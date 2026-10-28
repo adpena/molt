@@ -10,7 +10,8 @@ consumer-aware build-artifact allow-set; it is not a replacement generic
 
 This guard imports no process-control API, signals nothing, and kills nothing.
 The coordination-owned evidence inspector queries Git's object store through
-one batch-check stream; discovery otherwise reads filesystem metadata. The paired
+one batch-check stream; guard custody observes a read-only native snapshot,
+and discovery otherwise reads filesystem metadata. The paired
 ``tests/tools/test_disk_guard.py::test_agent_safety_source_scan`` asserts this
 module's source contains zero process-actuation tokens (the same discipline as
 pact's ``test_no_actuation_capability``). ``MOLT_DISABLE_DISK_GUARD`` stops
@@ -65,7 +66,7 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
     Lane-owned and pre-constructor scratch under ``<root>/tmp`` uses
     ``MOLT_SCRATCH_IDLE_DAYS`` (default three days), recursive activity and
     the same soft retirement. Existing control namespaces keep their rules;
-    an open guard marker conservatively keeps scratch.
+    an open guard marker keeps only its own checkout and resource coordinates.
 
   * ``--retire-cargo-incremental`` is a separate explicit review operation for
     successful pinned-session profile caches. It is never discovered by GC or
@@ -150,8 +151,8 @@ from molt.checkout_state import (  # noqa: E402
 from molt.file_deletion import delete_path  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
 from tools.memory_guard_core.active_custody import (  # noqa: E402
-    CUSTODY_COMMAND,
-    active_guard_blockers,
+    ArtifactGuard,
+    artifact_guard_records,
     has_active_guard_marker,
 )
 
@@ -189,7 +190,7 @@ _LAST_USE_KINDS: frozenset[CandidateKind] = frozenset(
     {"checkout-state", "session-target", "lane", "cargo-target"}
 )
 
-_GUARD_PROTECTED_KINDS: frozenset[CandidateKind] = frozenset(
+_LEGACY_TARGET_KINDS: frozenset[CandidateKind] = frozenset(
     {"lane", "cargo-target", "quarantine"}
 )
 
@@ -403,6 +404,8 @@ def decide_owner_reclaim(
         return False, "lock-held"
     if _is_protected(candidate.path, tuple(Path(path) for path in protected)):
         return False, "protected"
+    if candidate.guard_active:
+        return False, "active-guard"
     return True, "owner-retired"
 
 
@@ -633,6 +636,7 @@ def _retire_candidate(
             )
         except ValueError as error:
             return False, str(error), None
+        guards = _guard_protection(scope_roots)
         current = replace(
             candidate,
             mtime=(
@@ -641,12 +645,10 @@ def _retire_candidate(
                 else _newest_activity_mtime(candidate.path)
             ),
             lock_held=_root_lock_held(candidate.path, scope_roots),
-            guard_active=(
-                _has_active_guard(owner_root)
-                if candidate.kind in _GUARD_PROTECTED_KINDS
-                else False
-            ),
+            guard_active=guards.protects(candidate.path, owner_root),
         )
+        if current.guard_active:
+            result.custody = guards.report()
         reason = eligible(current, now_fn())
         if reason is not None:
             return False, None, reason
@@ -795,42 +797,174 @@ def _dir_size(path: Path, deadline: float) -> int:
 # --- discovery --------------------------------------------------------------
 
 
-def _has_active_guard(root: Path) -> bool:
-    """Project the shared marker authority without observing host processes."""
-    return any(
-        has_active_guard_marker(markers)
-        for markers in active_guard_marker_dirs_of(root)
-    )
+@dataclass(frozen=True)
+class _GuardScope:
+    guard: ArtifactGuard
+    checkout: Path
+    paths: tuple[Path, ...]
 
-
-def _active_guard_custody(roots: Iterable[Path]) -> list[dict]:
-    """Name the records that keep each owner root active, and the next step.
-
-    This reads files only. The custody tool takes the process snapshot that
-    tells a live guard from a stale or inconclusive record.
-    """
-    directories = sorted(
-        {markers for root in roots for markers in active_guard_marker_dirs_of(root)},
-        key=str,
-    )
-    custody = []
-    for markers in directories:
-        blockers = active_guard_blockers(markers)
-        if not blockers:
-            continue
-        custody.append(
-            {
-                "active_dir": str(markers),
-                "blocking_records": len(blockers),
-                "examples": list(blockers[:5]),
-                "next_step": (
-                    f"{CUSTODY_COMMAND} --active-dir {markers} names the live, "
-                    "stale and inconclusive records; add --apply to resolve "
-                    "the stale ones"
-                ),
-            }
+    @classmethod
+    def of(cls, guard: ArtifactGuard, namespace_owner: Path) -> _GuardScope:
+        scope = guard.record.artifact_scope
+        return cls(
+            guard,
+            Path(_norm(scope.checkout or namespace_owner)),
+            tuple(Path(_norm(path)) for path in scope.paths),
         )
-    return custody
+
+    @property
+    def coordinate_free(self) -> bool:
+        return not self.guard.record.artifact_scope.paths
+
+
+@dataclass
+class _GuardProtection:
+    scopes: tuple[_GuardScope, ...] = ()
+    _implied: dict[tuple[Path, Path], tuple[Path, Path]] = field(default_factory=dict)
+
+    def implied_roots(self, root: Path, checkout: Path) -> tuple[Path, Path]:
+        from molt.checkout_state import scratch_state_root
+        from molt.dx import cargo_target_dir_for_artifact_root
+
+        key = root, checkout
+        if key not in self._implied:
+            self._implied[key] = (
+                cargo_target_dir_for_artifact_root(root, None, source_root=checkout),
+                scratch_state_root(
+                    disk_scratch_roots_of(root)[0], owner=checkout, create=False
+                ),
+            )
+        return self._implied[key]
+
+    def protects(
+        self, path: Path, owner_root: Path, *, recorded_owner: Path | None = None
+    ) -> bool:
+        """Deletion containment plus bound ownership, never root-wide liveness.
+
+        A target coordinate keeps its enclosing target, not idle sibling
+        sessions below it. Only a coordinate-free record needs the more
+        conservative whole-owner rule, including that owner's sessions.
+        """
+        if not self.scopes:
+            return False
+        path = Path(_norm(path))
+        session = is_session_target(path, owner_root)
+        owner = bound_checkout_owner(
+            path.parent.parent if session else path, owner_root
+        )
+        owned = owner is not None or recorded_owner is not None
+        checkout = recorded_owner
+        used_target = (
+            owner.path
+            if owner is not None and owner.kind == "build-control"
+            else recorded_owner
+            if checkout_state_kind_of(path, owner_root) == "build-control"
+            else None
+        )
+        if used_target is not None:
+            session = is_session_target(used_target, owner_root)
+            target_owner = bound_checkout_owner(
+                used_target.parent.parent if session else used_target, owner_root
+            )
+            checkout = None if target_owner is None else target_owner.path
+        elif owner is not None:
+            checkout = owner.path
+        for scope in self.scopes:
+            coordinates = (*scope.paths, scope.guard.record.path)
+            if any(path == used or path in used.parents for used in coordinates):
+                return True
+            if used_target is not None and any(
+                used_target == used or used_target in used.parents
+                for used in scope.paths
+            ):
+                return True
+            if session and not scope.coordinate_free:
+                continue
+            if checkout is not None:
+                if checkout == scope.checkout or any(
+                    checkout == used or checkout in used.parents for used in scope.paths
+                ):
+                    return True
+                continue
+            # Pre-owner-record targets/scratch still have the canonical
+            # checkout address. Do not infer ownership from arbitrary names.
+            target, scratch = self.implied_roots(owner_root, scope.checkout)
+            if path in {target, scratch} or used_target == target:
+                return True
+            if (
+                session
+                and scope.coordinate_free
+                and (
+                    path.parent.parent == target
+                    or (used_target is not None and used_target.parent.parent == target)
+                )
+            ):
+                return True
+            # With no coordinates and no attributable checkout, retain only
+            # unowned state in the marker's own namespace. Bound foreign
+            # checkout/session state above never enters this branch.
+            if not owned and scope.coordinate_free and scope.checkout == owner_root:
+                return True
+        return False
+
+    def report(self) -> list[dict]:
+        directories: dict[Path, list[_GuardScope]] = {}
+        for scope in self.scopes:
+            directories.setdefault(scope.guard.active_dir, []).append(scope)
+        return [
+            {
+                "active_dir": str(directory),
+                "blocking_records": len(scopes),
+                "examples": [
+                    f"{scope.guard.record.path} ({scope.guard.reason})"
+                    for scope in scopes[:5]
+                ],
+                "records": [
+                    {
+                        "marker": str(scope.guard.record.path),
+                        "state": scope.guard.state,
+                        "reason": scope.guard.reason,
+                        "checkout": str(scope.checkout),
+                        "owner_source": "marker"
+                        if scope.guard.record.artifact_scope.checkout
+                        else "namespace",
+                        "paths": [str(path) for path in scope.paths],
+                        "coordinate_free": scope.coordinate_free,
+                        "operator_action_required": scope.guard.state == "ambiguous",
+                        "release_command": scope.guard.release_command,
+                    }
+                    for scope in scopes
+                ],
+                "next_step": scopes[0].guard.release_command,
+            }
+            for directory, scopes in sorted(
+                directories.items(), key=lambda item: str(item[0])
+            )
+        ]
+
+
+def _guard_protection(roots: Iterable[Path]) -> _GuardProtection:
+    owners = {
+        markers: root for root in roots for markers in active_guard_marker_dirs_of(root)
+    }
+    scopes = []
+    for guard in artifact_guard_records(tuple(owners)):
+        namespace = owners[guard.active_dir]
+        scopes.append(_GuardScope.of(guard, namespace))
+    return _GuardProtection(tuple(scopes))
+
+
+def _include_guard_custody(
+    result: ReclaimResult, guards: Sequence[ArtifactGuard], namespace_owner: Path
+) -> None:
+    """Report nested marker namespaces found by the existing scratch walk."""
+    if guards:
+        reports = {item["active_dir"]: item for item in result.custody}
+        projection = _GuardProtection(
+            tuple(_GuardScope.of(guard, namespace_owner) for guard in guards)
+        )
+        reports.update({item["active_dir"]: item for item in projection.report()})
+        result.custody = list(reports.values())
 
 
 def discover_candidates(
@@ -840,6 +974,7 @@ def discover_candidates(
     roots: Sequence[Path] | None = None,
     measure_sizes: bool = True,
     size_budget_s: float = 30.0,
+    guards: _GuardProtection | None = None,
 ) -> list[Candidate]:
     """Scan every registered worktree's allow-set into one candidate family."""
     root = root.resolve()
@@ -847,10 +982,9 @@ def discover_candidates(
     seen: set[str] = set()
     candidates: list[Candidate] = []
     size_deadline = time.monotonic() + size_budget_s
+    guards = _guard_protection(scan_roots) if guards is None else guards
 
-    def add(
-        path: Path, kind: CandidateKind, owner_root: Path, *, guard_active: bool
-    ) -> None:
+    def add(path: Path, kind: CandidateKind, owner_root: Path) -> None:
         norm = _norm(path)
         if norm in seen or not path.is_dir():
             return
@@ -869,34 +1003,31 @@ def discover_candidates(
                 size=size,
                 lock_held=_root_lock_held(path, scan_roots),
                 owner_root=owner_root,
-                # Guard markers elsewhere in the artifact root say nothing
-                # about a last-use root; its last use and its locks do.
-                guard_active=guard_active and kind in _GUARD_PROTECTED_KINDS,
+                guard_active=guards.protects(path, owner_root),
             )
         )
 
     for owner_root in scan_roots:
-        guard_active = _has_active_guard(owner_root)
         # pinned session targets, evicted by last use under pressure
         for child in session_target_dirs(owner_root):
-            add(child, "session-target", owner_root, guard_active=guard_active)
+            add(child, "session-target", owner_root)
         # per-lane target dirs under target/
         for child in _iter_dir(_target_root(owner_root)):
             if (
                 child.is_dir()
                 and _is_reclaimable(child, owner_root, config.lane_globs) == "lane"
             ):
-                add(child, "lane", owner_root, guard_active=guard_active)
+                add(child, "lane", owner_root)
         # cargo-incremental quarantine dirs
         for qdir in _iter_quarantine_dirs(owner_root):
-            add(qdir, "quarantine", owner_root, guard_active=guard_active)
+            add(qdir, "quarantine", owner_root)
         # flat legacy cargo-target-*
         for child in _iter_dir(owner_root):
             if child.is_dir() and child.name.startswith("cargo-target-"):
-                add(child, "cargo-target", owner_root, guard_active=guard_active)
+                add(child, "cargo-target", owner_root)
         # checkout state roots, evicted by last use under pressure
         for child in _checkout_state_dirs(owner_root):
-            add(child, "checkout-state", owner_root, guard_active=guard_active)
+            add(child, "checkout-state", owner_root)
     return candidates
 
 
@@ -1096,7 +1227,10 @@ def ensure_free(
         return result
 
     phase_started = time.monotonic()
-    candidates = discover_candidates(resolved_root, cfg, roots=scope_roots)
+    guards = _guard_protection(scope_roots)
+    candidates = discover_candidates(
+        resolved_root, cfg, roots=scope_roots, guards=guards
+    )
     result.phase_elapsed_s["discovery"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
     plan = plan_reclaim(
@@ -1112,11 +1246,7 @@ def ensure_free(
         result.skipped.append(
             {"path": str(cand.path), "reason": why, "kind": cand.kind}
         )
-    result.custody = _active_guard_custody(
-        cand.owner_root or resolved_root
-        for cand, why in plan.skipped
-        if why == "active-guard"
-    )
+    result.custody = guards.report()
 
     result.phase_elapsed_s["planning"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
@@ -1210,11 +1340,19 @@ def gc(
         mode="apply" if apply else "dry-run",
     )
     result.phase_elapsed_s["setup"] = _elapsed_since(started)
+    guards = _guard_protection(scope_roots)
+    result.custody = guards.report()
     # Reuse the existing inventory budget; evidence adds no unbounded walk.
     inventory_deadline = time.monotonic() + 30.0
     phase_started = time.monotonic()
     _collect_retired_roots(
-        scope_roots, result, env=env, now=now, apply=apply, deadline=inventory_deadline
+        scope_roots,
+        result,
+        env=env,
+        now=now,
+        apply=apply,
+        deadline=inventory_deadline,
+        guards=guards,
     )
     result.phase_elapsed_s["retired-roots"] = _elapsed_since(phase_started)
     protected = _protected_paths(scope_roots, env)
@@ -1238,6 +1376,7 @@ def gc(
         limits=limits,
         apply=apply,
         deadline=inventory_deadline,
+        guards=guards,
     )
     result.phase_elapsed_s["scratch"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
@@ -1245,7 +1384,7 @@ def gc(
         cand
         for owner_root in scope_roots
         for cand in _retention_candidates(
-            owner_root, scope_roots, now=now, limits=limits, config=cfg
+            owner_root, scope_roots, now=now, limits=limits, config=cfg, guards=guards
         )
     ]
     result.phase_elapsed_s["discovery"] = _elapsed_since(phase_started)
@@ -1256,6 +1395,11 @@ def gc(
         min_idle_s=cfg.min_idle_s,
         protected=protected,
     )
+    for cand in candidates:
+        if cand.guard_active:
+            result.skipped.append(
+                {"path": str(cand.path), "kind": cand.kind, "reason": "active-guard"}
+            )
     result.phase_elapsed_s["planning"] = _elapsed_since(phase_started)
     collected_norms: set[str] = set()
 
@@ -1340,6 +1484,7 @@ def gc(
                             limits=limits,
                             build_control=True,
                             config=cfg,
+                            guards=guards,
                         )
                     ],
                     now=now,
@@ -1362,6 +1507,7 @@ def gc(
             retired=collected_norms,
             protected=protected,
             deadline=inventory_deadline,
+            guards=guards,
         )
     result.phase_elapsed_s["superseded-layouts"] = _elapsed_since(phase_started)
     result.free_after = free_fn()
@@ -1371,7 +1517,15 @@ def gc(
     return result
 
 
-def _scratch_inventory(path: Path, deadline: float) -> tuple[int, float, bool]:
+@dataclass(frozen=True)
+class _ScratchInventory:
+    size: int
+    mtime: float
+    lock_held: bool
+    guards: tuple[ArtifactGuard, ...]
+
+
+def _scratch_inventory(path: Path, deadline: float) -> _ScratchInventory:
     """Complete recursive activity, size and lock observation in one walk.
 
     Old scratch has no cooperating stamp, so immediate children cannot prove
@@ -1383,13 +1537,14 @@ def _scratch_inventory(path: Path, deadline: float) -> tuple[int, float, bool]:
     newest = path.lstat().st_mtime
     size = 0
     locked = False
+    markers: list[Path] = []
     stack = [path]
     while stack:
         if time.monotonic() >= deadline:
             raise TimeoutError("scratch inventory budget exhausted")
         directory = stack.pop()
         if directory.name == "active" and directory.parent.name == STATE_DIRNAME:
-            locked |= has_active_guard_marker(directory)
+            markers.append(directory)
         with os.scandir(directory) as entries:
             for entry in entries:
                 if time.monotonic() >= deadline:
@@ -1410,7 +1565,7 @@ def _scratch_inventory(path: Path, deadline: float) -> tuple[int, float, bool]:
                 elif not stat.S_ISLNK(metadata.st_mode):
                     # Sockets/devices have a different lifetime protocol.
                     locked = True
-    return size, newest, locked
+    return _ScratchInventory(size, newest, locked, artifact_guard_records(markers))
 
 
 def _collect_scratch(
@@ -1422,6 +1577,7 @@ def _collect_scratch(
     limits: RetentionLimits,
     apply: bool,
     deadline: float,
+    guards: _GuardProtection,
 ) -> None:
     from molt.checkout_state import (
         LAST_USE_STAMP,
@@ -1430,10 +1586,7 @@ def _collect_scratch(
     )
     from molt.file_publication import resolve_owned_path
 
-    # A marker without a scratch coordinate cannot prove which legacy entry
-    # its child still uses. Preserve scratch until that custody is resolved.
     protected = _protected_paths(scope_roots, env)
-    guards = {root: _has_active_guard(root) for root in scope_roots}
     for root in scope_roots:
         container = disk_scratch_roots_of(root)[0]
         if container.is_symlink():
@@ -1465,7 +1618,10 @@ def _collect_scratch(
                     path, _protected_paths(scope_roots, env) if recheck else protected
                 ):
                     return 0, "protected"
-                if guards[root] or (recheck and _has_active_guard(root)):
+                protection = _guard_protection(scope_roots) if recheck else guards
+                if protection.protects(path, root):
+                    if recheck:
+                        result.custody = protection.report()
                     return 0, "active-guard"
                 if not recheck and any(
                     _region_locked(lock) for lock in checkout_state_lock_paths(path)
@@ -1485,8 +1641,14 @@ def _collect_scratch(
                     is None
                 ):
                     return 0, "recent-use"
-                size, newest, locked = _scratch_inventory(path, deadline)
-                if locked or _root_lock_held(path, scope_roots):
+                inventory = _scratch_inventory(path, deadline)
+                size, newest = inventory.size, inventory.mtime
+                _include_guard_custody(result, inventory.guards, path)
+                if (
+                    inventory.lock_held
+                    or inventory.guards
+                    or _root_lock_held(path, scope_roots)
+                ):
                     return size, "lock-or-guard-held"
                 if (
                     checkout_state_decision(
@@ -1520,7 +1682,9 @@ def _collect_scratch(
                                     result.errors.append(f"{path}: {error}")
                                     continue
                 if kept is not None:
-                    result.skipped.append({"path": str(path), "reason": kept})
+                    result.skipped.append(
+                        {"path": str(path), "kind": "scratch", "reason": kept}
+                    )
                 else:
                     result.reclaimed.append(
                         {"path": str(path), "kind": "scratch", "est_bytes": size}
@@ -1537,6 +1701,7 @@ def _collect_retired_roots(
     now: float,
     apply: bool,
     deadline: float,
+    guards: _GuardProtection,
 ) -> None:
     """Only a validated retirement's clock can authorize final deletion."""
     from molt.checkout_state import checkout_state_retirement
@@ -1565,15 +1730,16 @@ def _collect_retired_roots(
                     protected = _protected_paths(scope_roots, env)
                     if retirement.reason == "scratch":
                         try:
-                            _, newest, locked = _scratch_inventory(
-                                retirement.path, deadline
+                            inventory = _scratch_inventory(retirement.path, deadline)
+                            _include_guard_custody(
+                                result, inventory.guards, retirement.path
                             )
                         except (OSError, ValueError):
                             return True
                         if (
-                            locked
-                            or now - newest < CHECKOUT_STATE_WINDOW_S
-                            or _has_active_guard(owning_root)
+                            inventory.lock_held
+                            or inventory.guards
+                            or now - inventory.mtime < CHECKOUT_STATE_WINDOW_S
                             or (
                                 not state_lock_owned
                                 and any(
@@ -1586,7 +1752,16 @@ def _collect_retired_roots(
                         ):
                             return True
                     return (
-                        _is_protected(retirement.path, protected)
+                        (
+                            guards
+                            if not state_lock_owned
+                            else _guard_protection(scope_roots)
+                        ).protects(
+                            retirement.original,
+                            owning_root,
+                            recorded_owner=Path(retirement.owner),
+                        )
+                        or _is_protected(retirement.path, protected)
                         or _is_protected(retirement.original, protected)
                         or _root_lock_held(retirement.path, scope_roots)
                         or _root_lock_held(retirement.original, scope_roots)
@@ -1909,6 +2084,7 @@ def _retire_superseded_layouts(
     retired: set[str],
     protected: Sequence[Path],
     deadline: float,
+    guards: _GuardProtection,
 ) -> None:
     """Retire layouts a later design replaced inside live roots (design 56, 2.8).
 
@@ -1934,6 +2110,9 @@ def _retire_superseded_layouts(
         ]
         if not candidates:
             continue
+        if guards.protects(root, owner_root):
+            result.skipped.append({"path": str(root), "reason": "active-guard"})
+            continue
         if _root_lock_held(root, scope_roots):
             result.skipped.append({"path": str(root), "reason": "lock-held"})
             continue
@@ -1954,6 +2133,9 @@ def _retire_superseded_layouts(
         with checkout_state_retirement(root) as exclusive:
             if not exclusive:
                 result.skipped.append({"path": str(root), "reason": "state-in-use"})
+                continue
+            if _guard_protection(scope_roots).protects(root, owner_root):
+                result.skipped.append({"path": str(root), "reason": "active-guard"})
                 continue
             for path in candidates:
                 size = (
@@ -2034,6 +2216,7 @@ def _retention_candidates(
     limits: RetentionLimits,
     config: GuardConfig,
     build_control: bool = False,
+    guards: _GuardProtection | None = None,
 ) -> list[Candidate]:
     """The last-use roots of ``owner_root`` that the retention policy selects.
 
@@ -2058,18 +2241,14 @@ def _retention_candidates(
                 continue
             for child in children:
                 kind = _is_reclaimable(child, owner_root, config.lane_globs)
-                if kind in _GUARD_PROTECTED_KINDS and child.is_dir():
+                if kind in _LEGACY_TARGET_KINDS and child.is_dir():
                     roots.append((child, kind))
-    legacy_guard_active = (
-        _has_active_guard(owner_root)
-        if any(kind in _GUARD_PROTECTED_KINDS for _, kind in roots)
-        else False
-    )
+    guards = _guard_protection(scope_roots) if guards is None else guards
     return [
         Candidate(
             path=child,
             kind=kind,
-            guard_active=legacy_guard_active and kind in _GUARD_PROTECTED_KINDS,
+            guard_active=guards.protects(child, owner_root),
             mtime=checkout_state_last_use(child),
             lock_held=_root_lock_held(child, scope_roots),
             owner_root=owner_root,
@@ -2114,6 +2293,8 @@ def reclaim_checkout_state(
     )
     result.phase_elapsed_s["setup"] = _elapsed_since(started)
     phase_started = time.monotonic()
+    guards = _guard_protection(scope_roots)
+    result.custody = guards.report()
     protected = _protected_paths(scope_roots, env)
     roots_by_owner = {
         owner_root: sorted(
@@ -2158,6 +2339,7 @@ def reclaim_checkout_state(
                 mtime=checkout_state_last_use(child),
                 lock_held=_root_lock_held(child, scope_roots),
                 owner_root=owner_root,
+                guard_active=guards.protects(child, owner_root),
             )
             allowed, reason = decide_owner_reclaim(candidate, protected=protected)
             if not allowed:
@@ -2459,6 +2641,13 @@ def _print_result(result: ReclaimResult, *, as_json: bool) -> None:
             f"  active guard records: {item['blocking_records']} in "
             f"{item['active_dir']}; next step: {item['next_step']}"
         )
+        for record in item["records"]:
+            if record["operator_action_required"] or record["coordinate_free"]:
+                print(
+                    f"    {record['marker']}: {record['reason']}; "
+                    f"owner={record['checkout']}; coordinate-free={record['coordinate_free']}; "
+                    f"next step: {record['release_command']}"
+                )
 
 
 def _incremental_coordinate(path: Path, root: Path) -> tuple[Path, Path]:

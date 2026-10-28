@@ -27,11 +27,12 @@ install_registry({{
     "molt_warnings_warn": _warn,
     "molt_warnings_warn_explicit": _warn_explicit,
     "molt_warnings_formatwarning": lambda *args: "formatted",
-    "molt_warnings_showwarning": lambda *args: None,
     "molt_warnings_simplefilter": lambda *args: None,
     "molt_warnings_filterwarnings": lambda *args: None,
     "molt_warnings_resetwarnings": lambda *args: None,
     "molt_warnings_filters_get": lambda: [("default", None, Warning, None, 0)],
+    "molt_warnings_onceregistry_get": dict,
+    "molt_warnings_filters_mutated": lambda: None,
 }})
 
 
@@ -44,7 +45,7 @@ def _load_module(name, path_text):
     return module
 
 
-_load_module("warnings", {str(STDLIB_ROOT / "warnings.py")!r})
+_warnings_mod = _load_module("warnings", {str(STDLIB_ROOT / "warnings.py")!r})
 _private = _load_module("_warnings", {str(STDLIB_ROOT / "_warnings.py")!r})
 
 rows = [
@@ -56,6 +57,14 @@ for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
 checks = {{
+    "aliases": (
+        _private.filters is _warnings_mod.filters
+        and _private._onceregistry is _warnings_mod.onceregistry
+        and _private._defaultaction == _warnings_mod.defaultaction
+        and _private._filters_mutated is _warnings_mod._filters_mutated
+        and _private.warn is _warnings_mod.warn
+        and _private.warn_explicit is _warnings_mod.warn_explicit
+    ),
     "filters": isinstance(_private.filters, list),
     "warn": _private.warn("hello", UserWarning, 2) is None,
     "warn_explicit": _private.warn_explicit("boom", UserWarning, "file.py", 7) is None,
@@ -100,6 +109,7 @@ def test__warnings_public_surface_matches_expected_shape() -> None:
         ("warn_explicit", "function", "True"),
     ]
     assert checks == {
+        "aliases": "True",
         "filters": "True",
         "warn": "True",
         "warn_explicit": "True",
