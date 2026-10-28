@@ -135,7 +135,13 @@ fn importlib_cached_empty_namespace_preserves_identity_and_owner() {
         let modules = alloc_dict_with_pairs(py, &[name, bits]);
         assert!(!modules.is_null());
         let before = unsafe { (*crate::header_from_obj_ptr(module)).ref_count_snapshot() };
-        let imported = importlib_import_resolved_module(py, "cached_empty", name, modules, true);
+        let imported = importlib_import_resolved_module(
+            py,
+            "cached_empty",
+            name,
+            modules,
+            ImportlibImportMode::Python,
+        );
         assert!(!exception_pending(py));
         assert_eq!(imported, bits);
         assert_eq!(
