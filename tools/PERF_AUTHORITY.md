@@ -225,6 +225,22 @@ matches CPython and its previous size/digest. This proves avoided repeated work;
 it does not prove faster edited compilation. No cross-platform/WASM result or
 world-class budget is claimed, and HF-250 stays open.
 
+The native build-identity ownership proof uses the existing `dev-fast` host
+compiler profile, also admitted by the developer daemon proofs, instead of
+creating a separate `release-fast` compiler generation. Guest `--profile dev`,
+all nine AOT builds in three concurrent groups, shared artifact/cache placement,
+CPython comparisons and daemon-custody assertions remain unchanged. Each build
+checks its resolved compiler and guest profile in the public CLI's
+`observed_toolchain`; this is a producer selection, not loaded-daemon attestation.
+This follows [Cargo's profile tradeoff](https://doc.rust-lang.org/cargo/reference/profiles.html):
+reuse the development profile for this ownership contract, retaining separate
+shipping qualification. A macOS arm64/CPython 3.12.15 isolated baseline takes
+88.39 s, including 51.05 s preparing `release-fast`. Initial `dev-fast`
+preparation still costs 49.66 s. Once prepared, the unchanged nine-build proof
+takes 15.88 s with no Cargo build; all nine emitted programs match CPython and
+their guards close. Those are different artifact states, not a cold-versus-warm
+speedup claim. Cold preparation, other hosts and whole-gate budgets remain open.
+
 The shared `regalloc2` move planner uses one maintained source for native
 Cranelift and the Wasmtime host (pin and invariants:
 [`MOLT_PATCHES.md`](../vendor/rust/regalloc2/MOLT_PATCHES.md)). A captured
