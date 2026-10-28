@@ -1041,61 +1041,119 @@ fn transaction_rejects_gil_before_process_state_lock() {
     );
 }
 
-/// Standalone cache/error tests supply the actual public resolver boundary.
-/// The catalog is deliberately not consulted: an empty finder is a genuine
-/// resolver miss, while ordinary cached values bypass this callback entirely.
-/// Public util membership (including a preexisting None) is escrowed exactly.
+/// Standalone cache/error tests install a real ordered meta-path finder.
+/// Public util.find_spec rebinding is deliberately irrelevant to ordinary
+/// imports. The fixture preserves existing sys membership and finder state;
+/// a cold test establishes and later retires its own interpreter sys role.
 pub(crate) struct EmptyImportResolver {
-    previous: Option<u64>,
+    sys: u64,
+    previous_meta_path: Option<u64>,
+    previous_sys: Option<u64>,
+    sys_snapshot: Option<crate::builtins::module_table::InterpreterSysTestSnapshot>,
+    defaults_snapshot: Option<crate::builtins::platform::ImportDefaultsTestSnapshot>,
 }
 
 impl EmptyImportResolver {
     pub(crate) fn new(py: &crate::PyToken<'_>) -> Self {
-        extern "C" fn find_spec(_name: u64, _package: u64) -> u64 {
+        extern "C" fn find_spec(_name: u64, _path: u64, _target: u64) -> u64 {
             crate::MoltObject::none().bits()
         }
-        use crate::{MoltObject, dec_ref_bits};
-        let name = crate::attr_name_bits_from_bytes(py, b"importlib.util").unwrap();
-        let module = crate::object::builders::alloc_module_obj(py, name);
-        assert!(!module.is_null());
-        let module = MoltObject::from_ptr(module).bits();
+        use crate::{MoltObject, dec_ref_bits, inc_ref_bits};
+        let mut previous_sys = None;
+        let mut sys_snapshot = None;
+        let sys = if let Some(sys) = crate::builtins::modules::interpreter_sys_module(py) {
+            inc_ref_bits(py, sys);
+            sys
+        } else {
+            previous_sys = crate::builtins::module_table::module_lookup(py, "sys")
+                .expect("snapshot public sys membership");
+            sys_snapshot =
+                Some(crate::builtins::module_table::InterpreterSysTestSnapshot::detach(py));
+            let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
+            let pointer = crate::object::builders::alloc_module_obj(py, name);
+            assert!(!pointer.is_null());
+            let sys = MoltObject::from_ptr(pointer).bits();
+            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+            dec_ref_bits(py, name);
+            assert!(!crate::exception_pending(py));
+            sys
+        };
+        let defaults_snapshot = sys_snapshot
+            .is_none()
+            .then(|| crate::builtins::platform::ImportDefaultsTestSnapshot::detach(py));
+        let meta_key = crate::attr_name_bits_from_bytes(py, b"meta_path").unwrap();
+        let dictionary = unsafe { crate::module_dict_bits(crate::ptr_from_bits(sys)) };
+        let previous_meta_path = unsafe {
+            crate::dict_get_in_place(py, crate::ptr_from_bits(dictionary), meta_key)
+                .expect("snapshot sys.meta_path")
+        }
+        .inspect(|bits| inc_ref_bits(py, *bits));
+        let name = crate::attr_name_bits_from_bytes(py, b"_molt_empty_import_finder").unwrap();
+        let pointer = crate::object::builders::alloc_module_obj(py, name);
+        assert!(!pointer.is_null());
+        let finder = MoltObject::from_ptr(pointer).bits();
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
             crate::builtins::functions::runtime_fn_addr(
                 "empty_public_import_finder",
                 find_spec as *const (),
             ),
-            2,
+            3,
         );
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         let key = crate::attr_name_bits_from_bytes(py, b"find_spec").unwrap();
-        crate::builtins::modules::molt_module_set_attr(module, key, function);
+        crate::builtins::modules::molt_module_set_attr(finder, key, function);
+        let meta_path = crate::alloc_list(py, &[finder]);
+        assert!(!meta_path.is_null());
+        let meta_path = MoltObject::from_ptr(meta_path).bits();
+        crate::builtins::modules::molt_module_set_attr(sys, meta_key, meta_path);
         assert!(!crate::exception_pending(py));
-        let previous = crate::builtins::module_table::replace_module_owned_for_test(
-            py,
-            "importlib.util",
-            Some(module),
-        );
-        // Replacement consumes the module owner; its dictionary owns function.
-        for bits in [name, key, function] {
+        for bits in [name, key, function, finder, meta_key, meta_path] {
             dec_ref_bits(py, bits);
         }
-        Self { previous }
+        Self {
+            sys,
+            previous_meta_path,
+            previous_sys,
+            sys_snapshot,
+            defaults_snapshot,
+        }
     }
 }
 
 impl Drop for EmptyImportResolver {
     fn drop(&mut self) {
         crate::with_gil_entry_nopanic!(py, {
-            let removed = crate::builtins::module_table::replace_module_owned_for_test(
-                py,
-                "importlib.util",
-                self.previous.take(),
-            );
-            if let Some(bits) = removed {
+            let key = crate::attr_name_bits_from_bytes(py, b"meta_path").unwrap();
+            let dictionary = unsafe { crate::module_dict_bits(crate::ptr_from_bits(self.sys)) };
+            if let Some(bits) = self.previous_meta_path.take() {
+                assert!(unsafe {
+                    crate::dict_set_in_place(py, crate::ptr_from_bits(dictionary), key, bits)
+                });
                 crate::dec_ref_bits(py, bits);
+            } else {
+                unsafe {
+                    crate::dict_del_in_place(py, crate::ptr_from_bits(dictionary), key)
+                        .expect("restore absent sys.meta_path");
+                }
             }
+            crate::dec_ref_bits(py, key);
+            if let Some(snapshot) = self.defaults_snapshot.take() {
+                snapshot.restore(py);
+            }
+            if let Some(snapshot) = self.sys_snapshot.take() {
+                let removed = crate::builtins::module_table::replace_module_owned_for_test(
+                    py,
+                    "sys",
+                    self.previous_sys.take(),
+                );
+                snapshot.restore(py);
+                if let Some(bits) = removed {
+                    crate::dec_ref_bits(py, bits);
+                }
+            }
+            crate::dec_ref_bits(py, self.sys);
         });
     }
 }

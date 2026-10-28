@@ -1075,7 +1075,6 @@ fn sys_module_cache_set_does_not_leave_pending_exception() {
 fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let _resolver = crate::test_support::EmptyImportResolver::new(py);
         let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
         let _sys_restore = ModuleCacheRestore::new(py, sys_name);
         let text = "_molt_public_cache_outcome_probe";
@@ -1083,9 +1082,21 @@ fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
         let _name_restore = ModuleCacheRestore::new(py, name);
         let bootstrap = molt_module_new(name);
         molt_module_cache_set(name, bootstrap);
+        let before_sys = crate::builtins::module_table::module_dictionary(py).unwrap();
+        let cached = molt_module_cache_get(name);
+        assert_eq!(
+            cached, bootstrap,
+            "cache is authoritative before sys publication"
+        );
+        dec_ref_bits(py, cached);
         let sys = molt_module_new(sys_name);
         crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+        let _resolver = crate::test_support::EmptyImportResolver::new(py);
         let modules_bits = sys_modules_dict_bits(py, sys).unwrap();
+        assert_eq!(
+            modules_bits, before_sys,
+            "sys exposes the existing dictionary"
+        );
         let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
         let _modules_owner = crate::PtrDropGuard::new(modules);
         let module = molt_module_new(name);
@@ -1203,28 +1214,49 @@ fn import_attempt_preserves_pending_failure_even_when_its_text_names_the_target(
 
 #[test]
 fn canonical_module_dictionary_preserves_none_and_arbitrary_public_values() {
-    let _guard = crate::test_support::RuntimeTestTransaction::new();
-    crate::with_gil_entry_nopanic!(py, {
-        let _resolver = crate::test_support::EmptyImportResolver::new(py);
-        let text = "_molt_single_store_arbitrary_values";
-        let name = attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
-        let _restore = ModuleCacheRestore::new(py, name);
-        let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
-        let pointer = ptr_from_bits(dictionary);
-        assert!(unsafe { dict_set_in_place(py, pointer, name, MoltObject::none().bits()) });
-        assert!(module_import_attempt(name).is_err());
-        assert_pending_exception_class(py, "ModuleNotFoundError");
-        let string = MoltObject::from_ptr(alloc_string(py, b"arbitrary public value")).bits();
-        assert!(unsafe { dict_set_in_place(py, pointer, name, string) });
-        assert!(
-            matches!(module_import_attempt(name), Ok(ModuleImportOutcome::Imported(bits)) if { assert_eq!(bits, string); dec_ref_bits(py, bits); true })
-        );
-        assert!(unsafe { dict_del_in_place(py, pointer, name).unwrap() });
-        assert!(matches!(
-            module_import_attempt(name),
-            Ok(ModuleImportOutcome::Missing { .. })
-        ));
-        dec_ref_bits(py, string);
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        crate::with_gil_entry_nopanic!(py, {
+            assert!(
+                interpreter_sys_module(py).is_none(),
+                "exercise cold resolver setup"
+            );
+            let previous_sys = crate::builtins::module_table::module_lookup(py, "sys").unwrap();
+            let resolver = crate::test_support::EmptyImportResolver::new(py);
+            let text = "_molt_single_store_arbitrary_values";
+            let name = attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
+            let _restore = ModuleCacheRestore::new(py, name);
+            let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
+            let pointer = ptr_from_bits(dictionary);
+            assert!(unsafe { dict_set_in_place(py, pointer, name, MoltObject::none().bits()) });
+            assert!(module_import_attempt(name).is_err());
+            assert_pending_exception_class(py, "ModuleNotFoundError");
+            let string = MoltObject::from_ptr(alloc_string(py, b"arbitrary public value")).bits();
+            assert!(unsafe { dict_set_in_place(py, pointer, name, string) });
+            assert!(
+                matches!(module_import_attempt(name), Ok(ModuleImportOutcome::Imported(bits)) if { assert_eq!(bits, string); dec_ref_bits(py, bits); true })
+            );
+            assert!(unsafe { dict_del_in_place(py, pointer, name).unwrap() });
+            assert!(matches!(
+                module_import_attempt(name),
+                Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == text
+            ));
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, string);
+            drop(_restore);
+            drop(resolver);
+            assert!(
+                interpreter_sys_module(py).is_none(),
+                "fixture retires its sys role"
+            );
+            let restored_sys = crate::builtins::module_table::module_lookup(py, "sys").unwrap();
+            assert_eq!(
+                restored_sys, previous_sys,
+                "fixture restores public sys membership"
+            );
+            for bits in [previous_sys, restored_sys].into_iter().flatten() {
+                dec_ref_bits(py, bits);
+            }
+        });
     });
 }
 
