@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ContextManager, Mapping
 
-from molt.backend_environment import CodegenSelection
+from molt.backend_environment import (
+    CodegenSelection,
+    prepare_backend_debug_artifact_dir,
+)
 from molt.backend_executable_names import CodegenBackend
 from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
 from molt.cli import backend_binary as _backend_binary
@@ -686,6 +689,13 @@ def _prepare_backend_dispatch(
         backend_env = _backend_environment_with_compiler_fingerprint(
             backend_env, backend_ensure_result.cache_compiler_fingerprint
         )
+
+    try:
+        # Cache resolution only selects this path. Every actual dispatch,
+        # including fact graphs and daemon requests, binds its writer custody.
+        prepare_backend_debug_artifact_dir(backend_env)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return None, _fail(str(exc), json_output, command="build")
 
     daemon_socket: Path | None = None
     daemon_ready = False

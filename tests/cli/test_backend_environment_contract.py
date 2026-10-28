@@ -64,15 +64,21 @@ def test_backend_debug_artifacts_follow_the_artifact_root_not_the_checkout(
     """HF-111: the CLI names the directory; the backend derives no root."""
     from molt.path_custody import host_path_is_within
     from molt.source_root import compiler_source_root
+    from molt.checkout_state import scratch_state_root
 
     artifact_root = tmp_path / "artifacts"
     rooted = CodegenSelection().environment({"MOLT_EXT_ROOT": str(artifact_root)})
     default = Path(CodegenSelection().environment({})[DEBUG_ARTIFACT_DIR_ENV])
 
-    # The artifact root's scratch, the layout the backend used to derive.
-    assert rooted[DEBUG_ARTIFACT_DIR_ENV] == str(
-        artifact_root.resolve() / "tmp" / "molt-backend"
-    )
+    # Checkout identity owns the lane component; the debug purpose cannot
+    # collapse different compiler checkouts into the old shared tmp directory.
+    owner = compiler_source_root()
+    lane_root = scratch_state_root(artifact_root / "tmp", owner=owner, create=False)
+    assert rooted[DEBUG_ARTIFACT_DIR_ENV] == str(lane_root / "molt-backend")
+    assert lane_root.parent == artifact_root / "tmp"
+    assert host_path_is_within(Path(rooted[DEBUG_ARTIFACT_DIR_ENV]), artifact_root)
+    assert not host_path_is_within(lane_root, owner)
+    assert not artifact_root.exists(), "environment projection must create nothing"
     assert default.is_absolute()
     assert not host_path_is_within(default, compiler_source_root())
     # The backend no longer reads the artifact root, so no request carries it.
@@ -95,6 +101,63 @@ def test_explicit_backend_debug_artifact_dir_wins_and_is_made_absolute(
     # A daemon with another working directory resolves the same directory.
     assert relative[DEBUG_ARTIFACT_DIR_ENV] == str(tmp_path / "rel" / "debug")
     assert not (tmp_path / "rel").exists()
+
+
+@pytest.mark.parametrize("selection", ["default", "explicit-owned", "external"])
+def test_backend_debug_writer_binds_only_the_exact_owned_location(
+    tmp_path, monkeypatch, selection
+):
+    import molt.backend_environment as backend_environment
+    from molt.checkout_state import (
+        CheckoutOwner,
+        read_checkout_owner,
+        scratch_state_root,
+    )
+
+    compiler = tmp_path / "compiler"
+    compiler.mkdir()
+    monkeypatch.setattr(backend_environment, "compiler_source_root", lambda: compiler)
+    artifacts = tmp_path / "artifacts"
+    env = {"MOLT_EXT_ROOT": str(artifacts)}
+    owned = scratch_state_root(artifacts / "tmp", owner=compiler, create=False)
+    if selection == "explicit-owned":
+        env[DEBUG_ARTIFACT_DIR_ENV] = str(owned / "molt-backend")
+    elif selection == "external":
+        # A matching basename cannot confer checkout ownership.
+        env[DEBUG_ARTIFACT_DIR_ENV] = str(tmp_path / "caller" / "molt-backend")
+    projected = CodegenSelection().environment(env)
+    before = dict(projected)
+    assert not artifacts.exists()
+    backend_environment.prepare_backend_debug_artifact_dir(projected)
+    assert projected == before
+    if selection == "external":
+        assert not artifacts.exists()
+        assert not (tmp_path / "caller").exists()
+    else:
+        assert read_checkout_owner(owned) == CheckoutOwner(
+            compiler.resolve(), "scratch"
+        )
+        assert not (owned / "molt-backend").exists()
+
+
+def test_explicit_debug_writer_rejects_invalid_global_scratch_without_writes(tmp_path):
+    from molt.backend_environment import prepare_backend_debug_artifact_dir
+    from molt.dx import DxConfigError
+
+    artifacts = tmp_path / "artifacts"
+    explicit = tmp_path / "caller" / "debug"
+    projected = CodegenSelection().environment(
+        {
+            "MOLT_EXT_ROOT": str(artifacts),
+            "MOLT_SCRATCH_STORAGE": "relative-scratch-root",
+            DEBUG_ARTIFACT_DIR_ENV: str(explicit),
+        }
+    )
+    assert projected[DEBUG_ARTIFACT_DIR_ENV] == str(explicit)
+    assert not artifacts.exists() and not explicit.parent.exists()
+    with pytest.raises(DxConfigError, match="MOLT_SCRATCH_STORAGE.*absolute"):
+        prepare_backend_debug_artifact_dir(projected)
+    assert not artifacts.exists() and not explicit.parent.exists()
 
 
 @pytest.mark.parametrize("tier", ["module", "function"])
