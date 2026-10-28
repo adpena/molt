@@ -1061,6 +1061,9 @@ tests/differential/stdlib/fractions_basic.py
 tests/differential/stdlib/fractions_hash_modular.py
 tests/differential/stdlib/fractions_ops.py
 tests/differential/stdlib/frame_object_fields.py
+tests/differential/stdlib/fromlist_protocol_pkg/__init__.py
+tests/differential/stdlib/fromlist_protocol_pkg/broken.py
+tests/differential/stdlib/fromlist_protocol_pkg/child.py
 tests/differential/stdlib/ftplib_basic.py
 tests/differential/stdlib/functools_cache_basic.py
 tests/differential/stdlib/functools_cache_behavior.py
@@ -1477,6 +1480,7 @@ tests/differential/stdlib/module_protocol_pkg/child_delete.py
 tests/differential/stdlib/module_protocol_pkg/child_descriptor.py
 tests/differential/stdlib/module_protocol_pkg/child_from.py
 tests/differential/stdlib/module_protocol_pkg/child_normal.py
+tests/differential/stdlib/module_protocol_pkg/child_recursive.py
 tests/differential/stdlib/module_protocol_pkg/child_replace.py
 tests/differential/stdlib/module_protocol_pkg/child_value.py
 tests/differential/stdlib/module_protocol_pkg/child_warning_error.py
