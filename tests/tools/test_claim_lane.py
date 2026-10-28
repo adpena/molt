@@ -16,6 +16,7 @@ from tools.molt_dev_common import _run_fast_captured_command
 
 from tests.integration_driver_fixture import (
     GitFixture,
+    GitFixtureRole,
     copy_git_fixture,
     isolated_checkout_artifacts as isolated_checkout_artifacts,
     publish_git_fixture,
@@ -69,7 +70,9 @@ def _build_seed(root: Path) -> None:
 
 def _build_integration_seed(root: Path, driver: GitFixture) -> None:
     """The claims history with main's complete pinned controller and policy."""
-    copy_git_fixture(driver, GitFixture(root / "remote.git", root / "work"))
+    copy_git_fixture(
+        driver, GitFixture(root / "remote.git", root / "work"), role=GitFixtureRole.SEED
+    )
     w = root / "work"
     (w / "docs/agent").mkdir(parents=True)
     (w / "docs/agent/CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
@@ -116,6 +119,7 @@ def _copy_repo(tmp_path: Path, seed: Path, monkeypatch: pytest.MonkeyPatch) -> P
     copy_git_fixture(
         GitFixture(seed / "remote.git", seed / "work"),
         GitFixture(tmp_path / "remote.git", tmp_path / "work"),
+        role=GitFixtureRole.SUBJECT,
     )
     w = tmp_path / "work"
     return w
@@ -159,8 +163,8 @@ def test_prepared_claim_copies_keep_working_history_private(
     seed = GitFixture(_seed / "remote.git", _seed / "work")
     first = GitFixture(tmp_path / "first/origin.git", tmp_path / "first/work")
     second = GitFixture(tmp_path / "second/origin.git", tmp_path / "second/work")
-    copy_git_fixture(seed, first)
-    copy_git_fixture(seed, second)
+    copy_git_fixture(seed, first, role=GitFixtureRole.SUBJECT)
+    copy_git_fixture(seed, second, role=GitFixtureRole.SUBJECT)
     tip = _git(seed.work, "rev-parse", "HEAD")
     assert _git(first.work, "rev-parse", "origin/main") == tip
     assert _git(first.work, "ls-remote", "origin", "refs/heads/main").split()[0] == tip

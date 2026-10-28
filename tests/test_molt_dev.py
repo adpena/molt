@@ -96,8 +96,10 @@ from tools.driver_errors import (  # noqa: E402
 from tools.molt_dev_common import _run_fast_captured_command  # noqa: E402
 from tests.integration_driver_fixture import (  # noqa: E402
     GitFixture,
-    clone_tree,
+    GitFixtureRole,
     copy_driver_trees,
+    copy_git_fixture,
+    publish_git_fixture,
     isolated_checkout_artifacts as isolated_checkout_artifacts,
 )
 
@@ -355,7 +357,8 @@ def _commit_file(repo: Path, rel: str, content: str, msg: str) -> str:
 def _origin_seed(tmp_path_factory):
     """Provision immutable starting history once; every test gets its own copy."""
     root = tmp_path_factory.mktemp("integration-seed")
-    seed = root / "seed"
+    fixture = GitFixture(root / "origin.git", root / "work")
+    seed = fixture.work
     _init_repo(seed)
     (seed / "tools").mkdir()
     (seed / "tools/proof_plan.toml").write_text(
@@ -363,12 +366,13 @@ def _origin_seed(tmp_path_factory):
     )
     _git(seed, "add", "tools/proof_plan.toml")
     _commit_file(seed, "README.md", "seed\n", "seed: initial commit")
-    origin = root / "origin.git"
-    _git(root, "clone", "--bare", "-q", str(seed), str(origin))
-    return origin
+    publish_git_fixture(fixture)
+    return fixture
 
 
-def _clone_origin(tmp_path, seed: Path, monkeypatch) -> tuple[Path, Path]:
+def _copy_origin_fixture(
+    tmp_path: Path, seed: GitFixture, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
     # These repositories exercise generic shell gates, not the caller's venv.
     # Interpreter-selection tests construct and select their own environments.
     for key in (
@@ -379,21 +383,9 @@ def _clone_origin(tmp_path, seed: Path, monkeypatch) -> tuple[Path, Path]:
         "MOLT_UV_PROJECT_PURPOSE",
     ):
         monkeypatch.delenv(key, raising=False)
-    origin = tmp_path / "origin.git"
-    clone_tree(seed, origin)
-    work = tmp_path / "work"
-    _git(
-        tmp_path,
-        "clone",
-        "-q",
-        "-c",
-        "user.email=dev@molt.test",
-        "-c",
-        "user.name=Molt Dev",
-        str(origin),
-        str(work),
-    )
-    return origin, work
+    fixture = GitFixture(tmp_path / "origin.git", tmp_path / "work")
+    copy_git_fixture(seed, fixture, role=GitFixtureRole.SUBJECT)
+    return fixture.origin, fixture.work
 
 
 @pytest.fixture
@@ -401,9 +393,10 @@ def origin_and_clone(tmp_path, _origin_seed, monkeypatch, isolated_checkout_arti
     """Independent real bare origin and working clone for each integration.
 
     Copy files, never hardlink them: tests mutate refs, hooks, config and objects.
-    Subject fetch/rebase/push operations and clone creation still use real Git.
+    Subject fetch/rebase/push operations still use real Git. Prepared indexes,
+    tracking refs and source come from the same immutable seed.
     """
-    return _clone_origin(tmp_path, _origin_seed, monkeypatch)
+    return _copy_origin_fixture(tmp_path, _origin_seed, monkeypatch)
 
 
 @pytest.fixture
@@ -420,7 +413,7 @@ def driver_origin_and_clone(
     isolated_checkout_artifacts: Path,
 ) -> tuple[Path, Path]:
     """`origin_and_clone` whose main already carries this checkout's driver."""
-    return _clone_origin(tmp_path, driver_history_seed.origin, monkeypatch)
+    return _copy_origin_fixture(tmp_path, driver_history_seed, monkeypatch)
 
 
 def test_driver_seed_keeps_runtime_dependencies_without_optional_groups(
@@ -458,13 +451,59 @@ def test_private_driver_seed_retains_its_declared_groups(tmp_path: Path) -> None
     ).read_bytes()
 
 
+def test_prepared_fixture_keeps_fresh_checkout_stat_semantics(tmp_path, drv):
+    seed = GitFixture(tmp_path / "donor.git", tmp_path / "donor-work")
+    _init_repo(seed.work)
+    _commit_file(seed.work, "source.py", "value = 1\n", "source")
+    old_mtime = 1_000_000_000
+    os.utime(seed.work / "source.py", ns=(old_mtime, old_mtime))
+    publish_git_fixture(seed)
+    private = GitFixture(tmp_path / "private.git", tmp_path / "private-work")
+    copy_git_fixture(seed, private, role=GitFixtureRole.SUBJECT)
+    source = private.work / "source.py"
+    assert source.stat().st_mtime_ns != old_mtime
+    assert (seed.work / "source.py").stat().st_mtime_ns == old_mtime
+    original = source.stat()
+    source.write_text("value = 2\n", encoding="utf-8")
+    os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert drv.Git(private.work).checkout_observation().dirty_records
+    assert _git(seed.work, "show", "HEAD:source.py").stdout == "value = 1\n"
+
+
+@pytest.mark.parametrize(
+    "fixture_name", ["origin_and_clone", "driver_origin_and_clone"]
+)
+def test_prepared_fixture_remote_survives_linked_worktree_depth(
+    fixture_name, request, tmp_path
+):
+    origin, work = request.getfixturevalue(fixture_name)
+    linked = tmp_path / "another-depth" / "linked"
+    linked.parent.mkdir()
+    _git(work, "worktree", "add", "--detach", "-q", str(linked), "HEAD")
+    expected = _git(origin, "rev-parse", "refs/heads/main").stdout.strip()
+    assert (
+        _git(linked, "ls-remote", "origin", "refs/heads/main").stdout.split()[0]
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "seed_name"),
+    [
+        ("origin_and_clone", "_origin_seed"),
+        ("driver_origin_and_clone", "driver_history_seed"),
+    ],
+)
 def test_origin_fixture_copies_history_without_mutable_aliases(
-    drv, tmp_path, _origin_seed, monkeypatch, request
+    drv, tmp_path, monkeypatch, request, fixture_name, seed_name
 ):
     from molt import checkout_state, dx
     from molt.build_state_layout import build_state_root
     from tools import disk_guard
 
+    seed = request.getfixturevalue(seed_name)
+    assert isinstance(seed, GitFixture)
+    donor = seed.origin
     foreign_source = tmp_path / "foreign-source"
     foreign_source.mkdir()
     foreign_artifacts = tmp_path / "foreign-artifacts"
@@ -512,7 +551,7 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
         monkeypatch.setenv(key, str(tmp_path / "missing-caller-environment"))
     # Request after poisoning the caller: fixture admission must reset it, not
     # merely assume that the enclosing pytest session selected suitable roots.
-    origin, work = request.getfixturevalue("origin_and_clone")
+    origin, work = request.getfixturevalue(fixture_name)
 
     foreign_reads = []
     read_owner = disk_guard.read_checkout_owner
@@ -523,16 +562,40 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
         return read_owner(path)
 
     monkeypatch.setattr(disk_guard, "read_checkout_owner", observed_owner)
-    initial = _git(_origin_seed, "rev-parse", "HEAD").stdout.strip()
-    original_config = (_origin_seed / "config").read_bytes()
+    readme = work / "README.md"
+    original_readme = readme.read_bytes()
+    original_stat = readme.stat()
+    readme.write_bytes(b"feed\n")
+    assert len(original_readme) == readme.stat().st_size
+    os.utime(readme, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert drv.Git(work).checkout_observation().dirty_records, {
+        "failure": "the refreshed private index hid a same-size, restored-mtime edit",
+        "before_stat": repr(original_stat),
+        "after_stat": repr(readme.stat()),
+        "original": repr(original_readme),
+        "current": repr(readme.read_bytes()),
+        "index": _git(work, "ls-files", "--debug", "--", "README.md").stdout,
+        "tracked": _git(work, "show", "HEAD:README.md", check=False).stdout,
+        "configuration": _git(
+            work,
+            "config",
+            "--show-origin",
+            "--get-regexp",
+            r"^core\.(checkstat|trustctime|ignorestat|fsmonitor)$",
+            check=False,
+        ).stdout,
+    }
+    readme.write_bytes(original_readme)
+    initial = _git(donor, "rev-parse", "HEAD").stdout.strip()
+    original_config = (donor / "config").read_bytes()
     (origin / "config").write_bytes(original_config + b"\n# private test mutation\n")
-    assert (_origin_seed / "config").read_bytes() == original_config
+    assert (donor / "config").read_bytes() == original_config
     # A hardlink copy can appear isolated for Git's atomic ref replacement;
     # exercise direct object-byte mutation as well, after the real push.
     new_tip = _commit_file(work, "private.txt", "private\n", "private mutation")
     assert drv.cmd_integrate(_integrate_ns(drv, repo=str(work))) == EXIT_OK
     assert _git(origin, "rev-parse", "HEAD").stdout.strip() == new_tip
-    assert _git(_origin_seed, "rev-parse", "HEAD").stdout.strip() == initial
+    assert _git(donor, "rev-parse", "HEAD").stdout.strip() == initial
     wt = _worktree_off(work, "wt_isolated_artifacts")
     assert (
         molt_dev_retire.cleanup_worktree(
@@ -542,11 +605,11 @@ def test_origin_fixture_copies_history_without_mutable_aliases(
     )
     assert not wt.exists()
     relative = Path("objects") / initial[:2] / initial[2:]
-    original_object = (_origin_seed / relative).read_bytes()
+    original_object = (donor / relative).read_bytes()
     (origin / relative).chmod(0o600)
     (origin / relative).write_bytes(b"deliberately corrupt private copy")
-    assert (_origin_seed / relative).read_bytes() == original_object
-    assert _git(_origin_seed, "show", "HEAD:README.md").stdout == "seed\n"
+    assert (donor / relative).read_bytes() == original_object
+    assert _git(donor, "show", "HEAD:README.md").stdout == "seed\n"
     assert not foreign_reads, "synthetic retirement consulted foreign host artifacts"
     assert {
         path.relative_to(foreign_artifacts): path.read_bytes()
