@@ -1,12 +1,14 @@
 # Molt Agent Constitution
 
-Keep these project facts and operating invariants in every agent session. Use judgment:
-prefer live code, tests, measurements and explicit user direction over stale prose.
+Use expert judgment and first-principles reasoning. These are outcome and invariant constraints,
+not a fixed implementation recipe. Prefer live code, tests, measurements and explicit user direction
+over stale prose or precedent.
 
 ## Own the outcome
 
-- Carry authorized work through implementation, verification, landing and retirement without another
-  prompt. Landing and retirement are separate facts; resolve/report custody blockers and retain evidence.
+- Own the authorized outcome: choose the design and undertake necessary cross-layer refactors,
+  migrations and deletions without routine approval. Complete verification, landing and retirement;
+  landing and retirement are separate facts. Resolve/report custody blockers and retain evidence.
 - Reuse existing work before creating an isolated lane. New isolated work uses the managed
   lane/landing queue lifecycle in `docs/ops/INTEGRATION.md`, which owns automatic retirement.
 - Questions and reviews authorize inspection; change requests authorize scoped fixes and checks. Name completion and its integration owner.
@@ -14,35 +16,39 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   privileged or externally consequential action. Proceed with authorized safe, reversible work.
 - Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
   useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
-- Ground claims in current evidence: passes, failures, skips and unknowns. Prioritize release dependencies
-  and measured user benefit. Keep WIP small; land and retire coherent outcomes before adjacent apparatus.
+- Minimize wall clock to qualified outcomes and measured user benefit. Follow the release critical
+  path and reassess with new evidence. State passes, failures, skips and unknowns; keep WIP small
+  and land/retire coherent outcomes before adjacent apparatus. Activity is not progress.
 - Follow safer live facts over stale guidance; repair in-scope guidance in the same change.
 
 ## Engineer coherent systems
 
-- Trace the changed semantic contract's authority, producers, consumers and backend/profile/platform
-  siblings by mechanism and symbol. Scale research to risk; prose needs no whole-project design exercise.
-- Enter through a concrete aperture; follow the invariant through its complete authority class.
-  Prefer a structural correction with explicit invariants and family-wide regression/differential
-  oracles. Challenge correctness; record exceptions and unverified cells. Preserve different semantics.
-- Keep one canonical authority for each fact, state transition, storage owner, protocol, and
-  generated table. Move all consumers together and delete the replaced implementation: no internal
-  compatibility lanes, shims, duplicate registries, or speculative fallbacks.
+- Trace the invariant through its authority, producers/consumers and backend/profile/platform siblings
+  by mechanism and symbol. Bound discovery, not the required end state: a narrow aperture must lead
+  to the complete correction. Use independent family-wide regression/differential oracles; record
+  exceptions/unverified cells and preserve sites with different semantics. Scale research to risk.
+- Keep one canonical authority per fact, transition, owner, protocol or generated table. Complete
+  replacements by deleting legacy implementations, dead consumers and obsolete projections in
+  the same migration. No internal compatibility lanes, shims, duplicate registries or speculative fallbacks.
 - **Incomplete consumer migration blocks landing.** Authority/schema/API/ABI/identity/ownership changes
   are indivisible. Reconcile WIP; migrate callers, projections, fixtures, build/install/release paths,
   docs and backend/target/platform cells together. Search obsolete contracts before costly validation.
   Fixtures implement the real boundary with an independent oracle. No aliases, adapters, permissive
   validators or fallbacks may hide unfinished work. Exercise consumers, fix exposed failures and state
   unverified cells; a green producer cannot prove migration.
-- Prefer direct design; abstraction must remove duplication, expose an invariant or enable measured
-  optimization. Systematize families; specialize representations when useful while keeping the protocol.
+- Challenge inherited designs and proposed mechanisms with first-principles reasoning and bounded
+  experiments. Choose the simplest coherent architecture; abstractions and specialized representations
+  must remove duplication, expose an invariant or enable measured optimization while preserving contracts.
 - Treat all compiler layers, runtime, ABI, tooling, diagnostics, packaging, tests and docs as one architecture.
 
 ## Build to the state of the art
 
-- Before subsystem design or rewrite, research leading implementations (MLIR/LLVM, Cranelift, rustc,
-  CPython, PyPy, HotSpot/V8, Codon) and cite them in its design doc. Deviations need measured reasons.
-  Fix shared root causes, including deep refactors, through complete per-contract migrations.
+- Proactively research our codebase/history/WIP and leading projects' designs and avoided pitfalls
+  when choosing architectural/performance work. Seek reusable algorithms, data structures, code and
+  tools across languages (MLIR/LLVM, Cranelift, rustc, CPython, PyPy, HotSpot/V8, Codon and build tools).
+  Borrow/adapt when the evidence fits; retain provenance, attribution and license obligations.
+  Reuse matching research; keep inquiry decision-focused. Record sources, invariants, alternatives
+  and measured tradeoffs in the owning design; avoid repeated surveys or new documents by ritual.
 - Identity is typed, never spelled. One declarative source generates closed types for op kinds,
   exceptions, classes, decorators and attribute keys; exhaustive Rust matches and `Literal` types
   under `ty` reject stale consumers. Retire source-scraping audits when types enforce the invariant.
@@ -105,40 +111,36 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Generated files are projections; change the source or generator and regenerate in the same arc.
 - Reuse project commands, repairing stale, ambiguous or wasteful helpers. The frontend is CPython 3.12+, including 3.15;
   reuse uv selection and record its version separately from the CLI/project target (`docs/getting-started.md`).
-- Resolve versioned CPython oracles through the interpreter/source authorities and verify the exact
-  reference identity. Never use project-scoped `uv run --python` to switch minors in an active
-  checkout: it replaces the shared environment. Extra environments need an explicitly owned
-  `UV_PROJECT_ENVIRONMENT`; close existing readers before changing an environment.
+- Resolve versioned CPython oracles through interpreter/source authorities and verify exact identity.
+  Never switch project-scoped `uv run --python` minors in an active checkout: it replaces shared state.
+  Extra environments require owned `UV_PROJECT_ENVIRONMENT`; close readers before environment changes.
 - Keep history and procedures in owning designs/specs/runbooks, not this always-loaded file. Per-run
   logs, scratch plans and handoffs stay outside tracked source (`docs/ROOT_LAYOUT.md`); preserve
   private evidence and fold durable conclusions into the public contract.
 
 ## Delegate deliberately
 
-- Before designing, implementing or deleting, search canonical authority, history, handoffs and WIP.
-  Report the invariant's owner and what to reuse, reconcile or retire, including preserved donors.
-  Verify task messages and memory as leads; ask the integrator about unclear ownership or custody.
+- Reconcile canonical authorities, history, handoffs and WIP before replacement/deletion; identify
+  reuse, donors and custody. Verify messages/memory as leads; resolve unclear ownership with the integrator.
 - Delegate substantial independent work or a meaningful correctness review when it shortens the
   critical path after startup/context costs. Batch independent reads and checks; avoid tiny review
   agents, overlapping writers and duplicate proofs. The parent owns architecture and integration.
-- Dispatch bounded, disjoint work through `tools/dispatch_prompt.py` with validated `DispatchBounds`;
-  `docs/ops/MULTI_AGENT_COORDINATION.md` owns required outcome, ownership, scope, proof, budget and stop rules.
-  Workers return at their deliverable/budget; the parent reassesses the critical path before any expansion.
+- Dispatch disjoint work with validated `DispatchBounds` through `tools/dispatch_prompt.py`;
+  `docs/ops/MULTI_AGENT_COORDINATION.md` owns budgets, proofs, stop rules and parent-controlled expansion.
 - Record active worker ownership and handoff state in the coordination records described in
   `docs/ops/MULTI_AGENT_COORDINATION.md`; task messages and worktree names are not source locks.
-- Match effort to risk: Astra/strongest reasoning for complex architecture/correctness; faster workers
-  for bounded scans/mechanical work. Respect operator concurrency limits. Claude Fable/Opus uses the
-  same search, ownership and evidence discipline; independent review opens no second integration lane.
+- Match effort to risk: Astra for complex architecture/correctness, faster workers for bounded mechanics.
+  Respect concurrency limits; Claude follows the same custody/evidence rules and opens no second lane.
 
 ## Verify the claim, not the ritual
 
 - Tests must distinguish correct behavior from a plausible defect using an independent oracle.
   Extend the existing test authority; avoid implementation mirrors, mock-only success, and
   test-count or coverage quotas. Follow `docs/spec/areas/testing/0007-testing.md` when adding or reviewing tests.
-- Name the changed claim, plausible defect and smallest independent check, with one proof owner.
-  Stop development testing when that check sufficiently proves the claim. Broaden or repeat only
-  for changed inputs, a new failure or a named unresolved obligation. One cell cannot prove a family.
-  Low-impact prose needs no new permanent tests; scratch checks need not become product apparatus.
+- Name the changed obligation and plausible defect. Use independent oracles and adversarial review
+  for load-bearing changes; recurse on new findings, not review quotas. With one proof owner, stop at
+  sufficient evidence. Repeat/widen only for changed inputs, a new failure or an uncovered obligation.
+  One cell cannot prove a family; prose/scratch work needs no new permanent tests or apparatus.
 - Distinguish focused development feedback from required integration/release qualification. Run
   selected landing gates once; CI arbitrates release candidates. Review matching receipts instead of
   reproducing every PASS; avoid duplicate prechecks, benchmarks and reflexive final rechecks.
@@ -170,17 +172,15 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   this in the `commit-msg` hook and in CI (the `repository_policy` proof-plan family).
 - Dependencies, toolchains, Actions: newest release >=7 days old; advisory fixes by dated exemption.
 - Destructive Git operations and broad filesystem cleanup require explicit authorization and verified targets.
-- Before retiring old WIP, make at least two passes through its source, history and current owners,
-  including an independent pass when available. Harvest and land useful changes through current
-  authorities; identify what is already satisfied or intentionally superseded. Preserve unresolved
-  signal with an indexed recovery path and explicit owner or question. An archive alone is not
-  reconciliation, and age or a cache-like name is not evidence that source can be deleted.
+- Before retiring WIP, review source/history/current owners in two passes, one independent when available.
+  Harvest useful work; identify satisfied/superseded changes. Preserve unresolved signal with an indexed
+  recovery path and explicit owner/question. Archives, age or cache-like names do not prove reconciliation
+  or authorize source deletion.
 - Molt process cleanup may stop only a live-proved Molt-owned child or worker; test observers use `tests/process_guard_common.py`.
   Never stop Codex, Claude, app/renderer/server helpers, MCP/plugin processes, shell hosts,
   Git pollers, ancestors or ambiguous host control-plane processes; preserve evidence and repair unclear custody.
-- Before a risky or long-running proof, leave a recoverable command/cwd/status/ evidence capsule
-  under the established guard/incident machinery. Prefer detached project custody for expensive or
-  contention-heavy work; see `docs/agent/PROOF_QUEUE.md` when that machinery is actually needed.
+- Before risky/long proofs, record recoverable command/cwd/status/evidence in existing guard/incident
+  custody; use `docs/agent/PROOF_QUEUE.md` for expensive/contention-heavy work when needed.
 
 ## Useful authorities
 
