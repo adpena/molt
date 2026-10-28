@@ -12675,7 +12675,17 @@ def test_wasm_scanner_copy_uses_owned_scratch_not_cached_platform_temp(
     assert "scratch-routing-witness" in capsys.readouterr().err
     assert len(invoked) == 1
     assert not invoked[0].exists()
-    assert scratch.is_dir() and list(scratch.iterdir()) == []
+    assert scratch.is_dir()
+    from molt.checkout_state import LAST_USE_STAMP, OWNER_RECORD
+
+    # A lane's owned scratch root outlives the call by design (HF-435); the
+    # call's own scratch, including the copied scanner, must not.
+    for entry in scratch.iterdir():
+        assert entry.is_dir() and entry.name.startswith("scratch-"), entry
+        assert {child.name for child in entry.iterdir()} <= {
+            OWNER_RECORD,
+            LAST_USE_STAMP,
+        }, entry
     assert list(platform_temp.iterdir()) == []
     assert not linked.exists()
 
