@@ -243,6 +243,117 @@ fn ranged_counter(
 }
 
 #[test]
+fn scalar_binding_views_preserve_recurrences_ranges_and_carriers() {
+    use crate::repr::Repr;
+    for nsw in [false, true] {
+        for (start, stop, step) in [
+            (0, 8, 1),
+            (7, -1, -1),
+            ((1_i64 << 46) - 3, (1_i64 << 46) + 1, 1),
+            (i64::MAX - 4, i64::MAX, 1),
+        ] {
+            let (mut func, header, body, _, iv) = ranged_counter(start, stop, step, nsw);
+            let mut views = std::collections::HashMap::new();
+            let entry_ops =
+                std::mem::take(&mut func.blocks.get_mut(&func.entry_block).unwrap().ops);
+            let mut published = Vec::new();
+            for original in entry_ops {
+                let value = original.results[0];
+                let is_integer = original.opcode == OpCode::ConstInt;
+                published.push(original);
+                if is_integer {
+                    let view = func.fresh_value();
+                    let mut store = op(OpCode::Copy, vec![value], vec![view]);
+                    store.attrs.insert(
+                        "_original_kind".into(),
+                        AttrValue::Str("frame_home_store".into()),
+                    );
+                    store.attrs.insert("value".into(), AttrValue::Int(0));
+                    published.push(store);
+                    views.insert(value, view);
+                }
+            }
+            func.blocks.get_mut(&func.entry_block).unwrap().ops = published;
+            if let Terminator::Branch { args, .. } =
+                &mut func.blocks.get_mut(&func.entry_block).unwrap().terminator
+            {
+                args[0] = views[&args[0]];
+            }
+            let comparison = &mut func.blocks.get_mut(&header).unwrap().ops[0];
+            comparison.operands[1] = views[&comparison.operands[1]];
+            let increment = &mut func.blocks.get_mut(&body).unwrap().ops[1];
+            increment.operands[1] = views[&increment.operands[1]];
+            let next = increment.results[0];
+            let next_view = func.fresh_value();
+            let mut store = op(OpCode::Copy, vec![next], vec![next_view]);
+            store.attrs.insert(
+                "_original_kind".into(),
+                AttrValue::Str("frame_home_store".into()),
+            );
+            store.attrs.insert("value".into(), AttrValue::Int(0));
+            func.blocks.get_mut(&body).unwrap().ops.push(store);
+            if let Terminator::Branch { args, .. } =
+                &mut func.blocks.get_mut(&body).unwrap().terminator
+            {
+                args[0] = next_view;
+            }
+            let vr = compute_value_range(&func, &compute_scev(&func));
+            assert_eq!(
+                vr.range_of(iv),
+                IntRange::new(start.min(stop), start.max(stop)),
+                "nsw={nsw}"
+            );
+            let last = stop - step;
+            assert_eq!(
+                vr.range_at(body, iv),
+                IntRange::new(start.min(last), start.max(last))
+            );
+            assert_eq!(vr.resolve(next_view), next);
+            let repr = crate::representation_facts::repr_by_value_for(&func, Some(&vr));
+            let expected = if (-(1_i64 << 46)..(1_i64 << 46)).contains(&start)
+                && (-(1_i64 << 46)..(1_i64 << 46)).contains(&stop)
+            {
+                Repr::RawI64Safe
+            } else {
+                Repr::MaybeBigInt
+            };
+            assert_eq!(repr[&iv], expected, "{start}..{stop} nsw={nsw}");
+        }
+    }
+}
+
+#[test]
+fn effectful_binding_views_do_not_forward_container_lengths() {
+    let mut func = TirFunction::new(
+        "container_view".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let element = func.fresh_value();
+    let list = func.fresh_value();
+    let view = func.fresh_value();
+    let mut store = op(OpCode::Copy, vec![list], vec![view]);
+    store.attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("frame_home_store".into()),
+    );
+    store.attrs.insert("value".into(), AttrValue::Int(0));
+    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
+        cint(element, 1),
+        op(OpCode::BuildList, vec![element], vec![list]),
+        store,
+    ];
+    let vr = compute_value_range(&func, &compute_scev(&func));
+    assert!(vr.container_length_is_constant(list, 1));
+    assert!(
+        !vr.container_length_is_constant(view, 1),
+        "the displaced owner's finalizer may have mutated the published list"
+    );
+    assert_eq!(vr.resolve(view), view);
+}
+
+#[test]
 fn recurrence_sites_keep_failed_guard_body_and_escaping_copy_facts_distinct() {
     for nsw in [false, true] {
         for (start, stop, step, global, local) in [

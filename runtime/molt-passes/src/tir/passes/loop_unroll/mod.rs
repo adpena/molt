@@ -73,9 +73,8 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
 use crate::tir::values::ValueId;
 
-// The copy-resolution model is shared with the counted-loop recognizer so both
-// recognition and exit-arg substitution resolve frontend Copy/store_var chains
-// identically.
+// Exit substitution requires true copy identity. Numeric recognition may see
+// through a publication, but its borrowed view keeps its own representation.
 use super::value_identity::{build_copy_map, resolve_copy};
 
 mod terminators;
@@ -440,8 +439,8 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         .map(|&v| {
             let root = resolve_copy(&copy_of, v);
             final_remap
-                .get(&root)
-                .or_else(|| final_remap.get(&v))
+                .get(&v)
+                .or_else(|| final_remap.get(&root))
                 .copied()
                 .unwrap_or(v)
         })

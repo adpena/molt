@@ -2873,6 +2873,14 @@ pub fn copy_kind_is_binding_view_table(kind: &str) -> bool {
     )
 }
 
+/// Unary borrowed-result spellings forwarding operand zero's mathematical
+/// scalar value. Not a heap-alias, ownership, purity or erasure permission.
+/// Consumers must require one operand and one result and an existing scalar proof.
+#[inline]
+pub fn copy_kind_forwards_scalar_value_table(kind: &str) -> bool {
+    matches!(kind, "frame_home_store")
+}
+
 /// Every `OpCode` variant in op_kinds.toml order. Generated so tests and
 /// diagnostics can iterate the closed enum domain without hand-maintained
 /// opcode lists in pass-local modules.
