@@ -9604,6 +9604,7 @@
       "local.git-process-policy.pytest": "none",
       "local.gpu-runtime.0": "shared",
       "local.guard-marker-custody.pytest": "none",
+      "local.guard-wiring-source-observation.pytest": "none",
       "local.heap-kind-lifetime-authority.pytest": "none",
       "local.host-capability-authority.pytest": "none",
       "local.host-capacity.pytest": "none",
@@ -9779,6 +9780,7 @@
       "local.git-process-policy.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_command_execution.py",
       "local.gpu-runtime.0": "cargo test --locked -p molt-gpu-runtime --all-features --no-fail-fast",
       "local.guard-marker-custody.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_memory_guard_custody.py tests/tools/test_guard_marker_consumers.py tests/tools/test_runtime_wasm_final_preflight.py tests/tools/test_disk_guard.py tests/tools/test_proof_queue_execution_receipt_details.py",
+      "local.guard-wiring-source-observation.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/tools/test_check_memory_guard_wiring.py tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
       "local.heap-kind-lifetime-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_gen_heap_kinds.py",
       "local.host-capability-authority.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_host_capabilities.py tests/test_capability_policy.py",
       "local.host-capacity.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_host_capacity.py tests/test_pytest_capacity_plugin.py tests/tools/test_pytest_profile.py tests/cli/test_cli_frontend_parallel_authority.py tests/tools/test_ci_resource_env.py tests/test_memory_guard_tool.py tests/test_temporary_artifacts.py tests/test_backend_daemon_suite_custody.py::test_guarded_protocol_daemon_transfer_and_failure_cleanup",
@@ -11353,6 +11355,26 @@
         "name": "subprocess-guard-coverage",
         "pytest": [
           "tests/tools/test_subprocess_guard_coverage.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.guard-wiring-source-observation.pytest"
+        ],
+        "description": "Shared raw-source observation changes select guard-wiring consumers; leaf scanner tests stay local.",
+        "gates": [],
+        "globs": [
+          "tools/check_subprocess_guard_coverage.py",
+          "tools/check_memory_guard_wiring.py",
+          "tests/tools/test_check_memory_guard_wiring.py"
+        ],
+        "name": "guard-wiring-source-observation",
+        "pytest": [
+          "tests/tools/test_check_memory_guard_wiring.py",
+          "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth"
         ],
         "toolchains": [
           "python"
@@ -13654,6 +13676,9 @@
         "git"
       ],
       "local.guard-marker-custody.pytest": [
+        "python"
+      ],
+      "local.guard-wiring-source-observation.pytest": [
         "python"
       ],
       "local.heap-kind-lifetime-authority.pytest": [

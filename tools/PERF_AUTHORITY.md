@@ -172,12 +172,74 @@ not installed-user compile latency or E2 performance acceptance.
 ## Finding the limiter
 
 Development-loop latency is always P0: every faster edit, build, diagnosis and
-proof compounds across subsequent work. Keep the existing build phase diagnostics
-on during development, profile the current limiter, and compare the same unchanged
+proof compounds across subsequent work. Use the existing build phase diagnostics
+to attribute the current limiter, and compare the same unchanged
 or edited workload before and after each load-bearing change. Use
 `tools/dx_build_timer.py` for build-loop measurements and
 `MOLT_CLI_PROFILE` for attribution; keep instrumented timings separate from
-uninstrumented latency. Classify a new failure before repeating an expensive proof.
+uninstrumented latency. The timer defaults to `--molt-measurement latency`, with
+ordinary CLI flags and one explicit output; native requests remain eligible for
+build-record cutoff. `--molt-measurement attribution` requests JSON, cache reports
+and diagnostics, which disable that cutoff. Latency refuses inherited profiling
+or diagnostics rather than silently measuring an instrumented path. Classify a
+new failure before repeating an expensive proof.
+
+Molt timer trials copy one source into an isolated project and use a fresh guest
+cache, retaining configured compiler/runtime locations. They measure cold and
+the first unchanged build; a warm label does not prove a record hit, particularly
+under the fixed racy-window policy. `--molt-edited-source` adds an explicit source
+pair's edit phase; the tool never rewrites arbitrary input as a synthetic edit.
+Receipts retain mode, actual source bytes/digests, command, streams and exactly
+the selected artifact's digest and byte size. Attribution observations stay
+unavailable in latency mode, and neither mode proves guest execution correctness.
+Historical instrumented receipts retain their original comparison class.
+
+A bounded macOS arm64/CPython 3.12.15 observation of native `dev` builds of
+`bench_calls.py`, in the same retained project/cache/output, found metadata-only
+import-root probes reporting shared parent-directory contents. That false input
+refused every record under unrelated scratch churn: three unchanged builds took
+2.350–2.362 s. Reporting the exact positive lookup instead restores reuse.
+Twenty subsequent ordinary CLI observations on the matched source have p50
+281 ms and nearest-rank p95 290 ms; 19 explicitly report unchanged inputs.
+Restoring that source immediately before the 2.599 s prime triggered the fixed
+two-second racy-window refusal. The first observation therefore rebuilt in
+2.327 s and remains in those statistics. A real function-body edit rebuilt in
+2.541 s, the next unchanged build took 2.334 s after the same racy refusal,
+and the following cutoff took 283 ms. Original and edited executables match the
+same interpreter's output. These are bounded compiler-latency observations,
+not a runtime speedup, cross-platform qualification, E2 acceptance, or proof of
+the 100 ms no-change and one-second edit targets. HF-250 remains open.
+
+Consumed-source records now remove the next redundant compile after that exact
+body edit. Scoped read receipts bind actual immutable source bytes to each
+recording, and checksum rows verify them on every replay, including equal-token
+and aged inputs. Weak custody/audit reads and namespace generations retain the
+conservative racy policy. The generated backend IR namespace is projected through
+its producer's single root authority, while explicit source facts inside it stay
+inputs. On the same retained native-dev workload, the immediate post-edit
+unchanged build is 321 ms instead of 2.334 s; all 20 unchanged observations hit,
+with p50 314 ms, nearest-rank p95 333 ms and maximum 341 ms. This has a measured
+cost: the earlier steady p50 was 281 ms, and the body compile is 2.978 s against
+the prior 2.541 s. The compiler-source prime costs 6.378 s separately. The binary
+matches CPython and its previous size/digest. This proves avoided repeated work;
+it does not prove faster edited compilation. No cross-platform/WASM result or
+world-class budget is claimed, and HF-250 stays open.
+
+The native build-identity ownership proof uses the existing `dev-fast` host
+compiler profile, also admitted by the developer daemon proofs, instead of
+creating a separate `release-fast` compiler generation. Guest `--profile dev`,
+all nine AOT builds in three concurrent groups, shared artifact/cache placement,
+CPython comparisons and daemon-custody assertions remain unchanged. Each build
+checks its resolved compiler and guest profile in the public CLI's
+`observed_toolchain`; this is a producer selection, not loaded-daemon attestation.
+This follows [Cargo's profile tradeoff](https://doc.rust-lang.org/cargo/reference/profiles.html):
+reuse the development profile for this ownership contract, retaining separate
+shipping qualification. A macOS arm64/CPython 3.12.15 isolated baseline takes
+88.39 s, including 51.05 s preparing `release-fast`. Initial `dev-fast`
+preparation still costs 49.66 s. Once prepared, the unchanged nine-build proof
+takes 15.88 s with no Cargo build; all nine emitted programs match CPython and
+their guards close. Those are different artifact states, not a cold-versus-warm
+speedup claim. Cold preparation, other hosts and whole-gate budgets remain open.
 
 The shared `regalloc2` move planner uses one maintained source for native
 Cranelift and the Wasmtime host (pin and invariants:
@@ -203,6 +265,18 @@ The source cache initializes lazily and uses bounded `O(blocks)` storage; sparse
 large graphs can use more storage than the old sparse map. Stable managed slots
 retain the dependency build across lanes. Keep cold dependency rebuild cost,
 compiler execution latency and ordinary edit-to-test latency separate.
+
+Repository audit tests now share one streaming import-policy observation and
+leave full-tree subprocess acceptance to the existing mandatory source-policy
+gate. The copied-default scan-record oracle uses a real isolated inventory,
+including Python and shell findings, exact cold/warm equality and a rejected
+source mutation. One serial macOS arm64 comparison reduced the selected test
+bundle from 21.05 to 8.58 seconds guarded wall time. The restructured bundle
+retains all three import policies and adds missing-position controls; full-source
+acceptance executes separately in the mandatory gate. This is one test-cost
+comparison, not a whole-integration, compiler-latency or cross-platform result.
+The per-file snippet index removes repeated source-prefix extraction; its
+initial same-node macro comparison alone established no material improvement.
 
 A measured allocator landing spent 277.31 seconds in changed-package Clippy
 selection and execution; the Python cohorts already overlapped that work. The

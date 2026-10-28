@@ -161,10 +161,13 @@ class _ModuleGraphDiscovery:
         for module_name in self.source_generations if modules is None else modules:
             generation = self.source_generations.get(module_name)
             snapshot = generation[1] if generation is not None else None
-            if snapshot is not None and snapshot.path.read_bytes() != snapshot.content:
-                raise _module_source.PythonSourceChangedError(
-                    f"source changed during deferred discovery: {snapshot.path}"
-                )
+            if snapshot is not None:
+                snapshot.report_input()
+                current = _module_source.PythonSourceSnapshot.capture(snapshot.path)
+                if current.content != snapshot.content:
+                    raise _module_source.PythonSourceChangedError(
+                        f"source changed during deferred discovery: {snapshot.path}"
+                    )
 
 
 class _LoadedModuleImportScan(NamedTuple):
@@ -1318,7 +1321,7 @@ def _load_module_import_scan(
         )
 
     if snapshot is not None and source is not None and retain_source:
-        resolution_cache.source_cache[resolution_cache.resolved_path(path)] = source
+        resolution_cache.source_cache[resolution_cache.resolved_path(path)] = snapshot
 
     def complete(requests: _ImportScanRequests) -> _CompleteImportScan:
         if runtime_import_custody is not None:

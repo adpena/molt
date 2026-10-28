@@ -23,6 +23,73 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 AUDIT_TOOL = REPO_ROOT / "tools" / "check_subprocess_guard_coverage.py"
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r", "\r\n"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+def test_raw_call_segments_match_cpython(newline: str, trailing_newline: bool) -> None:
+    from collections import Counter
+
+    source = newline.join(
+        [
+            "import subprocess as sp",
+            "label = 'λ🧪\v\f\x85\u2028'; sp.run(['echo', label])",
+            "sp.run(",
+            "    sp.check_output(['echo', '嵐']),",
+            "    shell=True,",
+            ")",
+            "sp.run('pkill -f molt-backend', shell=True)",
+        ]
+    ) + (newline if trailing_newline else "")
+    expected = Counter(
+        (
+            node.lineno,
+            node.func.attr,
+            " ".join(ast.get_source_segment(source, node).strip().split()),
+        )
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    )
+    calls = check_subprocess_guard_coverage.scan_source(
+        source.encode(), "tools/physical_lines.py"
+    )
+    assert (
+        Counter(
+            (call.line, call.method, call.source)
+            for call in calls
+            if call.method in check_subprocess_guard_coverage.SUBPROCESS_METHODS
+        )
+        == expected
+    )
+    # These three policy findings describe one actual call expression.
+    assert [(call.method, call.source) for call in calls if call.line == 7] == [
+        (method, "sp.run('pkill -f molt-backend', shell=True)")
+        for method in ("run", "shell.exec", "shell.kill")
+    ]
+
+
+@pytest.mark.parametrize("position", ["end_lineno", "end_col_offset", "col_offset"])
+def test_missing_call_positions_keep_each_method_fallback(position: str) -> None:
+    source = "import subprocess as sp\nsp.run('pkill -f molt-backend', shell=True)"
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if position == "col_offset":
+                delattr(node, position)
+            else:
+                setattr(node, position, None)
+    visitor = check_subprocess_guard_coverage._SubprocessVisitor(
+        path="tools/missing_positions.py", source_text=source
+    )
+    try:
+        visitor.visit(tree)
+        assert [(call.method, call.source) for call in visitor.calls] == [
+            ("run", "run(...)"),
+            ("shell.exec", "shell.exec(...)"),
+            ("shell.kill", "shell.kill(...)"),
+        ]
+    finally:
+        visitor._visit_handlers.clear()
+
+
 def test_dispatch_reuse_preserves_raw_scope_and_diagnostic_order():
     source = "\n".join(
         [
@@ -337,16 +404,8 @@ def test_warning_free_observation_shares_parse_across_policy_changes(monkeypatch
     assert parses == ["tests/ordinary.py"]
 
 
-def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
+def test_default_inventory_includes_host_process_boundaries() -> None:
     module = check_subprocess_guard_coverage
-
-    audit = module.audit_paths()
-
-    assert audit.ok
-    assert audit.unexpected == ()
-    assert audit.stale_allowlist == ()
-    assert audit.expanded_allowlist == ()
-    assert audit.allowlist_entries == len(module.ALLOWLIST)
     assert REPO_ROOT / "src" / "molt" / "repl.py" in module.DEFAULT_TARGETS
     assert (
         REPO_ROOT / "src" / "molt" / "toolchain_identity.py" in module.DEFAULT_TARGETS
@@ -355,8 +414,42 @@ def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
     assert REPO_ROOT / "packaging" in module.DEFAULT_TARGETS
 
 
-def test_copied_default_targets_replay_the_computed_audit(tmp_path: Path) -> None:
+def test_copied_default_targets_replay_the_computed_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = check_subprocess_guard_coverage
+    root = tmp_path / "checkout"
+    for path in module.default_targets(root):
+        if path.suffix == ".py":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("pass\n", encoding="utf-8")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+    source = root / "tools" / "allowed.py"
+    source.write_text(
+        "import subprocess as sp\ndef execute():\n    sp.run([])\n", encoding="utf-8"
+    )
+    (root / "packaging" / "child.py").write_text(
+        "import subprocess\nsubprocess.call([])\n", encoding="utf-8"
+    )
+    (root / "tools" / "command.sh").write_text(
+        "pkill -f fixture-only\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        module,
+        "ALLOWLIST",
+        (
+            module.AllowedRawSubprocessUse(
+                "tools/allowed.py", "execute", "run", "fixture Python call"
+            ),
+            module.AllowedRawSubprocessUse(
+                "packaging/child.py", "<module>", "call", "fixture packaging call"
+            ),
+            module.AllowedRawSubprocessUse(
+                "tools/command.sh", "<text>", "shell.kill", "fixture text only"
+            ),
+        ),
+    )
 
     def records() -> scan_records.ScanRecords:
         return scan_records.ScanRecords(
@@ -364,25 +457,33 @@ def test_copied_default_targets_replay_the_computed_audit(tmp_path: Path) -> Non
         )
 
     cold = records()
-    default_audit = module.audit_paths(records=cold)
-    assert cold.misses == default_audit.scanned_files - _text_file_count()
+    default_audit = module.audit_paths(root=root, records=cold)
+    assert default_audit.ok
+    assert [(call.path, call.method) for call in default_audit.raw_calls] == [
+        ("tools/allowed.py", "run"),
+        ("packaging/child.py", "call"),
+        ("tools/command.sh", "shell.kill"),
+    ]
+    assert cold.misses == default_audit.scanned_files - 1
     assert cold.publish() is True
-    # Copied defaults keep the default scope, and every Python result replays
-    # the real tree's raw calls, which the computed audit above produced.
     warm = records()
-    copied_audit = module.audit_paths(tuple(module.DEFAULT_TARGETS), records=warm)
-
+    copied_audit = module.audit_paths(
+        tuple(module.default_targets(root)), root=root, records=warm
+    )
     assert (warm.hits, warm.misses) == (cold.misses, 0)
     assert copied_audit == default_audit
-    assert copied_audit.ok
-    assert len(copied_audit.raw_calls) > 0
 
-
-def _text_file_count() -> int:
-    module = check_subprocess_guard_coverage
-    return len(
-        list(module._iter_text_files(module.DEFAULT_TEXT_TARGETS, root=REPO_ROOT))
+    # A changed file must be re-examined even when every other result replays.
+    source.write_text(
+        source.read_text(encoding="utf-8") + "    sp.call([])\n", encoding="utf-8"
     )
+    changed = records()
+    rejected = module.audit_paths(root=root, records=changed)
+    assert not rejected.ok
+    assert [(call.path, call.method) for call in rejected.unexpected] == [
+        ("tools/allowed.py", "call")
+    ]
+    assert (changed.hits, changed.misses) == (cold.misses - 1, 1)
 
 
 @pytest.fixture

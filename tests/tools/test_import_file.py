@@ -7,7 +7,8 @@ import importlib.machinery
 import importlib.resources
 import importlib.util
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
@@ -643,14 +644,15 @@ def _imports_repository_code(tree: ast.Module) -> bool:
     return False
 
 
-def _bootstrap_failure(script: Path, *, root: Path = ROOT) -> str | None:
+def _bootstrap_failure(
+    script: Path, tree: ast.Module, *, root: Path = ROOT
+) -> str | None:
     """Why ``script``, launched by path, could import repository code unbound.
 
     Every tool entrypoint binds the repository before its first repository
     import; the canonical root insertion that reaches the binder is its only
     module-level sys.path edit.
     """
-    tree = ast.parse(script.read_text(encoding="utf-8"))
     if not _is_entrypoint(tree) or not _imports_repository_code(tree):
         return None
     root_value = (
@@ -720,17 +722,7 @@ def test_binding_a_by_path_tool_drops_tools_directories_from_sys_path(
     assert tools_on_path == "False"
 
 
-def test_every_host_entrypoint_binds_the_repository_first() -> None:
-    failures = {
-        script.relative_to(ROOT).as_posix(): failure
-        for script in _repository_python(*_HOST_SCRIPT_ROOTS)
-        if (failure := _bootstrap_failure(script)) is not None
-    }
-    assert not failures, failures
-
-
-def _bare_tool_imports(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+def _bare_tool_imports(tree: ast.Module) -> list[str]:
     return [
         f"line {node.lineno}: {ast.unparse(node)}"
         for node in ast.walk(tree)
@@ -739,39 +731,90 @@ def _bare_tool_imports(path: Path) -> list[str]:
     ]
 
 
-def test_tools_have_one_import_identity() -> None:
-    """Repository tools import each other only as ``tools.<module>``.
-
-    A bare sibling import resolves only while ``tools/`` is on sys.path, so a
-    module would load under two names depending on how it was launched.
-    """
-    failures = {
-        path.relative_to(ROOT).as_posix(): bare
-        for path in _repository_python(
-            *_HOST_SCRIPT_ROOTS, "tests", "src", "demos", "demo", "examples"
-        )
-        if not path.is_relative_to(ROOT / "tests" / "differential")
-        and not path.is_relative_to(ROOT / "src" / "molt" / "stdlib")
-        and (bare := _bare_tool_imports(path))
-    }
-    assert not failures, failures
+@dataclass(frozen=True, slots=True)
+class _ImportPolicyFindings:
+    bootstrap_failures: dict[str, str]
+    bare_imports: dict[str, list[str]]
+    library_path_edits: list[str]
 
 
-def test_host_libraries_never_edit_sys_path_at_import() -> None:
-    failures = []
-    for path in _repository_python(*_HOST_SCRIPT_ROOTS):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        if _is_entrypoint(tree):
+def _import_policy_findings(
+    paths: Iterable[Path], *, host_paths: Collection[Path], root: Path
+) -> _ImportPolicyFindings:
+    bootstrap: dict[str, str] = {}
+    bare: dict[str, list[str]] = {}
+    edits: list[str] = []
+    for path in paths:
+        host = path in host_paths
+        bare_scope = not path.is_relative_to(
+            root / "tests" / "differential"
+        ) and not path.is_relative_to(root / "src" / "molt" / "stdlib")
+        if not host and not bare_scope:
             continue
-        failures.extend(
-            f"{path.relative_to(ROOT).as_posix()}:{node.lineno}"
-            for node in tree.body
-            if not isinstance(
-                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            )
-            and _edits_sys_path(node)
-        )
-    assert failures == []
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        relative = path.relative_to(root).as_posix()
+        if bare_scope and (imports := _bare_tool_imports(tree)):
+            bare[relative] = imports
+        if host:
+            if (failure := _bootstrap_failure(path, tree, root=root)) is not None:
+                bootstrap[relative] = failure
+            if not _is_entrypoint(tree):
+                edits.extend(
+                    f"{relative}:{node.lineno}"
+                    for node in tree.body
+                    if not isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                    and _edits_sys_path(node)
+                )
+    return _ImportPolicyFindings(bootstrap, bare, edits)
+
+
+def test_import_policy_scopes_keep_independent_violations(tmp_path: Path) -> None:
+    bodies = {
+        "tools/bad.py": (
+            'from tools import import_file\nif __name__ == "__main__":\n    pass\n'
+        ),
+        "tools/library.py": "import sys\nsys.path.insert(0, '/x')\n",
+        "src/client.py": "import import_file\n",
+        "tests/helper.py": (
+            "from tools import import_file\nimport sys\nsys.path.insert(0, '/x')\n"
+            'if __name__ == "__main__":\n    pass\n'
+        ),
+        # Program-only roots can use syntax this host cannot parse.
+        "tests/differential/program.py": "not legal Python !",
+        "src/molt/stdlib/program.py": "not legal Python !",
+    }
+    paths = []
+    for relative, body in bodies.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        paths.append(path)
+    findings = _import_policy_findings(
+        paths,
+        host_paths=frozenset(path for path in paths if path.parent.name == "tools"),
+        root=tmp_path,
+    )
+    assert findings.bootstrap_failures == {
+        "tools/bad.py": "line 1: import before the repository binding"
+    }
+    assert findings.bare_imports == {"src/client.py": ["line 1: import import_file"]}
+    assert findings.library_path_edits == ["tools/library.py:2"]
+
+
+def test_repository_import_policies() -> None:
+    # One streaming observation owns all three policies, including under xdist.
+    findings = _import_policy_findings(
+        _repository_python(
+            *_HOST_SCRIPT_ROOTS, "tests", "src", "demos", "demo", "examples"
+        ),
+        host_paths=frozenset(_repository_python(*_HOST_SCRIPT_ROOTS)),
+        root=ROOT,
+    )
+    assert findings == _ImportPolicyFindings(
+        bootstrap_failures={}, bare_imports={}, library_path_edits=[]
+    )
 
 
 @pytest.mark.parametrize(
@@ -818,7 +861,9 @@ def test_script_launch_scan_uses_executable_module_guard(
 ) -> None:
     script = tmp_path / "command.py"
     script.write_text("from . import sibling\n" + body, encoding="utf-8")
-    failure = _bootstrap_failure(script, root=tmp_path.parent)
+    failure = _bootstrap_failure(
+        script, ast.parse(script.read_text(encoding="utf-8")), root=tmp_path.parent
+    )
     assert (failure is not None) is is_entrypoint
     if is_entrypoint:
         assert failure == "line 1: import before the repository binding"
@@ -946,18 +991,25 @@ def test_bootstrap_scan_accepts_only_the_canonical_binding(tmp_path: Path) -> No
     )
     script = tmp_path / "command.py"
     script.write_text(canonical, encoding="utf-8")
-    assert _bootstrap_failure(script, root=tmp_path.parent) is None
-    script.write_text(canonical.replace("parents[1]", "parents[2]"), encoding="utf-8")
-    assert _bootstrap_failure(script, root=tmp_path.parent) == (
-        "line 3: _REPO_ROOT must be Path(__file__).resolve().parents[1]"
+    assert (
+        _bootstrap_failure(
+            script, ast.parse(script.read_text(encoding="utf-8")), root=tmp_path.parent
+        )
+        is None
     )
+    script.write_text(canonical.replace("parents[1]", "parents[2]"), encoding="utf-8")
+    assert _bootstrap_failure(
+        script, ast.parse(script.read_text(encoding="utf-8")), root=tmp_path.parent
+    ) == ("line 3: _REPO_ROOT must be Path(__file__).resolve().parents[1]")
     hand_rolled = canonical.replace(
         "if str(_REPO_ROOT) not in sys.path:\n    sys.path.insert(0, str(_REPO_ROOT))",
         "sys.path.insert(0, str(Path(__file__).parent))",
     )
     script.write_text(hand_rolled, encoding="utf-8")
     assert (
-        _bootstrap_failure(script, root=tmp_path.parent)
+        _bootstrap_failure(
+            script, ast.parse(script.read_text(encoding="utf-8")), root=tmp_path.parent
+        )
         == "line 4: sys.path edit outside the bootstrap"
     )
     script.write_text(
@@ -965,7 +1017,9 @@ def test_bootstrap_scan_accepts_only_the_canonical_binding(tmp_path: Path) -> No
         encoding="utf-8",
     )
     assert (
-        _bootstrap_failure(script, root=tmp_path.parent)
+        _bootstrap_failure(
+            script, ast.parse(script.read_text(encoding="utf-8")), root=tmp_path.parent
+        )
         == "line 1: import before the repository binding"
     )
 

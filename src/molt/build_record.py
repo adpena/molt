@@ -5,10 +5,10 @@ reads it; an audit hook observes the reads no authority reports. This module
 owns the ledger those facts reach, the request key and the record. A successful
 build whose ledger holds no refusal and no racy input records those facts with
 the token of the binary it published. The next build of the same request
-re-checks them by stat: when every input matches and the binary is untouched,
-the build is complete. A changed token on a file with a recorded digest falls
-back to a digest compare, so a `touch` costs one hash. Anything unproven means
-a full build.
+re-checks metadata inputs by stat and consumed source bytes by checksum: when
+every input matches and the binary is untouched, the build is complete. A
+changed metadata token with a recorded digest falls back to a digest compare,
+so a `touch` costs one hash. Anything unproven means a full build.
 """
 
 from __future__ import annotations
@@ -23,14 +23,22 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, assert_never
 
 from molt import file_publication, input_report
 from molt.build_output_selection import BuildOutputSelection
 from molt.file_hashing import DIGEST_RACY_WINDOW_NS
-from molt.input_report import ProbeOutcome, StatToken, resolved_probe, stat_token
+from molt.input_report import (
+    FileEvidence,
+    ProbeOutcome,
+    ReadReceiptId,
+    StatToken,
+    resolved_probe,
+    stat_token,
+)
+from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v7"
+_SCHEMA = "molt-build-record-v8"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -71,22 +79,34 @@ _TRANSIENT_DIRNAME = ".transient"
 
 
 def _file_sha256(path: Path | str) -> str | None:
+    from molt.toolchain_identity import stable_file_sha256
+
     try:
-        with open(path, "rb") as handle:
-            return hashlib.file_digest(handle, "sha256").hexdigest()
-    except OSError:
+        return stable_file_sha256(Path(path), label="build record input")
+    except (OSError, ValueError):
         return None
+
+
+class FileValidation(StrEnum):
+    METADATA = "metadata"
+    CHECKSUM = "checksum"
+
+
+@dataclass
+class FileObservation:
+    token: StatToken
+    sha256: str | None
+    evidence: FileEvidence
 
 
 @dataclass
 class InputLedger:
     """What one build read, reported by each authority when it read it."""
 
-    # No input may have changed at or after this time minus the racy window:
-    # the start of the recording process, which may hold earlier reads.
+    # Weak inputs may not change at or after process birth minus the racy
+    # window. Consumed source buffers instead retain checksum validation.
     started_ns: int
-    # path -> (token of the bytes read, their sha256 or None)
-    files: dict[str, tuple[StatToken, str | None]] = field(default_factory=dict)
+    files: dict[str, FileObservation] = field(default_factory=dict)
     # path -> token; adding, removing or renaming an entry changes it
     directories: dict[str, StatToken] = field(default_factory=dict)
     probes: dict[str, ProbeOutcome] = field(default_factory=dict)
@@ -96,19 +116,81 @@ class InputLedger:
     observed: set[tuple[str, str]] = field(default_factory=set)
     output_selection: BuildOutputSelection | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _reads: dict[ReadReceiptId, str | None] = field(default_factory=dict, repr=False)
+
+    def _file_locked(
+        self,
+        name: str,
+        token: StatToken | None,
+        sha256: str | None,
+        evidence: FileEvidence,
+    ) -> None:
+        if token is None:
+            self.refusals.append(f"unreportable file {name}")
+            return
+        prior = self.files.get(name)
+        if ("file", name) in self.observed:
+            evidence |= FileEvidence.UNBOUND
+        if prior is None:
+            self.files[name] = FileObservation(token, sha256, evidence)
+            return
+        if prior.token != token:
+            self.refusals.append(f"file changed during the build: {name}")
+        if prior.sha256 is not None and sha256 is not None and prior.sha256 != sha256:
+            self.refusals.append(f"file bytes changed during the build: {name}")
+        prior.evidence |= evidence
+        if prior.sha256 is None:
+            prior.sha256 = sha256
 
     def file(
         self, path: Path | str, token: StatToken | None, sha256: str | None
     ) -> None:
         name = os.fspath(path)
         with self._lock:
-            if token is None:
-                self.refusals.append(f"unreportable file {name}")
+            self._file_locked(
+                name,
+                token,
+                sha256,
+                FileEvidence.CUSTODY if sha256 is not None else FileEvidence.UNBOUND,
+            )
+
+    def consumed_file(
+        self, path: Path | str, token: StatToken | None, sha256: str
+    ) -> None:
+        with self._lock:
+            self._file_locked(os.fspath(path), token, sha256, FileEvidence.CONSUMED)
+
+    def read_started(self, receipt: ReadReceiptId, path: Path | str) -> None:
+        path = os.fspath(path)
+        with self._lock:
+            if receipt in self._reads:
+                self.refusals.append(f"duplicate captured read receipt: {path}")
+            else:
+                self._reads[receipt] = path
+
+    def read_finished(
+        self,
+        receipt: ReadReceiptId,
+        path: Path | str,
+        token: StatToken | None,
+        sha256: str | None,
+    ) -> None:
+        path = os.fspath(path)
+        with self._lock:
+            if self._reads.get(receipt) != path:
+                self.refusals.append(f"unmatched captured read receipt: {path}")
                 return
-            prior = self.files.get(name)
-            if prior is not None and prior[0] != token:
-                self.refusals.append(f"file changed during the build: {name}")
-            self.files[name] = (token, sha256 or (prior[1] if prior else None))
+            self._reads[receipt] = None
+            if token is None or sha256 is None:
+                self.observed.add(("file", path))
+                if path in self.files:
+                    self.files[path].evidence |= FileEvidence.UNBOUND
+                return
+            self._file_locked(path, token, sha256, FileEvidence.CONSUMED)
+
+    def pending_reads(self) -> bool:
+        with self._lock:
+            return any(path is not None for path in self._reads.values())
 
     def directory(self, path: Path | str, token: StatToken | None) -> None:
         name = os.fspath(path)
@@ -135,6 +217,8 @@ class InputLedger:
     def observe(self, entry: tuple[str, str]) -> None:
         with self._lock:
             self.observed.add(entry)
+            if entry[0] == "file" and entry[1] in self.files:
+                self.files[entry[1]].evidence |= FileEvidence.UNBOUND
 
     def build_output(self, selection: object) -> None:
         try:
@@ -151,7 +235,12 @@ class InputLedger:
         """Inputs whose content changed within the racy window of the
         recording process's start: their token cannot prove what it read."""
         limit = self.started_ns - DIGEST_RACY_WINDOW_NS
-        racy = [name for name, (token, _) in self.files.items() if token[5] >= limit]
+        racy = [
+            name
+            for name, fact in self.files.items()
+            if fact.token[5] >= limit
+            and (fact.evidence != FileEvidence.CONSUMED or fact.sha256 is None)
+        ]
         racy.extend(
             name for name, token in self.directories.items() if token[5] >= limit
         )
@@ -365,7 +454,7 @@ def resolve_observed(
         if kind == "directory":
             if name not in ledger.directories:
                 ledger.directory(name, token)
-        elif name not in ledger.files and stat.S_ISREG(token[2]):
+        elif stat.S_ISREG(token[2]):
             ledger.file(name, token, None)
 
 
@@ -382,8 +471,25 @@ def _first_change(
         expected = None if outcome is None else (outcome[0], outcome[1])
         if resolved_probe(name) != expected:
             return f"lookup {name}"
-    for name, token, sha256 in files:
+    for name, token, sha256, mode in files:
+        validation = FileValidation(mode)
         current = stat_token(name)
+        if validation is FileValidation.CHECKSUM:
+            if (
+                not isinstance(sha256, str)
+                or len(sha256) != 64
+                or any(c not in "0123456789abcdef" for c in sha256)
+            ):
+                raise ValueError(f"invalid checksum input {name}")
+            if (
+                current is None
+                or current[3] != token[3]
+                or _file_sha256(name) != sha256
+            ):
+                return f"file {name}"
+            continue
+        if validation is not FileValidation.METADATA:
+            assert_never(validation)
         if current == tuple(token):
             continue
         # A rewritten file with equal bytes (a touch, a checkout) is unchanged
@@ -408,12 +514,21 @@ def write_record(
     """
     if ledger.refusals:
         return ledger.refusals[0]
+    if ledger.pending_reads():
+        return "pending captured read receipt"
     racy = ledger.racy_inputs()
     if racy:
         return f"input changed after the recording process started: {racy[0]}"
     files = [
-        [name, list(token), sha256]
-        for name, (token, sha256) in sorted(ledger.files.items())
+        [
+            name,
+            list(fact.token),
+            fact.sha256,
+            FileValidation.CHECKSUM
+            if fact.evidence & FileEvidence.CONSUMED
+            else FileValidation.METADATA,
+        ]
+        for name, fact in sorted(ledger.files.items())
     ]
     directories = [
         [name, list(token)] for name, token in sorted(ledger.directories.items())

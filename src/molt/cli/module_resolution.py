@@ -409,7 +409,9 @@ class _ModuleResolutionCache:
     resolved_roots_cache: dict[tuple[Path, ...], tuple[Path, ...]] = field(
         default_factory=dict
     )
-    source_cache: dict[Path, str] = field(default_factory=dict)
+    source_cache: dict[Path, _module_source.PythonSourceSnapshot] = field(
+        default_factory=dict
+    )
     source_error_cache: dict[Path, Exception] = field(default_factory=dict)
     ast_cache: dict[tuple[Path, str, str, str], _ParsedModuleAst] = field(
         default_factory=dict
@@ -652,18 +654,26 @@ class _ModuleResolutionCache:
         cache_key = self.resolved_path(path)
         if not retain:
             return _module_source._read_module_source(path)
-        source = self.source_cache.get(cache_key)
-        if source is not None:
-            return source
+        snapshot = self.source_cache.get(cache_key)
+        if snapshot is not None:
+            if snapshot.path.resolve() != cache_key:
+                raise _module_source.PythonSourceChangedError(
+                    f"cached source lost path custody: {path}"
+                )
+            return snapshot.text_for_filename(str(path))
         cached_error = self.source_error_cache.get(cache_key)
         if cached_error is not None:
+            from molt import input_report
+
+            input_report.refuse(f"cached source error lacks a byte generation: {path}")
             raise cached_error
         try:
-            source = _module_source._read_module_source(path)
+            snapshot = _module_source.PythonSourceSnapshot.capture(path)
+            source = snapshot.text_for_filename(str(path))
         except (OSError, SyntaxError, UnicodeDecodeError) as exc:
             self.source_error_cache[cache_key] = exc
             raise
-        self.source_cache[cache_key] = source
+        self.source_cache[cache_key] = snapshot
         return source
 
     def path_stat(self, path: Path) -> os.stat_result:

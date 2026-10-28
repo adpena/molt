@@ -28,8 +28,12 @@ programs constantly.
   inputs, output names, commands and environment. Molt likewise records the
   output selected by the successful action; a request spelling alone does not
   determine the output of a directory or package-entry build.
-- git: the racy-git rule; a file changed within one timestamp tick of the
-  index cannot be trusted by stat alone.
+- [Git's racy-index rule](https://git-scm.com/docs/racy-git): a file changed
+  within one timestamp tick of the index cannot be trusted by stat alone.
+  Resolution alone is insufficient: [Linux multigrain timestamps](https://docs.kernel.org/filesystems/multigrain-ts.html)
+  distinguish clock precision from timestamp generation, and [Windows file times](https://learn.microsoft.com/en-us/windows/win32/sysinfo/file-times)
+  can remain unchanged until a writing handle closes. Molt instead binds the
+  source bytes actually consumed and checks those bytes on every replay.
 - [Cargo build directories](https://doc.rust-lang.org/cargo/reference/config.html#buildbuild-dir)
   separate intermediate graphs from final target outputs. Target rustflags
   alone cannot invalidate compiled host dependencies when `--target` is used.
@@ -133,7 +137,8 @@ conflict:
   without guessing a source.
   Reads under named product roots (the Molt
   cache, Cargo target and build state roots, the backend daemon's socket
-  directory, the artifact root under the output directory, the memory guard's
+  directory, the derived backend IR lease directory for both the project and
+  compiler roots, the artifact root under the output directory, the memory guard's
   state root and its scratch generations) are not inputs. A
   source checkout, a user directory, the temporary directory and the shared
   scratch root are never excluded: projects live there too, and so do guard
@@ -162,6 +167,25 @@ conflict:
   Allocations left by an interrupted direct build stay preserved until an
   external owner establishes process-tree closure; no age-based reclaimer or
   alternate scratch lifecycle is introduced.
+
+**Import lookup scope.** A successful `PythonImportTopology.probe` consumes the
+selected path's resolved target and file type. Its existing exact probe report
+captures those facts; it does not consume the other entries in the parent.
+Internal directory observations and operation-local validation remain intact.
+An actual enumeration reports its directory before reading entries. A negative
+probe retains the nearest existing directory generation, including missing
+ancestors and `ENOTDIR`, so a removed input subtree cannot grant a reusable
+record. This follows Skyframe's separation of file lookup and directory listing
+dependencies rather than excluding a shared temporary or user directory.
+
+Positive metadata-only probes no longer add a parent stat/report or worker-log
+entry. Listings retain one report per captured enumeration; negative lookups
+retain ancestor traversal and generation reporting. No new cache, process,
+serialization protocol, lock or emitted-program work is added. Actual record
+reuse controls distinguish unrelated parent churn from negative/listing
+generations, changed entry types and retargeted symlinks. The native macOS arm64
+latency observation is documented in [PERF_AUTHORITY.md](../../tools/PERF_AUTHORITY.md);
+it does not qualify other hosts, WASM, or the remaining racy-window policy.
 
 **Captured inputs and isolated Python.** Cargo file custody reports the existing
 handle-bound token and digest, including lexical and resolved tool names. An
@@ -263,28 +287,85 @@ racy input, or input that changed during the build. A failed record never
 fails the build; `--verbose` prints why no record was written and why a
 record did not match.
 
-**Racy rule.** `file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over
+**Consumed source bytes.** `PythonSourceSnapshot` owns the immutable bytes
+used by decoding, AST construction and source hashing. While recording, its
+reader scopes a receipt to the one primary open, with before/after descriptor
+and pathname generations and lexical selection checks. It preserves ordinary
+source-open sharing; unavailable generation evidence refuses reuse without
+preventing source parsing. Finite traversal reuses the captured-file iterator
+and rejects growth beyond the admitted extent. Source hash consumers bypass
+metadata-only memoization while recording. Resolution caches retain snapshots,
+and graph validation compares captured content rather than detached text.
+
+A receipt has a monotone process-local identity bound to its recording, process
+and thread. Start and completion travel through the same worker fact protocol;
+pending, unmatched, duplicate, aborted or crossed-lifetime receipts cannot
+publish a reusable record. Only that receipt's primary open is covered. Raw
+reads before or after it, another open and other threads remain independent
+dependencies. Plain-fork children discard the inherited ledger and establish
+their own reporting session while retaining worker-log custody.
+
+Cached text, ASTs and digests report their snapshot's actual immutable buffer
+once per recording, including an inherited snapshot used in a fork. The
+acknowledgment and publication are atomic under the recording lifecycle lock.
+Deduplication lives on the snapshot, with no global strong-owner registry that
+would retain temporary source bytes or ASTs.
+
+The ledger unions closed `FileEvidence` obligations: unbound audit reads,
+custody captures and consumed bytes. A supplied digest alone is not consumed
+proof. Changed generations and distinct digests under an equal token refuse
+permanently; later equal observations cannot erase an earlier conflict. Every
+consumed row has persistent checksum validation, including an initially old or
+cached snapshot. Its checksum never ages into metadata-only trust. The explicit
+input facts survive named product-root projection: generated MessagePack leases
+are products, but an explicitly consumed source inside their namespace still
+invalidates the build. `dx.backend_ir_lease_dir` is the single namespace used by
+the producer and projection; transport, scratch selection and cleanup are unchanged.
+
+**Racy rule.** Except for files proven exclusively consumed as above,
+`file_hashing.DIGEST_RACY_WINDOW_NS` (2 s) over
 `content_change_time_ns` (ctime on POSIX, NTFS ChangeTime converted to
 Unix-epoch nanoseconds on Windows; none fails closed), measured from the start
 of the recording process
 (`molt.process_birth`: `/proc/self/stat`, `proc_pidinfo`, `GetProcessTimes`).
 A long-lived process, such as the batch build server, may hold bytes it read
-long before its build began; any input changed since it started refuses the
-record. An `rsync -a` keeps an old mtime but cannot keep ctime.
+long before its build began; weakly observed inputs changed since it started
+refuse the record. Directory and negative-lookup protections remain intact.
+An `rsync -a` keeps an old mtime but cannot keep ctime.
 
 **Check.** Stat every recorded directory, probe and file, then the output.
-A changed token on a file with a recorded digest falls back to a digest
-compare. A hit when the output still holds the binary the build published
+A consumed source row checks current bytes through the stable-file hash owner
+even when tokens match and after aging. A metadata row with a changed token and
+a recorded digest falls back to a digest comparison. A hit when the output still holds the binary the build published
 does nothing else: there is no artifact store and no copy. Malformed JSON,
-including valid JSON scalars and arrays, is a cache miss. The v7 record key
-retires records missing captured tool and isolated-Python inputs, including
-source-only bytecode records and records produced under inferred write ownership. There is no compatibility reader for the retired contracts.
+including valid JSON scalars and arrays, is a cache miss. The v8 record key
+requires explicit metadata/checksum modes; old epochs and malformed modes are
+misses. Captured tool, isolated-Python and actual bytecode inputs remain required.
+There is no compatibility reader for retired contracts.
 
 **Trimming.** A hit refreshes its record's mtime at most once an hour; records
 unused for a week are deleted, at most once an hour.
 
 ## Measured
 
+- macOS arm64, CPython 3.12.15, native dev, matched `bench_calls.py` body edit
+  and retained project/cache/output: the first unchanged build after the edit
+  changes from 2.334 s to 321 ms. All 20 subsequent ordinary CLI observations
+  explicitly hit the record: p50 314 ms, nearest-rank p95 333 ms, maximum 341 ms.
+  Source-byte validation is a measured trade: prior steady cutoff p50 was
+  281 ms, and this body compile takes 2.978 s against the earlier 2.541 s.
+  The new compiler-source prime costs 6.378 s and is recorded separately.
+  Emitted output matches CPython, with the same artifact size and digest as the
+  previous source-pair result. These observations prove removal of a redundant
+  post-edit build, not faster body compilation or the 100 ms/one-second targets.
+  Other host/backend cells and WASM performance remain unverified.
+- Recording adds bounded receipt/lifecycle state, serialized worker start/end
+  events and consumed-byte facts, plus source hashing at publication/replay.
+  Replay remains linear in recorded paths plus consumed source bytes; it hashes
+  no additional tool/artifact bytes solely for this exception. Explicitly retained
+  resolution caches now retain raw source bytes as well as decoded text. Temporary
+  snapshots remain collectible. No new process, optimizer, disk cache or
+  generated-program work is introduced.
 - No-change rebuild through `python -m molt.cli`: 0.155 s, from 32-44 s.
   Before the dispatcher imported each command lazily it was 0.87-1.02 s, and
   copying the binary from a store on another volume cost 1.5 s more. Keying
@@ -420,5 +501,7 @@ which removed the artifact store.
 5. A directory the build lists records the projection it used (its module
    candidates), not its token, so a new log or editor file beside the entry
    does not invalidate the record; Bazel's `GlobValue` cuts off the same way.
-6. The racy window follows each input's filesystem timestamp granularity
-   instead of a fixed 2 s, so an edit saved just before a build still records.
+6. Recent source edits now record through consumed-byte evidence. Remaining
+   weak metadata inputs keep the conservative window until their actual
+   consuming authority can prove a stronger contract; filesystem precision alone
+   does not justify relaxing it.

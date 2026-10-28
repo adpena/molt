@@ -176,10 +176,11 @@ def test_record_rejects_relative_output_selection_context(tmp_path, field):
     assert isinstance(build_record.check(record, KEY), str)
 
 
-def test_previous_coordinate_record_schema_is_rejected(tmp_path):
+@pytest.mark.parametrize("schema", ["molt-build-record-v6", "molt-build-record-v7"])
+def test_previous_coordinate_record_schema_is_rejected(tmp_path, schema):
     _source, _tool, _output, record = _fixture(tmp_path)
     payload = json.loads(record.read_text(encoding="utf-8"))
-    payload["schema"] = "molt-build-record-v6"
+    payload["schema"] = schema
     record.write_text(json.dumps(payload), encoding="utf-8")
     assert build_record.check(record, KEY) == "no record for this request"
 
@@ -265,7 +266,7 @@ def test_captured_cargo_tool_bytes_and_resolution_are_recorded(
     monkeypatch.setattr(input_report, "_SINK", ledger)
     captured = CargoExecutableCustody.capture("compiler", tool)
     monkeypatch.setattr(input_report, "_SINK", None)
-    assert ledger.files[os.fspath(tool)][1] == expected
+    assert ledger.files[os.fspath(tool)].sha256 == expected
     output = tmp_path / "app"
     output.write_bytes(b"compiled output")
     record, reason = _write(tmp_path, ledger, output)
@@ -338,7 +339,7 @@ def test_isolated_python_probe_logs_captured_files_and_negative_selectors(
             assert admission.capture(environment) == first
     assert first == unrecorded, "recording does not change the admitted runtime"
     assert not ledger.refusals
-    assert ledger.files[os.fspath(subject)][1] == expected
+    assert ledger.files[os.fspath(subject)].sha256 == expected
     assert any(outcome is None for outcome in ledger.probes.values())
     assert any(Path(name).suffix == ".zip" for name in ledger.probes)
 
@@ -407,7 +408,8 @@ input_report.remove_sink()
 if {activation!r} == 'worker':
     input_report.merge_worker_logs(ledger, str(logs))
 assert not ledger.refusals, ledger.refusals
-assert ledger.files[str(subject)] == (token, digest)
+assert ledger.files[str(subject)].token == token
+assert ledger.files[str(subject)].sha256 == digest
 assert data == b'first observed input'
 """
     completed = run_custody_subject_process(
@@ -575,7 +577,7 @@ def _check_threaded_python_capture_dependencies(
                 expected
             )
     assert not ledger.refusals
-    assert {name: ledger.files[name][1] for name in expected} == expected
+    assert {name: ledger.files[name].sha256 for name in expected} == expected
     assert os.fspath(root) in ledger.directories
     assert ledger.probes[os.fspath(root / "pybuilddir.txt")] is None
     output = tmp_path / "app"
@@ -1763,3 +1765,243 @@ def test_source_only_record_epoch_is_rejected(tmp_path: Path) -> None:
     payload["schema"] = "molt-build-record-v4"
     record.write_text(json.dumps(payload), encoding="utf-8")
     assert build_record.check(record, KEY) == "no record for this request"
+
+
+@pytest.mark.parametrize("digests", [("a", "b"), ("a", "b", "a")])
+def test_equal_metadata_conflicting_digests_permanently_refuse(tmp_path, digests):
+    source = tmp_path / "source.py"
+    source.write_bytes(b"x = 1\n")
+    token = input_report.stat_token(source)
+    assert token is not None
+    ledger = _future_ledger()
+    for digest in digests:
+        ledger.file(source, token, digest * 64)
+    observation = ledger.files[str(source)]
+    assert observation.token == token
+    assert observation.sha256 == "a" * 64, "retain the first observed generation"
+    assert ledger.refusals, "A -> B -> A cannot erase the conflicting read"
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    assert _write(tmp_path, ledger, output)[1] is not None
+
+
+def test_recent_custody_digest_is_not_a_consumed_read(tmp_path):
+    source = tmp_path / "source.py"
+    source.write_bytes(b"x = 1\n")
+    started = current_process_started_ns()
+    assert started is not None
+    ledger = build_record.InputLedger(started)
+    ledger.file(
+        source,
+        input_report.stat_token(source),
+        hashlib.sha256(source.read_bytes()).hexdigest(),
+    )
+    assert ledger.files[str(source)].evidence == input_report.FileEvidence.CUSTODY
+    assert str(source) in ledger.racy_inputs()
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    assert _write(tmp_path, ledger, output)[1] is not None
+
+
+@pytest.mark.parametrize("raw_order", ["before", "after", "second", "thread"])
+def test_raw_read_obligation_survives_consumed_capture(tmp_path, transient, raw_order):
+    from molt.cli.module_source import PythonSourceSnapshot
+
+    source = tmp_path / "source.py"
+    source.write_bytes(b"x = 1\n")
+    with build_record.recording(transient) as ledger:
+        if raw_order == "before":
+            assert source.read_bytes() == b"x = 1\n"
+        if raw_order in {"second", "thread"}:
+            with input_report.capture_read(source) as receipt:
+                with source.open("rb") as handle:
+                    receipt.opened()
+                    content = handle.read()
+                    if raw_order == "second":
+                        assert source.read_bytes() == content
+                    else:
+                        from concurrent.futures import ThreadPoolExecutor
+
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            assert pool.submit(source.read_bytes).result() == content
+                    receipt.complete(
+                        input_report.stat_token(source),
+                        hashlib.sha256(content).hexdigest(),
+                    )
+        else:
+            assert PythonSourceSnapshot.capture(source).content == b"x = 1\n"
+        if raw_order == "after":
+            assert source.read_bytes() == b"x = 1\n"
+    build_record.resolve_observed(ledger, ())
+    observation = ledger.files[str(source)]
+    assert observation.evidence & input_report.FileEvidence.UNBOUND
+    assert observation.evidence & input_report.FileEvidence.CONSUMED
+    assert str(source) in ledger.racy_inputs()
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    assert _write(tmp_path, ledger, output)[1] is not None
+
+
+@pytest.mark.parametrize("transport", ["parent", "worker"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "pending",
+        "aborted",
+        "path",
+        "id",
+        "duplicate",
+        "process",
+        "unmatched",
+        "twice",
+    ],
+)
+def test_read_receipts_require_complete_matching_publication(
+    tmp_path, transport, fault
+):
+    source = tmp_path / "source.py"
+    source.write_bytes(b"x = 1\n")
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    started = current_process_started_ns()
+    assert started is not None
+    ledger = build_record.InputLedger(started)
+    receipt_id = (os.getpid(), 1)
+    token = input_report.stat_token(source)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    def start(identity, path):
+        if transport == "worker":
+            input_report._merge_worker_fact(
+                ledger, ["read_started", list(identity), str(path)]
+            )
+        else:
+            ledger.read_started(identity, path)
+
+    def finish(identity, path, captured_token, captured_digest):
+        if transport == "worker":
+            input_report._merge_worker_fact(
+                ledger,
+                [
+                    "read_finished",
+                    list(identity),
+                    str(path),
+                    captured_token,
+                    captured_digest,
+                ],
+            )
+        else:
+            ledger.read_finished(identity, path, captured_token, captured_digest)
+
+    if fault != "unmatched":
+        start(receipt_id, source)
+    if fault in {"none", "unmatched", "twice"}:
+        finish(receipt_id, source, token, digest)
+        if fault == "twice":
+            finish(receipt_id, source, token, digest)
+    elif fault == "aborted":
+        finish(receipt_id, source, None, None)
+    elif fault == "path":
+        finish(receipt_id, tmp_path / "other.py", token, digest)
+    elif fault == "id":
+        finish((receipt_id[0], 2), source, token, digest)
+    elif fault == "duplicate":
+        start(receipt_id, source)
+        finish(receipt_id, source, token, digest)
+    elif fault == "process":
+        finish((receipt_id[0] + 1, receipt_id[1]), source, token, digest)
+    build_record.resolve_observed(ledger, ())
+    record, reason = _write(tmp_path, ledger, output)
+    if fault == "none":
+        assert reason is None
+        assert ledger.files[str(source)].evidence == input_report.FileEvidence.CONSUMED
+        assert _current(record, output)
+    else:
+        assert reason is not None, fault
+
+
+def test_checksum_validation_survives_aging_and_equal_metadata(
+    tmp_path, transient, monkeypatch
+):
+    from molt.cli.module_source import PythonSourceSnapshot
+
+    source = tmp_path / "source.py"
+    source.write_bytes(b"x = 1\n")
+    output = tmp_path / "app"
+    output.write_bytes(b"binary")
+    with build_record.recording(transient) as ledger:
+        assert PythonSourceSnapshot.capture(source).content == b"x = 1\n"
+    assert ledger.files[str(source)].evidence == input_report.FileEvidence.CONSUMED
+    record, reason = _write(tmp_path, ledger, output)
+    assert reason is None
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    row = next(row for row in payload["files"] if row[0] == str(source))
+    assert row[3] == "checksum"
+    # Present an old, unchanged metadata generation. Replay must retain its
+    # checksum obligation even when both timestamp clocks are long past.
+    row[1][4] = row[1][5] = 1
+    frozen_token = tuple(row[1])
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    real_stat_token = build_record.stat_token
+
+    def equal_source_metadata(path, metadata=None):
+        if os.fspath(path) == str(source):
+            return frozen_token
+        return real_stat_token(path, metadata)
+
+    monkeypatch.setattr(build_record, "stat_token", equal_source_metadata)
+    assert _current(record, output)
+    assert json.loads(record.read_text(encoding="utf-8"))["files"] == payload["files"]
+    source.write_bytes(b"x = 2\n")
+    assert source.read_bytes() == b"x = 2\n", "the independent byte oracle changed"
+    assert build_record.check(record, KEY) == f"file {source}"
+
+
+@pytest.mark.parametrize("mode", ["unknown", None, 0, {}, ["checksum"]])
+def test_unknown_file_validation_mode_refuses_record(tmp_path, mode):
+    _source, _tool, output, record = _fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["files"][0][3] = mode
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert not _current(record, output)
+
+
+def test_missing_file_validation_mode_refuses_record(tmp_path):
+    _source, _tool, output, record = _fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["files"][0].pop()
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert not _current(record, output)
+
+
+def test_fresh_consumed_source_reuses_without_a_future_process_clock(
+    tmp_path, transient
+):
+    from molt.cli.module_source import PythonSourceSnapshot
+
+    # This is the source-value/record boundary. Whole compiler execution has
+    # separate input obligations, qualified by the real CLI integration cell.
+    importlib.import_module("molt.toolchain_identity")
+    source, output = tmp_path / "app.py", tmp_path / "app"
+    started = current_process_started_ns()
+    assert started is not None
+    record: Path | None = None
+    for value in (1, 2):
+        source.write_text(f"print({value})\n", encoding="utf-8")
+        token = input_report.stat_token(source)
+        assert (
+            token is not None
+            and token[5] >= started - build_record.DIGEST_RACY_WINDOW_NS
+        )
+        if value == 2:
+            assert record is not None
+            assert not _current(record, output), "an actual source edit invalidates"
+        with build_record.recording(transient) as ledger:
+            snapshot = PythonSourceSnapshot.capture(source)
+            output.write_text(f"binary of {snapshot.text}", encoding="utf-8")
+        build_record.resolve_observed(ledger, (), published_output=output)
+        record, reason = _write(tmp_path, ledger, output)
+        assert reason is None
+        assert _current(record, output), "the next observation reuses immediately"
+        assert output.read_text(encoding="utf-8") == f"binary of print({value})\n"
