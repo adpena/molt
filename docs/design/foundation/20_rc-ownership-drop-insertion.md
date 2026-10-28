@@ -448,6 +448,35 @@ The additional exact-scalar query is compile-time analysis over existing SSA;
 it adds no runtime guards, allocations, locks or calls. Existing range and
 overflow proofs still decide whether an integer can use a raw carrier.
 
+The physical-carrier closure additionally constrains a full-width binding view
+when an emitted use observes its boxed object. Its store must publish one
+persistent box; separately boxing a temporary at each use changes identity and
+moves allocation failure out of the store's authored exception region. Shared
+alias roots and executable ordinary/handler phi inputs carry that demand.
+Removing a raw carrier also invalidates operand-dependent results, including
+inline-safe masks and forwarding copies: their mathematical range stays valid,
+but a boxed lowering result cannot inhabit a raw slot. Native projection must
+not recreate an integer carrier after this closure.
+
+Checked arithmetic, scalar comparisons and integer truthiness consume raw
+operands without boxing. Bitwise operations additionally require a raw result;
+both operand and result removals invalidate that exemption. Native and LLVM
+integer `not` lower directly to a zero comparison. Opaque calls, object
+identity, owned capture and storage demand boxed values. Unqualified arithmetic
+and shifts remain conservative where target lowering contracts differ; the
+existing WASM inline-range and shift-count proofs are unchanged. This follows
+the distinction between semantic values and explicit input/output representation
+requirements in [V8 Maglev](https://v8.dev/blog/maglev#representation-selection).
+
+Functions without a full-width binding publication take one scan and allocate
+no additional alias/CFG indexes. Otherwise the demand worklist is linear in
+values and use/phi edges after canonical alias and reachability analysis: each
+raw value is removed once and each conditional use is invalidated once. This
+compile-time work buys correct persistent identity; raw-only checked arithmetic
+and bitwise consumers retain zero-allocation homes. Final-linked native/LLVM
+provider tests check identity, allocation failure and allocation-free numeric
+paths; generic WASM exercises a mixed owner/view join and terminal cleanup.
+
 A plain store can allocate when its result needs a boxed view of a raw
 integer. The frontend authors a `CheckException` immediately after that store,
 before a later effect or `TRY_END`; the existing preserved-Copy effect floor

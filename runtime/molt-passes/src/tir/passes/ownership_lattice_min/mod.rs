@@ -422,7 +422,7 @@ fn non_owning_copy_result_roots(func: &TirFunction, aliases: &AliasUnionFind) ->
 /// already make it: an owned value moves in, and a raw carrier boxes on its arc,
 /// where a full-range integer can allocate. A raw binding's own store view is a
 /// view, so a local that starts as `0` or `None` still joins as one.
-fn binding_view_roots(func: &TirFunction, aliases: &AliasUnionFind) -> HashSet<ValueId> {
+pub(crate) fn binding_view_roots(func: &TirFunction, aliases: &AliasUnionFind) -> HashSet<ValueId> {
     let mut views: HashSet<ValueId> = func
         .blocks
         .values()

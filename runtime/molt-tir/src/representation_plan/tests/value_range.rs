@@ -48,6 +48,309 @@ fn tir_cint(result: ValueId, value: i64) -> TirOp {
     o
 }
 
+fn binding_store(source: ValueId, view: ValueId, slot: i64) -> TirOp {
+    let mut op = tir_op(TirOpCode::Copy, vec![source], vec![view]);
+    op.attrs.insert(
+        "_original_kind".into(),
+        TirAttrValue::Str("frame_home_store".into()),
+    );
+    op.attrs.insert("value".into(), TirAttrValue::Int(slot));
+    op
+}
+
+fn wide_binding_carrier_fixture() -> (TirFunction, [ValueId; 5]) {
+    let mut func = TirFunction::new(
+        "wide_binding_carrier".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let wide = func.fresh_value();
+    let view = func.fresh_value();
+    let alias = func.fresh_value();
+    let step = func.fresh_value();
+    let sum = func.fresh_value();
+    let overflow = func.fresh_value();
+    let compared = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops = vec![
+        tir_cint(wide, 1_i64 << 62),
+        binding_store(wide, view, 0),
+        tir_op(TirOpCode::Copy, vec![view], vec![alias]),
+        tir_cint(step, 1),
+        tir_op(
+            TirOpCode::CheckedAdd,
+            vec![alias, step],
+            vec![sum, overflow],
+        ),
+        tir_op(TirOpCode::Lt, vec![alias, wide], vec![compared]),
+    ];
+    entry.terminator = Terminator::Return { values: vec![] };
+    (func, [wide, view, alias, step, sum])
+}
+
+fn assert_canonical_binding_carriers(func: &TirFunction, boxed: &[ValueId], raw: &[ValueId]) {
+    let ranges = value_range_for(func);
+    let repr = repr_by_value_for(func, Some(&ranges));
+    let native = native_projectable_scalar_reprs_for(func, &repr);
+    for value in boxed {
+        assert_eq!(repr.get(value), Some(&Repr::MaybeBigInt), "{value:?}");
+        assert!(
+            !native.contains_key(value),
+            "native projection recreated the constrained carrier {value:?}"
+        );
+    }
+    for value in raw {
+        assert_eq!(repr.get(value), Some(&Repr::RawI64FullDeopt), "{value:?}");
+        assert_eq!(native.get(value), repr.get(value), "{value:?}");
+    }
+    #[cfg(feature = "llvm")]
+    assert_eq!(repr, LlvmReprFacts::build(func).repr_by_value);
+}
+
+#[test]
+fn boxed_binding_observations_preserve_math_but_constrain_physical_carriers() {
+    for consumer in ["call", "box", "binding_alias", "identity", "another_home"] {
+        let (mut func, [wide, view, alias, _, sum]) = wide_binding_carrier_fixture();
+        let result = func.fresh_value();
+        let observation = match consumer {
+            "call" => tir_op(TirOpCode::Call, vec![alias], vec![]),
+            "box" => tir_op(TirOpCode::BoxVal, vec![alias], vec![result]),
+            "binding_alias" => {
+                let mut capture = tir_op(TirOpCode::Copy, vec![alias], vec![result]);
+                capture.attrs.insert(
+                    "_original_kind".into(),
+                    TirAttrValue::Str("binding_alias".into()),
+                );
+                capture
+            }
+            "identity" => tir_op(TirOpCode::Is, vec![view, alias], vec![result]),
+            "another_home" => binding_store(alias, result, 1),
+            _ => unreachable!(),
+        };
+        func.blocks
+            .get_mut(&func.entry_block)
+            .unwrap()
+            .ops
+            .push(observation);
+        // These expected mathematical facts come from the literal producer,
+        // independent of its physical storage and the consumer under test.
+        let exact = crate::tir::type_refine::extract_exact_scalar_map(&func);
+        for value in [wide, view, alias, sum] {
+            assert_eq!(exact.get(&value), Some(&TirType::I64), "{consumer}");
+        }
+        let ranges = value_range_for(&func);
+        assert_eq!(
+            ranges.range_of(view),
+            crate::tir::numeric_facts::IntRange::point(1_i64 << 62)
+        );
+        assert_canonical_binding_carriers(&func, &[view, alias, sum], &[wide]);
+    }
+}
+
+#[test]
+fn raw_numeric_binding_views_keep_the_full_width_allocation_free_lane() {
+    let (func, [wide, view, alias, _, sum]) = wide_binding_carrier_fixture();
+    assert_canonical_binding_carriers(&func, &[], &[wide, view, alias, sum]);
+}
+
+#[test]
+fn boxed_binding_demand_closes_inline_bitwise_copies_phis_and_checked_results() {
+    for observed in [false, true] {
+        let (mut func, [wide, view, alias, step, _]) = wide_binding_carrier_fixture();
+        let masked = func.fresh_value();
+        let copied = func.fresh_value();
+        let joined = func.fresh_value();
+        let sum = func.fresh_value();
+        let overflow = func.fresh_value();
+        let join = func.fresh_block();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.extend([
+            tir_op(TirOpCode::BitAnd, vec![alias, step], vec![masked]),
+            tir_op(TirOpCode::Copy, vec![masked], vec![copied]),
+        ]);
+        if observed {
+            entry.ops.push(tir_op(TirOpCode::Call, vec![view], vec![]));
+        }
+        entry.terminator = Terminator::Branch {
+            target: join,
+            args: vec![copied],
+        };
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: joined,
+                    ty: TirType::I64,
+                }],
+                ops: vec![tir_op(
+                    TirOpCode::CheckedAdd,
+                    vec![joined, step],
+                    vec![sum, overflow],
+                )],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let ranges = value_range_for(&func);
+        // Independent mathematical oracle: (2**62 & 1) is exactly zero.
+        assert_eq!(
+            ranges.range_of(masked),
+            crate::tir::numeric_facts::IntRange::point(0)
+        );
+        let repr = repr_by_value_for(&func, Some(&ranges));
+        let native = native_projectable_scalar_reprs_for(&func, &repr);
+        assert_eq!(repr[&wide], Repr::RawI64FullDeopt);
+        assert_eq!(repr[&step], Repr::RawI64Safe, "independent constant");
+        for value in [view, alias, masked, copied, joined, sum] {
+            if observed {
+                assert_eq!(repr[&value], Repr::MaybeBigInt, "{value:?}");
+                assert!(!native.contains_key(&value), "{value:?}");
+            } else {
+                assert!(repr[&value].is_raw_i64_carrier(), "{value:?}");
+                assert_eq!(native.get(&value), repr.get(&value));
+            }
+        }
+    }
+}
+
+#[test]
+fn boxed_phi_observations_reach_binding_inputs_even_in_mixed_joins() {
+    for both_views in [false, true] {
+        let mut func = TirFunction::new(
+            "binding_phi".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let condition = func.blocks[&func.entry_block].args[0].id;
+        let left_value = func.fresh_value();
+        let right_value = func.fresh_value();
+        let left_view = func.fresh_value();
+        let right_view = func.fresh_value();
+        let joined = func.fresh_value();
+        let copied = func.fresh_value();
+        let left = func.fresh_block();
+        let right = func.fresh_block();
+        let join = func.fresh_block();
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+            cond: condition,
+            then_block: left,
+            then_args: vec![],
+            else_block: right,
+            else_args: vec![],
+        };
+        for (block, value, view, publish) in [
+            (left, left_value, left_view, true),
+            (right, right_value, right_view, both_views),
+        ] {
+            let mut ops = vec![tir_cint(value, 1_i64 << 62)];
+            if publish {
+                ops.push(binding_store(value, view, 0));
+            }
+            func.blocks.insert(
+                block,
+                TirBlock {
+                    id: block,
+                    args: vec![],
+                    ops,
+                    terminator: Terminator::Branch {
+                        target: join,
+                        args: vec![if publish { view } else { value }],
+                    },
+                },
+            );
+        }
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: joined,
+                    ty: TirType::I64,
+                }],
+                ops: vec![
+                    tir_op(TirOpCode::Copy, vec![joined], vec![copied]),
+                    tir_op(TirOpCode::Call, vec![copied], vec![]),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let mut boxed = vec![left_view, joined, copied];
+        if both_views {
+            boxed.push(right_view);
+        }
+        assert_canonical_binding_carriers(&func, &boxed, &[left_value, right_value]);
+    }
+}
+
+#[test]
+fn boxed_handler_payload_observes_the_original_binding() {
+    let (mut func, [wide, view, alias, _, sum]) = wide_binding_carrier_fixture();
+    let handler = func.fresh_block();
+    let argument = func.fresh_value();
+    func.has_exception_handling = true;
+    func.label_id_map.insert(handler.0, 51);
+    let mut check = tir_op(TirOpCode::CheckException, vec![alias], vec![]);
+    check.attrs.insert("value".into(), TirAttrValue::Int(51));
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .push(check);
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![TirValue {
+                id: argument,
+                ty: TirType::I64,
+            }],
+            ops: vec![tir_op(TirOpCode::Call, vec![argument], vec![])],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    assert_canonical_binding_carriers(&func, &[view, alias, sum, argument], &[wide]);
+}
+
+#[test]
+fn binding_observation_constraints_close_checked_recurrences() {
+    for observed in [false, true] {
+        let (mut func, accumulator, sum) = checked_loop_with_none_vestige(false);
+        let view = func.fresh_value();
+        let body = func
+            .blocks
+            .values_mut()
+            .find(|block| block.ops.iter().any(|op| op.results.first() == Some(&sum)))
+            .unwrap();
+        body.ops.push(binding_store(sum, view, 0));
+        body.terminator.for_each_edge_mut(|_, args| {
+            for value in args {
+                if *value == sum {
+                    *value = view;
+                }
+            }
+        });
+        if observed {
+            let exit = func
+                .blocks
+                .values_mut()
+                .find(|block| matches!(block.terminator, Terminator::Return { .. }))
+                .unwrap();
+            exit.ops
+                .push(tir_op(TirOpCode::Call, vec![accumulator], vec![]));
+        }
+        if observed {
+            // A boxed observer of the loop phi conservatively constrains its
+            // whole recurrence, including the checked producer. This documents
+            // the cost; it is not permission to emit boxed bits into a raw phi.
+            assert_canonical_binding_carriers(&func, &[accumulator, sum, view], &[]);
+        } else {
+            assert_canonical_binding_carriers(&func, &[], &[accumulator, sum, view]);
+        }
+    }
+}
+
 #[test]
 fn canonical_value_range_matches_standalone_scev_composition() {
     for (start, stop) in [(0, 10), (-3, 7), (10, 0), (i64::MAX - 3, i64::MAX)] {

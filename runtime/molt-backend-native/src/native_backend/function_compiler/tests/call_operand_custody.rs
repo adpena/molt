@@ -291,6 +291,205 @@ fn home_store_fixture() -> FunctionIR {
     function
 }
 
+fn home_store_alias_fixture() -> FunctionIR {
+    let mut function = home_store_fixture();
+    function.name = "custody_home_store_alias".into();
+    let end = function
+        .ops
+        .iter()
+        .position(|op| op.kind == "try_end")
+        .unwrap();
+    function.ops.insert(
+        end,
+        OpIR {
+            kind: "identity_alias".into(),
+            args: Some(vec!["view".into()]),
+            out: Some("view_alias".into()),
+            ..Default::default()
+        },
+    );
+    let call = function
+        .ops
+        .iter_mut()
+        .find(|op| op.s_value.as_deref() == Some("custody_home_success"))
+        .unwrap();
+    call.args = Some(vec!["view_alias".into()]);
+    function
+}
+
+/// The same wide publication stays allocation-free when only arithmetic
+/// observes its view. A branch exposes the independent arithmetic result;
+/// the provider also checks that no temporary or persistent box was minted.
+fn home_store_numeric_fixture() -> FunctionIR {
+    let mut function = home_store_fixture();
+    function.name = "custody_home_numeric".into();
+    let call = function
+        .ops
+        .iter()
+        .position(|op| op.s_value.as_deref() == Some("custody_home_success"))
+        .unwrap();
+    function.ops.splice(
+        call..=call,
+        [
+            OpIR {
+                kind: "checked_add".into(),
+                args: Some(vec!["view".into(), "limb".into()]),
+                var: Some("numeric".into()),
+                out: Some("numeric_overflow".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "const_int".into(),
+                value: Some((1_i64 << 62) + (1_i64 << 31)),
+                out: Some("numeric_expected".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "eq".into(),
+                args: Some(vec!["numeric".into(), "numeric_expected".into()]),
+                out: Some("numeric_ok".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "br_if".into(),
+                args: Some(vec!["numeric_ok".into()]),
+                value: Some(60),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "call".into(),
+                s_value: Some("custody_home_numeric_bad".into()),
+                args: Some(vec![]),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(60),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "call".into(),
+                s_value: Some("custody_home_numeric_ok".into()),
+                args: Some(vec![]),
+                ..Default::default()
+            },
+        ],
+    );
+    let failure = function
+        .ops
+        .iter_mut()
+        .find(|op| op.s_value.as_deref() == Some("custody_home_failure"))
+        .unwrap();
+    failure.s_value = Some("custody_home_numeric_bad".into());
+    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
+        &function,
+        &crate::tir::TargetInfo::native_release_fast(),
+    );
+    for value in ["view", "numeric"] {
+        assert!(
+            plan.is_full_deopt_int_name(value),
+            "numeric-only view must remain raw: {value}"
+        );
+    }
+    function
+}
+
+fn home_store_bitwise_fixture(observed: bool) -> FunctionIR {
+    let mut function = home_store_numeric_fixture();
+    function.name = if observed {
+        "custody_home_bitwise_observed"
+    } else {
+        "custody_home_bitwise_raw"
+    }
+    .into();
+    let index = function
+        .ops
+        .iter()
+        .position(|op| op.kind == "checked_add")
+        .unwrap();
+    function.ops[index] = OpIR {
+        kind: "bit_and".into(),
+        args: Some(vec!["view".into(), "limb".into()]),
+        out: Some("numeric".into()),
+        ..Default::default()
+    };
+    function
+        .ops
+        .iter_mut()
+        .find(|op| op.out.as_deref() == Some("numeric_expected"))
+        .unwrap()
+        .value = Some(0);
+    // Integer `not` must not mint a temporary box in either machine backend.
+    // Branching to the failing provider exposes its mathematical result too.
+    function.ops.splice(
+        index..index,
+        [
+            OpIR {
+                kind: "not".into(),
+                args: Some(vec!["view".into()]),
+                out: Some("wide_is_zero".into()),
+                ..Default::default()
+            },
+            OpIR {
+                kind: "br_if".into(),
+                args: Some(vec!["wide_is_zero".into()]),
+                value: Some(61),
+                ..Default::default()
+            },
+        ],
+    );
+    let failure = function
+        .ops
+        .iter()
+        .position(|op| op.s_value.as_deref() == Some("custody_home_numeric_bad"))
+        .unwrap();
+    function.ops.insert(
+        failure,
+        OpIR {
+            kind: "label".into(),
+            value: Some(61),
+            ..Default::default()
+        },
+    );
+    if observed {
+        let index = function
+            .ops
+            .iter()
+            .position(|op| op.kind == "bit_and")
+            .unwrap();
+        function.ops.insert(
+            index,
+            OpIR {
+                kind: "call".into(),
+                s_value: Some("custody_home_success".into()),
+                args: Some(vec!["view".into()]),
+                ..Default::default()
+            },
+        );
+        function
+            .ops
+            .iter_mut()
+            .find(|op| op.s_value.as_deref() == Some("custody_home_numeric_ok"))
+            .unwrap()
+            .s_value = Some("custody_home_observed_numeric_ok".into());
+        function
+            .ops
+            .iter_mut()
+            .rev()
+            .find(|op| op.s_value.as_deref() == Some("custody_home_numeric_bad"))
+            .unwrap()
+            .s_value = Some("custody_home_failure".into());
+    }
+    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
+        &function,
+        &crate::tir::TargetInfo::native_release_fast(),
+    );
+    for value in ["view", "numeric"] {
+        assert_eq!(plan.is_raw_int_carrier_name(value), !observed, "{value}");
+    }
+    function
+}
+
 fn method_receiver_prefix_fixture() -> FunctionIR {
     FunctionIR {
         name: "custody_method_receiver".into(),
@@ -342,6 +541,10 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
     functions.push(builder_fixture("custody_indirect", true));
     functions.push(loop_fixture());
     functions.push(home_store_fixture());
+    functions.push(home_store_alias_fixture());
+    functions.push(home_store_numeric_fixture());
+    functions.push(home_store_bitwise_fixture(false));
+    functions.push(home_store_bitwise_fixture(true));
     functions.push(method_receiver_prefix_fixture());
     for (name, arity, custody) in [
         (
@@ -367,6 +570,9 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
         ("custody_loop_continue", 0, vec![]),
         ("custody_home_success", 1, vec![Borrowed]),
         ("custody_home_failure", 0, vec![]),
+        ("custody_home_numeric_ok", 0, vec![]),
+        ("custody_home_numeric_bad", 0, vec![]),
+        ("custody_home_observed_numeric_ok", 0, vec![]),
     ] {
         functions.push(FunctionIR {
             name: name.into(),
@@ -386,11 +592,19 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
             "custody_indirect",
             "custody_loop",
             "custody_home_store",
+            "custody_home_store_alias",
+            "custody_home_numeric",
+            "custody_home_bitwise_raw",
+            "custody_home_bitwise_observed",
             "custody_method_receiver",
         ])
         .collect();
     let object = emit_direct_object(compile_selected_functions_direct(functions, &targets));
     let provider = PROVIDER
+        .replace(
+            "@INT_TAG@",
+            &(molt_codegen_abi::QNAN_TAG_INT_I64 as u64).to_string(),
+        )
         .replace(
             "@NONE@",
             &(molt_codegen_abi::box_none_bits() as u64).to_string(),
@@ -590,6 +804,53 @@ pub extern "C" fn custody_home_finish(failure: u64) {
         assert_eq!(count.load(SeqCst), 0, "every home owner released exactly once");
     }
 }
+#[no_mangle]
+pub extern "C" fn custody_home_numeric_ok() -> u64 {
+    assert_eq!(ATTEMPTS.load(SeqCst), 0, "numeric-only publication allocated");
+    assert_eq!(ERROR.load(SeqCst), 0);
+    assert_eq!(HOME_SUCCESSES.fetch_add(1, SeqCst), 0);
+    assert_eq!(home_pair(), (HOME_RAW, 1_u64 << 62));
+    NONE
+}
+#[no_mangle]
+pub extern "C" fn custody_home_numeric_bad() -> u64 {
+    panic!("numeric-only publication changed the arithmetic result or raised");
+}
+#[no_mangle]
+pub extern "C" fn custody_home_observed_numeric_ok() -> u64 {
+    assert_eq!(ATTEMPTS.load(SeqCst), 1);
+    assert_eq!(HOME_SUCCESSES.load(SeqCst), 1);
+    assert_eq!(home_pair(), (HOME_PLAIN, 0x101));
+    NONE
+}
+#[no_mangle]
+pub extern "C" fn molt_bit_and(lhs: u64, rhs: u64) -> u64 {
+    assert_eq!(lhs, 0x101, "the persistent binding's exact object");
+    assert_eq!(rhs, @INT_TAG@ | (1_u64 << 31));
+    @INT_TAG@ // (2**62 & 2**31) == 0, as a boxed inline integer.
+}
+#[no_mangle]
+pub extern "C" fn molt_eq(lhs: u64, rhs: u64) -> u64 {
+    assert_eq!((lhs, rhs), (@INT_TAG@, @INT_TAG@));
+    TRUE
+}
+#[no_mangle]
+pub extern "C" fn molt_not(value: u64) -> u64 {
+    assert_eq!(value, 0x101);
+    assert_eq!(home_pair(), (HOME_PLAIN, value));
+    FALSE
+}
+#[no_mangle]
+pub extern "C" fn custody_home_numeric_finish() {
+    assert_eq!(ATTEMPTS.load(SeqCst), 0);
+    assert_eq!(ERROR.load(SeqCst), 0);
+    assert_eq!(HOME_SUCCESSES.load(SeqCst), 1);
+    assert_eq!(HOME_FAILURES.load(SeqCst), 0);
+    assert_eq!(home_pair(), (HOME_UNBOUND, 0));
+    for count in [&FIRST, &SECOND, &EXISTING, &OTHER, &RESULT] {
+        assert_eq!(count.load(SeqCst), 0, "numeric-only publication retained a box");
+    }
+}
 "#;
 
 const HARNESS: &str = r#"
@@ -604,6 +865,8 @@ extern "C" {
  fn custody_loop()->u64; fn custody_loop_check(fail:u64);
  fn custody_reset(mode:u64,fail:u64,guard:u64); fn custody_check(fail:u64,boxes:u64,guard:u64);
  fn custody_home_store(); fn custody_home_reset(failure:u64); fn custody_home_finish(failure:u64);
+ fn custody_home_store_alias(); fn custody_home_numeric(); fn custody_home_numeric_finish();
+ fn custody_home_bitwise_raw(); fn custody_home_bitwise_observed();
  fn custody_method_receiver(builder:u64,receiver:u64)->u64;
  fn custody_prefix_reset(present:u64,fail:u64); fn custody_prefix_check(present:u64,fail:u64);
  fn molt_dec_ref_obj(value:u64);
@@ -616,6 +879,10 @@ fn main(){unsafe{
  custody_reset(0,0,1);assert_eq!(custody_direct(0x501,0x502),NONE);custody_check(0,2,1);
  for fail in 0..=4{custody_reset(3,fail,0);assert_eq!(custody_loop(),NONE);custody_loop_check(fail);}
  for fail in [0,1]{custody_home_reset(fail);custody_home_store();custody_home_finish(fail);}
+ for fail in [0,1]{custody_home_reset(fail);custody_home_store_alias();custody_home_finish(fail);}
+ custody_home_reset(0);custody_home_numeric();custody_home_numeric_finish();
+ custody_home_reset(0);custody_home_bitwise_raw();custody_home_numeric_finish();
+ for fail in [0,1]{custody_home_reset(fail);custody_home_bitwise_observed();custody_home_finish(fail);}
  for present in [0,1]{for fail in [0,1]{custody_prefix_reset(present,fail);assert_eq!(custody_method_receiver(0x777,if present==0{METHOD_NULL}else{0x501}),NONE);custody_prefix_check(present,fail);}}
 }}
 "#;
