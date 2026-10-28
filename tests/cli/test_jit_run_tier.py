@@ -892,7 +892,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
         monkeypatch.setenv("MOLT_DEBUG_ARTIFACT_DIR", str(selected))
     if location == "blocked":
         artifacts.mkdir()
-        (artifacts / "tmp").write_text("not a scratch directory")
+        (artifacts / "tmp").write_text("not a scratch directory", encoding="utf-8")
     binding = transport_codegen_binding(tmp_path / "runtime")
     published = []
 
@@ -1010,7 +1010,9 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
     )
     if location == "blocked":
         assert result != 0 and not published
-        assert (artifacts / "tmp").read_text() == "not a scratch directory"
+        assert (artifacts / "tmp").read_text(
+            encoding="utf-8"
+        ) == "not a scratch directory"
     else:
         assert result == 0 and published == [tmp_path / "app.moltjit"]
         assert (selected / "object.o").read_bytes() == b"runner scratch"
