@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 69
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 350
+- `scattered-assumption` files: 351
 
 ## Files
 
@@ -293,7 +293,8 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/io_path.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/io_path_utils.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/json_tests.rs` | 2 | scattered-assumption | `3.12` |
-| `runtime/molt-runtime/src/builtins/module_table.rs` | 4 | authority-routed | `3.13` |
+| `runtime/molt-runtime/src/builtins/module_table/tests.rs` | 1 | authority-routed | `version_info` |
+| `runtime/molt-runtime/src/builtins/module_table.rs` | 3 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/modules/execution.rs` | 2 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime/src/builtins/modules.rs` | 7 | authority-routed | `version_info` |
 | `runtime/molt-runtime/src/builtins/numbers.rs` | 20 | authority-routed | `3.14` |
@@ -426,7 +427,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/ci_resource_env.py` | 1 | scattered-assumption | `3.06` |
 | `tools/cold_start_decompose.py` | 1 | scattered-assumption | `3.45` |
 | `tools/command_execution.py` | 1 | scattered-assumption | `3.12` |
-| `tools/compatibility_error_protocol.py` | 13 | authority-routed | `3.12` |
+| `tools/compatibility_error_protocol.py` | 14 | authority-routed | `3.12` |
 | `tools/compile_progress.py` | 2 | scattered-assumption | `3.12` |
 | `tools/correctness_dashboard.py` | 3 | operational-tooling | `3.12` |
 | `tools/cpython_regrtest.py` | 13 | authority-routed | `3.12` |
