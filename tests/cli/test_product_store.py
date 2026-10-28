@@ -574,3 +574,45 @@ def test_two_processes_with_one_identity_build_it_once(tmp_path: Path) -> None:
     assert (store.entry(identity) / "published").read_text(encoding="utf-8") == (
         builds[0]
     )
+
+
+def test_every_successful_product_use_reports_even_without_renewal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from molt import build_record, input_report
+    from molt.cli.build_output_layout import _replay_build_claim
+
+    store = products.ProductStore(tmp_path / "v1" / "native-runtime")
+    identity = _digest("a")
+    store.entry(identity).mkdir(parents=True)
+    ledger = build_record.InputLedger(time.time_ns())
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    monkeypatch.setattr(input_report, "_CAPTURE_RESULT", True)
+    store.retain(identity)
+    assert len(ledger.claims) == 1
+    claim = ledger.claims[0]
+    ledger.claims.clear()
+    assert store.record_use(identity)
+    assert ledger.claims == [claim], (
+        "a throttled use must still report its selected generation"
+    )
+    monkeypatch.setattr(input_report, "_CAPTURE_RESULT", False)
+    _replay_build_claim(claim)
+    store.entry(identity).rmdir()
+    with pytest.raises(ValueError, match="evicted"):
+        _replay_build_claim(claim)
+
+
+def test_plain_product_use_adds_no_build_claim_observation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from molt import build_record, input_report
+
+    store = products.ProductStore(tmp_path / "v1" / "host-tool")
+    identity = _digest("b")
+    store.entry(identity).mkdir(parents=True)
+    ledger = build_record.InputLedger(time.time_ns())
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    monkeypatch.setattr(input_report, "_CAPTURE_RESULT", False)
+    assert store.record_use(identity)
+    assert ledger.claims == []

@@ -78,6 +78,40 @@ imports no other Molt module, and a test keeps it and the recorder out of the
 key. `molt.build_record` is the recorder: the ledger, the key, the record, the
 check and trimming. Only `molt build` imports it.
 
+**Native JSON results.** Ordinary native binary JSON requests use this same
+record and dependency closure, with JSON retained in the request key. Their
+successful result owner reports frozen native build facts, original emission
+provenance and the promised binary/archive/stub/runtime identities. The archive,
+stub and runtime identities are captured before linking and verified again after
+finalization and after build cleanup; later observations never replace those
+expectations. Compiler and final-binary observations must agree with the
+canonical publication observation. Plain builds do not capture these identities. Detached result validation compares
+current content with the original expected SHA-256 through the existing host
+file-digest cache. Its shared policy always hashes on Windows and hashes racy
+POSIX captures; only settled unchanged POSIX observations can reuse a digest.
+Result validation batches cache publication across its artifact family. Root
+claims and product-store renewals retain selections but never substitute for
+this content check or change the expected digest.
+
+The existing artifacts-root, checkout-state and product-store admission
+owners report their actual selections into the same ledger. JSON reuse reacquires
+these claims in producer order before validating artifacts and holds scope claims
+through result emission. Root identity binds the physical directory and resolved
+coordinate, not its changing mtime. Product generations renew through the existing
+`record_use` path, including uses whose renewal is throttled; a hit performs no
+product retention sweep. The result cannot infer custody from an archive parent.
+
+A reused result reports `cache.hit_tier = "build-record"` and `link.skipped = true`.
+It retains `emission_origin` unchanged as the original archive's provenance and
+keeps `compiled_with_verified = false`; it does not claim another compiler or
+linker execution. Backend/function cache paths and daemon observations are omitted
+because this invocation did not consult them. The canonical result owner rebuilds
+the success envelope and message. Nonempty warnings, process output, diagnostic
+results, auxiliary external-native artifact families and incomplete toolchain
+observations refuse JSON recording. Existing proof-bearing and unsupported request
+exclusions remain unchanged. Missing, replaced or retargeted promised artifacts
+require a build; JSON replay never returns a stale path as a current result.
+
 **Python startup.** [CPython's site hook](https://github.com/python/cpython/blob/v3.12.15/Lib/site.py)
 runs before the user command. Molt's existing hook classifies test invocations
 without initializing DX, temporary-artifact storage or toolchain identities.
@@ -274,12 +308,13 @@ to another coordinate, invalidates the record. Output directories and artifact
 claims are created only by the existing build layout, never by record checking.
 This adds one small selection record and bounded path checks; the existing
 source, tool, environment, output-token and racy-input checks remain unchanged.
-JSON and diagnostics still execute the pipeline because they request additional
-result data or fresh measurements.
+Eligible native JSON requests retain their typed result through this same record.
+Diagnostic requests still execute the pipeline because they require fresh
+measurements; unsupported additional result families also retain that path.
 
 **Refusals.** No record for non-native targets, requests
-that publish more than one binary (JSON results, diagnostics, IR, linked or
-split output, snapshots, audit logs), non-default codegen backends, BOLT,
+that request unrecorded additional products or measurements (diagnostics, IR,
+linked or split output, snapshots, audit logs), non-default codegen backends, BOLT,
 file-naming inputs whose loaders do not report (type facts, PGO profiles,
 runtime feedback, capability manifests, sysroots, capability files), `ty`
 under the trust policy, external static packages, and any ledger refusal,
@@ -338,9 +373,9 @@ A consumed source row checks current bytes through the stable-file hash owner
 even when tokens match and after aging. A metadata row with a changed token and
 a recorded digest falls back to a digest comparison. A hit when the output still holds the binary the build published
 does nothing else: there is no artifact store and no copy. Malformed JSON,
-including valid JSON scalars and arrays, is a cache miss. The v8 record key
-requires explicit metadata/checksum modes; old epochs and malformed modes are
-misses. Captured tool, isolated-Python and actual bytecode inputs remain required.
+including valid JSON scalars and arrays, is a cache miss. The v9 record key
+requires explicit metadata/checksum modes and typed native result/claim fields;
+old epochs and malformed modes are misses. Captured tool, isolated-Python and actual bytecode inputs remain required.
 There is no compatibility reader for retired contracts.
 
 **Trimming.** A hit refreshes its record's mtime at most once an hour; records

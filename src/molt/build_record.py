@@ -19,11 +19,11 @@ import os
 import stat
 import threading
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, assert_never
+from typing import TYPE_CHECKING, Any, assert_never
 
 from molt import file_publication, input_report
 from molt.build_output_selection import BuildOutputSelection
@@ -38,7 +38,7 @@ from molt.input_report import (
 )
 from enum import StrEnum
 
-_SCHEMA = "molt-build-record-v8"
+_SCHEMA = "molt-build-record-v9"
 # Keys that name the terminal or login session. No build step reads them for
 # its artifact (`TERM` only styles progress output); they change between
 # shells and would defeat every hit. Everything else is keyed, `PWD` included:
@@ -92,6 +92,388 @@ class FileValidation(StrEnum):
     CHECKSUM = "checksum"
 
 
+if TYPE_CHECKING:
+    from molt.backend_protocol import BackendEmissionOrigin
+    from molt.toolchain_identity import FileDigestCache, StableRegularFileIdentity
+
+
+def _record_path(value: object) -> Path:
+    if not isinstance(value, str) or not value or "\0" in value:
+        raise ValueError("invalid recorded path")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("recorded path is not absolute")
+    return path
+
+
+def _record_digest(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise ValueError("invalid recorded content digest")
+    return value
+
+
+class BuildClaimKind(StrEnum):
+    ARTIFACTS = "artifacts"
+    CHECKOUT = "checkout"
+    PRODUCT = "product"
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedBuildClaim:
+    kind: BuildClaimKind
+    root: Path
+    resolved_root: Path
+    directory_identity: tuple[int, int]
+    cargo_target: Path | None = None
+    product_identity: str | None = None
+
+    @classmethod
+    def capture(
+        cls,
+        kind: BuildClaimKind,
+        root: Path,
+        *,
+        cargo_target: Path | None = None,
+        product_identity: str | None = None,
+    ) -> RecordedBuildClaim:
+        root = root.absolute()
+        resolved = root.resolve(strict=True)
+        metadata = resolved.stat()
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"build claim is not a directory: {root}")
+        return cls(
+            kind,
+            root,
+            resolved,
+            (metadata.st_dev, metadata.st_ino),
+            None if cargo_target is None else cargo_target.absolute(),
+            product_identity,
+        )
+
+    def verify(self) -> None:
+        if (
+            RecordedBuildClaim.capture(
+                self.kind,
+                self.root,
+                cargo_target=self.cargo_target,
+                product_identity=self.product_identity,
+            )
+            != self
+        ):
+            raise ValueError(f"build claim root changed: {self.root}")
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind.value,
+            "root": str(self.root),
+            "resolved_root": str(self.resolved_root),
+            "directory_identity": list(self.directory_identity),
+            "cargo_target": None
+            if self.cargo_target is None
+            else str(self.cargo_target),
+            "product_identity": self.product_identity,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> RecordedBuildClaim:
+        if not isinstance(value, dict) or set(value) != {
+            "kind",
+            "root",
+            "resolved_root",
+            "directory_identity",
+            "cargo_target",
+            "product_identity",
+        }:
+            raise ValueError("invalid build claim")
+        kind = BuildClaimKind(value["kind"])
+        identity = value["directory_identity"]
+        if (
+            not isinstance(identity, list)
+            or len(identity) != 2
+            or any(type(part) is not int or part < 0 for part in identity)
+        ):
+            raise ValueError("invalid build claim directory identity")
+        cargo_target = (
+            None
+            if value["cargo_target"] is None
+            else _record_path(value["cargo_target"])
+        )
+        product = value["product_identity"]
+        if kind is BuildClaimKind.PRODUCT:
+            product = _record_digest(product)
+        elif product is not None:
+            raise ValueError("non-product claim has a product identity")
+        if kind is not BuildClaimKind.CHECKOUT and cargo_target is not None:
+            raise ValueError("non-checkout claim has a Cargo target")
+        return cls(
+            kind,
+            _record_path(value["root"]),
+            _record_path(value["resolved_root"]),
+            (identity[0], identity[1]),
+            cargo_target,
+            product,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedArtifact:
+    path: Path
+    resolved_path: Path
+    token: StatToken
+    sha256: str
+
+    @classmethod
+    def capture(cls, path: Path) -> RecordedArtifact:
+        from molt.toolchain_identity import stable_regular_file_identity
+
+        path = path.absolute()
+        return cls.from_identity(
+            path,
+            stable_regular_file_identity(
+                path.resolve(strict=True), label="build result artifact"
+            ),
+        )
+
+    @classmethod
+    def from_identity(
+        cls,
+        path: Path,
+        identity: StableRegularFileIdentity,
+    ) -> RecordedArtifact:
+        path = path.absolute()
+        resolved = path.resolve(strict=True)
+        if resolved != identity.path:
+            raise ValueError(
+                f"build result artifact identity names another path: {path}"
+            )
+        result = cls(path, resolved, identity.stat_token(), identity.sha256)
+        # The supplied capture already has its digest. This fence binds its
+        # coordinate; detached reuse below independently revalidates content.
+        result.verify_path()
+        return result
+
+    def verify_path(self) -> None:
+        if (
+            self.path.resolve(strict=True) != self.resolved_path
+            or stat_token(self.path) != self.token
+        ):
+            raise ValueError(f"build result artifact changed: {self.path}")
+
+    def verify(self, *, digests: FileDigestCache | None = None) -> None:
+        from molt.toolchain_facts import host_file_digest_cache
+        import sqlite3
+
+        self.verify_path()
+        owned_cache = digests is None
+        cache = host_file_digest_cache() if digests is None else digests
+        try:
+            # Existing host policy hashes Windows and racy POSIX generations;
+            # only settled, unchanged POSIX bytes can reuse a recorded digest.
+            current = cache.identity(self.resolved_path, label="build result artifact")
+            if current.size != self.token[3] or current.sha256 != self.sha256:
+                raise ValueError(f"build result artifact content changed: {self.path}")
+            self.verify_path()
+            if owned_cache:
+                cache.flush()
+        except sqlite3.Error as exc:
+            raise ValueError(f"build result digest cache unavailable: {exc}") from exc
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "path": str(self.path),
+            "resolved_path": str(self.resolved_path),
+            "token": list(self.token),
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> RecordedArtifact:
+        if not isinstance(value, dict) or set(value) != {
+            "path",
+            "resolved_path",
+            "token",
+            "sha256",
+        }:
+            raise ValueError("invalid build result artifact")
+        token = value["token"]
+        if (
+            not isinstance(token, list)
+            or len(token) != 6
+            or any(type(item) is not int for item in token)
+        ):
+            raise ValueError("invalid build result artifact token")
+        if not stat.S_ISREG(token[2]) or token[3] < 0:
+            raise ValueError("build result artifact is not a regular file")
+        return cls(
+            _record_path(value["path"]),
+            _record_path(value["resolved_path"]),
+            (token[0], token[1], token[2], token[3], token[4], token[5]),
+            _record_digest(value["sha256"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NativeBuildFacts:
+    target_triple: str | None
+    entry: str
+    deterministic: bool
+    trusted: bool
+    capabilities: tuple[str, ...]
+    capability_profiles: tuple[str, ...]
+    capability_policy_digest: str
+    capabilities_source: str | None
+    profile: str
+    native_arch_perf: bool
+    cpu_baseline: str
+    cranelift_flags: str
+
+    def payload(self) -> dict[str, object]:
+        from dataclasses import asdict
+
+        result = asdict(self)
+        result["capabilities"] = list(self.capabilities)
+        result["capability_profiles"] = list(self.capability_profiles)
+        return result
+
+    @classmethod
+    def from_payload(cls, value: object) -> NativeBuildFacts:
+        from dataclasses import fields
+
+        if not isinstance(value, dict) or set(value) != {
+            item.name for item in fields(cls)
+        }:
+            raise ValueError("invalid native build facts")
+        values = dict(value)
+        for key in ("target_triple", "capabilities_source"):
+            if values[key] is not None and not isinstance(values[key], str):
+                raise ValueError(f"invalid native build fact: {key}")
+        for key in (
+            "entry",
+            "capability_policy_digest",
+            "profile",
+            "cpu_baseline",
+            "cranelift_flags",
+        ):
+            if not isinstance(values[key], str):
+                raise ValueError(f"invalid native build fact: {key}")
+        for key in ("deterministic", "trusted", "native_arch_perf"):
+            if type(values[key]) is not bool:
+                raise ValueError(f"invalid native build fact: {key}")
+        for key in ("capabilities", "capability_profiles"):
+            if not isinstance(values[key], list) or any(
+                not isinstance(item, str) for item in values[key]
+            ):
+                raise ValueError(f"invalid native build fact: {key}")
+            values[key] = tuple(values[key])
+        _record_digest(values["capability_policy_digest"])
+        return cls(**values)
+
+
+@dataclass(frozen=True, slots=True)
+class NativeBuildResult:
+    facts: NativeBuildFacts
+    binary: RecordedArtifact
+    archive: RecordedArtifact
+    stub: RecordedArtifact
+    runtime: RecordedArtifact
+    compiler: RecordedArtifact
+    selected_profiles: tuple[tuple[str, str], ...]
+    emission_origin: BackendEmissionOrigin | None
+
+    def verify_paths(self) -> None:
+        for artifact in (
+            self.binary,
+            self.archive,
+            self.stub,
+            self.runtime,
+            self.compiler,
+        ):
+            artifact.verify_path()
+
+    def verify(self) -> None:
+        from molt.toolchain_facts import host_file_digest_cache
+        import sqlite3
+
+        digests = host_file_digest_cache()
+        for artifact in (
+            self.binary,
+            self.archive,
+            self.stub,
+            self.runtime,
+            self.compiler,
+        ):
+            artifact.verify(digests=digests)
+        try:
+            digests.flush()
+        except sqlite3.Error as exc:
+            raise ValueError(f"build result digest cache unavailable: {exc}") from exc
+        if self.emission_origin is not None and (
+            self.emission_origin.output_size != self.archive.token[3]
+            or self.emission_origin.output_sha256 != self.archive.sha256
+        ):
+            raise ValueError("build result archive differs from original emission")
+
+    def verify_claims(self, claims: list[RecordedBuildClaim]) -> None:
+        if not any(
+            claim.kind is BuildClaimKind.ARTIFACTS
+            and self.archive.resolved_path.is_relative_to(claim.resolved_root)
+            and self.stub.resolved_path.is_relative_to(claim.resolved_root)
+            for claim in claims
+        ):
+            raise ValueError("native JSON result lacks its producer artifacts claim")
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "facts": self.facts.payload(),
+            **{
+                name: getattr(self, name).payload()
+                for name in ("binary", "archive", "stub", "runtime", "compiler")
+            },
+            "selected_profiles": dict(self.selected_profiles),
+            "emission_origin": None
+            if self.emission_origin is None
+            else self.emission_origin.payload(),
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> NativeBuildResult:
+        from molt.backend_protocol import BackendEmissionOrigin
+
+        if not isinstance(value, dict) or set(value) != {
+            "facts",
+            "binary",
+            "archive",
+            "stub",
+            "runtime",
+            "compiler",
+            "selected_profiles",
+            "emission_origin",
+        }:
+            raise ValueError("invalid native build result")
+        profiles = value["selected_profiles"]
+        if not isinstance(profiles, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in profiles.items()
+        ):
+            raise ValueError("invalid native build profiles")
+        return cls(
+            facts=NativeBuildFacts.from_payload(value["facts"]),
+            binary=RecordedArtifact.from_payload(value["binary"]),
+            archive=RecordedArtifact.from_payload(value["archive"]),
+            stub=RecordedArtifact.from_payload(value["stub"]),
+            runtime=RecordedArtifact.from_payload(value["runtime"]),
+            compiler=RecordedArtifact.from_payload(value["compiler"]),
+            selected_profiles=tuple(sorted(profiles.items())),
+            emission_origin=None
+            if value["emission_origin"] is None
+            else BackendEmissionOrigin.from_payload(value["emission_origin"]),
+        )
+
+
 @dataclass
 class FileObservation:
     token: StatToken
@@ -115,6 +497,8 @@ class InputLedger:
     # hook; resolved against the excluded roots when the record is written.
     observed: set[tuple[str, str]] = field(default_factory=set)
     output_selection: BuildOutputSelection | None = None
+    result: NativeBuildResult | None = None
+    claims: list[RecordedBuildClaim] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _reads: dict[ReadReceiptId, str | None] = field(default_factory=dict, repr=False)
 
@@ -231,6 +615,36 @@ class InputLedger:
                 self.refusals.append("build selected more than one native output")
             self.output_selection = selected
 
+    def build_claim(self, value: object) -> None:
+        try:
+            claim = RecordedBuildClaim.from_payload(value)
+        except (TypeError, ValueError) as exc:
+            self.refuse(f"unreportable build claim: {exc}")
+            return
+        with self._lock:
+            for prior in self.claims:
+                if (prior.kind, prior.root, prior.product_identity) == (
+                    claim.kind,
+                    claim.root,
+                    claim.product_identity,
+                ):
+                    if prior != claim:
+                        self.refusals.append("build claim changed during build")
+                    return
+            self.claims.append(claim)
+
+    def build_result(self, value: object) -> None:
+        try:
+            result = NativeBuildResult.from_payload(value)
+            result.verify()
+        except (OSError, TypeError, ValueError) as exc:
+            self.refuse(f"unreportable build result: {exc}")
+            return
+        with self._lock:
+            if self.result is not None and self.result != result:
+                self.refusals.append("build reported conflicting results")
+            self.result = result
+
     def racy_inputs(self) -> list[str]:
         """Inputs whose content changed within the racy window of the
         recording process's start: their token cannot prove what it read."""
@@ -270,7 +684,9 @@ def transient_root(state_root: Path) -> Path:
 
 
 @contextmanager
-def recording(transient_parent: Path) -> Generator[InputLedger]:
+def recording(
+    transient_parent: Path, *, capture_result: bool = False
+) -> Generator[InputLedger]:
     """Activate one ledger for the first build of this process.
 
     The racy bound is the process's start: modules, caches and worker state may
@@ -302,7 +718,7 @@ def recording(transient_parent: Path) -> Generator[InputLedger]:
         os.mkdir(temporary)
         previous_temporary = tempfile.tempdir
         tempfile.tempdir = temporary
-        input_report.install_sink(ledger, log_dir)
+        input_report.install_sink(ledger, log_dir, capture_result=capture_result)
         try:
             yield ledger
         finally:
@@ -542,6 +958,13 @@ def write_record(
         return f"input changed during the build: {changed}"
     try:
         output.verify()
+        if ledger.result is not None:
+            ledger.result.verify()
+            ledger.result.verify_claims(ledger.claims)
+            if ledger.result.binary.path != output.path:
+                return "build result differs from output selection"
+            for claim in ledger.claims:
+                claim.verify()
     except (OSError, ValueError) as exc:
         return str(exc)
     output_token = stat_token(output.path)
@@ -554,6 +977,10 @@ def write_record(
         "files": files,
         "directories": directories,
         "probes": probes,
+        "result": None if ledger.result is None else ledger.result.payload(),
+        "claims": [claim.payload() for claim in ledger.claims]
+        if ledger.result is not None
+        else [],
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -571,9 +998,16 @@ def write_record(
 @dataclass(frozen=True, slots=True)
 class BuildRecordHit:
     output: Path
+    result: NativeBuildResult | None = None
 
 
-def check(path: Path, key: str) -> BuildRecordHit | str:
+def check(
+    path: Path,
+    key: str,
+    *,
+    claim: Callable[[RecordedBuildClaim], None] | None = None,
+    require_result: bool = False,
+) -> BuildRecordHit | str:
     """The verified output when current, otherwise the first difference.
 
     Current means every recorded input matches and ``output`` still holds the
@@ -587,6 +1021,23 @@ def check(path: Path, key: str) -> BuildRecordHit | str:
             return "unreadable record: expected a JSON object"
         if payload.get("schema") != _SCHEMA or payload.get("key") != key:
             return "no record for this request"
+        result = (
+            None
+            if payload["result"] is None
+            else NativeBuildResult.from_payload(payload["result"])
+        )
+        if require_result and result is None:
+            return "no native JSON result for this request"
+        claims = [RecordedBuildClaim.from_payload(value) for value in payload["claims"]]
+        if result is not None:
+            result.verify_claims(claims)
+            if claim is None:
+                return "native JSON result requires build custody"
+            for selection_claim in claims:
+                selection_claim.verify()
+                claim(selection_claim)
+                selection_claim.verify()
+            result.verify_paths()
         recorded_output = payload["output"]
         selection = BuildOutputSelection.from_dict(recorded_output["selection"])
         selection.verify()
@@ -599,7 +1050,13 @@ def check(path: Path, key: str) -> BuildRecordHit | str:
             return changed
         if time.time_ns() - metadata.st_mtime_ns > _RECORD_REFRESH_INTERVAL_NS:
             os.utime(path)
-        return BuildRecordHit(selection.path)
+        if result is not None:
+            if result.binary.path != selection.path:
+                return "native JSON result differs from output selection"
+            for selection_claim in claims:
+                selection_claim.verify()
+            result.verify()
+        return BuildRecordHit(selection.path, result)
     except FileNotFoundError:
         return "no record for this request"
     except (
