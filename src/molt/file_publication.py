@@ -586,7 +586,12 @@ def reclaim_retired_paths(parent: Path, *, retirement_scope: str) -> tuple[Path,
     return tuple(reclaimed)
 
 
-def durable_remove_path(path: Path, *, retirement_scope: str | None = None) -> None:
+def durable_remove_path(
+    path: Path,
+    *,
+    retirement_scope: str | None = None,
+    reclaim_existing: bool = True,
+) -> None:
     """Retire one owned live leaf atomically, then reclaim its physical storage.
 
     The caller retains its existing exclusive namespace lock/private-parent
@@ -595,13 +600,18 @@ def durable_remove_path(path: Path, *, retirement_scope: str | None = None) -> N
     error names recoverable retirement state; callers must not recreate a journal
     or claim rollback. A new live leaf at the old spelling is never touched by
     reclaim_retired_paths.
+
+    A batch owner may set ``reclaim_existing=False`` after its one scoped
+    recovery sweep under the same lock. This avoids rescanning the shared
+    parent for every entry; retirement and failure recovery remain identical.
     """
     path = resolve_owned_path(path)
     if path == path.parent or is_link_like(path):
         raise ValueError(f"cleanup requires a real owned leaf: {path}")
     scope = path.name if retirement_scope is None else retirement_scope
     prefix = _retirement_prefix(scope)
-    reclaim_retired_paths(path.parent, retirement_scope=scope)
+    if reclaim_existing:
+        reclaim_retired_paths(path.parent, retirement_scope=scope)
     try:
         metadata = path.lstat()
     except FileNotFoundError:
