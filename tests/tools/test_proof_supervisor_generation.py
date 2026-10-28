@@ -538,6 +538,7 @@ def test_undeclared_supervisor_store_uses_dx_and_refuses_source_overlap(
         "nested": source / "tmp",
         "external": tmp_path / "canonical",
     }[placement]
+    artifacts.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(
         cargo_output_layout, "implementation_source_root", lambda: source
     )

@@ -14,6 +14,7 @@ import pytest
 from molt.process_environment import NameRule, ProcessEnvironment
 from tests import proof_queue_custody_test_support, proof_queue_owned_roots
 from tools.proof_queue_pkg import (
+    cargo_output_layout,
     command_admission,
     command_identity,
     execution_environment,
@@ -204,6 +205,9 @@ def test_ineligible_plan_refuses_before_execution(
     request_path.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": cargo_output_layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=Path(str(result_path)).parent
+                ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "ineligible-plan",
                 "execution_nonce": "a" * 64,

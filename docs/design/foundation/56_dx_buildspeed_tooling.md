@@ -147,6 +147,16 @@ override. Source, enclosing-checkout and receipt-overlap refusals still apply;
 an unconfigured plain clone must bind/select an external root for supervisor
 bootstrap instead of silently acquiring a sibling output directory.
 
+The queue resolves that control-plane choice once in the parent, including
+requested environment overrides, and carries an existing directory declaration
+(path/device/inode) in execution request version 5. The guarded child and receipt
+verifier use that captured root; they never reselect from a scrubbed child
+environment. A missing declaration refuses instead of falling back to DX.
+The declaration is separate from payload argv/environment authority and enters
+the nonce-bound receipt context. This preserves CI's environment-only selection
+without granting new environment names to proof commands. Direct local layout
+users and the parent share the same root/store selector and overlap checks.
+
 A binding records the resolved root and its directory device/inode identity.
 Every use checks that directory before probing capacity; absence, replacement,
 an unmounted volume exposing another directory, unwritability or failed/low

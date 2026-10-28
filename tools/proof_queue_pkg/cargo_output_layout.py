@@ -7,7 +7,7 @@ of another filesystem. No directory is created by admission or validation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import os
 from pathlib import Path
@@ -179,6 +179,7 @@ def _overlaps(left: Path, right: Path) -> bool:
 class CargoOutputLayout:
     result_root: Path
     declaration: Mapping[str, object] | None = None
+    supervisor_declaration: Mapping[str, object] | None = None
 
     @classmethod
     def for_envelope(
@@ -187,11 +188,13 @@ class CargoOutputLayout:
         *,
         result_root: Path,
         source_root: Path | None = None,
+        supervisor_artifact_root: object = None,
     ) -> CargoOutputLayout:
         return cls.create(
             result_root=result_root,
             declaration=envelope.get("cargo_output_root"),
             source_root=source_root,
+            supervisor_artifact_root=supervisor_artifact_root,
         )
 
     @classmethod
@@ -201,10 +204,20 @@ class CargoOutputLayout:
         result_root: Path,
         declaration: object = None,
         source_root: Path | None = None,
+        supervisor_artifact_root: object = None,
     ) -> CargoOutputLayout:
         metadata = file_publication.resolve_owned_path(result_root)
         root = validate_root(declaration)
-        layout = cls(metadata, root)
+        supervisor_root = validate_root(supervisor_artifact_root)
+        if (
+            root is not None
+            and supervisor_root is not None
+            and not same_root(root, supervisor_root)
+        ):
+            raise ValueError(
+                "supervisor artifact root differs from declared Cargo output root"
+            )
+        layout = cls(metadata, root, supervisor_root)
         protected = [metadata] if root is not None else []
         if source_root is not None and root is not None:
             protected.append(source_root)
@@ -344,14 +357,43 @@ class CargoOutputLayout:
         )
 
     @property
+    def supervisor_artifact_root(self) -> dict[str, object]:
+        """The selected control-plane storage declaration, never payload env."""
+        if self.supervisor_declaration is not None:
+            selected = validate_root(self.supervisor_declaration)
+            assert selected is not None
+            return selected
+        return self._select_supervisor_artifact_root(os.environ)
+
+    def _select_supervisor_artifact_root(
+        self, environment: Mapping[str, str]
+    ) -> dict[str, object]:
+        if self.declaration is not None:
+            selected = validate_root(self.declaration)
+            assert selected is not None
+            return selected
+        return declare_root(
+            str(artifact_root(implementation_source_root(), environment))
+        )
+
+    def bind_supervisor_artifact_root(
+        self, environment: Mapping[str, str]
+    ) -> CargoOutputLayout:
+        """Freeze the parent's selection before launching a scrubbed child."""
+        bound = replace(
+            self,
+            supervisor_declaration=self._select_supervisor_artifact_root(environment),
+        )
+        # Refuse source/receipt overlap at the same owner used by the child.
+        _ = bound.supervisor_store
+        return bound
+
+    @property
     def supervisor_store(self) -> Path:
         # Bootstrap source belongs to this implementation, never the guest cwd
         # or a cached Python fixture. Result paths cannot fragment this store.
         source = implementation_source_root()
-        if self.declaration is not None:
-            root = Path(str(self.declaration["path"]))
-        else:
-            root = artifact_root(source)
+        root = Path(str(self.supervisor_artifact_root["path"]))
         namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
             :24
         ]
