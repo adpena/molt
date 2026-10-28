@@ -457,6 +457,8 @@ Removing a raw carrier also invalidates operand-dependent results, including
 inline-safe masks and forwarding copies: their mathematical range stays valid,
 but a boxed lowering result cannot inhabit a raw slot. Native projection must
 not recreate an integer carrier after this closure.
+One exhaustive `OpCode` use policy owns both observation and result-dependency
+requirements, so a new opcode cannot silently bypass this physical contract.
 
 Checked arithmetic, scalar comparisons and integer truthiness consume raw
 operands without boxing. Bitwise operations additionally require a raw result;
