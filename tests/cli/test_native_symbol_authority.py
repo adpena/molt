@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import subprocess
 import sys
+import time
 from dataclasses import replace
 
 from molt.cli import native_symbol_inspection
@@ -594,6 +595,139 @@ def test_symbol_fact_retention_bounds_persistent_and_memory_admission(
     assert {key.artifact_digest for key in cache} == {
         hashlib.sha256(artifacts[i].read_bytes()).hexdigest() for i in (2, 3)
     }
+
+
+@pytest.mark.parametrize("version", range(1, 7))
+def test_symbol_fact_cache_path_admits_current_and_cleanup_only_schemas(
+    tmp_path, version
+):
+    from molt.default_paths import toolchain_symbol_facts_cache_entry
+
+    assert toolchain_symbol_facts_cache_entry(tmp_path, version, "a" * 64) == (
+        tmp_path / "toolchain_symbol_facts" / f"v{version}" / ("a" * 64 + ".json")
+    )
+
+
+@pytest.mark.parametrize("version", [0, -1, 7, True, 1.0, "../v6"])
+def test_symbol_fact_cache_path_rejects_unknown_schema(tmp_path, version):
+    from molt.default_paths import toolchain_symbol_facts_cache_entry
+
+    with pytest.raises(ValueError, match="schema"):
+        toolchain_symbol_facts_cache_entry(tmp_path, version, "a" * 64)
+
+
+@pytest.mark.parametrize("digest", ["../escape", "A" * 64, "a" * 63, "a" * 65, ""])
+def test_symbol_fact_cache_path_rejects_noncanonical_key(tmp_path, digest):
+    from molt.default_paths import toolchain_symbol_facts_cache_entry
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        toolchain_symbol_facts_cache_entry(tmp_path, 6, digest)
+
+
+@pytest.fixture
+def persisted_archive_facts(tmp_path, monkeypatch):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: cache_root
+    )
+    artifact = tmp_path / "input.a"
+    artifact.write_bytes(_archive("preserved"))
+    read = native_symbol_inspection._native_archive_global_symbol_facts
+    assert read(artifact).defined == {"preserved"}
+    (record,) = (cache_root / "toolchain_symbol_facts" / "v6").glob("*.json")
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    return artifact, record
+
+
+@pytest.mark.parametrize("recent", [False, True])
+def test_persistent_symbol_fact_hit_renews_only_idle_record(
+    persisted_archive_facts, monkeypatch, recent
+):
+    from molt import cache_eviction
+
+    artifact, record = persisted_archive_facts
+    before = record.read_bytes()
+    if not recent:
+        stamp = time.time_ns() - 1_000_000_000_000
+        os.utime(record, ns=(stamp, stamp))
+    observed = record.stat()
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("persistent hit must not rewrite facts or extract symbols")
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_write_native_archive_symbol_cache", unexpected
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_read_native_global_symbol_facts", unexpected
+    )
+    if recent:
+        monkeypatch.setattr(cache_eviction, "_try_acquire_file_lock", unexpected)
+    assert native_symbol_inspection._native_archive_global_symbol_facts(
+        artifact
+    ).defined == {"preserved"}
+    assert record.read_bytes() == before
+    assert record.stat().st_ino == observed.st_ino
+    if recent:
+        assert record.stat().st_mtime_ns == observed.st_mtime_ns
+    else:
+        assert record.stat().st_mtime_ns > observed.st_mtime_ns
+
+
+def test_persistent_symbol_fact_hit_does_not_refresh_replacement(
+    persisted_archive_facts, monkeypatch
+):
+    artifact, record = persisted_archive_facts
+    old = time.time_ns() - 1_000_000_000_000
+    os.utime(record, ns=(old, old))
+    replacement = record.with_name("replacement.json")
+    replacement.write_bytes(record.read_bytes())
+    os.utime(replacement, ns=(old, old))
+    replaced_stat = replacement.stat()
+    original = native_symbol_inspection._read_native_archive_symbol_cache
+
+    def replace_after_read(path, **kwargs):
+        facts = original(path, **kwargs)
+        replacement.replace(path)
+        return facts
+
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_read_native_archive_symbol_cache",
+        replace_after_read,
+    )
+    assert native_symbol_inspection._native_archive_global_symbol_facts(
+        artifact
+    ).defined == {"preserved"}
+    assert record.stat().st_ino == replaced_stat.st_ino
+    assert record.stat().st_mtime_ns == replaced_stat.st_mtime_ns
+
+
+def test_evicted_persistent_symbol_facts_are_recomputed(persisted_archive_facts):
+    artifact, record = persisted_archive_facts
+    expected = record.read_bytes()
+    record.unlink()
+    assert native_symbol_inspection._native_archive_global_symbol_facts(
+        artifact
+    ).defined == {"preserved"}
+    assert record.read_bytes() == expected
+
+
+def test_failed_persistent_symbol_fact_admission_does_not_renew_record(
+    persisted_archive_facts,
+):
+    artifact, record = persisted_archive_facts
+    old = time.time_ns() - 1_000_000_000_000
+    os.utime(record, ns=(old, old))
+    observed = record.stat()
+    with pytest.raises((native_symbol_inspection.NativeSymbolInspectionError, OSError)):
+        with native_symbol_inspection._native_symbol_facts_admission(
+            artifact, archive=True
+        ) as (_opened, _identity, facts):
+            assert facts.defined == {"preserved"}
+            artifact.write_bytes(_archive("changed"))
+    assert record.stat().st_mtime_ns == observed.st_mtime_ns
+    assert not native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
 
 
 def test_missing_tools_and_decode_failures_preserve_typed_diagnostics(

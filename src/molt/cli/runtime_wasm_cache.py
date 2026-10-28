@@ -7,7 +7,10 @@ from pathlib import Path
 from molt.cli import runtime_wasm_cache_diagnostics as _cache_diagnostics
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.process_environment import ProcessEnvironment
-from molt.default_paths import _default_molt_cache
+from molt.default_paths import (
+    _default_molt_cache,
+    runtime_wasm_cache_entry,
+)
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
     SourceRuntimeWasmGeneration,
@@ -18,12 +21,8 @@ from molt.cli.runtime_wasm_generation import (
 )
 
 
-def _shared_runtime_wasm_cache_root() -> Path:
-    return _default_molt_cache() / "runtime_wasm_generations"
-
-
 def _runtime_wasm_cache_generation_dir(identity: RuntimeBuildIdentity) -> Path:
-    return _shared_runtime_wasm_cache_root() / identity.family_digest
+    return runtime_wasm_cache_entry(_default_molt_cache(), identity.family_digest)[0]
 
 
 def _cached_pair_paths(identity: RuntimeBuildIdentity) -> tuple[Path, Path, Path]:
@@ -91,7 +90,6 @@ def publish_runtime_wasm_pair_to_shared_cache(
     )
     cache_shared, cache_reloc, _cache_manifest = _cached_pair_paths(shared_identity)
     try:
-        cache_shared.parent.mkdir(parents=True, exist_ok=True)
         publish_runtime_wasm_generation(
             cache_shared,
             cache_reloc,

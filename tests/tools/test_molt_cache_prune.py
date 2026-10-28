@@ -47,6 +47,57 @@ def _cache_key(label: str) -> str:
     return digest
 
 
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_symbol_facts_retention_owns_only_completed_known_schema_records(
+    tmp_path: Path, dry_run: bool
+) -> None:
+    from molt.default_paths import (
+        TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION,
+        toolchain_symbol_facts_cache_entry,
+    )
+
+    cache_root = tmp_path / "cache"
+    old_records = [
+        toolchain_symbol_facts_cache_entry(
+            cache_root, version, _cache_key(str(version))
+        )
+        for version in (1, TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION)
+    ]
+    recent = old_records[-1].with_name(f"{_cache_key('recent')}.json")
+    for path in (*old_records, recent):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'{"facts":"independent retained bytes"}')
+    preserved = [
+        recent,
+        recent.with_name(".publisher.json.tmp"),
+        recent.with_name("unknown.json"),
+        recent.parents[1]
+        / f"v{TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION + 1}"
+        / recent.name,
+        recent.parents[1] / "v06" / recent.name,
+    ]
+    for path in preserved[1:]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"outside completed known-schema ownership")
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"unrelated source")
+    link = recent.with_name(f"{_cache_key('symlink')}.json")
+    link.symlink_to(outside)
+    old = time.time() - 10 * 86400
+    for path in (*old_records, *preserved[1:]):
+        os.utime(path, (old, old))
+
+    result = _load_molt_cache_prune()._prune(
+        cache_root, max_bytes=None, max_age_days=1, dry_run=dry_run
+    )
+
+    assert result["entries_before"] == 3
+    assert result["entries_removed"] == 2
+    assert all(path.exists() == dry_run for path in old_records)
+    assert all(path.is_file() for path in preserved)
+    assert link.is_symlink() and outside.read_bytes() == b"unrelated source"
+
+
 def _cache_entry(cache_root: Path, label: str):
     return _wasm_link_cache_entry(
         "runtime_tree_shake",
@@ -1649,7 +1700,7 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
         remove_file = module._remove_entry
         observed = []
 
-        def observe_file(candidate, dry_run):
+        def observe_file(candidate, dry_run, *, retirement_prepared=False):
             assert candidate.path == entry.root
             # This real competing writer must acquire immediately. The earlier
             # row is committed and later rows have not been reordered past us.
@@ -1666,7 +1717,9 @@ def test_row_batches_commit_before_interleaved_file_eviction(tmp_path, monkeypat
             # reader must not pin the committed row deletion in the WAL.
             with closing(peer.execute("PRAGMA wal_checkpoint(TRUNCATE)")) as cursor:
                 assert cursor.fetchone() == (0, 0, 0)
-            return remove_file(candidate, dry_run)
+            return remove_file(
+                candidate, dry_run, retirement_prepared=retirement_prepared
+            )
 
         monkeypatch.setattr(module, "_remove_entry", observe_file)
         result = module._prune(cache, max_bytes=None, max_age_days=0, dry_run=False)

@@ -28,7 +28,12 @@ from typing import Literal, Sequence, TypeVar
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.command_runtime import _run_completed_command
-from molt.default_paths import _default_molt_cache, is_backend_cache_artifact_name
+from molt.default_paths import (
+    TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION,
+    _default_molt_cache,
+    is_backend_cache_artifact_name,
+    toolchain_symbol_facts_cache_entry,
+)
 from molt.cache_eviction import refresh_cache_entry_recency
 from molt.llvm_wasi_tools import _tool_version, llvm_tool_candidates
 from molt.cli.static_archive_identity import (
@@ -755,7 +760,6 @@ _NATIVE_OBJECT_SYMBOL_SETS_CACHE: OrderedDict[
 _NATIVE_OBJECT_SYMBOL_SETS_CACHE_LIMIT = 256
 _NATIVE_OBJECT_SYMBOL_FACTS_SCHEMA_VERSION = 6
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE_LIMIT = 32
-_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION = 6
 _NATIVE_ARCHIVE_SYMBOL_SETS_CACHE: OrderedDict[
     _NativeSymbolFactsCacheKey,
     _NativeGlobalSymbolFacts,
@@ -1342,6 +1346,7 @@ def _native_symbol_facts_admission(
     """
     computed = False
     used_sidecar: tuple[Path, os.stat_result] | None = None
+    used_archive_cache: tuple[Path, os.stat_result] | None = None
     with _open_native_symbol_artifact(path, identity, capture=capture) as (
         opened,
         admitted,
@@ -1391,6 +1396,13 @@ def _native_symbol_facts_admission(
             )
             if archive:
                 assert members is not None and persistent_cache_path is not None
+                # Retention may replace/remove the record during admission.
+                # Renew only the generation observed before decoding it.
+                with contextlib.suppress(OSError):
+                    used_archive_cache = (
+                        persistent_cache_path,
+                        persistent_cache_path.lstat(),
+                    )
                 facts = _read_native_archive_symbol_cache(
                     persistent_cache_path, cache_key=cache_key, members=members
                 )
@@ -1432,6 +1444,11 @@ def _native_symbol_facts_admission(
         sidecar, observed = used_sidecar
         refresh_cache_entry_recency(
             sidecar, cache_root=sidecar.parent, observed=observed
+        )
+    if used_archive_cache is not None and not computed:
+        record, observed = used_archive_cache
+        refresh_cache_entry_recency(
+            record, cache_root=record.parents[2], observed=observed
         )
     _remember_native_symbol_facts(cache, cache_key, facts, limit=limit)
     if archive:
@@ -1655,11 +1672,8 @@ def _native_archive_symbol_cache_path(
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return (
-        _default_molt_cache()
-        / "toolchain_symbol_facts"
-        / f"v{_NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION}"
-        / f"{digest}.json"
+    return toolchain_symbol_facts_cache_entry(
+        _default_molt_cache(), TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION, digest
     )
 
 
@@ -1675,7 +1689,7 @@ def _read_native_archive_symbol_cache(
         return None
     if not isinstance(payload, dict):
         return None
-    if payload.get("schema") != _NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION:
+    if payload.get("schema") != TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION:
         return None
     if payload.get("identity") != _native_archive_symbol_cache_identity(cache_key):
         return None
@@ -1695,7 +1709,7 @@ def _write_native_archive_symbol_cache(
     _atomic_write_json(
         path,
         {
-            "schema": _NATIVE_ARCHIVE_SYMBOL_CACHE_SCHEMA_VERSION,
+            "schema": TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION,
             "identity": _native_archive_symbol_cache_identity(cache_key),
             "facts": _symbol_facts_payload(facts),
         },
