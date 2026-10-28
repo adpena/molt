@@ -15,31 +15,50 @@ def cast(_tp, value):  # type: ignore[override]
     return value
 
 
-def _require_callable_intrinsic(name: str):
-    value = _require_intrinsic(name)
+def _require_callable_intrinsic(value, name: str):
     if not callable(value):
         raise RuntimeError(f"{name} intrinsic unavailable")
     return value
 
 
-_molt_weakcontainer_new = _require_callable_intrinsic("molt_weakcontainer_new")
+_molt_weakcontainer_new = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_new"), "molt_weakcontainer_new"
+)
 _molt_weakcontainer_store_probe = _require_callable_intrinsic(
-    "molt_weakcontainer_store_probe"
+    _require_intrinsic("molt_weakcontainer_store_probe"),
+    "molt_weakcontainer_store_probe",
 )
 _molt_weakcontainer_store_commit = _require_callable_intrinsic(
-    "molt_weakcontainer_store_commit"
+    _require_intrinsic("molt_weakcontainer_store_commit"),
+    "molt_weakcontainer_store_commit",
 )
-_molt_weakcontainer_get = _require_callable_intrinsic("molt_weakcontainer_get")
-_molt_weakcontainer_take = _require_callable_intrinsic("molt_weakcontainer_take")
+_molt_weakcontainer_get = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_get"), "molt_weakcontainer_get"
+)
+_molt_weakcontainer_take = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_take"), "molt_weakcontainer_take"
+)
 _molt_weakcontainer_contains = _require_callable_intrinsic(
-    "molt_weakcontainer_contains"
+    _require_intrinsic("molt_weakcontainer_contains"), "molt_weakcontainer_contains"
 )
-_molt_weakcontainer_len = _require_callable_intrinsic("molt_weakcontainer_len")
-_molt_weakcontainer_iter = _require_callable_intrinsic("molt_weakcontainer_iter")
-_molt_weakcontainer_refs = _require_callable_intrinsic("molt_weakcontainer_refs")
-_molt_weakcontainer_pop = _require_callable_intrinsic("molt_weakcontainer_pop")
-_molt_weakcontainer_clear = _require_callable_intrinsic("molt_weakcontainer_clear")
-_molt_weakcontainer_dead = _require_callable_intrinsic("molt_weakcontainer_dead")
+_molt_weakcontainer_len = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_len"), "molt_weakcontainer_len"
+)
+_molt_weakcontainer_iter = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_iter"), "molt_weakcontainer_iter"
+)
+_molt_weakcontainer_refs = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_refs"), "molt_weakcontainer_refs"
+)
+_molt_weakcontainer_pop = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_pop"), "molt_weakcontainer_pop"
+)
+_molt_weakcontainer_clear = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_clear"), "molt_weakcontainer_clear"
+)
+_molt_weakcontainer_dead = _require_callable_intrinsic(
+    _require_intrinsic("molt_weakcontainer_dead"), "molt_weakcontainer_dead"
+)
 
 _WEAK_KEY_DICT = 1
 _WEAK_VALUE_DICT = 2
@@ -473,9 +492,7 @@ class WeakKeyDictionary:
         if _molt_weakcontainer_store_probe(state, key, value, key_hash):
             return
         key_ref = ReferenceType(key, self._remove)
-        _molt_weakcontainer_store_commit(
-            state, key, value, key_ref, key_hash
-        )
+        _molt_weakcontainer_store_commit(state, key, value, key_ref, key_hash)
 
     def __getitem__(self, key: object) -> Any:
         key_hash = hash(key)
@@ -607,9 +624,7 @@ class WeakValueDictionary:
         if _molt_weakcontainer_store_probe(state, key, value, key_hash):
             return
         value_ref = KeyedRef(value, self._remove, key)
-        _molt_weakcontainer_store_commit(
-            state, key, value, value_ref, key_hash
-        )
+        _molt_weakcontainer_store_commit(state, key, value, value_ref, key_hash)
 
     def __getitem__(self, key: object) -> Any:
         key_hash = hash(key)
@@ -744,9 +759,7 @@ class WeakSet:
         if _molt_weakcontainer_store_probe(state, item, item, item_hash):
             return
         item_ref = ReferenceType(item, self._remove)
-        _molt_weakcontainer_store_commit(
-            state, item, item, item_ref, item_hash
-        )
+        _molt_weakcontainer_store_commit(state, item, item, item_ref, item_hash)
 
     def discard(self, item: object) -> None:
         item_hash = hash(item)

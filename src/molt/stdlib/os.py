@@ -378,10 +378,6 @@ def _require_callable_intrinsic(value: Any, name: str):
     return value
 
 
-def _require_os_intrinsic(name: str):
-    return _require_callable_intrinsic(_require_intrinsic(name), name)
-
-
 def _expect_str(value: Any, intrinsic: str) -> str:
     if not isinstance(value, str):
         raise RuntimeError(f"os {intrinsic} intrinsic returned invalid value")
@@ -463,9 +459,13 @@ class DirEntry:
     def stat(self, *, follow_symlinks: bool = True) -> "stat_result":
         _require_cap("fs.read")
         if follow_symlinks:
-            intrinsic = _require_os_intrinsic("molt_os_stat")
+            intrinsic = _require_callable_intrinsic(
+                _require_intrinsic("molt_os_stat"), "molt_os_stat"
+            )
             return intrinsic(self.path)
-        intrinsic = _require_os_intrinsic("molt_os_lstat")
+        intrinsic = _require_callable_intrinsic(
+            _require_intrinsic("molt_os_lstat"), "molt_os_lstat"
+        )
         return intrinsic(self.path)
 
     def inode(self) -> int:
@@ -1374,7 +1374,9 @@ def rename(
     if src_dir_fd is not None or dst_dir_fd is not None:
         _MOLT_OS_RENAME_AT(src, src_dir_fd, dst, dst_dir_fd)
         return
-    intrinsic = _require_os_intrinsic("molt_os_rename")
+    intrinsic = _require_callable_intrinsic(
+        _require_intrinsic("molt_os_rename"), "molt_os_rename"
+    )
     intrinsic(src, dst)
 
 
@@ -1389,7 +1391,9 @@ def replace(
     if src_dir_fd is not None or dst_dir_fd is not None:
         _MOLT_OS_REPLACE_AT(src, src_dir_fd, dst, dst_dir_fd)
         return
-    intrinsic = _require_os_intrinsic("molt_os_replace")
+    intrinsic = _require_callable_intrinsic(
+        _require_intrinsic("molt_os_replace"), "molt_os_replace"
+    )
     intrinsic(src, dst)
 
 

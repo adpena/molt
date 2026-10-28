@@ -18,6 +18,91 @@ from tools import check_stdlib_intrinsics
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def wrapper(name):\n    return _require_intrinsic(name)",
+        "def wrapper(name):\n    return _require_intrinsic(name=name)",
+        "def lazy(name):\n"
+        "    def call(*args):\n        return _require_intrinsic(name)(*args)\n"
+        "    return call",
+        "def wrapper(name):\n"
+        "    from _intrinsics import require_intrinsic as _require\n"
+        "    return _require(name)",
+        "_require_intrinsic('molt_' + suffix)",
+        'name = "molt_gc_collect"\n_require_intrinsic(name)',
+        "import _intrinsics as loader\nloader.require_intrinsic(name)",
+        "from _intrinsics import load_intrinsic as load\nload(name)",
+    ],
+)
+def test_intrinsic_name_wrappers_are_refused(tmp_path: Path, source: str) -> None:
+    path = tmp_path / "wrapped.py"
+    path.write_text(source + "\n", encoding="utf-8")
+
+    errors, names, _ = check_stdlib_intrinsics._scan_file(path)
+
+    assert len(errors) == 1
+    assert "literal molt_* name directly" in errors[0]
+    assert names == ()
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        '_require_intrinsic("molt_gc_collect")',
+        '_require_intrinsic(name="molt_gc_collect")',
+    ],
+)
+def test_literal_intrinsic_read_is_counted(tmp_path: Path, read: str) -> None:
+    path = tmp_path / "literal.py"
+    path.write_text(
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "def checked(value, name):\n"
+        "    if not callable(value):\n        raise RuntimeError(name)\n"
+        "    return value\n"
+        f'collect = checked({read}, "molt_gc_collect")\n',
+        encoding="utf-8",
+    )
+
+    errors, names, _ = check_stdlib_intrinsics._scan_file(path)
+
+    assert errors == []
+    assert names == ("molt_gc_collect",)
+
+
+def test_callable_validator_is_not_a_name_wrapper(tmp_path: Path) -> None:
+    path = tmp_path / "validator.py"
+    path.write_text(
+        "from _intrinsics import require_intrinsic as _intrinsics_require\n"
+        "def _require_intrinsic(value, name):\n"
+        "    if not callable(value):\n        raise RuntimeError(name)\n"
+        "    return value\n"
+        'value = _intrinsics_require("molt_gc_collect")\n'
+        'collect = _require_intrinsic(value, "molt_gc_collect")\n',
+        encoding="utf-8",
+    )
+
+    errors, names, _ = check_stdlib_intrinsics._scan_file(path)
+
+    assert errors == []
+    assert names == ("molt_gc_collect",)
+
+
+def test_unrecognized_resolver_alias_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "alias.py"
+    path.write_text(
+        "from _intrinsics import require_intrinsic as lookup\n"
+        'collect = lookup("molt_gc_collect")\n',
+        encoding="utf-8",
+    )
+
+    errors, names, _ = check_stdlib_intrinsics._scan_file(path)
+
+    assert len(errors) == 1
+    assert "resolver alias hides the literal read" in errors[0]
+    assert names == ()
+
+
 @pytest.fixture(autouse=True)
 def _private_build_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The gate caches per-module facts under the build state; keep each test's

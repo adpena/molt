@@ -17,13 +17,6 @@ import enum as _enum
 _EventTypeBase = _enum.Enum
 
 
-def _lazy_intrinsic(name):
-    def _call(*args, **kwargs):
-        return _require_intrinsic(name)(*args, **kwargs)
-
-    return _call
-
-
 def _tk_runtime_export(name):
     def _call(*args, **kwargs):
         return getattr(_tk_runtime, name)(*args, **kwargs)
