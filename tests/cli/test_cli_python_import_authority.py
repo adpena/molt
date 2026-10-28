@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from molt.compiler_analysis import python_import_scan as _source_import_scan
 
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    IMPORT_CALLABLES_BY_TARGET,
+)
+
 import ast
 import inspect
 from pathlib import Path
@@ -1521,7 +1525,15 @@ def test_import_expansion_does_not_hide_proven_binding_failure(
     kind: python_imports.ImportOperationKind, arguments: str
 ) -> None:
     call = cast(ast.Call, ast.parse(f"load({arguments})", mode="eval").body)
-    assert python_imports.bind_static_import_call_arguments(call, kind) is None
+    assert (
+        python_imports.bind_static_import_call_arguments(
+            call,
+            IMPORT_CALLABLES_BY_TARGET[
+                "importlib.import_module" if kind == "import_module" else "__import__"
+            ],
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("kind", ["dunder_import", "import_module"])
@@ -1533,7 +1545,12 @@ def test_import_expansion_retains_only_fixed_parameter_positions(
         ast.Call,
         ast.parse(f"load(*args, 'later', {keyword}=1)", mode="eval").body,
     )
-    binding = python_imports.bind_static_import_call_arguments(call, kind)
+    binding = python_imports.bind_static_import_call_arguments(
+        call,
+        IMPORT_CALLABLES_BY_TARGET[
+            "importlib.import_module" if kind == "import_module" else "__import__"
+        ],
+    )
     assert binding is not None and binding.requires_runtime_binding
     assert binding.name is None
     assert getattr(binding, keyword) is call.keywords[0].value
@@ -3152,3 +3169,112 @@ def test_import_fact_and_direct_visitor_gateways_preserve_syntax_admission(sourc
         if "is_lazy" not in statement._fields:
             statement._fields = (*statement._fields, "is_lazy")
         assert "pkg" in _source_import_scan._collect_imports(tree, "entry")
+
+
+@pytest.mark.parametrize(
+    "identity,arguments,role,position",
+    [
+        ("INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL", "'pkg.leaf'", "name", 0),
+        ("INTRINSIC_IMPORTLIB_IMPORT_REQUIRED", "'pkg.leaf'", "name", 0),
+        (
+            "INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK",
+            "'pkg.leaf', callback",
+            "fallback",
+            1,
+        ),
+        ("INTRINSIC_IMPORTLIB_FIND_SPEC", "'pkg.leaf', paths, target", "path", 1),
+        (
+            "INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION",
+            "'pkg.leaf', namespace, None, (), 0",
+            "globals",
+            1,
+        ),
+    ],
+)
+def test_import_callable_binder_preserves_intrinsic_positional_roles(
+    identity, arguments, role, position
+):
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        IMPORT_CALLABLES,
+        PythonIdentity,
+    )
+
+    call = cast(ast.Call, ast.parse(f"load({arguments})", mode="eval").body)
+    binding = python_imports.bind_static_import_call_arguments(
+        call, IMPORT_CALLABLES[int(PythonIdentity[identity])]
+    )
+    assert binding is not None
+    assert getattr(binding, role) is call.args[position]
+
+
+@pytest.mark.parametrize(
+    "identity,arguments",
+    [
+        ("INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL", "module_name='pkg.leaf'"),
+        (
+            "INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK",
+            "module_name='pkg.leaf', fallback=callback",
+        ),
+        ("INTRINSIC_IMPORTLIB_FIND_SPEC", "name='pkg.leaf', path=None, target=None"),
+        ("INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL", "name='pkg.leaf'"),
+        ("INTRINSIC_IMPORTLIB_IMPORT_REQUIRED", "name='pkg.leaf'"),
+        ("INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK", "name='pkg.leaf', globals=callback"),
+        ("INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK", "module_name='pkg.leaf'"),
+        ("INTRINSIC_IMPORTLIB_FIND_SPEC", "name='pkg.leaf', package=None"),
+        (
+            "INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION",
+            "name='pkg.leaf', globals=namespace, locals=None, fromlist=(), level=0",
+        ),
+    ],
+)
+def test_import_callable_binder_rejects_wrong_native_signature_without_diagnostics(
+    identity, arguments
+):
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        IMPORT_CALLABLES,
+        PythonIdentity,
+    )
+
+    call = cast(ast.Call, ast.parse(f"load({arguments})", mode="eval").body)
+    assert (
+        python_imports.bind_static_import_call_arguments(
+            call, IMPORT_CALLABLES[int(PythonIdentity[identity])]
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "target,arguments,role,keyword",
+    [
+        (
+            "__import__",
+            "name='pkg.leaf', globals=namespace, fromlist=('child',)",
+            "globals",
+            "globals",
+        ),
+        (
+            "importlib.import_module",
+            "name='.leaf', package='pkg'",
+            "package",
+            "package",
+        ),
+        (
+            "importlib.util.find_spec",
+            "name='.leaf', package='pkg'",
+            "package",
+            "package",
+        ),
+    ],
+)
+def test_public_import_callable_keyword_contract_is_preserved(
+    target, arguments, role, keyword
+):
+    call = cast(ast.Call, ast.parse(f"load({arguments})", mode="eval").body)
+    binding = python_imports.bind_static_import_call_arguments(
+        call, IMPORT_CALLABLES_BY_TARGET[target]
+    )
+    assert binding is not None
+    assert getattr(binding, role) is next(
+        value.value for value in call.keywords if value.arg == keyword
+    )

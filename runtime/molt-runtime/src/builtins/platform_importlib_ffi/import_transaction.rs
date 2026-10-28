@@ -306,11 +306,20 @@ pub(super) struct ImportlibModuleStateArgs {
     pub(super) module_spec_cls_bits: u64,
 }
 
-pub(super) fn importlib_import_resolved_transaction(
+enum ImportlibTransactionReturn<'a> {
+    Leaf,
+    Dunder {
+        requested_name: &'a str,
+        level: i64,
+        fromlist_bits: u64,
+    },
+}
+
+fn importlib_import_resolved_transaction(
     _py: &PyToken<'_>,
     resolved: &str,
     modules_ptr: *mut u8,
-    fromlist_bits: Option<u64>,
+    return_plan: ImportlibTransactionReturn<'_>,
 ) -> Result<u64, u64> {
     let resolved_key_bits = alloc_str_bits(_py, resolved)?;
     if let Err(err) = importlib_import_parent_chain(_py, resolved, modules_ptr) {
@@ -322,7 +331,7 @@ pub(super) fn importlib_import_resolved_transaction(
         resolved,
         resolved_key_bits,
         modules_ptr,
-        fromlist_bits.is_none(),
+        matches!(return_plan, ImportlibTransactionReturn::Leaf),
     );
     dec_ref_bits(_py, resolved_key_bits);
     if exception_pending(_py) {
@@ -332,7 +341,12 @@ pub(super) fn importlib_import_resolved_transaction(
         return Err(MoltObject::none().bits());
     }
 
-    let Some(fromlist_bits) = fromlist_bits else {
+    let ImportlibTransactionReturn::Dunder {
+        requested_name,
+        level,
+        fromlist_bits,
+    } = return_plan
+    else {
         return Ok(leaf_bits);
     };
     // __import__ selects the return module before package-only child preparation.
@@ -344,12 +358,14 @@ pub(super) fn importlib_import_resolved_transaction(
         return Err(MoltObject::none().bits());
     }
     if !has_fromlist {
-        return Ok(importlib_transaction_top_level_value(
+        return importlib_transaction_no_fromlist_value(
             _py,
+            requested_name,
+            level,
             resolved,
             modules_ptr,
             leaf_bits,
-        ));
+        );
     }
     if let Err(err) = importlib_prepare_package_fromlist(_py, resolved, leaf_bits, fromlist_bits) {
         dec_ref_bits(_py, leaf_bits);
@@ -374,7 +390,12 @@ pub(super) fn importlib_import_module_impl(
 
     // Cache precedence and provider/dependency provenance are resolved once by
     // the shared import attempt after the transaction's public-cache lookup.
-    let out = importlib_import_resolved_transaction(_py, &resolved, modules_ptr, None);
+    let out = importlib_import_resolved_transaction(
+        _py,
+        &resolved,
+        modules_ptr,
+        ImportlibTransactionReturn::Leaf,
+    );
     if !obj_from_bits(modules_bits).is_none() {
         dec_ref_bits(_py, modules_bits);
     }
@@ -995,52 +1016,65 @@ fn trace_importlib_transaction(
     );
 }
 
-pub(super) fn importlib_transaction_top_level_value(
+fn importlib_transaction_no_fromlist_value(
     _py: &PyToken<'_>,
+    requested_name: &str,
+    level: i64,
     resolved: &str,
     modules_ptr: *mut u8,
     leaf_bits: u64,
-) -> u64 {
-    let Some((top_name, _)) = resolved.split_once('.') else {
-        return leaf_bits;
+) -> Result<u64, u64> {
+    // CPython selects the first component of the *request*, preserving the
+    // resolved package prefix for relative imports. An empty or undotted
+    // relative request returns the leaf without a second cache observation.
+    let Some(dot) = requested_name.find('.') else {
+        return Ok(leaf_bits);
     };
-    let top_key_bits = match alloc_str_bits(_py, top_name) {
+    let return_name = &resolved[..resolved.len() - requested_name.len() + dot];
+    let return_key_bits = match alloc_str_bits(_py, return_name) {
         Ok(bits) => bits,
         Err(err) => {
-            if !obj_from_bits(leaf_bits).is_none() {
-                dec_ref_bits(_py, leaf_bits);
-            }
-            return err;
-        }
-    };
-    let top_bits = match importlib_dict_get_raw_key_bits(_py, modules_ptr, top_key_bits) {
-        Ok(bits) => bits,
-        Err(err) => {
-            dec_ref_bits(_py, top_key_bits);
-            if !obj_from_bits(leaf_bits).is_none() {
-                dec_ref_bits(_py, leaf_bits);
-            }
-            return err;
-        }
-    };
-    let Some(top_bits) = top_bits else {
-        dec_ref_bits(_py, top_key_bits);
-        return leaf_bits;
-    };
-    if obj_from_bits(top_bits).is_none() {
-        if !obj_from_bits(leaf_bits).is_none() {
             dec_ref_bits(_py, leaf_bits);
+            return Err(err);
         }
-        let error = importlib_none_in_modules_error(_py, top_name, top_key_bits);
-        dec_ref_bits(_py, top_key_bits);
-        return error;
-    }
-    dec_ref_bits(_py, top_key_bits);
-    inc_ref_bits(_py, top_bits);
-    if top_bits != leaf_bits && !obj_from_bits(leaf_bits).is_none() {
-        dec_ref_bits(_py, leaf_bits);
-    }
-    top_bits
+    };
+    let out = if level == 0 {
+        // A false fromlist may mutate sys.modules. Absolute imports perform
+        // the ordinary top-level import again, including finder/error policy.
+        let bits =
+            importlib_import_resolved_module(_py, return_name, return_key_bits, modules_ptr, false);
+        if exception_pending(_py) {
+            if !obj_from_bits(bits).is_none() {
+                dec_ref_bits(_py, bits);
+            }
+            Err(MoltObject::none().bits())
+        } else {
+            Ok(bits)
+        }
+    } else {
+        // The relative protocol performs only the raw dictionary lookup: a
+        // present None is a result, while a removed entry raises KeyError.
+        match importlib_dict_get_raw_key_bits(_py, modules_ptr, return_key_bits) {
+            Ok(Some(bits)) => {
+                inc_ref_bits(_py, bits);
+                Ok(bits)
+            }
+            Ok(None) => Err(raise_exception::<_>(
+                _py,
+                "KeyError",
+                &format!(
+                    "{} not in sys.modules as expected",
+                    crate::format_obj(_py, obj_from_bits(return_key_bits))
+                ),
+            )),
+            Err(err) => Err(err),
+        }
+    };
+    dec_ref_bits(_py, return_key_bits);
+    // Both branches return a fresh owner even when cache entries alias the
+    // imported leaf. Retire the incoming owner exactly once in every case.
+    dec_ref_bits(_py, leaf_bits);
+    out
 }
 
 pub(super) enum ImportlibTransactionStringItemsContext<'a> {
@@ -1314,7 +1348,11 @@ pub extern "C" fn molt_importlib_import_transaction(
             _py,
             &resolved,
             modules_ptr,
-            Some(fromlist_bits),
+            ImportlibTransactionReturn::Dunder {
+                requested_name: &name,
+                level,
+                fromlist_bits,
+            },
         ) {
             Ok(bits) => bits,
             Err(err) => {
@@ -1334,6 +1372,84 @@ pub extern "C" fn molt_importlib_import_transaction(
 #[cfg(test)]
 mod cached_module_tests {
     use super::*;
+
+    #[test]
+    fn false_fromlist_selects_request_component_and_balances_alias_owners() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let mut keys = Vec::new();
+            let mut modules = Vec::new();
+            for name in ["return_pkg", "return_pkg.branch", "return_pkg.branch.leaf"] {
+                let key = alloc_str_bits(py, name).unwrap();
+                let module = crate::object::builders::alloc_module_obj(py, key);
+                assert!(!module.is_null());
+                keys.push(key);
+                modules.push(MoltObject::from_ptr(module).bits());
+            }
+            let cache = alloc_dict_with_pairs(
+                py,
+                &[
+                    keys[0], modules[0], keys[1], modules[1], keys[2], modules[2],
+                ],
+            );
+            assert!(!cache.is_null());
+            for (request, level, expected) in [
+                ("return_pkg.branch.leaf", 0, 0),
+                ("branch.leaf", 1, 1),
+                ("leaf", 1, 2),
+                ("", 1, 2),
+            ] {
+                let ptr = obj_from_bits(modules[expected]).as_ptr().unwrap();
+                let before = unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() };
+                inc_ref_bits(py, modules[2]);
+                let result = importlib_transaction_no_fromlist_value(
+                    py,
+                    request,
+                    level,
+                    "return_pkg.branch.leaf",
+                    cache,
+                    modules[2],
+                )
+                .unwrap();
+                assert!(!exception_pending(py));
+                assert_eq!(result, modules[expected]);
+                assert_eq!(
+                    unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() },
+                    before + 1,
+                );
+                dec_ref_bits(py, result);
+            }
+
+            // Distinct keys may own the same module. Selection must transfer
+            // exactly one result reference, rather than retaining both owners.
+            unsafe {
+                assert!(dict_set_in_place(py, cache, keys[1], modules[2]));
+            }
+            let ptr = obj_from_bits(modules[2]).as_ptr().unwrap();
+            let before = unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() };
+            inc_ref_bits(py, modules[2]);
+            let result = importlib_transaction_no_fromlist_value(
+                py,
+                "branch.leaf",
+                1,
+                "return_pkg.branch.leaf",
+                cache,
+                modules[2],
+            )
+            .unwrap();
+            assert_eq!(result, modules[2]);
+            assert_eq!(
+                unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() },
+                before + 1,
+            );
+            dec_ref_bits(py, result);
+            dec_ref_bits(py, MoltObject::from_ptr(cache).bits());
+            for bits in modules.into_iter().chain(keys) {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
     #[test]
     fn importlib_cached_empty_namespace_preserves_identity_and_owner() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();

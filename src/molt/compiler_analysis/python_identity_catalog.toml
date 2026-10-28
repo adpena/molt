@@ -1,6 +1,6 @@
 # Compiler-only Python identity, acquisition and mutation authority.
 # Bit positions are stable cache identities; never renumber an existing entry.
-schema_version = 1
+schema_version = 2
 
 [identity_bits]
 IMPORTLIB_MODULE = 0
@@ -67,6 +67,47 @@ INTRINSICS_LOAD = 58
 SYS_PLATFORM = "sys_platform"
 OS_NAME = "os_name"
 
+[import_behavior]
+LEAF = "leaf"
+DUNDER = "dunder"
+FINDER = "finder"
+FALLBACK = "fallback"
+
+[import_argument_role]
+NAME = "name"
+PACKAGE = "package"
+GLOBALS = "globals"
+LOCALS = "locals"
+FROMLIST = "fromlist"
+LEVEL = "level"
+FALLBACK = "fallback"
+PATH = "path"
+TARGET = "target"
+
+[[import_callable]]
+identity = "BUILTINS_IMPORT"
+target = "__import__"
+behavior = "DUNDER"
+parameter_names = ["name", "globals", "locals", "fromlist", "level"]
+argument_roles = ["NAME", "GLOBALS", "LOCALS", "FROMLIST", "LEVEL"]
+minimum_arguments = 1
+
+[[import_callable]]
+identity = "IMPORTLIB_IMPORT_MODULE"
+target = "importlib.import_module"
+behavior = "LEAF"
+parameter_names = ["name", "package"]
+argument_roles = ["NAME", "PACKAGE"]
+minimum_arguments = 1
+
+[[import_callable]]
+identity = "IMPORTLIB_FIND_SPEC"
+target = "importlib.util.find_spec"
+behavior = "FINDER"
+parameter_names = ["name", "package"]
+argument_roles = ["NAME", "PACKAGE"]
+minimum_arguments = 1
+
 [[intrinsic_callable]]
 name = "molt_sys_platform"
 identity = "INTRINSIC_SYS_PLATFORM"
@@ -80,37 +121,44 @@ target_property = "OS_NAME"
 [[intrinsic_callable]]
 name = "molt_module_import"
 identity = "INTRINSIC_MODULE_IMPORT"
-runtime_import_protocol = true
+import_behavior = "LEAF"
+argument_roles = ["NAME"]
 
 [[intrinsic_callable]]
 name = "molt_importlib_import_module"
 identity = "INTRINSIC_IMPORTLIB_IMPORT_MODULE"
-runtime_import_protocol = true
+import_behavior = "LEAF"
+argument_roles = ["NAME", "PACKAGE"]
 
 [[intrinsic_callable]]
 name = "molt_importlib_import_optional"
 identity = "INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL"
-runtime_import_protocol = true
+import_behavior = "LEAF"
+argument_roles = ["NAME"]
 
 [[intrinsic_callable]]
 name = "molt_importlib_import_or_fallback"
 identity = "INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK"
-runtime_import_protocol = true
+import_behavior = "FALLBACK"
+argument_roles = ["NAME", "FALLBACK"]
 
 [[intrinsic_callable]]
 name = "molt_importlib_import_required"
 identity = "INTRINSIC_IMPORTLIB_IMPORT_REQUIRED"
-runtime_import_protocol = true
+import_behavior = "LEAF"
+argument_roles = ["NAME"]
 
 [[intrinsic_callable]]
 name = "molt_importlib_import_transaction"
 identity = "INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION"
-runtime_import_protocol = true
+import_behavior = "DUNDER"
+argument_roles = ["NAME", "GLOBALS", "LOCALS", "FROMLIST", "LEVEL"]
 
 [[intrinsic_callable]]
 name = "molt_importlib_find_spec"
 identity = "INTRINSIC_IMPORTLIB_FIND_SPEC"
-runtime_import_protocol = true
+import_behavior = "FINDER"
+argument_roles = ["NAME", "PATH", "TARGET"]
 
 [[intrinsic_callable]]
 name = "molt_require_intrinsic_runtime"

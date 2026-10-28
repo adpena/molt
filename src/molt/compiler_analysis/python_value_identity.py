@@ -11,6 +11,31 @@ import ast
 from molt.compiler_analysis import python_identity_catalog_generated as _catalog
 
 
+SOURCE_CALLABLE_IDENTITIES = (
+    _catalog.ALL_INTRINSIC_CALLABLE_IDENTITIES
+    | _catalog.PUBLIC_RUNTIME_IMPORT_IDENTITIES
+)
+
+
+def possible_runtime_import_call_identities(
+    identities: _catalog.IdentityMask, argument_count: int | None
+) -> _catalog.IdentityMask:
+    """Project canonical callees that can reach the import protocol.
+
+    Intrinsic binding rejects too few arguments before its body executes.
+    Unknown expansions preserve all possibilities. Public Python callables
+    retain their existing conservative admission; their mutable hooks and
+    descriptors have a distinct binding contract.
+    """
+    intrinsic = _catalog.INTRINSIC_RUNTIME_IMPORT_IDENTITIES
+    if argument_count is not None:
+        if argument_count < 0:
+            raise ValueError("call argument count must be nonnegative")
+        masks = _catalog.INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS
+        intrinsic = masks[min(argument_count, len(masks) - 1)]
+    return identities & (_catalog.PUBLIC_RUNTIME_IMPORT_IDENTITIES | intrinsic)
+
+
 def exact_identity(identity: _catalog.PythonIdentity) -> _catalog.IdentityMask:
     return int(identity)
 

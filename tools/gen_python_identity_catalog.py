@@ -36,9 +36,22 @@ class SchemaError(ValueError):
 class IntrinsicCallable:
     name: str
     identity: str
+    minimum_arguments: int
+    parameter_names: tuple[str, ...]
     target_property: str | None = None
-    runtime_import_protocol: bool = False
+    import_behavior: str | None = None
+    argument_roles: tuple[str, ...] = ()
     acquisition: str | None = None
+
+
+@dataclass(frozen=True)
+class ImportCallable:
+    identity: str
+    behavior: str
+    parameter_names: tuple[str, ...]
+    argument_roles: tuple[str, ...]
+    minimum_arguments: int
+    target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +64,9 @@ class Schema:
     writes: tuple[tuple[str, str, tuple[str, ...]], ...]
     target_properties: tuple[tuple[str, str], ...]
     intrinsic_callables: tuple[IntrinsicCallable, ...]
+    import_behaviors: tuple[tuple[str, str], ...]
+    import_argument_roles: tuple[tuple[str, str], ...]
+    import_callables: tuple[ImportCallable, ...]
 
 
 def _bits(raw: object, label: str) -> tuple[tuple[str, int], ...]:
@@ -92,6 +108,33 @@ def _name(raw: object, label: str, *, dotted: bool = False) -> str:
     return raw
 
 
+def _semantic_enum_rows(raw: object, label: str) -> tuple[tuple[str, str], ...]:
+    if not isinstance(raw, dict) or not raw:
+        raise SchemaError(f"{label} must be a nonempty table")
+    rows: list[tuple[str, str]] = []
+    values: set[str] = set()
+    for key, value in raw.items():
+        if not isinstance(key, str) or re.fullmatch(r"[A-Z][A-Z0-9_]*", key) is None:
+            raise SchemaError(f"invalid {label} member {key!r}")
+        checked = _name(value, f"{label} value")
+        if checked in values:
+            raise SchemaError(f"duplicate {label} value {checked!r}")
+        rows.append((key, checked))
+        values.add(checked)
+    return tuple(rows)
+
+
+def _import_argument_roles(
+    raw: object, names: set[str], parameters: tuple[str, ...]
+) -> tuple[str, ...]:
+    if not isinstance(raw, list) or len(raw) != len(parameters):
+        raise SchemaError("import argument roles must match the producer signature")
+    roles = tuple(_reference(value, names, "import argument role") for value in raw)
+    if len(set(roles)) != len(roles) or roles.count("NAME") != 1:
+        raise SchemaError("import argument roles need one name and no duplicates")
+    return roles
+
+
 def load_schema(
     path: Path = SOURCE, *, intrinsic_manifest: Path = INTRINSIC_MANIFEST
 ) -> Schema:
@@ -109,10 +152,13 @@ def load_schema(
         "write",
         "target_property",
         "intrinsic_callable",
+        "import_behavior",
+        "import_argument_role",
+        "import_callable",
     }:
         raise SchemaError("unknown or missing identity-catalog top-level keys")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
-        raise SchemaError("schema_version must be integer 1")
+    if type(data["schema_version"]) is not int or data["schema_version"] != 2:
+        raise SchemaError("schema_version must be integer 2")
     identities = _bits(data["identity_bits"], "identity")
     members = _bits(data["member_bits"], "member")
     identity_names, member_names = set(dict(identities)), set(dict(members))
@@ -212,6 +258,64 @@ def load_schema(
             raise SchemaError(f"duplicate target property value {checked!r}")
         property_values.add(checked)
         target_properties.append((name, checked))
+    import_behaviors = _semantic_enum_rows(data["import_behavior"], "import behavior")
+    import_roles = _semantic_enum_rows(
+        data["import_argument_role"], "import argument role"
+    )
+    behavior_names = set(dict(import_behaviors))
+    role_names = set(dict(import_roles))
+    owner_modules = {identity: name for name, identity in modules}
+    public_targets = {name: identity for name, identity, _guard, _shape in builtins}
+    public_targets.update(
+        (owner_modules[owner] + "." + name, identity)
+        for owner, name, identity, _guard in acquisitions
+    )
+    import_callables: list[ImportCallable] = []
+    import_identities: set[str] = set()
+    import_targets: set[str] = set()
+    for row in _rows(
+        data["import_callable"],
+        "import callable",
+        {
+            "identity",
+            "target",
+            "behavior",
+            "parameter_names",
+            "argument_roles",
+            "minimum_arguments",
+        },
+    ):
+        identity = _reference(
+            row["identity"], identity_names, "import callable identity"
+        )
+        target = row["target"]
+        if not isinstance(target, str) or public_targets.get(target) != identity:
+            raise SchemaError(
+                "public import callable has no matching acquisition producer"
+            )
+        if identity in import_identities or target in import_targets:
+            raise SchemaError("duplicate public import callable")
+        parameters_raw = row["parameter_names"]
+        if not isinstance(parameters_raw, list):
+            raise SchemaError("import parameter names must be an array")
+        parameters = tuple(_name(value, "import parameter") for value in parameters_raw)
+        if len(set(parameters)) != len(parameters):
+            raise SchemaError("duplicate import parameter")
+        minimum = row["minimum_arguments"]
+        if type(minimum) is not int or not 0 <= minimum <= len(parameters):
+            raise SchemaError("invalid minimum import argument count")
+        import_callables.append(
+            ImportCallable(
+                identity,
+                _reference(row["behavior"], behavior_names, "import behavior"),
+                parameters,
+                _import_argument_roles(row["argument_roles"], role_names, parameters),
+                minimum,
+                target,
+            )
+        )
+        import_identities.add(identity)
+        import_targets.add(target)
     producers = {
         entry.name: entry
         for entry in parse_intrinsic_manifest(
@@ -234,7 +338,7 @@ def load_schema(
     for row in rows:
         if not isinstance(row, dict) or set(row) not in (
             {"name", "identity", "target_property"},
-            {"name", "identity", "runtime_import_protocol"},
+            {"name", "identity", "import_behavior", "argument_roles"},
             {"name", "identity", "acquisition"},
         ):
             raise SchemaError("intrinsic callable requires one explicit semantic facet")
@@ -245,9 +349,11 @@ def load_schema(
             if "target_property" in row
             else None
         )
-        runtime_import = "runtime_import_protocol" in row
-        if runtime_import and row["runtime_import_protocol"] is not True:
-            raise SchemaError("runtime_import_protocol must be true")
+        import_behavior = (
+            _reference(row["import_behavior"], behavior_names, "import behavior")
+            if "import_behavior" in row
+            else None
+        )
         acquisition = row.get("acquisition")
         if "acquisition" in row and (
             not isinstance(acquisition, str)
@@ -274,19 +380,50 @@ def load_schema(
             raise SchemaError(
                 "intrinsic acquisition requires its two-argument public producer"
             )
+        argument_roles = (
+            _import_argument_roles(
+                row["argument_roles"], role_names, producer.parameter_names
+            )
+            if import_behavior is not None
+            else ()
+        )
+        if import_behavior is not None:
+            if identity in import_identities:
+                raise SchemaError("duplicate intrinsic import callable")
+            import_callables.append(
+                ImportCallable(
+                    identity,
+                    import_behavior,
+                    producer.parameter_names,
+                    argument_roles,
+                    producer.arity - len(producer.defaults),
+                )
+            )
+            import_identities.add(identity)
         intrinsic_names.add(name)
         intrinsic_identities.add(identity)
         if target_property is not None:
             used_properties.add(target_property)
         intrinsic_callables.append(
             IntrinsicCallable(
-                name, identity, target_property, runtime_import, acquisition
+                name,
+                identity,
+                producer.arity - len(producer.defaults),
+                producer.parameter_names,
+                target_property,
+                import_behavior,
+                argument_roles,
+                acquisition,
             )
         )
     if used_properties != set(properties):
         raise SchemaError(
             f"orphan target properties: {sorted(set(properties) - used_properties)}"
         )
+    used_behaviors = {row.behavior for row in import_callables}
+    used_roles = {role for row in import_callables for role in row.argument_roles}
+    if used_behaviors != behavior_names or used_roles != role_names:
+        raise SchemaError("orphan import behavior or argument role")
     return Schema(
         identities,
         members,
@@ -296,17 +433,21 @@ def load_schema(
         tuple(writes),
         tuple(target_properties),
         tuple(intrinsic_callables),
+        import_behaviors,
+        import_roles,
+        tuple(import_callables),
     )
 
 
 def render_python(schema: Schema) -> str:
     lines = [
         "# @generated by tools/gen_python_identity_catalog.py from\n",
-        "# src/molt/compiler_analysis/python_identity_catalog.toml. DO NOT EDIT.\n",
+        "# src/molt/compiler_analysis/python_identity_catalog.toml and\n",
+        "# runtime/molt-runtime/src/intrinsics/manifest.pyi. DO NOT EDIT.\n",
         '"""Closed compiler-only identities, acquisitions and mutation guards."""\n\n',
         "from __future__ import annotations\n\n",
         "from enum import Enum, IntFlag\nfrom types import MappingProxyType\n",
-        "from typing import Final, Mapping, TypeAlias\n\n\n",
+        "from typing import Final, Mapping, NamedTuple, TypeAlias\n\n\n",
     ]
     for name, rows in (
         ("PythonIdentity", schema.identity_bits),
@@ -320,6 +461,13 @@ def render_python(schema: Schema) -> str:
         f"    {name} = {value!r}\n" for name, value in schema.target_properties
     )
     lines.append("\n\n")
+    for name, rows in (
+        ("PythonImportBehavior", schema.import_behaviors),
+        ("PythonImportArgumentRole", schema.import_argument_roles),
+    ):
+        lines.append(f"class {name}(Enum):\n")
+        lines.extend(f"    {member} = {value!r}\n" for member, value in rows)
+        lines.append("\n\n")
     lines.extend(
         [
             "IdentityMask: TypeAlias = int\nMemberMask: TypeAlias = int\n",
@@ -341,6 +489,57 @@ def render_python(schema: Schema) -> str:
         )
         lines.extend(f"        {key}: {value},\n" for key, value in rows)
         lines.append("    }\n)\n\n")
+
+    lines.extend(
+        [
+            "class PythonImportCallable(NamedTuple):\n",
+            "    behavior: PythonImportBehavior\n",
+            "    parameter_names: tuple[str, ...]\n",
+            "    argument_roles: tuple[PythonImportArgumentRole, ...]\n",
+            "    minimum_arguments: int\n",
+            "    positional_only: bool\n\n\n",
+        ]
+    )
+
+    def import_callable(row: ImportCallable) -> str:
+        roles = (
+            "("
+            + "".join(
+                f"PythonImportArgumentRole.{role}, " for role in row.argument_roles
+            )
+            + ")"
+        )
+        return (
+            f"PythonImportCallable(PythonImportBehavior.{row.behavior}, "
+            f"{row.parameter_names!r}, {roles}, {row.minimum_arguments}, {row.target is None})"
+        )
+
+    mapping(
+        "IMPORT_CALLABLES",
+        "IdentityMask",
+        "PythonImportCallable",
+        [
+            (f"int(PythonIdentity.{row.identity})", import_callable(row))
+            for row in schema.import_callables
+        ],
+    )
+    mapping(
+        "IMPORT_CALLABLES_BY_TARGET",
+        "str",
+        "PythonImportCallable",
+        [
+            (repr(row.target), f"IMPORT_CALLABLES[int(PythonIdentity.{row.identity})]")
+            for row in schema.import_callables
+            if row.target is not None
+        ],
+    )
+    lines.append("PUBLIC_RUNTIME_IMPORT_IDENTITIES: Final[IdentityMask] = (\n")
+    lines.extend(
+        f"    int(PythonIdentity.{row.identity}) |\n"
+        for row in schema.import_callables
+        if row.target is not None
+    )
+    lines.append("    0\n)\n\n")
 
     mapping(
         "INTRINSIC_CALLABLE_IDENTITIES",
@@ -368,9 +567,32 @@ def render_python(schema: Schema) -> str:
     lines.extend(
         f"    int(PythonIdentity.{row.identity}) |\n"
         for row in schema.intrinsic_callables
-        if row.runtime_import_protocol
+        if row.import_behavior is not None
     )
     lines.append("    0\n)\n\n")
+    protocol_rows = tuple(
+        row for row in schema.intrinsic_callables if row.import_behavior is not None
+    )
+    # Runtime callable argument defaults come from the same manifest as its
+    # native/WASM binding. Unknown expansions retain the complete mask; a
+    # concrete argument count can only reject an impossible canonical call.
+    max_required = max((row.minimum_arguments for row in protocol_rows), default=0)
+    lines.append(
+        "INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS: Final[tuple[IdentityMask, ...]] = (\n"
+    )
+    for count in range(max_required + 1):
+        names = [
+            f"int(PythonIdentity.{row.identity})"
+            for row in protocol_rows
+            if row.minimum_arguments <= count
+        ]
+        if not names:
+            lines.append("    0,\n")
+        else:
+            lines.append("    (\n")
+            lines.extend(f"        {name} |\n" for name in names)
+            lines.append("        0\n    ),\n")
+    lines.append(")\n\n")
     for name, rows in (
         ("ALL_INTRINSIC_CALLABLE_IDENTITIES", schema.intrinsic_callables),
         (

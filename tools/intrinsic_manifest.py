@@ -164,7 +164,15 @@ def parse_runtime_cfg(text: str) -> RuntimeCfg:
 
 
 class IntrinsicEntry:
-    __slots__ = ("name", "symbol", "arity", "defaults", "python_name", "cfg")
+    __slots__ = (
+        "name",
+        "symbol",
+        "arity",
+        "defaults",
+        "python_name",
+        "cfg",
+        "parameter_names",
+    )
 
     def __init__(
         self,
@@ -174,7 +182,15 @@ class IntrinsicEntry:
         defaults: tuple[str, ...] = (),
         python_name: str | None = None,
         cfg: RuntimeCfg = ALWAYS_DEFINED,
+        *,
+        parameter_names: tuple[str, ...],
     ) -> None:
+        if (
+            len(parameter_names) != arity
+            or any(not name.isidentifier() for name in parameter_names)
+            or len(set(parameter_names)) != len(parameter_names)
+        ):
+            raise ValueError("intrinsic parameter names must match its fixed arity")
         if python_name is not None and (
             not isinstance(python_name, str)
             or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", python_name) is None
@@ -186,6 +202,7 @@ class IntrinsicEntry:
         self.defaults = defaults
         self.python_name = python_name
         self.cfg = cfg
+        self.parameter_names = parameter_names
 
 
 def _iter_defs(text: str) -> list[tuple[str, dict[str, str]]]:
@@ -336,6 +353,9 @@ def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
             defaults=_parse_intrinsic_defaults(name, params),
             python_name=metadata.get("python-name"),
             cfg=cfg or ALWAYS_DEFINED,
+            parameter_names=tuple(
+                param.split(":", 1)[0].split("=", 1)[0].strip() for param in params
+            ),
         )
         signatures[name] = (tuple(params), match["ret"].strip())
     for entry in entries.values():

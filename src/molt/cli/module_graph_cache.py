@@ -7,6 +7,8 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_binding_facts import (
     PythonElementProtocol,
     PythonFunctionResult,
+    PythonSourceCall,
+    PythonSourceParameters,
     PythonSourceElement,
 )
 
@@ -19,6 +21,7 @@ from dataclasses import asdict
 from molt.compiler_analysis.python_imports import (
     RuntimeCatalogDeferral,
     SourceImportSite,
+    SourceImportCall,
     SourceAllExports,
     SourceDemandPhase,
 )
@@ -41,7 +44,16 @@ from molt.compiler_analysis.python_source_keys import (
     decode_python_source_key,
 )
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
-from molt.compiler_analysis.python_identity_catalog_generated import ALL_INVALID_MEMBERS
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    ALL_INVALID_MEMBERS,
+    IMPORT_CALLABLES,
+    PythonImportBehavior,
+    OTHER_IDENTITY,
+)
+from molt.compiler_analysis.python_value_identity import (
+    SOURCE_CALLABLE_IDENTITIES,
+    possible_runtime_import_call_identities,
+)
 from molt.compiler_analysis.python_namespace_writes import (
     SUMMARY_SCHEMA,
     PythonNamespaceSummary,
@@ -75,6 +87,25 @@ from molt.compiler_analysis.python_imports import (
     StaticImportRequest,
     UnresolvedStaticImportError,
 )
+
+
+def _source_callable_mask(value: Any, *, allow_other: bool = False) -> int:
+    allowed = SOURCE_CALLABLE_IDENTITIES | (OTHER_IDENTITY if allow_other else 0)
+    if type(value) is not int or value < 0 or value & ~allowed:
+        raise ValueError("invalid canonical source callable identities")
+    return value
+
+
+def _source_argument_name(value: Any) -> int | str | None:
+    if value is None or type(value) is str or type(value) is int and value >= 0:
+        return value
+    raise ValueError("invalid source call argument")
+
+
+def _source_parameter_name(value: Any) -> str:
+    if type(value) is not str:
+        raise ValueError("invalid source parameter name")
+    return value
 
 
 def _source_cache_strings(value: Any) -> tuple[str, ...]:
@@ -727,7 +758,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 36
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 38
 
 
 def _import_scan_cache_key(
@@ -988,10 +1019,20 @@ def _read_persisted_import_scan_record(
             _SourceValueDemand(
                 decode_python_source_key(source),
                 phase,
+                argument_count,
             )
-            for source, phase in rows("source_demands", 2)
+            for source, phase, argument_count in rows("source_demands", 3)
         )
-        if any(item.phase not in get_args(SourceDemandPhase) for item in demands):
+        if any(
+            item.phase not in get_args(SourceDemandPhase)
+            or item.argument_count is not None
+            and (
+                type(item.argument_count) is not int
+                or item.argument_count < 0
+                or item.phase != "call"
+            )
+            for item in demands
+        ):
             return None
         sites = tuple(
             _decode_source_site(item)
@@ -1028,6 +1069,8 @@ def _read_persisted_import_scan_record(
                 "functions",
                 "bases",
                 "completions",
+                "callables",
+                "call_imports",
             },
         )
         values = _SourceValueSummary(
@@ -1065,20 +1108,39 @@ def _read_persisted_import_scan_record(
                 )
             ),
             tuple(
-                (decode_python_source_key(source), _source_cache_origins(origins))
-                for source, origins in _source_cache_rows(raw_values["calls"], 2)
+                PythonSourceCall(
+                    decode_python_source_key(source),
+                    _source_cache_origins(origins),
+                    _source_callable_mask(intrinsic_result, allow_other=True),
+                    tuple(
+                        (
+                            _source_argument_name(name),
+                            _source_cache_origins(direct),
+                            _source_cache_origins(exposed),
+                        )
+                        for name, direct, exposed in _source_cache_rows(arguments, 3)
+                    ),
+                )
+                for source, origins, intrinsic_result, arguments in _source_cache_rows(
+                    raw_values["calls"], 4
+                )
             ),
             tuple(
-                (
+                PythonSourceParameters(
                     decode_python_source_key(owner),
                     tuple(
                         decode_python_source_key(arg)
                         for arg in _source_cache_list(positional)
                     ),
                     _decode_optional_source_key(vararg),
+                    tuple(
+                        (_source_parameter_name(name), decode_python_source_key(arg))
+                        for name, arg in _source_cache_rows(keywords, 2)
+                    ),
+                    _decode_optional_source_key(kwarg),
                 )
-                for owner, positional, vararg in _source_cache_rows(
-                    raw_values["parameters"], 3
+                for owner, positional, vararg, keywords, kwarg in _source_cache_rows(
+                    raw_values["parameters"], 5
                 )
             ),
             tuple(
@@ -1102,6 +1164,22 @@ def _read_persisted_import_scan_record(
                 (decode_python_source_key(owner), _source_cache_origins(origins))
                 for owner, origins in _source_cache_rows(raw_values["completions"], 2)
             ),
+            tuple(
+                (decode_python_source_key(owner), _source_callable_mask(identities))
+                for owner, identities in _source_cache_rows(raw_values["callables"], 2)
+            ),
+            tuple(
+                SourceImportCall(
+                    _source_callable_mask(identities),
+                    _decode_source_site(site),
+                    _source_cache_strings(modules),
+                    _source_cache_origins(origins),
+                    _source_cache_origins(exposed),
+                )
+                for identities, site, modules, origins, exposed in _source_cache_rows(
+                    raw_values["call_imports"], 5
+                )
+            ),
         )
         if any(owner[-1] != "ClassDef" for owner, _ in values.bases) or len(
             {owner for owner, _ in values.bases}
@@ -1116,13 +1194,38 @@ def _read_persisted_import_scan_record(
             and vararg[-1] != "arg"
             or len(set((*positional, *((vararg,) if vararg is not None else ()))))
             != len(positional) + (vararg is not None)
-            for owner, positional, vararg in values.parameters
-        ) or len({owner for owner, _, _ in values.parameters}) != len(
-            values.parameters
-        ):
+            or any(arg[-1] != "arg" for _, arg in keywords)
+            or kwarg is not None
+            and kwarg[-1] != "arg"
+            or len({name for name, _ in keywords}) != len(keywords)
+            for owner, positional, vararg, keywords, kwarg in values.parameters
+        ) or len({item.owner for item in values.parameters}) != len(values.parameters):
             return None
         if (
-            any(source[-1] != "Call" for source, _ in values.calls)
+            any(item.owner[-1] != "Call" for item in values.calls)
+            or len({item.owner for item in values.calls}) != len(values.calls)
+            or len({owner for owner, _ in values.callables}) != len(values.callables)
+            or any(not identities for _, identities in values.callables)
+            or any(
+                transfer.site.source[-1] != "Call"
+                or not transfer.identities
+                or possible_runtime_import_call_identities(transfer.identities, None)
+                != transfer.identities
+                or not transfer.returned_sources <= transfer.returned_exposed
+                or any(
+                    (
+                        callable.behavior is PythonImportBehavior.FINDER
+                        and transfer.returned_modules
+                    )
+                    or (
+                        callable.behavior is not PythonImportBehavior.FALLBACK
+                        and transfer.returned_exposed
+                    )
+                    for identity, callable in IMPORT_CALLABLES.items()
+                    if identity & transfer.identities
+                )
+                for transfer in values.call_imports
+            )
             or any(
                 source[-1] not in {"Await", "YieldFrom"}
                 for source, _ in values.completions
@@ -1243,6 +1346,7 @@ def _write_persisted_import_scan(
             [
                 item.source,
                 item.phase,
+                item.argument_count,
             ]
             for item in scan.source_demands
         ],
@@ -1272,8 +1376,27 @@ def _write_persisted_import_scan(
                 for item in scan.source_values.elements
             ],
             "calls": [
-                (source, sorted(origins))
-                for source, origins in scan.source_values.calls
+                (
+                    item.owner,
+                    sorted(item.callees),
+                    item.intrinsic_result,
+                    [
+                        (name, sorted(direct), sorted(exposed))
+                        for name, direct, exposed in item.arguments
+                    ],
+                )
+                for item in scan.source_values.calls
+            ],
+            "callables": scan.source_values.callables,
+            "call_imports": [
+                (
+                    transfer.identities,
+                    _encode_source_site(transfer.site),
+                    transfer.returned_modules,
+                    sorted(transfer.returned_sources),
+                    sorted(transfer.returned_exposed),
+                )
+                for transfer in scan.source_values.call_imports
             ],
             "parameters": scan.source_values.parameters,
             "functions": [

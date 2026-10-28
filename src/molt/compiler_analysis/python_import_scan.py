@@ -21,6 +21,8 @@ from molt.compiler_analysis.python_lexical_scope import (
 from molt.compiler_analysis.python_imports import (
     is_compiler_intrinsics_module,
     SourceImportSite,
+    SourceImportCall,
+    static_import_call_result_modules,
     SourceAllExports,
 )
 from typing import TYPE_CHECKING
@@ -59,8 +61,14 @@ from molt.compiler_analysis.python_namespace_writes import (
     python_package_name,
 )
 from molt.compiler_analysis.python_identity_catalog_generated import (
-    INTRINSIC_RUNTIME_IMPORT_IDENTITIES,
+    IMPORT_CALLABLES,
+    PythonImportBehavior,
+    PythonImportCallable,
     PythonIdentity,
+)
+from molt.compiler_analysis.python_value_identity import (
+    SOURCE_CALLABLE_IDENTITIES,
+    possible_runtime_import_call_identities,
 )
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
@@ -72,6 +80,7 @@ from molt.compiler_analysis.python_imports import (
     StaticImportRequest,
     StaticImportPlan,
     bind_static_import_call_arguments,
+    import_call_fallback_operand,
     dunder_globals_state_from_expression,
     metadata_value_from_expression,
     module_import_context_with_metadata_proof,
@@ -270,7 +279,7 @@ def _sealed_import_modules(
 @dataclass(frozen=True, slots=True)
 class _StaticImportCallPayload:
     call: ast.Call
-    target: str
+    callable: PythonImportCallable
     name: ast.expr | None
     package: ast.expr | None = None
     globals: ast.expr | None = None
@@ -720,9 +729,20 @@ def _collect_imports(
                 binding_index.source_function_results,
                 binding_index.source_bases,
                 binding_index.source_completions,
+                binding_index.source_callables,
             )
         )
 
+    conditional_import_sites: list[SourceImportCall] = []
+    import_callable_groups: dict[PythonImportCallable, int] = {}
+    for identity, callable in IMPORT_CALLABLES.items():
+        import_callable_groups[callable] = (
+            import_callable_groups.get(callable, 0) | identity
+        )
+    conditional_call_cache: dict[
+        tuple[PythonSourceKey, PythonImportCallable], tuple[SourceImportCall, ...]
+    ] = {}
+    source_call_keys = {call.owner for call in binding_index.source_calls}
     projecting_helper = False
 
     def record_site(node, request, contexts=()):
@@ -758,6 +778,7 @@ def _collect_imports(
         phase: SourceDemandPhase,
         *,
         contents: bool = False,
+        argument_count: int | None = None,
     ) -> None:
         if _source_demands is not None:
             origins = (
@@ -772,6 +793,7 @@ def _collect_imports(
                 _SourceValueDemand(
                     origin,
                     "expose" if phase == "escape" else phase,
+                    argument_count,
                 )
                 for origin in sorted(origins)
             )
@@ -783,13 +805,14 @@ def _collect_imports(
                     _SourceValueDemand(
                         ref.source,
                         "expose" if phase == "escape" else "escape",
+                        None,
                     )
                     for ref in refs
                     if ref.source[-1] == "Module" and ref.phase == "escape"
                 )
             if result.exposes_module_globals:
                 _source_demands.append(
-                    _SourceValueDemand(python_node_source_key(tree), "expose")
+                    _SourceValueDemand(python_node_source_key(tree), "expose", None)
                 )
 
     def _import_contexts(
@@ -808,34 +831,27 @@ def _collect_imports(
         ast_digest_admission, source_owner, source_arguments
     )
 
-    def _static_call_target(
+    def _static_import_callable(
         call: ast.Call, *, allow_possible: bool = False
-    ) -> str | None:
+    ) -> PythonImportCallable | None:
         fact = binding_index.call_fact(call)
         if fact is not None:
             exact_kind = fact.exact_import_call_kind()
             if exact_kind == "dunder_import":
-                return "builtins.__import__"
+                return IMPORT_CALLABLES[PythonIdentity.BUILTINS_IMPORT]
             if exact_kind == "import_module":
-                return "importlib.import_module"
+                return IMPORT_CALLABLES[PythonIdentity.IMPORTLIB_IMPORT_MODULE]
             if fact.callee_is(PythonIdentity.IMPORTLIB_FIND_SPEC):
-                return "importlib.util.find_spec"
+                return IMPORT_CALLABLES[PythonIdentity.IMPORTLIB_FIND_SPEC]
             if allow_possible:
                 possible_kinds = fact.possible_import_call_kinds()
                 if "dunder_import" in possible_kinds:
-                    return "builtins.__import__"
+                    return IMPORT_CALLABLES[PythonIdentity.BUILTINS_IMPORT]
                 if "import_module" in possible_kinds:
-                    return "importlib.import_module"
+                    return IMPORT_CALLABLES[PythonIdentity.IMPORTLIB_IMPORT_MODULE]
                 if fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC):
-                    return "importlib.util.find_spec"
+                    return IMPORT_CALLABLES[PythonIdentity.IMPORTLIB_FIND_SPEC]
         return None
-
-    def _is_static_import_target(target: str | None) -> bool:
-        return target in {
-            "builtins.__import__",
-            "importlib.import_module",
-            "importlib.util.find_spec",
-        }
 
     def _bound_static_value(
         node: ast.expr,
@@ -987,16 +1003,11 @@ def _collect_imports(
 
     def _static_import_call_payload(
         call: ast.Call,
-        target: str,
+        callable: PythonImportCallable,
         *,
         local_expr_bindings: Mapping[str, ast.expr] | None = None,
     ) -> _StaticImportCallPayload | None:
-        operation_kind = (
-            "import_module"
-            if target in {"importlib.import_module", "importlib.util.find_spec"}
-            else "dunder_import"
-        )
-        arguments = bind_static_import_call_arguments(call, operation_kind)
+        arguments = bind_static_import_call_arguments(call, callable)
         if arguments is None:
             return None
 
@@ -1006,23 +1017,159 @@ def _collect_imports(
             return _resolve_local_expr_binding(expr, dict(local_expr_bindings))
 
         name_expr = resolve_local(arguments.name)
-        if target in {"importlib.import_module", "importlib.util.find_spec"}:
+        if callable.behavior is not PythonImportBehavior.DUNDER:
             return _StaticImportCallPayload(
                 call=call,
-                target=target,
+                callable=callable,
                 name=name_expr,
                 package=resolve_local(arguments.package),
                 requires_runtime_binding=arguments.requires_runtime_binding,
             )
         return _StaticImportCallPayload(
             call=call,
-            target=target,
+            callable=callable,
             name=name_expr,
             globals=resolve_local(arguments.globals),
             fromlist=resolve_local(arguments.fromlist),
             level=resolve_local(arguments.level),
             requires_runtime_binding=arguments.requires_runtime_binding,
         )
+
+    def _source_import_call_transfers(
+        node: ast.Call,
+        callable: PythonImportCallable,
+    ) -> tuple[SourceImportCall, ...]:
+        """Bind once, plan admission and project returned values independently."""
+        key = (python_node_source_key(node), callable)
+        if key in conditional_call_cache:
+            return conditional_call_cache[key]
+        arguments = bind_static_import_call_arguments(node, callable)
+        if arguments is None:
+            conditional_call_cache[key] = ()
+            return ()
+        if arguments.name is not None:
+            name_result = _bound_expression_result(arguments.name, source_bindings)
+            if name_result.value_known and type(name_result.value) is not str:
+                conditional_call_cache[key] = ()
+                return ()
+        behavior = callable.behavior
+        fallback = (
+            binding_index.expression_result(arguments.fallback)
+            if arguments.fallback is not None
+            and behavior is PythonImportBehavior.FALLBACK
+            else None
+        )
+        returned_sources = (
+            fallback.source_origins if fallback is not None else frozenset()
+        )
+        returned_exposed = (
+            fallback.exposed_source_origins if fallback is not None else frozenset()
+        )
+        identities = import_callable_groups[callable]
+
+        def resolve(expression: ast.expr) -> str | None:
+            return _resolve_string_constant(expression, source_bindings, set())
+
+        name = resolve(arguments.name) if arguments.name is not None else None
+        transfers: list[SourceImportCall] = []
+        if name is None:
+            opaque = StaticImportPlan((), (), True, True)
+            transfers.append(
+                SourceImportCall(
+                    identities,
+                    SourceImportSite(key[0], None, opaque, opaque),
+                    (),
+                    returned_sources,
+                    returned_exposed,
+                )
+            )
+        else:
+            fromlist = (
+                _resolve_string_sequence(arguments.fromlist, source_bindings, set())
+                if arguments.fromlist is not None
+                else []
+            )
+            fromlist_truth = (
+                _bound_expression_result(arguments.fromlist, source_bindings).truth
+                if arguments.fromlist is not None
+                else False
+            )
+            level, invalid = (
+                static_import_level_from_result(
+                    _bound_expression_result(arguments.level, source_bindings)
+                )
+                if arguments.level is not None
+                else (0, False)
+            )
+            if level is not None or invalid:
+                for context in _import_contexts(node, source_discovery=True):
+                    request = (
+                        StaticImportRequest(
+                            "dunder_import",
+                            name,
+                            level=level or 0,
+                            level_is_invalid=invalid,
+                            fromlist=tuple(fromlist or ()),
+                            globals_were_supplied=arguments.globals is not None,
+                        )
+                        if behavior is PythonImportBehavior.DUNDER
+                        else StaticImportRequest.import_module(name, None)
+                    )
+                    for captured in source_import_requests_from_expressions(
+                        request,
+                        context,
+                        package_expression=arguments.package,
+                        globals_expression=arguments.globals,
+                        source_contexts_for_read=lambda expression: _import_contexts(
+                            expression, source_discovery=True
+                        ),
+                        resolve_string=resolve,
+                        fact_result=lambda expression: _bound_expression_result(
+                            expression, source_bindings
+                        ),
+                        expression_fact=binding_index.expression_fact,
+                        call_fact=binding_index.call_fact(node),
+                    ):
+                        plan = plan_static_import_request(captured, (context,))
+                        owner_plan = plan_static_import_request(
+                            replace(captured, fromlist=()), (context,)
+                        )
+                        transfers.append(
+                            SourceImportCall(
+                                identities,
+                                SourceImportSite(key[0], captured, plan, owner_plan),
+                                static_import_call_result_modules(
+                                    behavior, captured, owner_plan, fromlist_truth
+                                ),
+                                returned_sources,
+                                returned_exposed,
+                            )
+                        )
+        result = tuple(dict.fromkeys(transfers))
+        conditional_call_cache[key] = result
+        return result
+
+    def _conditional_import_call_plans(node: ast.Call) -> None:
+        """Publish source-only transfers; candidate activation owns graph edges."""
+        if (
+            _source_values is None
+            or python_node_source_key(node) not in source_call_keys
+        ):
+            return
+        call = binding_index.call_fact(node)
+        closed_identities = (
+            call.callee_identities
+            if call is not None
+            and call.callee_identities
+            and not call.callee_identities & ~SOURCE_CALLABLE_IDENTITIES
+            else None
+        )
+        for callable, identities in import_callable_groups.items():
+            if closed_identities is not None and not closed_identities & identities:
+                continue
+            conditional_import_sites.extend(
+                _source_import_call_transfers(node, callable)
+            )
 
     def _resolve_static_import_call(
         payload: _StaticImportCallPayload,
@@ -1145,10 +1292,9 @@ def _collect_imports(
         def resolve_string(expression: ast.expr) -> str | None:
             return _resolve_string_constant(expression, bindings, set())
 
-        import_module_call = payload.target in {
-            "importlib.import_module",
-            "importlib.util.find_spec",
-        }
+        import_module_call = (
+            payload.callable.behavior is not PythonImportBehavior.DUNDER
+        )
         fromlist = (
             _resolve_string_sequence(payload.fromlist, bindings, set())
             if payload.fromlist is not None
@@ -1374,13 +1520,12 @@ def _collect_imports(
                 continue
             if not import_flow.states_for(node):
                 continue
-            target = _static_call_target(node, allow_possible=True)
-            if not _is_static_import_target(target):
+            callable = _static_import_callable(node, allow_possible=True)
+            if callable is None:
                 continue
-            assert target is not None
             payload = _static_import_call_payload(
                 node,
-                target,
+                callable,
                 local_expr_bindings=local_expr_bindings,
             )
             if payload is None:
@@ -1545,26 +1690,31 @@ def _collect_imports(
         _record_helper_call_imports(node)
         # Graph custody includes every admitted import alternative after a
         # callback; exact callee identity is a lowering/specialization condition.
-        target = _static_call_target(node, allow_possible=True)
-        if not _is_static_import_target(target):
+        callable = _static_import_callable(node, allow_possible=True)
+        if callable is None:
             return
-        assert target is not None
-        payload = _static_import_call_payload(node, target)
+        payload = _static_import_call_payload(node, callable)
         if payload is None:
             record_site(node, None)
         else:
             modules = _resolve_static_import_call(payload, source_bindings)
             imports.extend(modules)
-            if modules and _source_bindings is not None:
-                # The returned module is one of those the call imports; uses of
-                # the result select from them, as uses of an import alias do.
-                _source_bindings.append(
-                    _SourceImportBinding(
-                        python_node_source_key(node),
-                        tuple(dict.fromkeys(modules)),
-                        None,
+            if _source_bindings is not None:
+                returned = tuple(
+                    dict.fromkeys(
+                        module
+                        for transfer in _source_import_call_transfers(node, callable)
+                        for module in transfer.returned_modules
                     )
                 )
+                if returned:
+                    _source_bindings.append(
+                        _SourceImportBinding(
+                            python_node_source_key(node),
+                            returned,
+                            None,
+                        )
+                    )
 
     def publishes_binding(node: ast.AST, name: str) -> bool:
         fact = (
@@ -1592,11 +1742,12 @@ def _collect_imports(
         iteration = binding_index.iteration_fact(node)
         if iteration is not None and _source_demands is not None:
             _source_demands.extend(
-                _SourceValueDemand(ref.source, ref.phase)
+                _SourceValueDemand(ref.source, ref.phase, None)
                 for ref in sorted(
                     iteration.deferred_execution,
                     key=lambda ref: (ref.source, ref.phase),
                 )
+                if ref.phase != "call"
             )
 
     def _visit(
@@ -1614,10 +1765,14 @@ def _collect_imports(
         )
         if fact is not None and _source_demands is not None:
             _source_demands.extend(
-                _SourceValueDemand(ref.source, ref.phase)
+                _SourceValueDemand(ref.source, ref.phase, None)
                 for ref in sorted(
                     fact.deferred_execution, key=lambda ref: (ref.source, ref.phase)
                 )
+                # Aggregate call effects have lost their argument count. The
+                # explicit call visitor below owns the invocation demand;
+                # non-call protocol and lifetime demands remain here.
+                if ref.phase != "call"
             )
         if isinstance(node, (ast.For, ast.AsyncFor)):
             demand_iteration(node)
@@ -1625,18 +1780,41 @@ def _collect_imports(
             for generator in node.generators:
                 demand_iteration(generator)
         if isinstance(node, ast.Call):
+            _conditional_import_call_plans(node)
+            argument_count = (
+                None
+                if any(isinstance(arg, ast.Starred) for arg in node.args)
+                or any(keyword.arg is None for keyword in node.keywords)
+                else len(node.args) + len(node.keywords)
+            )
             if (
                 _runtime_import_protocol is not None
                 and not uses_runtime_import_protocol
             ):
                 call = binding_index.call_fact(node)
                 uses_runtime_import_protocol = call is not None and bool(
-                    call.possible_import_call_kinds()
-                    or call.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC)
-                    or call.callee_identities & INTRINSIC_RUNTIME_IMPORT_IDENTITIES
+                    possible_runtime_import_call_identities(
+                        call.callee_identities, argument_count
+                    )
                 )
-            demand(binding_index.expression_result(node.func), "call")
+            demand(
+                binding_index.expression_result(node.func),
+                "call",
+                argument_count=argument_count,
+            )
+            # Reach the call-value transfer even when its result is discarded:
+            # argument-to-formal publications belong to the executed call.
+            demand(binding_index.expression_result(node), "read")
+            call = binding_index.call_fact(node)
+            fallback_operand = import_call_fallback_operand(
+                node,
+                IMPORT_CALLABLES.get(call.callee_identities)
+                if call is not None
+                else None,
+            )
             for value in (*node.args, *(keyword.value for keyword in node.keywords)):
+                if value is fallback_operand:
+                    continue
                 demand(
                     binding_index.expression_result(
                         value.value if isinstance(value, ast.Starred) else value
@@ -1666,12 +1844,14 @@ def _collect_imports(
                         contents=True,
                     )
             for decorator in node.decorator_list:
-                demand(binding_index.expression_result(decorator), "call")
+                demand(
+                    binding_index.expression_result(decorator), "call", argument_count=1
+                )
             if (
                 node.decorator_list or publishes_binding(node, node.name)
             ) and _source_demands is not None:
                 _source_demands.append(
-                    _SourceValueDemand(python_node_source_key(node), "expose")
+                    _SourceValueDemand(python_node_source_key(node), "expose", None)
                 )
         elif isinstance(node, ast.Assign) and any(
             publishes_target(node, target) for target in node.targets
@@ -1732,6 +1912,7 @@ def _collect_imports(
                         "expose"
                         if publishes_binding(node, alias.asname or alias.name)
                         else "read",
+                        None,
                     )
                     for alias in node.names
                 )
@@ -1741,7 +1922,7 @@ def _collect_imports(
             needs_typing = True
             if publishes_target(node, node.name) and _source_demands is not None:
                 _source_demands.append(
-                    _SourceValueDemand(python_node_source_key(node), "expose")
+                    _SourceValueDemand(python_node_source_key(node), "expose", None)
                 )
         elif template_str_cls is not None and isinstance(node, template_str_cls):
             needs_string_templatelib = True
@@ -1771,6 +1952,12 @@ def _collect_imports(
         else:
             assert isinstance(region.node, ast.expr)
             demand(binding_index.expression_result(region.node), region.phase)
+    if _source_values is not None:
+        if not _source_values:
+            _source_values.append(_SourceValueSummary())
+        _source_values[0] = _source_values[0]._replace(
+            call_imports=tuple(dict.fromkeys(conditional_import_sites))
+        )
     if _runtime_import_protocol is not None:
         _runtime_import_protocol.append(uses_runtime_import_protocol)
     if needs_typing:

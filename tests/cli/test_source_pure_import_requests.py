@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.compiler_analysis.python_binding_facts import PythonSourceCall
 from molt.cli import module_graph_cache as records
 from molt.cli import module_graph_discovery as discovery
 from molt.cli import module_import_scanner as scanner
@@ -534,7 +535,9 @@ def test_source_demand_activation_join_emits_only_new_incidences(tmp_path, monke
     tree = ast.parse(source.read_text(encoding="utf-8"))
     value = ("entry", python_node_source_key(tree.body[-1].value))
     engine = PythonSourceDemands(
-        admit_imports=lambda *_: None, queue_body=lambda *_: None
+        require_runtime_import_protocol=lambda _module: None,
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
     )
     engine.accept("entry", scan, full=True)
     engine.demand(value, "read")
@@ -572,7 +575,9 @@ def test_unchanged_body_receipts_do_not_revisit_existing_values(
     from molt.compiler_analysis.python_source_keys import python_node_source_key
 
     engine = PythonSourceDemands(
-        admit_imports=lambda *_: None, queue_body=lambda *_: None
+        require_runtime_import_protocol=lambda _module: None,
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
     )
     empty = _ImportScanRequests((), ())
     engine.accept("module", empty)
@@ -621,7 +626,9 @@ def test_changed_source_facts_wake_only_actual_dependencies():
         python_node_source_key(tree.body[3].names[0]),
     )
     engine = PythonSourceDemands(
-        admit_imports=lambda *_: None, queue_body=lambda *_: None
+        require_runtime_import_protocol=lambda _module: None,
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
     )
     member = ("module", SourceMember(SourceCandidate("module", None), "selected"))
     returned = ("module", SourceReturn(("module", first)))
@@ -645,7 +652,7 @@ def test_changed_source_facts_wake_only_actual_dependencies():
                     frozenset(),
                 ),
             ),
-            calls=((call, frozenset({first})),),
+            calls=(PythonSourceCall(call, frozenset({first}), 0, ()),),
             functions=(
                 PythonFunctionResult(
                     first,
@@ -737,7 +744,9 @@ def test_late_descriptor_namespace_publication_wakes_only_descriptor_hooks(publi
     field = python_node_source_key(tree.body[2].value)
     bodies = []
     engine = PythonSourceDemands(
-        admit_imports=lambda *_: None, queue_body=lambda *job: bodies.append(job)
+        require_runtime_import_protocol=lambda _module: None,
+        admit_imports=lambda *_: None,
+        queue_body=lambda *job: bodies.append(job),
     )
     engine.accept(
         "module", _ImportScanRequests((), (), source_values=projection.source_values)
@@ -822,7 +831,7 @@ def test_native_globals_key_protocol_matches_actual_cpython_imports(
     assert (leaf in imports) is bool(observed)
 
 
-def closed_source_imports(paths):
+def closed_source_imports(paths, *, protocol_modules=None):
     """Run the real source worklist with a premise derived from fixture sources."""
     from molt.compiler_analysis.python_imports import _ImportScanRequests
     from molt.compiler_analysis.python_namespace_graph import (
@@ -846,7 +855,10 @@ def closed_source_imports(paths):
     )
     imports = set()
     bodies = []
+    if protocol_modules is None:
+        protocol_modules = set()
     engine = PythonSourceDemands(
+        require_runtime_import_protocol=protocol_modules.add,
         admit_imports=lambda _module, names: imports.update(names),
         queue_body=lambda *job: bodies.append(job),
     )
@@ -1111,7 +1123,9 @@ def test_unrelated_member_class_is_exposure_not_an_inherited_base(
         )
         bodies = []
         engine = PythonSourceDemands(
-            admit_imports=lambda *_: None, queue_body=lambda *job: bodies.append(job)
+            require_runtime_import_protocol=lambda _module: None,
+            admit_imports=lambda *_: None,
+            queue_body=lambda *job: bodies.append(job),
         )
         # Isolate member selection from conservative descriptor callbacks at
         # class creation: those are separate source availability demands.
@@ -1950,7 +1964,9 @@ def test_typed_element_value_matches_actual_cpython_protocol_selection(
         if item.protocol == protocol
     )
     engine = PythonSourceDemands(
-        admit_imports=lambda *_: None, queue_body=lambda *_: None
+        require_runtime_import_protocol=lambda _module: None,
+        admit_imports=lambda *_: None,
+        queue_body=lambda *_: None,
     )
     for module, projection in projections.items():
         engine.accept(
@@ -2416,3 +2432,473 @@ def test_module_export_fact_does_not_outlive_source_generation(tmp_path):
     assert before.scan.source_requests.all_exports.names == ("before",)
     assert after.scan.source_requests.all_exports.names == tuple(namespace["__all__"])
     assert not after.cache_hit
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (
+            "def factory(): return take('molt_module_import')\nloader = factory()\n",
+            False,
+        ),
+        ("def factory(): return take('molt_module_import')\nfactory()('leaf')\n", True),
+        (
+            "def replacement(name): return take('molt_module_import')\n"
+            "acquire = take if flag else replacement\n"
+            "acquire('molt_sys_platform')('leaf')\n",
+            True,
+        ),
+        ("def factory(): return take\nfactory()('molt_module_import')('leaf')\n", True),
+        (
+            "def factory(): return [take('molt_module_import')]\n"
+            "alias = factory()\nalias[0]('leaf')\n",
+            True,
+        ),
+        (
+            "def factory(reader=take('molt_module_import')): return reader\n"
+            "factory()('leaf')\n",
+            True,
+        ),
+        (
+            "def identity(reader): return reader\n"
+            "identity(take('molt_module_import'))('leaf')\n",
+            True,
+        ),
+        (
+            "def identity(*, reader): return reader\n"
+            "identity(reader=take('molt_module_import'))('leaf')\n",
+            True,
+        ),
+        (
+            "def factory(): yield take('molt_module_import')\n"
+            "for loader in factory(): loader('leaf')\n",
+            True,
+        ),
+        ("def factory(): yield take('molt_module_import')\nvalue = factory()\n", False),
+        (
+            "async def factory(): return take('molt_module_import')\n"
+            "async def main():\n    loader = await factory()\n    loader('leaf')\n"
+            "run(main())\n",
+            True,
+        ),
+        ("take(selector)('leaf')\n", True),
+        ("take(*values)('leaf')\n", True),
+        ("take(**keywords)('leaf')\n", True),
+        ("take('molt_sys_platform')()\n", False),
+    ],
+)
+def test_canonical_callable_results_follow_actual_consumers(tmp_path, body, expected):
+    import asyncio
+
+    observed = []
+
+    def importer(name):
+        observed.append(name)
+
+    def acquire(name, namespace=None):
+        return importer if name == "molt_module_import" else lambda: "linux"
+
+    # This independent runtime oracle distinguishes obtaining a callable from
+    # invoking it; the source solver must preserve the same execution boundary.
+    exec(
+        compile(body, "<canonical-callable-oracle>", "exec"),
+        {
+            "take": acquire,
+            "flag": False,
+            "selector": "molt_module_import",
+            "values": ("molt_module_import",),
+            "keywords": {"name": "molt_module_import"},
+            "run": asyncio.run,
+        },
+    )
+    assert bool(observed) is expected
+    entry = write(
+        tmp_path / "entry.py",
+        "from _intrinsics import require_intrinsic as take\n" + body,
+    )
+    protocol = set()
+    closed_source_imports({"entry": entry}, protocol_modules=protocol)
+    assert ("entry" in protocol) is expected
+
+
+@pytest.mark.parametrize("factory", [False, True])
+def test_zero_argument_importer_cannot_execute_import_protocol(tmp_path, factory):
+    body = (
+        "def factory(): return take('molt_module_import')\nfactory()()\n"
+        if factory
+        else "take('molt_module_import')()\n"
+    )
+    observed = []
+
+    def importer(name):
+        observed.append(name)
+
+    with pytest.raises(TypeError):
+        exec(body, {"take": lambda name: importer})
+    assert observed == []
+    entry = write(
+        tmp_path / "entry.py",
+        "from _intrinsics import require_intrinsic as take\n" + body,
+    )
+    protocol = set()
+    closed_source_imports({"entry": entry}, protocol_modules=protocol)
+    assert protocol == set()
+
+
+@pytest.mark.parametrize("invoke", [False, True])
+def test_returned_public_importer_admits_actual_user_leaf(tmp_path, invoke):
+    leaf = write(tmp_path / "_molt_returned_import_leaf.py", "sentinel = 42\n")
+    entry = write(
+        tmp_path / "entry.py",
+        "import importlib\ndef factory(): return importlib.import_module\n"
+        "loader = factory()\n"
+        + ("loader('_molt_returned_import_leaf')\n" if invoke else ""),
+    )
+    for _ in range(2):
+        graph = discovery._discover_module_graph(
+            entry, [tmp_path], [tmp_path], tmp_path / "stdlib", tmp_path, set()
+        )
+        assert (graph.graph.get("_molt_returned_import_leaf") == leaf) is invoke
+
+
+def test_canonical_callable_cache_preserves_strict_new_rows(tmp_path):
+    entry = write(
+        tmp_path / "entry.py",
+        "from _intrinsics import require_intrinsic as take\n"
+        "def factory(): return take\n"
+        "factory()('molt_module_import')('leaf')\n",
+    )
+    cold = load(entry)
+    warm = load(entry)
+    assert warm.cache_hit
+    assert warm.scan.source_values == cold.scan.source_values
+    assert cold.scan.source_values.callables
+    assert cold.scan.source_values.call_imports
+    key = records._import_scan_cache_key(
+        entry, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    payload["source_values"]["calls"][0] = payload["source_values"]["calls"][0][:2]
+    replace_source_record("import-scan", key, payload)
+    assert not load(entry).cache_hit
+
+
+def test_late_canonical_provider_activation_retains_application_consumer():
+    from molt.compiler_analysis.python_imports import _ImportScanRequests
+    from molt.compiler_analysis.python_source_demands import PythonSourceDemands
+    from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+    sources = {
+        "entry": "from _intrinsics import factory\nfactory()('leaf')\n",
+        "_intrinsics": (
+            "from _intrinsics import require_intrinsic as take\n"
+            "def factory(): return take('molt_module_import')\n"
+        ),
+    }
+    protocols = set()
+    imports = set()
+    engine = PythonSourceDemands(
+        admit_imports=lambda _module, names: imports.update(names),
+        queue_body=lambda *_: None,
+        require_runtime_import_protocol=protocols.add,
+    )
+    for module in ("entry", "_intrinsics"):
+        projection = _source_import_scan._collect_imports_for_graph(
+            ast.parse(sources[module]),
+            module,
+            namespace_premise=PythonNamespacePremise((), 0),
+        )
+        engine.accept(
+            module,
+            _ImportScanRequests((), ())._replace(**projection._asdict()),
+            full=True,
+        )
+        engine.drain()
+        if module == "entry":
+            assert protocols == set()
+    assert "entry" in protocols
+    assert "leaf" in imports
+
+
+@pytest.mark.parametrize("route", ["direct", "deferred", "intrinsic"])
+@pytest.mark.parametrize("fromlist,selected", [((), "root"), (("child",), "leaf")])
+def test_import_result_selects_root_or_base_without_exposing_fromlist_child(
+    tmp_path, monkeypatch, route, fromlist, selected
+):
+    package = "_molt_import_result_package"
+    markers = {
+        kind: f"_molt_import_result_{kind}" for kind in ("root", "leaf", "child")
+    }
+    paths = {
+        package: write(
+            tmp_path / package / "__init__.py",
+            f"def chosen(): import {markers['root']}\n",
+        ),
+        f"{package}.sub": write(
+            tmp_path / package / "sub" / "__init__.py",
+            f"def chosen(): import {markers['leaf']}\n",
+        ),
+        f"{package}.sub.child": write(
+            tmp_path / package / "sub" / "child.py",
+            f"def chosen(): import {markers['child']}\n",
+        ),
+    }
+    paths.update({name: write(tmp_path / f"{name}.py") for name in markers.values()})
+    body = (
+        "from _intrinsics import require_intrinsic as take\n"
+        "loader = take('molt_importlib_import_transaction')\n"
+        f"result = loader('{package}.sub', None, None, {fromlist!r}, 0)\nresult.chosen()\n"
+        if route == "intrinsic"
+        else (
+            "def factory(): return __import__\nloader = factory()\n"
+            if route == "deferred"
+            else "loader = __import__\n"
+        )
+        + f"result = loader('{package}.sub', fromlist={fromlist!r})\nresult.chosen()\n"
+    )
+    paths["entry"] = write(tmp_path / "entry.py", body)
+    with monkeypatch.context() as runtime:
+        runtime.syspath_prepend(str(tmp_path))
+        namespace = {"take": lambda name: __import__}
+        try:
+            exec(body.split("\n", 1)[1] if route == "intrinsic" else body, namespace)
+            assert namespace["result"].__name__ == (
+                package if selected == "root" else f"{package}.sub"
+            )
+            assert {name for name in markers.values() if name in sys.modules} == {
+                markers[selected]
+            }
+        finally:
+            for name in (*paths, *markers.values()):
+                sys.modules.pop(name, None)
+    admitted = closed_source_imports(paths)
+    assert admitted.intersection(markers.values()) == {markers[selected]}
+
+
+@pytest.mark.parametrize("route", ["direct", "deferred", "intrinsic"])
+@pytest.mark.parametrize(
+    "name,level,fromlist,imported,returned",
+    [
+        ("", 1, (), "branch", "branch"),
+        ("child", 1, (), "branch.child", "branch.child"),
+        ("child.deep", 1, (), "branch.child.deep", "branch.child"),
+        ("child.deep", 1, ("chosen",), "branch.child.deep", "branch.child.deep"),
+        ("child.deep", 2, (), "child.deep", "child"),
+    ],
+)
+def test_relative_import_result_retains_the_resolved_package_prefix(
+    tmp_path, monkeypatch, route, name, level, fromlist, imported, returned
+):
+    package = "_molt_relative_result_package"
+    suffixes = (
+        "",
+        "branch",
+        "branch.child",
+        "branch.child.deep",
+        "child",
+        "child.deep",
+    )
+    modules = {
+        suffix: package + (f".{suffix}" if suffix else "") for suffix in suffixes
+    }
+    markers = {
+        suffix: f"_molt_relative_result_{suffix.replace('.', '_') or 'root'}"
+        for suffix in suffixes
+    }
+    paths = {
+        module: write(
+            tmp_path.joinpath(*module.split("."), "__init__.py"),
+            f"def chosen(): import {markers[suffix]}\n",
+        )
+        for suffix, module in modules.items()
+    }
+    paths.update(
+        {marker: write(tmp_path / f"{marker}.py") for marker in markers.values()}
+    )
+    prefix = (
+        "from _intrinsics import require_intrinsic as take\n"
+        "loader = take('molt_importlib_import_transaction')\n"
+        if route == "intrinsic"
+        else (
+            "def factory(): return __import__\nloader = factory()\n"
+            if route == "deferred"
+            else "loader = __import__\n"
+        )
+    )
+    body = prefix + (
+        f"result = loader({name!r}, {{'__package__': '{package}.branch'}}, "
+        f"None, {fromlist!r}, {level})\nresult.chosen()\n"
+    )
+    paths["entry"] = write(tmp_path / "entry.py", body)
+    with monkeypatch.context() as runtime:
+        runtime.syspath_prepend(str(tmp_path))
+        namespace = {"take": lambda intrinsic: __import__}
+        try:
+            exec(body.split("\n", 1)[1] if route == "intrinsic" else body, namespace)
+            assert namespace["result"].__name__ == modules[returned]
+            assert modules[imported] in sys.modules
+            assert {marker for marker in markers.values() if marker in sys.modules} == {
+                markers[returned]
+            }
+        finally:
+            for module in (*modules.values(), *markers.values()):
+                sys.modules.pop(module, None)
+    admitted = closed_source_imports(paths)
+    assert modules[imported] in admitted
+    assert admitted.intersection(markers.values()) == {markers[returned]}
+
+
+@pytest.mark.parametrize("intrinsic", [False, True])
+def test_finder_result_does_not_publish_the_leaf_module_namespace(
+    tmp_path, monkeypatch, intrinsic
+):
+    import importlib.util
+
+    package = "_molt_finder_result_package"
+    marker = "_molt_finder_result_callback"
+    paths = {
+        package: write(tmp_path / package / "__init__.py"),
+        f"{package}.leaf": write(
+            tmp_path / package / "leaf.py", f"def chosen(): import {marker}\n"
+        ),
+        marker: write(tmp_path / f"{marker}.py"),
+    }
+    source = (
+        "from _intrinsics import require_intrinsic as take\n"
+        "def factory(): return take('molt_importlib_find_spec')\n"
+        f"result = factory()('{package}.leaf', None, None)\n"
+        if intrinsic
+        else "import importlib.util\ndef factory(): return importlib.util.find_spec\n"
+        f"result = factory()('{package}.leaf')\n"
+    ) + "result.chosen()\n"
+    paths["entry"] = write(tmp_path / "entry.py", source)
+    with monkeypatch.context() as runtime:
+        runtime.syspath_prepend(str(tmp_path))
+        try:
+            spec = importlib.util.find_spec(f"{package}.leaf")
+            assert spec is not None
+            with pytest.raises(AttributeError):
+                spec.chosen()
+            assert marker not in sys.modules
+        finally:
+            sys.modules.pop(package, None)
+            sys.modules.pop(f"{package}.leaf", None)
+    assert marker not in closed_source_imports(paths)
+
+
+@pytest.mark.parametrize("invoke", [False, True])
+def test_import_fallback_result_preserves_the_supplied_callable(
+    tmp_path, monkeypatch, invoke
+):
+    marker = "_molt_import_fallback_callable"
+    body = (
+        f"def fallback(): import {marker}\n"
+        "loader = take('molt_importlib_import_or_fallback')\n"
+        "result = loader('_molt_missing_import_for_fallback', fallback)\n"
+        + ("result()\n" if invoke else "")
+    )
+    entry = write(
+        tmp_path / "entry.py",
+        "from _intrinsics import require_intrinsic as take\n" + body,
+    )
+    marker_path = write(tmp_path / f"{marker}.py")
+    # A missing import returns exactly the supplied object, not a module-shaped
+    # proxy. The worklist consumes that object's own existing source origins.
+    import importlib
+
+    def fallback_import(module_name, fallback):
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            return fallback
+
+    namespace = {"take": lambda name: fallback_import}
+    with monkeypatch.context() as runtime:
+        runtime.syspath_prepend(str(tmp_path))
+        try:
+            exec(body, namespace)
+            assert namespace["result"] is namespace["fallback"]
+            assert (marker in sys.modules) is invoke
+        finally:
+            sys.modules.pop(marker, None)
+    assert (
+        marker in closed_source_imports({"entry": entry, marker: marker_path})
+    ) is invoke
+
+
+@pytest.mark.parametrize(
+    "intrinsic,arguments",
+    [
+        ("molt_module_import", "'{module}'"),
+        ("molt_importlib_import_module", "'{module}', None"),
+        ("molt_importlib_import_optional", "'{module}'"),
+        ("molt_importlib_import_required", "'{module}'"),
+        ("molt_importlib_import_or_fallback", "'{module}', None"),
+    ],
+)
+def test_native_leaf_importers_return_requested_leaf_with_positional_abi(
+    tmp_path, monkeypatch, intrinsic, arguments
+):
+    import importlib
+
+    package = "_molt_native_leaf_package"
+    root_marker, leaf_marker = "_molt_native_root_marker", "_molt_native_leaf_marker"
+    paths = {
+        package: write(
+            tmp_path / package / "__init__.py", f"def chosen(): import {root_marker}\n"
+        ),
+        f"{package}.leaf": write(
+            tmp_path / package / "leaf.py", f"def chosen(): import {leaf_marker}\n"
+        ),
+        root_marker: write(tmp_path / f"{root_marker}.py"),
+        leaf_marker: write(tmp_path / f"{leaf_marker}.py"),
+    }
+    body = (
+        "from _intrinsics import require_intrinsic as take\n"
+        f"loader = take({intrinsic!r})\n"
+        f"result = loader({arguments.format(module=f'{package}.leaf')})\n"
+        "result.chosen()\n"
+    )
+    paths["entry"] = write(tmp_path / "entry.py", body)
+    with monkeypatch.context() as runtime:
+        runtime.syspath_prepend(str(tmp_path))
+        try:
+            leaf = importlib.import_module(f"{package}.leaf")
+            leaf.chosen()
+            assert leaf.__name__ == f"{package}.leaf"
+            assert leaf_marker in sys.modules and root_marker not in sys.modules
+        finally:
+            for name in paths:
+                sys.modules.pop(name, None)
+    assert closed_source_imports(paths).intersection({root_marker, leaf_marker}) == {
+        leaf_marker
+    }
+
+
+@pytest.mark.parametrize("defect", ["retired-row", "finder-module", "finder-fallback"])
+def test_conditional_import_cache_rejects_incoherent_return_projections(
+    tmp_path, defect
+):
+    entry = write(
+        tmp_path / "entry.py",
+        "from _intrinsics import require_intrinsic as take\n"
+        "take('molt_importlib_find_spec')('leaf', None, None)\n",
+    )
+    cold = load(entry)
+    assert load(entry).cache_hit
+    key = records._import_scan_cache_key(
+        entry, module_name="entry", is_package=False, import_scan_mode="full"
+    )
+    payload = source_records("import-scan")[key]
+    rows = payload["source_values"]["call_imports"]
+    assert rows
+    if defect == "retired-row":
+        rows[0] = rows[0][:2]
+    elif defect == "finder-module":
+        rows[0][2] = ["leaf"]
+    else:
+        rows[0][4] = [rows[0][1]["source"]]
+    replace_source_record("import-scan", key, payload)
+    repaired = load(entry)
+    assert not repaired.cache_hit
+    assert repaired.scan.source_values == cold.scan.source_values

@@ -16,7 +16,7 @@ module's source location in an emitted artifact.
   ``/rustc/<commit>/library/...`` for std in the same way, and Go's
   ``-trimpath`` records ``runtime/proc.go``. The same compiler sources
   therefore give the same objects from every checkout.
-- A generated module (a namespace stub or the generated importer) reports its
+- A generated module (such as a namespace stub) reports its
   path below ``GENERATED_ROOT``.
 
 The design and its references are in

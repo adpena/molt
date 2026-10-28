@@ -359,7 +359,7 @@ initialization remains raw. Growing views preserve original source keys and reus
 one parse rather than generating replacement Python files.
 
 One explicit `_ModuleGraphDiscovery` continues through entry, package/core, native
-support, runtime owner and generated namespace/importer admission. Each source
+support, runtime owner and generated namespace admission. Each source
 retains its own roots and admission policy. Writer deltas revisit affected prior
 projections; logical receiver incidences survive until a later generated package
 is admitted. Closure publication applies only changed source rows. Frozen graphs
@@ -375,8 +375,48 @@ micro program) and `tests/test_io_private_module_surface.py` check it. Its opera
 module/package identity, scan mode, and target; it retains no AST or source.
 Preparation and native materialization use the same runtime closure finalizer.
 New roots, promoted modes, or native imports participate in closure convergence
-before the final policy, finite source-backed catalog, and generated importer are
+before the final policy, finite source-backed catalog, and module registry are
 published.
+
+Canonical callable provenance follows the same source-value activation worklist
+as source-defined functions. A callable's acquisition, return or storage records
+availability; an invocation demands its execution protocol. Returns, yielded
+values, awaited results, containers, arguments and imported aliases preserve that
+distinction. Positive callable identities belong to source-keyed value facts;
+unknown alternatives remain unclassified and do not establish a constant value.
+Selector binding is computed once by binding analysis and transported with the
+source call, including when a factory returns the acquisition function itself.
+
+Runtime import admission consumes the actual invocation's argument extent.
+Intrinsic minimum argument counts are generated from the runtime manifest and
+its concrete defaults, shared with native and WASM callable binding. A canonical
+call with too few arguments raises before entering the import protocol. Starred
+or keyword expansions retain conservative admission. Public Python import hooks
+retain their existing conservative binding policy. Callback, evaluation and
+operand-retirement effects remain independent of this body-admission decision.
+
+One closed catalog distinguishes leaf imports, `__import__` transactions,
+finder results and import-or-fallback results. Admitted source modules and
+returned values have separate projections: a finder returns a spec, an absolute
+`__import__` with false fromlist selects the root, and a relative call retains
+the resolved package prefix through the first requested component. Empty or
+undotted relative names return the resolved base. A true fromlist selects the
+base rather than its children, following
+[CPython 3.12.15's import return selection](https://github.com/python/cpython/blob/v3.12.15/Python/import.c#L2700-L2745).
+A supplied fallback retains its source provenance until an actual consumer uses
+it. Native parameter names come from the intrinsic manifest to identify positional roles; raw intrinsic handles reject keywords.
+Public Python import callables retain their own declared keyword signatures.
+
+The worklist joins only newly discovered candidate/demand incidences, including
+late module publication. The consuming module owns an invocation demand, so a
+callable returned by an implementation module cannot lose its application-side
+requirement through implementation-owner exclusions. Cached scan rows retain
+source facts; graph activation updates the existing scan authority. Changed
+record shapes reject old cache rows instead of accepting partial projections.
+This follows [MLIR's forward dataflow model](https://mlir.llvm.org/docs/Tutorials/DataFlowAnalysis/):
+definitions produce facts, uses consume them, and monotone joins wake dependents.
+The compiler adds bounded identity-mask operations and source-value edges; it
+adds no guest runtime path, source reread or additional analysis pass.
 
 Runtime custody remains a separate permission boundary: only verified owner
 sources may use it, every owner scan must be full-depth, and native-only artifacts
