@@ -781,6 +781,24 @@ pub(crate) fn index_c_int_from_obj(
     })
 }
 
+/// CPython's `Py_off_t` argument converter (Modules/posixmodule.c), after
+/// canonical __index__ dispatch: `PyLong_AsLong` where C long is 64 bits, and
+/// `PyLong_AsLongLong` (HAVE_LARGEFILE_SUPPORT) on Windows and 32-bit targets.
+pub(crate) fn index_off_t_from_obj(py: &PyToken<'_>, obj_bits: u64) -> Option<i64> {
+    #[cfg(any(windows, target_pointer_width = "32"))]
+    const OVERFLOW: &str = "int too big to convert";
+    #[cfg(not(any(windows, target_pointer_width = "32")))]
+    const OVERFLOW: &str = "Python int too large to convert to C long";
+    let value = if let Some(value) = index_i64_integral_bits(obj_bits) {
+        Some(value)
+    } else {
+        let name = class_name_for_error(type_of_bits(py, obj_bits));
+        let err = format!("'{name}' object cannot be interpreted as an integer");
+        index_bigint_from_obj(py, obj_bits, &err)?.to_i64()
+    };
+    value.or_else(|| raise_exception::<Option<i64>>(py, "OverflowError", OVERFLOW))
+}
+
 /// Index-sized conversion with CPython's no-error overflow policy. Slice/search
 /// bounds and byte membership share __index__ admission and target-width clipping.
 pub(crate) fn index_ssize_clamped_from_obj(
