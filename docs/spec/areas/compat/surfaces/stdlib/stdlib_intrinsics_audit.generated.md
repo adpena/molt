@@ -18,9 +18,9 @@
 ## Progress Summary (Generated)
 - Total audited modules: `949`
 - `intrinsic-backed`: `38`
-- `intrinsic-partial`: `161`
+- `intrinsic-partial`: `162`
 - `intrinsic-support`: `27`
-- `python-compiled`: `344`
+- `python-compiled`: `343`
 - `stub`: `379`
 - `policy-gate`: `0`
 
@@ -115,6 +115,7 @@
 - `_frozen_importlib`
 - `_frozen_importlib_external`
 - `_functools`
+- `_imp`
 - `_intrinsics`
 - `_io`
 - `_locale`
@@ -315,7 +316,6 @@
 - `_elementtree`
 - `_hashlib`
 - `_hmac`
-- `_imp`
 - `_lsprof`
 - `_markupbase`
 - `_md5`
