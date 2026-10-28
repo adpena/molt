@@ -218,6 +218,10 @@ CACHE_MAINTENANCE_INTERVAL_SECONDS = 300.0
 # interactive build loop must not pay it every few minutes.
 CLI_CACHE_RETENTION_INTERVAL_SECONDS = 24 * 3600.0
 SHARED_SOURCE_RECORDS_DIRECTORY = "toolchain_source_records"
+TOOLCHAIN_SYMBOL_FACTS_CACHE_DIRECTORY = "toolchain_symbol_facts"
+TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION = 6
+RUNTIME_WASM_CACHE_DIRECTORY = "runtime-wasm-generations-v2"
+RUNTIME_WASM_CACHE_RETIREMENT_SCOPE = "runtime-wasm-family"
 WASM_LINK_CACHE_DIRECTORY = "wasm_link"
 WASM_LINK_CACHE_FAMILIES = frozenset(
     {"runtime_tree_shake", "split_app_optimize", "final_link"}
@@ -225,6 +229,25 @@ WASM_LINK_CACHE_FAMILIES = frozenset(
 NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY = "native-stdlib-objects-v1"
 NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY = "native-stdlib-archives-v1"
 SHARED_STDLIB_CACHE_DIRECTORY = "shared-stdlib"
+
+
+def toolchain_symbol_facts_cache_entry(
+    cache_root: Path, version: int, digest: str
+) -> Path:
+    """One immutable fact record; older known schemas are cleanup-only."""
+    if (
+        type(version) is not int
+        or not 1 <= version <= TOOLCHAIN_SYMBOL_FACTS_CACHE_SCHEMA_VERSION
+    ):
+        raise ValueError("symbol facts cache schema must be a known positive version")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError("symbol facts cache key must be a lowercase SHA-256")
+    return (
+        cache_root
+        / TOOLCHAIN_SYMBOL_FACTS_CACHE_DIRECTORY
+        / f"v{version}"
+        / f"{digest}.json"
+    )
 
 
 def backend_cache_artifact_filename(source_key: str, suffix: str) -> str:
@@ -277,6 +300,21 @@ def toolchain_fact_store_path(cache_root: Path) -> Path:
 def shared_cache_lock_path(cache_root: Path, name: str) -> Path:
     """Project the shared producer/reader/evictor lock in durable control state."""
     return cache_control_root(cache_root) / f"{name}.lock"
+
+
+def runtime_wasm_cache_entry(cache_root: Path, key: str) -> tuple[Path, Path]:
+    """One optional runtime family and its persistent publication/use stripe.
+
+    The v2 lifetime covers staging through publication and reader renewal.
+    Earlier in-directory locks do not participate in this removable-entry
+    protocol; current producers never select that namespace.
+    """
+    if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
+        raise ValueError("runtime WASM cache key must be a lowercase SHA-256")
+    return (
+        cache_root / RUNTIME_WASM_CACHE_DIRECTORY / key,
+        shared_cache_lock_path(cache_root, f"runtime-wasm-family.{key[:2]}"),
+    )
 
 
 def wasm_link_cache_paths(

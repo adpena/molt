@@ -152,9 +152,7 @@ def test_disabled_pair_build_still_admits_cached_generation(
 
     from molt.cli import runtime_wasm_cache as pair_cache
 
-    monkeypatch.setattr(
-        pair_cache, "_shared_runtime_wasm_cache_root", lambda: tmp_path / "cache"
-    )
+    monkeypatch.setattr(pair_cache, "_default_molt_cache", lambda: tmp_path / "cache")
     if cache != "missing":
         source_shared, source_reloc = (
             tmp_path / "shared-source",

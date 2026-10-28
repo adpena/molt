@@ -21,11 +21,13 @@ bind_repository_imports(__file__)
 
 from molt.cli.atomic_io import _atomic_copy_file  # noqa: E402
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
-from molt.cli.runtime_wasm_cache import (  # noqa: E402
-    _shared_runtime_wasm_cache_root,
+from molt.default_paths import (  # noqa: E402
+    RUNTIME_WASM_CACHE_DIRECTORY,
+    _default_molt_cache,
 )
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
     SourceRuntimeWasmGeneration,
+    _runtime_wasm_store,
     hydrate_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_identities,
@@ -40,15 +42,17 @@ from molt.cli.runtime_wasm_validation import (  # noqa: E402
 def _read_cached_generation(
     manifest: Path,
 ) -> SourceRuntimeWasmGeneration:
-    payload = json.loads(manifest.read_text(encoding="utf-8"))
-    shared_identity, reloc_identity = runtime_wasm_generation_identities(payload)
-    generation = read_runtime_wasm_generation(
-        manifest,
-        expected_shared_identity=shared_identity,
-        expected_reloc_identity=reloc_identity,
-    )
-    if generation is None:
-        raise ValueError(f"runtime generation is invalid: {manifest}")
+    with _runtime_wasm_store(manifest.parent) as store:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        shared_identity, reloc_identity = runtime_wasm_generation_identities(payload)
+        generation = read_runtime_wasm_generation(
+            manifest,
+            expected_shared_identity=shared_identity,
+            expected_reloc_identity=reloc_identity,
+        )
+        if generation is None:
+            raise ValueError(f"runtime generation is invalid: {manifest}")
+        store.use(manifest.name, generation.shared.name, generation.reloc.name)
     return generation
 
 
@@ -161,7 +165,7 @@ def main() -> int:
     if args.samples < 3:
         raise SystemExit("at least three samples are required")
 
-    cache_root = _shared_runtime_wasm_cache_root()
+    cache_root = _default_molt_cache() / RUNTIME_WASM_CACHE_DIRECTORY
     candidates = []
     for manifest in cache_root.glob("*/molt_runtime.generation.json"):
         try:

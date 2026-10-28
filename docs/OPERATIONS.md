@@ -561,6 +561,14 @@ Reclaim through the existing owners:
   a broad filesystem deletion. Reconcile and retire obsolete producers with
   their storage and lifetime consumers; protection is not an indefinite
   compatibility lane. Keep one current protocol and resolve live ownership.
+  Completed `toolchain_symbol_facts/vN/<digest>.json` records use that same
+  budget and identity-fenced recency; unknown schemas and stages are excluded.
+  Shared `runtime-wasm-generations-v2/<family>` entries use persistent external
+  stripes for publication, admission, binding and eviction. The family directory
+  records successful ledger renewal; immutable members are never touched for
+  recency. Even a zero budget preserves the existing 24-hour reader grace.
+  Selected target/runtime installation stores keep their own lifetime. See
+  [the storage policy](design/foundation/56_dx_buildspeed_tooling.md#28-one-product-store-per-host-hf-390).
 - `tools/linux_vm.py` owns VM definitions, idle-work checks, service startup
   and host-file release. Lima's explicit `LIMA_HOME` owns disk placement.
   Follow [the storage relocation protocol](design/linux_vm_apparatus.md#storage-placement-and-capacity)

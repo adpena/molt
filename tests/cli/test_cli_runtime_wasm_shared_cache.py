@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import time
+from contextlib import contextmanager
 
 from molt.process_environment import ProcessEnvironment
 
@@ -29,10 +31,200 @@ def _identity(kind: str, pair_seed: str = "pair") -> RuntimeBuildIdentity:
 def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cache,
-        "_shared_runtime_wasm_cache_root",
+        "_default_molt_cache",
         lambda: tmp_path / "cache",
     )
     diagnostics._reset_runtime_wasm_cache_diagnostics()
+
+
+def _retention_pair(tmp_path: Path, pair_seed: str = "pair"):
+    shared, reloc = tmp_path / "molt_runtime.wasm", tmp_path / "molt_runtime_reloc.wasm"
+    shared.write_bytes(b"retention-shared")
+    reloc.write_bytes(b"retention-reloc")
+    identities = _identity("shared", pair_seed), _identity("reloc", pair_seed)
+    assert (
+        cache.publish_runtime_wasm_pair_to_shared_cache(
+            shared=shared,
+            reloc=reloc,
+            shared_identity=identities[0],
+            reloc_identity=identities[1],
+            cargo_environment=runtime_cargo_environment_inputs(),
+        )
+        is None
+    )
+    manifest = cache._cached_pair_paths(identities[0])[2]
+    generation = cache.read_runtime_wasm_generation(
+        manifest,
+        expected_shared_identity=identities[0],
+        expected_reloc_identity=identities[1],
+    )
+    assert generation is not None
+    return generation, identities
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_shared_family_budget_preserves_reader_grace_and_member_identity(
+    tmp_path, dry_run
+):
+    from molt import cache_eviction
+
+    generation, _ = _retention_pair(tmp_path)
+    before = [path.stat() for path in (generation.shared, generation.reloc)]
+    result = cache_eviction._prune(
+        tmp_path / "cache", max_bytes=0, max_age_days=0, dry_run=dry_run
+    )
+    assert result["entries_busy"] == 1 and result["entries_removed"] == 0
+    for path, observed in zip(
+        (generation.shared, generation.reloc), before, strict=True
+    ):
+        assert path.read_bytes().startswith(b"retention-")
+        assert path.stat() == observed
+
+
+def test_shared_family_expires_without_another_publication_and_keeps_lock_inode(
+    tmp_path,
+):
+    from molt import cache_eviction
+    from molt.cli import runtime_wasm_generation as generations
+    from molt.default_paths import runtime_wasm_cache_entry
+
+    generation, identities = _retention_pair(tmp_path)
+    target = generations.publish_runtime_wasm_generation(
+        tmp_path / "target" / "molt_runtime.wasm",
+        tmp_path / "target" / "molt_runtime_reloc.wasm",
+        shared_identity=identities[0],
+        reloc_identity=identities[1],
+        cargo_environment=runtime_cargo_environment_inputs(),
+        source_shared=generation.shared,
+        source_reloc=generation.reloc,
+    )
+    _, lock = runtime_wasm_cache_entry(tmp_path / "cache", identities[0].family_digest)
+    before = lock.stat()
+    old = time.time() - 2 * 86400
+    os.utime(generation.manifest.parent, (old, old))
+    result = cache_eviction._prune(
+        tmp_path / "cache", max_bytes=0, max_age_days=0, dry_run=False
+    )
+    assert result["entries_removed"] == 1
+    assert not generation.manifest.parent.exists()
+    assert os.path.samestat(before, lock.stat())
+    assert (
+        cache.admit_runtime_wasm_pair_from_shared_cache(
+            shared_identity=identities[0],
+            reloc_identity=identities[1],
+            environment=ProcessEnvironment(os.environ),
+        )
+        is None
+    )
+    assert not generation.manifest.parent.exists()
+    target.verify_members(hash_content=True)
+
+
+def test_family_batch_recovers_retired_scope_once(tmp_path, monkeypatch):
+    from molt import cache_eviction, file_publication
+
+    for seed in ("first", "second"):
+        generation, _ = _retention_pair(tmp_path, seed)
+        old = time.time() - 2 * 86400
+        os.utime(generation.manifest.parent, (old, old))
+    original = file_publication.reclaim_retired_paths
+    scans = []
+
+    def observed(parent, *, retirement_scope):
+        scans.append((parent, retirement_scope))
+        return original(parent, retirement_scope=retirement_scope)
+
+    monkeypatch.setattr(file_publication, "reclaim_retired_paths", observed)
+    monkeypatch.setattr(cache_eviction, "reclaim_retired_paths", observed)
+    result = cache_eviction._prune(
+        tmp_path / "cache", max_bytes=0, max_age_days=0, dry_run=False
+    )
+    assert result["entries_removed"] == 2
+    assert len(scans) == 1
+
+
+@pytest.mark.parametrize("renewal", ["admission", "binding", "hydration"])
+def test_shared_family_renewal_invalidates_stale_eviction_inventory(tmp_path, renewal):
+    from molt import cache_eviction
+    from molt.cli import runtime_wasm_generation as generations
+
+    generation, identities = _retention_pair(tmp_path)
+    binding = generations.bind_runtime_wasm_codegen(generation, None)
+    old = time.time() - 2 * 86400
+    os.utime(generation.manifest.parent, (old, old))
+    (entry,) = cache_eviction._collect_entries(tmp_path / "cache")
+    if renewal == "admission":
+        assert (
+            cache.admit_runtime_wasm_pair_from_shared_cache(
+                shared_identity=identities[0],
+                reloc_identity=identities[1],
+                environment=ProcessEnvironment(os.environ),
+            )
+            is not None
+        )
+    elif renewal == "binding":
+        binding.verify()
+    else:
+        generations.hydrate_runtime_wasm_generation(
+            source_manifest=generation.manifest,
+            source_generation=generation,
+            dest_shared=tmp_path / "hydrated" / "molt_runtime.wasm",
+            dest_reloc=tmp_path / "hydrated" / "molt_runtime_reloc.wasm",
+            expected_shared_identity=identities[0],
+            expected_reloc_identity=identities[1],
+        )
+    assert cache_eviction._remove_entry(entry, False) == "busy"
+    binding.verify()
+
+
+def test_publication_owns_family_before_first_stage(tmp_path, monkeypatch):
+    from molt import cache_eviction
+    from molt.cli import runtime_wasm_generation as generations
+
+    original = generations.staged_file_path
+    outcomes = []
+
+    def interleave(path, **kwargs):
+        if not outcomes:
+            old = time.time() - 2 * 86400
+            os.utime(path.parent, (old, old))
+            outcomes.append(
+                cache_eviction._prune(
+                    tmp_path / "cache", max_bytes=0, max_age_days=0, dry_run=False
+                )
+            )
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(generations, "staged_file_path", interleave)
+    generation, _ = _retention_pair(tmp_path)
+    assert outcomes[0]["entries_busy"] == 1
+    assert outcomes[0]["entries_removed"] == 0
+    generation.verify_members(hash_content=True)
+
+
+def test_binding_cannot_recreate_family_evicted_after_validation(tmp_path, monkeypatch):
+    from molt import cache_eviction
+    from molt.cli import runtime_wasm_generation as generations
+
+    generation, _ = _retention_pair(tmp_path)
+    root = generation.manifest.parent
+    old = time.time() - 2 * 86400
+    os.utime(root, (old, old))
+    original = generations._runtime_wasm_store
+
+    @contextmanager
+    def interleave(path):
+        cache_eviction._prune(
+            tmp_path / "cache", max_bytes=0, max_age_days=0, dry_run=False
+        )
+        assert not root.exists()
+        with original(path) as store:
+            yield store
+
+    monkeypatch.setattr(generations, "_runtime_wasm_store", interleave)
+    with pytest.raises(OSError):
+        generations.bind_runtime_wasm_codegen(generation, None)
+    assert not root.exists()
 
 
 def test_pair_cache_admits_interleaved_families_without_copy_or_publication(
@@ -253,6 +445,11 @@ def test_admitted_cache_generation_retains_custody_across_selection_and_eviction
     # may evict them; binding and final-link admission must then fail closed.
     now += 3 * hour
     publish(b"current")
+    # Existing-binding verification at the previous link was real use and
+    # renewed its window, even though no new codegen binding was constructed.
+    assert all(path.exists() for path in (pinned.shared, pinned.reloc, pinned.manifest))
+    now += 22 * hour
+    publish(b"expired")
     assert not any(
         path.exists() for path in (pinned.shared, pinned.reloc, pinned.manifest)
     )
