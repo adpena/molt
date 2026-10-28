@@ -5433,6 +5433,7 @@ def test_cargo_receipt_cannot_omit_an_actual_rust_tool(tmp_path):
         with pytest.raises(ValueError, match="toolchain closure is incomplete"):
             runner._validated_execution_context(
                 context,
+                supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
                 execution_path=tmp_path / "execution.json",
                 envelope=envelope,
                 run_id="fixture",

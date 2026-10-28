@@ -19,6 +19,7 @@ import os
 import re
 import stat
 import tempfile
+from functools import cache
 from pathlib import Path
 
 from molt.path_custody import host_path_is_within, resolved_host_path_key
@@ -101,6 +102,17 @@ def git_directories(repo_root: Path) -> tuple[Path, Path] | None:
     except (OSError, UnicodeError, RuntimeError) as exc:
         raise ValueError(f"cannot read Git checkout metadata: {dot_git}") from exc
     return git_dir, common
+
+
+@cache
+def checkout_family_state_root(repo_root: Path) -> Path | None:
+    """Existing repository control records, shared by all linked worktrees.
+
+    Git path metadata is immutable for the lifetime of a checkout process.
+    Source distributions without Git metadata have no durable family record.
+    """
+    directories = git_directories(repo_root)
+    return None if directories is None else directories[1] / "molt"
 
 
 def enclosing_checkouts(path: str | Path) -> tuple[Path, ...]:

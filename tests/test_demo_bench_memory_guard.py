@@ -59,7 +59,23 @@ def run_checker(target: Path):
     )
 
 
+def _family_default_root(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Clear ambient artifact preferences; return the family's default root.
+
+    With no explicit selection the harness uses the artifact-root authority's
+    default: the family binding when one exists, else the custody root.
+    """
+    for name in (
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    return str(molt_dx.artifact_root(demo_bench.ROOT, {}))
+
+
 def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    family_root = _family_default_root(monkeypatch)
     calls: list[dict[str, object]] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
@@ -86,9 +102,7 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
     assert call["cwd"] == demo_bench.ROOT
     assert call["capture_output"] is True
     assert call["text"] is True
-    assert call["env"]["MOLT_EXT_ROOT"] == str(
-        molt_dx.canonical_molt_root(demo_bench.ROOT)
-    )
+    assert call["env"]["MOLT_EXT_ROOT"] == family_root
     assert call["env"]["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
             Path(call["env"]["MOLT_EXT_ROOT"]), call["env"], source_root=REPO_ROOT
@@ -111,6 +125,7 @@ def test_demo_bench_base_env_forces_repo_roots_unless_explicit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    family_root = _family_default_root(monkeypatch)
     ambient_root = tmp_path / "ambient"
     explicit_root = tmp_path / "explicit"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient_root))
@@ -118,7 +133,7 @@ def test_demo_bench_base_env_forces_repo_roots_unless_explicit(
 
     env = demo_bench.base_env()
 
-    assert env["MOLT_EXT_ROOT"] == str(molt_dx.canonical_molt_root(demo_bench.ROOT))
+    assert env["MOLT_EXT_ROOT"] == family_root
     assert env["CARGO_TARGET_DIR"] == str(
         molt_dx.cargo_target_dir_for_environment(
             Path(env["MOLT_EXT_ROOT"]), env, source_root=REPO_ROOT
@@ -139,6 +154,7 @@ def test_demo_bench_run_k6_uses_live_tree_guard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    family_root = _family_default_root(monkeypatch)
     guard_calls: list[dict[str, object]] = []
 
     summary_path = tmp_path / "summary.json"
@@ -195,9 +211,7 @@ def test_demo_bench_run_k6_uses_live_tree_guard(
     assert call["env"]["K6_SUMMARY_EXPORT"] == str(summary_path)
     assert call["env"]["K6_SUMMARY_TREND_STATS"] == "med,p(95),p(99),p(99.9)"
     assert call["env"]["K6_LOG_LEVEL"] == "info"
-    assert call["env"]["MOLT_EXT_ROOT"] == str(
-        molt_dx.canonical_molt_root(demo_bench.ROOT)
-    )
+    assert call["env"]["MOLT_EXT_ROOT"] == family_root
     assert call["limits"] is not None
 
 

@@ -573,6 +573,7 @@ def _write_synthetic_guarded_execution(
         toolchains,
         nonce=request["execution_nonce"],
         descendants=request["envelope"]["process_closure"]["descendants"],
+        supervisor_artifact_root=request["supervisor_artifact_root"],
     )
     supervisor_policy = json.loads(
         Path(str(v3["supervisor"]["policy"]["path"])).read_text(encoding="utf-8")
@@ -592,6 +593,7 @@ def _write_synthetic_guarded_execution(
         "toolchain_custody": compact_custody,
         "toolchain_capture": v3["capture"],
         "command_envelope": request["envelope"],
+        "supervisor_artifact_root": request["supervisor_artifact_root"],
         "command_envelope_sha256": hashlib.sha256(
             json.dumps(
                 request["envelope"], sort_keys=True, separators=(",", ":")
@@ -5218,6 +5220,9 @@ def _execute_request(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": cargo_output_layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=Path(str(result)).parent
+                ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "unit-run",
                 "execution_nonce": "a" * 64,
@@ -5277,6 +5282,9 @@ def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
     for path in stale_paths:
         path.write_text("stale", encoding="utf-8")
     request_path, result_path, persisted, first_nonce = runner._write_execution_request(
+        output_layout=cargo_output_layout.CargoOutputLayout.for_envelope(
+            envelope, result_root=(log).parent
+        ),
         row=row,  # type: ignore[arg-type]
         command=command,
         repo_root=tmp_path,
@@ -5294,6 +5302,9 @@ def test_execution_request_nonce_invalidates_stale_result_and_transcripts(
     assert not result_path.with_suffix(".stdout.bin").exists()
     assert not result_path.with_suffix(".stderr.bin").exists()
     _, _, _, second_nonce = runner._write_execution_request(
+        output_layout=cargo_output_layout.CargoOutputLayout.for_envelope(
+            envelope, result_root=(log).parent
+        ),
         row=row,  # type: ignore[arg-type]
         command=command,
         repo_root=tmp_path,
@@ -5316,6 +5327,9 @@ def test_execution_request_rejects_duplicate_json_envelope_keys(tmp_path: Path) 
 
     with pytest.raises(ValueError, match="not exact JSON"):
         runner._write_execution_request(
+            output_layout=cargo_output_layout.CargoOutputLayout.for_envelope(
+                envelope, result_root=(tmp_path / "run.log").parent
+            ),
             row=row,  # type: ignore[arg-type]
             command=command,
             repo_root=tmp_path,
@@ -5541,6 +5555,7 @@ def test_execution_context_rejects_malformed_toolchain_objects(
     with pytest.raises(ValueError, match="toolchain closure is incomplete"):
         runner._validated_execution_context(
             context,
+            supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
             execution_path=tmp_path / "run.execution.json",
             envelope=envelope,
             run_id="malformed-receipt",
@@ -6389,7 +6404,9 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
 
     started = time.perf_counter()
-    execution_path = tmp_path / "minimal-cargo-link-execution.json"
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    execution_path = receipts / "minimal-cargo-link-execution.json"
     rc, record = _execute_request(
         repo,
         execution_path,
@@ -6402,6 +6419,7 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     context = record["receipt_context"]
     runner._validated_execution_context(
         context,
+        supervisor_artifact_root=context.get("supervisor_artifact_root", {}),
         execution_path=execution_path,
         envelope=record["envelope"],
         run_id="unit-run",
@@ -6413,6 +6431,7 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     provision_target = Path(
         context["process_supervisor"]["provision_telemetry"]["build_target_dir"]
     )
+    assert provision_target.parent.parent == artifact_root / "proof-supervisor"
     assert not provision_target.is_relative_to(repo)
     assert "tools/proof_supervisor/target" not in provision_target.as_posix()
     roots = {
@@ -6467,7 +6486,7 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     )
     event = context["process_supervisor"]["event_artifact"]
     custody_cas.verify_file_ref(
-        event["artifact"], expected_root=tmp_path / "custody-cas"
+        event["artifact"], expected_root=execution_path.parent / "custody-cas"
     )
     assert event["bytes"] == event["artifact"]["size_bytes"]
     supervisor_receipt = context["process_supervisor"]["receipt"]
@@ -6583,6 +6602,9 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": cargo_output_layout.CargoOutputLayout.for_envelope(
+                    envelope, result_root=Path(str(result)).parent
+                ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "timeout-unit-run",
                 "execution_nonce": "b" * 64,
@@ -6630,6 +6652,10 @@ def test_guarded_execution_rejects_frozen_file_outside_armed_roots(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": cargo_output_layout.CargoOutputLayout.for_envelope(
+                    command_admission.envelope_for_command(command),
+                    result_root=Path(str(result)).parent,
+                ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "unwatched-frozen-input",
                 "execution_nonce": "d" * 64,
@@ -6775,6 +6801,10 @@ def test_guarded_failure_retains_bounded_exception_notes(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": cargo_output_layout.CargoOutputLayout.for_envelope(
+                    command_admission.envelope_for_command(command),
+                    result_root=Path(str(result)).parent,
+                ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "noted-failure",
                 "execution_nonce": "b" * 64,
@@ -6833,6 +6863,10 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": cargo_output_layout.CargoOutputLayout.for_envelope(
+                    command_admission.envelope_for_command(command),
+                    result_root=Path(str(result)).parent,
+                ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "rust-capture-failure",
                 "execution_nonce": "b" * 64,
@@ -7321,6 +7355,10 @@ def test_guarded_execution_rejects_source_owned_outputs_before_arming(
     request.write_text(
         json.dumps(
             {
+                "supervisor_artifact_root": cargo_output_layout.CargoOutputLayout.for_envelope(
+                    command_admission.envelope_for_command(command),
+                    result_root=Path(str(result)).parent,
+                ).supervisor_artifact_root,
                 "schema": command_admission.EXECUTION_SCHEMA,
                 "run_id": "source-output-unit-run",
                 "execution_nonce": "c" * 64,
