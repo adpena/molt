@@ -47,6 +47,7 @@ from tools.molt_dev_controller import (
 from tools.detached_execution import launch_detached, python_command
 from tools.venv_exec import venv_python
 from molt.path_custody import host_path_is_within
+from molt.custody_layout import landing_sandbox_path
 from molt import process_model
 from molt.file_locks import FileLockTimeout
 from tools.driver_errors import (
@@ -126,10 +127,14 @@ class LandingRequest:
 @dataclass(frozen=True)
 class QueuePaths:
     root: Path
+    sandbox: Path
 
     @classmethod
-    def of(cls, common_dir: Path) -> "QueuePaths":
-        return cls(common_dir / "molt" / "landing-queue")
+    def of(cls, common_dir: Path, *, primary_checkout: Path) -> "QueuePaths":
+        return cls(
+            common_dir / "molt" / "landing-queue",
+            landing_sandbox_path(primary_checkout, common_dir),
+        )
 
     @property
     def requests(self) -> Path:
@@ -150,10 +155,6 @@ class QueuePaths:
     @property
     def runners(self) -> Path:
         return self.root / "runners"
-
-    @property
-    def sandbox(self) -> Path:
-        return self.root.parent / "landing-sandbox"
 
 
 def _now() -> str:
@@ -492,7 +493,10 @@ def queue_paths(repo: Path) -> QueuePaths:
     common_dir = drv._git_common_directory(repo)
     if common_dir is None:
         raise DriverError("cannot resolve the Git common directory for the queue")
-    return QueuePaths.of(common_dir)
+    primary_checkout = drv._main_worktree(drv.Git(repo))
+    if primary_checkout is None:
+        raise DriverError("cannot resolve the primary checkout for the queue sandbox")
+    return QueuePaths.of(common_dir, primary_checkout=primary_checkout)
 
 
 def cmd_land(args: argparse.Namespace) -> int:
@@ -767,8 +771,7 @@ def _sandbox_git(paths, git, upstream: str):
     if not (sandbox / ".git").exists():
         paths.sandbox.parent.mkdir(parents=True, exist_ok=True)
         git._run(["worktree", "add", "--detach", "--quiet", str(sandbox), upstream])
-    listed = git._run(["worktree", "list", "--porcelain", "-z"]).stdout.split("\0")
-    if f"worktree {sandbox.resolve()}" not in listed:
+    if sandbox.resolve() not in git.worktree_paths():
         raise DriverError(f"{sandbox} is not a worktree of this repository")
     return drv.Git(sandbox.resolve())
 

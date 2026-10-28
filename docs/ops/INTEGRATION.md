@@ -571,8 +571,13 @@ process table, decides which runner works.
 The runner always runs main's pinned controller. Each batch takes the
 bisection plan's next group, else the oldest `MAX_BATCH` (8) requests:
 
-1. Materialize the candidate in the queue's own sandbox worktree
-   (`<git-common-dir>/molt/landing-sandbox`). If the first requested tip already
+1. Materialize the candidate in the queue's repository-keyed external worktree
+   (`<external-custody-root>/worktrees/landing-sandbox-<repository-key>`),
+   selected by `molt.custody_layout.landing_sandbox_path`. Source never lives
+   under another checkout, so Cargo cannot inherit a dirty primary checkout's
+   ancestor configuration. Queue requests, results and locks remain under the
+   Git common directory. An existing old sandbox is retained for explicit
+   reader/product custody reconciliation; it is not an alternate source path. If the first requested tip already
    contains captured main, check it out directly and create a dedicated candidate
    commit with the same tree and that tip as its parent. This preserves unchanged
    source files and ignored build products between retries, while citation amendment

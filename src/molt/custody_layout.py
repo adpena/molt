@@ -21,7 +21,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-from molt.path_custody import host_path_is_within
+from molt.path_custody import host_path_is_within, resolved_host_path_key
 
 MAIN_CHECKOUT_DIRNAME = "molt-src"
 WORKTREES_DIRNAME = "worktrees"
@@ -147,6 +147,37 @@ def family_worktrees_root(main_checkout: str | Path) -> Path | None:
     if root.name != MAIN_CHECKOUT_DIRNAME:
         return None
     return root.parent / WORKTREES_DIRNAME
+
+
+def landing_sandbox_path(primary_checkout: str | Path, common_dir: str | Path) -> Path:
+    """One repository's integration source, outside every other checkout.
+
+    Queue control remains in the Git common directory. Its source must not
+    inherit a primary checkout's Cargo configuration through that directory.
+    The common-directory identity keeps unrelated repositories distinct, even
+    when they share an external worktree parent or use separate Git metadata.
+    """
+    primary = Path(primary_checkout).expanduser().resolve()
+    common = Path(common_dir).expanduser().resolve()
+    custody = custody_root(primary)
+    # A plain clone owns repo-local artifacts, but another source worktree
+    # cannot live there. Nested checkouts have already promoted custody beyond
+    # their enclosing source owners.
+    external = custody.parent if custody == primary else custody
+    repository_key = hashlib.sha256(
+        os.fsencode(resolved_host_path_key(common))
+    ).hexdigest()[:16]
+    candidate = external / WORKTREES_DIRNAME / f"landing-sandbox-{repository_key}"
+    selected = candidate.resolve(strict=False)
+    if selected != candidate:
+        raise ValueError(
+            f"landing sandbox source cannot contain symlink or path indirection: {candidate}"
+        )
+    if any(owner != selected for owner in enclosing_checkouts(candidate)):
+        raise ValueError(
+            f"landing sandbox source is inside another source checkout: {candidate}"
+        )
+    return selected
 
 
 def lane_slot_path(worktrees_root: str | Path, index: int) -> Path:

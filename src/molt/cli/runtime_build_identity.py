@@ -10,7 +10,7 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, Iterator, Mapping, Sequence, TypeVar, cast
+from typing import Callable, Iterator, Mapping, Sequence, TypeVar, assert_never, cast
 
 from molt import input_report as _input_report
 from molt.cli.runtime_artifact_selection import RuntimeArtifactSelection
@@ -31,7 +31,12 @@ from molt.cli.runtime_identity_schema import (
     _freeze_json,
 )
 from molt import host_capacity
-from molt.rust_toolchain import rust_flag_spans
+from molt.rust_toolchain import (
+    RustLiteralRemapSource,
+    RustLogicalRemapSource,
+    RustPathRemap,
+    rust_flag_spans,
+)
 from molt.file_publication import metadata_is_link_like
 from molt.toolchain_identity import (
     StableRegularFileChangedError,
@@ -717,29 +722,23 @@ class _RuntimeFlagProjection:
                 result.append("--")
                 result.extend(self.rustflags(value[span.start + 1 :]))
             elif span.option == "--remap-path-prefix":
-                source, separator, destination = (span.value or "").rpartition("=")
-                if not separator:
-                    raise ValueError("Rust --remap-path-prefix requires FROM=TO")
-                # This is textual substitution, not a filesystem resource:
-                # resolving '..', case, quotes or separators would change
-                # rustc's matching semantics. Only replace an exact known
-                # root prefix, retaining the remainder and TO byte-for-byte.
-                if _is_host_absolute(source):
-                    for label, _root, root_text in sorted(
-                        self.roots, key=lambda row: len(row[2]), reverse=True
-                    ):
-                        if source == root_text or source.startswith(root_text + os.sep):
-                            source = "${" + label + "}" + source[len(root_text) :]
-                            break
-                    else:
+                remap = RustPathRemap.parse(span.value or "")
+                projected = remap.project(
+                    tuple((label, text) for label, _root, text in self.roots)
+                )
+                if isinstance(projected, RustLogicalRemapSource):
+                    source = "${" + projected.label + "}" + projected.suffix
+                elif isinstance(projected, RustLiteralRemapSource):
+                    if remap.source_is_absolute:
                         raise ValueError(
-                            f"unknown absolute host path in Rust remap: {source!r}"
+                            f"unknown absolute host path in Rust remap: {remap.source!r}"
                         )
-                else:
                     # A relative spelling such as '${source}' is literal
                     # compiler input, never an already projected root token.
-                    source = "relative:" + source
-                result.append("--remap-path-prefix=" + source + "=" + destination)
+                    source = "relative:" + projected.value
+                else:
+                    assert_never(projected)
+                result.append("--remap-path-prefix=" + source + "=" + remap.destination)
             else:
                 result.extend(
                     self.token(token) for token in value[span.start : span.stop]

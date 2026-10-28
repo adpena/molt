@@ -4632,6 +4632,97 @@ def test_detached_published_source_survives_caller_removal_and_idle_retention(
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("separate_git_dir", [False, True])
+def test_queue_sandbox_excludes_dirty_primary_cargo_configuration(
+    tmp_path, drv, separate_git_dir
+):
+    from molt.rust_toolchain import cargo_configuration_paths
+    from tools import molt_dev_queue as queue
+
+    primary = tmp_path / "molt-src"
+    _init_repo(primary)
+    candidate_config = '[env]\nQUEUE_CONFIGURATION = "candidate"\n'
+    tip = _commit_file(
+        primary, ".cargo/config.toml", candidate_config, "candidate config"
+    )
+    if separate_git_dir:
+        _git(
+            primary, "init", "-q", "--separate-git-dir", str(tmp_path / "git metadata")
+        )
+    common = drv._git_common_directory(primary)
+    assert common is not None
+    primary_config = primary / ".cargo" / "config.toml"
+    primary_config.write_text(
+        '[env]\nQUEUE_CONFIGURATION = "dirty-primary"\n', encoding="utf-8"
+    )
+    paths = queue.queue_paths(primary)
+    assert paths.root == common / "molt" / "landing-queue"
+    assert paths.runner_lock == paths.root / "runner.lock"
+    assert not paths.sandbox.is_relative_to(primary)
+    sandbox = queue._sandbox_git(paths, drv.Git(primary), tip)
+    assert sandbox.repo == paths.sandbox.resolve()
+    assert queue._sandbox_git(paths, drv.Git(primary), tip).repo == sandbox.repo
+    local_config = sandbox.repo / ".cargo" / "config.toml"
+    environment = {"CARGO_HOME": str(tmp_path / "cargo-home")}
+    assert primary_config in cargo_configuration_paths(primary, environment)
+    selected = cargo_configuration_paths(sandbox.repo, environment)
+    assert local_config in selected
+    assert primary_config not in selected, (
+        "dirty primary Cargo config is not a candidate input"
+    )
+    assert local_config.read_text(encoding="utf-8") == candidate_config
+    assert "dirty-primary" in primary_config.read_text(encoding="utf-8")
+    linked = tmp_path / "linked source"
+    _git(primary, "worktree", "add", "--detach", "-q", str(linked), tip)
+    assert queue.queue_paths(linked) == paths
+    assert queue.queue_paths(sandbox.repo) == paths
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "primary Ω with spaces",
+        pytest.param(
+            "primary Ω\nwith newline ",
+            marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filename newline"),
+        ),
+        pytest.param(
+            "primary\rwith\r\ncarriage return ",
+            marks=pytest.mark.skipif(os.name == "nt", reason="POSIX filename CR"),
+        ),
+        pytest.param(
+            os.fsdecode(b"primary-\xff"),
+            marks=pytest.mark.skipif(
+                os.name == "nt" or sys.platform == "darwin",
+                reason="host filesystem requires Unicode path components",
+            ),
+        ),
+    ],
+)
+def test_main_worktree_preserves_opaque_git_path(tmp_path, drv, name):
+    from tools import molt_dev_queue as queue
+
+    primary = tmp_path / name
+    _init_repo(primary)
+    tip = _commit_file(primary, "source.txt", "source\n", "base")
+    linked = tmp_path / "linked"
+    _git(primary, "worktree", "add", "--detach", "-q", str(linked), tip)
+    assert drv._main_worktree(drv.Git(linked)) == primary.resolve()
+    paths = queue.queue_paths(linked)
+    assert paths == queue.queue_paths(primary)
+    assert queue._sandbox_git(paths, drv.Git(linked), tip).repo == paths.sandbox
+
+
+def test_queue_refuses_an_unresolved_primary_checkout(tmp_path, drv, monkeypatch):
+    from tools import molt_dev_queue as queue
+
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, "source.txt", "source\n", "base")
+    monkeypatch.setattr(drv, "_main_worktree", lambda git: None)
+    with pytest.raises(DriverError, match="cannot resolve the primary checkout"):
+        queue.queue_paths(tmp_path)
+
+
 def _counting_policy(work: Path, counter: Path, check: str = "true") -> None:
     """main's gate policy: each run appends one line, then runs `check`."""
     (work / "tools" / "proof_plan.toml").write_text(
@@ -5107,14 +5198,16 @@ def test_land_waits_for_a_real_runner_through_the_pinned_controller(
     # Both checkouts declare the real driver project, but the selected echo
     # policy grants no source-Python environment. Observe persistent selection
     # state after the real child protocol, not a mocked provisioner call count.
-    for checkout in (lane, work / ".git/molt/landing-sandbox"):
+    from tools import molt_dev_queue as queue
+
+    for checkout in (lane, queue.queue_paths(work).sandbox):
         assert selected_development_environment(checkout, os.environ) is None
 
 
 def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeypatch):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     runner = paths.runners / "runner-1"
     runner.mkdir(parents=True)
@@ -5132,7 +5225,7 @@ def test_land_wait_fails_when_its_runner_exits_without_landing(tmp_path, monkeyp
 def test_land_wait_reads_a_pid_that_names_no_process_as_unwritten(tmp_path, recorded):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     older, newest = paths.runners / "runner-1", paths.runners / "runner-2"
     for runner in (older, newest):
@@ -5149,7 +5242,7 @@ def test_land_wait_looks_again_at_a_doubling_interval(tmp_path, monkeypatch):
     from tools import molt_dev_queue as queue
     from tests.process_guard_common import install_module_view
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     waits: list[float] = []
 
@@ -5249,7 +5342,7 @@ def test_land_wait_counts_every_runner_that_may_still_land(tmp_path):
     from molt import process_model
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     # A stale record whose pid names a live process that is not its supervisor.
     stale = paths.runners / "runner-0"
@@ -5302,7 +5395,7 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
     from tools import molt_dev_queue as queue
     from tests.process_guard_common import install_module_view
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     # A real detached supervisor, started by this process as `land` starts it.
     runner = paths.runners / "runner-1"
@@ -5360,7 +5453,7 @@ def test_land_wait_fails_when_its_runner_supervisor_dies_without_rc(
 def test_queue_plan_survives_between_runners_and_drops_closed_requests(tmp_path):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     requests = [
         queue.enqueue(paths, head=f"{index:040x}", worktree=tmp_path, branch=None)
         for index in range(1, 6)
@@ -5401,7 +5494,7 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
 
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     waiting = queue.enqueue(paths, head="f" * 40, worktree=tmp_path, branch=None)
     queue._write_plan(paths, [[waiting.id]])
     paths.results.mkdir()
@@ -5461,7 +5554,7 @@ def test_queue_status_bounds_result_bodies_and_live_inventory(
             glob_calls += 1
             return (ObservedResult(path) for path in entries)
 
-    paths = queue.QueuePaths(ObservedQueuePath(paths.root))
+    paths = queue.QueuePaths(ObservedQueuePath(paths.root), paths.sandbox)
     monkeypatch.setattr(queue, "queue_paths", lambda _repo: paths)
     monkeypatch.setattr(queue.json, "loads", observe_loads)
     args = drv.build_parser().parse_args(
@@ -5512,7 +5605,7 @@ def test_queue_status_preserves_selected_result_parse_errors(
 ):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     paths.results.mkdir(parents=True)
     (paths.results / "newest.json").write_text("not JSON", encoding="utf-8")
     monkeypatch.setattr(queue, "queue_paths", lambda _repo: paths)
@@ -5533,7 +5626,7 @@ def test_queue_status_rejects_noninteger_recent(drv, capsys):
 def test_queue_retires_old_runner_logs_and_results_only(tmp_path):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     now = 50_000_000.0
     for index in range(queue.RUNNER_LOGS_KEPT + 3):
         runner = paths.runners / f"runner-{index:03d}"
@@ -8608,7 +8701,7 @@ def test_runner_liveness_probes_never_read_each_other_as_a_runner(
 ):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     paths.root.mkdir(parents=True)
     spawned = []
     monkeypatch.setattr(drv, "cmd_detached_run", lambda args: spawned.append(args))
@@ -8635,7 +8728,7 @@ def test_a_probe_never_sends_a_runner_away(drv, tmp_path, monkeypatch):
     import molt.file_locks as file_locks
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     paths.root.mkdir(parents=True)
     # A `land --wait` poller holds its shared probe as a runner starts, and
     # lets go between the runner's polls.
@@ -8671,7 +8764,7 @@ def test_a_probe_never_sends_a_runner_away(drv, tmp_path, monkeypatch):
 def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path / "landing-queue")
+    paths = queue.QueuePaths(tmp_path / "landing-queue", tmp_path / "sandbox")
     stamps = iter(f"2026-10-21T12:00:0{second}+00:00" for second in (0, 1, 2, 3, 4, 5))
     monkeypatch.setattr(queue, "_now", lambda: next(stamps))
     early, late = (
@@ -8691,7 +8784,7 @@ def test_queue_results_read_in_the_order_they_closed(tmp_path, monkeypatch):
 def test_queue_refuses_old_requests_without_removing_them(tmp_path):
     from tools import molt_dev_queue as queue
 
-    paths = queue.QueuePaths(tmp_path)
+    paths = queue.QueuePaths(tmp_path, tmp_path / "sandbox")
     request = queue.enqueue(paths, head="1" * 40, worktree=tmp_path, branch=None)
     path = paths.requests / f"{request.id}.json"
     record = json.loads(path.read_text(encoding="utf-8"))
