@@ -80,6 +80,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleExecutionKind
     from molt.compiler_analysis.python_imports import ModuleImportContext
     from molt.compiler_analysis.python_imports import ModuleImportFlow
+    from molt.compiler_analysis.python_imports import ModuleSourceRole
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArm
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardArmExpr
     from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
@@ -103,7 +104,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -164,6 +164,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_obj: MoltValue | None
     module_pre_frame_exception_label: int | None
     module_prefix: Any
+    module_source_role: ModuleSourceRole
     module_spec_name: Any
     module_stmt_offsets: list[int]
     mutated_classes: set[ClassId]
@@ -213,6 +214,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_spec_name: str | None = ...,
         module_is_namespace: bool = ...,
         module_execution_kind: ModuleExecutionKind | None = ...,
+        module_source_role: ModuleSourceRole = ...,
         enable_phi: bool = ...,
         known_modules: set[str] | None = ...,
         direct_call_modules: set[str] | None = ...,
@@ -894,6 +896,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.BoolOp, mode: _ConditionMode
     ) -> tuple[MoltValue, ...]: ...
 
+    def _emit_bootstrap_from_import(
+        self, module_name: str, fromlist_names: Sequence[str]
+    ) -> MoltValue: ...
+
     def _emit_borrow(self, value: MoltValue) -> MoltValue: ...
 
     def _emit_box(self, value: MoltValue, *, hint: str | None = ...) -> MoltValue: ...
@@ -1274,6 +1280,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_hoisted_loop_guards(
         self, body: list[ast.stmt]
     ) -> dict[str, tuple[ClassId, MoltValue, int]]: ...
+
+    def _emit_import_fromlist(self, names: Sequence[str]) -> MoltValue: ...
 
     def _emit_import_guard(self, module_val: MoltValue, module_name: str) -> None: ...
 
@@ -2002,9 +2010,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     @staticmethod
     def _is_internal_module(module_name: str | None) -> bool: ...
-
-    @staticmethod
-    def _is_intrinsics_module_name(module_name: str | None) -> bool: ...
 
     def _is_known_project_module(self, module_name: str | None) -> bool: ...
 

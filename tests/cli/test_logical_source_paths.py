@@ -179,10 +179,20 @@ def test_module_registry_origins_are_the_reported_paths(
     graph = _graph(first, program)
     logical = _logical_paths(monkeypatch, first, program)
     order = ["app", "json", "os"]
+    metadata = module_graph._build_module_graph_metadata(
+        {name: graph[name] for name in order},
+        stdlib_root=first / "src" / "molt" / "stdlib",
+        generated_module_source_paths={},
+        entry_module="app",
+        entry_execution_kind="script",
+        namespace_module_names=(),
+    )
     registry = backend_ir._build_module_registry(
         entry_module="app",
         module_graph={name: graph[name] for name in order},
         logical_source_path_by_module=logical,
+        module_is_namespace_by_module=metadata.module_is_namespace_by_module,
+        module_source_role_by_module=metadata.module_source_role_by_module,
         module_order=order,
         runtime_import_dispatch_roots=set(order),
         native_module_init_specs=(),

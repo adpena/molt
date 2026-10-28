@@ -2841,6 +2841,7 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     pins.write_text(
         protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    _compatibility_source_policy_fixture(tmp_path)
     for name, source in protocol.projections().items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2909,10 +2910,239 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     assert any(item.probe == "rust_stub_surface" for item in findings)
 
 
+def _compatibility_source_policy_fixture(tmp_path):
+    for relative in (
+        "config/verified_subset.toml",
+        "config/cpython_regrtest_sources.toml",
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    for relative in (
+        "tests/differential/basic",
+        "tests/differential/basic/generated_from_proofs",
+        "tests/differential/stdlib",
+    ):
+        (tmp_path / relative).mkdir(parents=True, exist_ok=True)
+
+
+def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
+    protocol = SA.compatibility_errors
+    _compatibility_source_policy_fixture(tmp_path)
+
+    def fetch(version, paths, _revision, _git_url):
+        return {
+            path: f"reference fixture {version}: {path}\n".encode() for path in paths
+        }
+
+    assert protocol.refresh_sources(fetch, root=tmp_path) == 0
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    before = receipt.read_bytes()
+    rows = json.loads(before)["sources"]
+    assert {
+        row["version"] for row in rows if row["path"] == "Objects/memoryobject.c"
+    } == {"3.12.15", "3.13.17", "3.14.9"}
+    assert not any(
+        row["version"] == "3.15.1" and row["path"] == "Objects/memoryobject.c"
+        for row in rows
+    )
+    assert any(
+        row["version"] == "3.15.1" and row["path"] == "Modules/_io/iobase.c"
+        for row in rows
+    )
+    assert protocol.refresh_sources(fetch, root=tmp_path) == 0
+    assert receipt.read_bytes() == before
+
+    calls = 0
+
+    def interrupted(version, paths, revision, git_url):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("independent capture interruption")
+        return fetch(version, paths, revision, git_url)
+
+    with pytest.raises(OSError, match="capture interruption"):
+        protocol.refresh_sources(interrupted, root=tmp_path)
+    assert calls == 2
+    assert receipt.read_bytes() == before
+
+    def changed(version, paths, revision, git_url):
+        result = fetch(version, paths, revision, git_url)
+        if version == "3.12.15":
+            result["Objects/memoryobject.c"] = (
+                b"changed source at an unchanged coordinate"
+            )
+        return result
+
+    with pytest.raises(ValueError, match="unchanged coordinate differs"):
+        protocol.refresh_sources(changed, root=tmp_path)
+    assert receipt.read_bytes() == before
+
+    policy = tmp_path / "config/verified_subset.toml"
+    policy.write_text(
+        policy.read_text(encoding="utf-8").replace('"3.12.15"', '"3.12.14"'),
+        encoding="utf-8",
+    )
+    calls = 0
+    with pytest.raises(ValueError, match="reference and source pin disagree"):
+        protocol.refresh_sources(interrupted, root=tmp_path)
+    assert calls == 0
+    assert receipt.read_bytes() == before
+
+
+@pytest.mark.parametrize("changed", ["policy", "pins", "receipt", "appeared"])
+def test_compatibility_source_refresh_rejects_authority_drift(tmp_path, changed):
+    protocol = SA.compatibility_errors
+    _compatibility_source_policy_fixture(tmp_path)
+
+    def fetch(version, paths, _revision, _git_url):
+        return {path: f"source fixture {version}/{path}".encode() for path in paths}
+
+    protocol.refresh_sources(fetch, root=tmp_path)
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    expected_receipt = receipt.read_bytes()
+    if changed == "appeared":
+        receipt.unlink()
+    visited = False
+
+    def mutate(version, paths, revision, git_url):
+        nonlocal visited, expected_receipt
+        if not visited:
+            visited = True
+            if changed == "appeared":
+                receipt.write_bytes(expected_receipt)
+                return fetch(version, paths, revision, git_url)
+            name = {
+                "policy": "config/verified_subset.toml",
+                "pins": "config/cpython_regrtest_sources.toml",
+                "receipt": protocol.SOURCE_RECEIPTS,
+            }[changed]
+            path = tmp_path / name
+            # Valid same-content replacement still belongs to another generation.
+            replacement = path.with_suffix(".replacement")
+            replacement.write_bytes(path.read_bytes())
+            replacement.replace(path)
+            if changed == "receipt":
+                expected_receipt = path.read_bytes()
+        return fetch(version, paths, revision, git_url)
+
+    with pytest.raises(
+        ValueError, match="changed since identity capture|appeared during capture"
+    ):
+        protocol.refresh_sources(mutate, root=tmp_path)
+    assert visited
+    assert receipt.read_bytes() == expected_receipt
+
+
+@pytest.mark.parametrize("fault", [None, "commit", "version", "content"])
+def test_compatibility_source_capture_checks_git_commit_release_and_blob(
+    monkeypatch, fault
+):
+    import hashlib
+    from tools import gen_stdlib_module_union as pinned
+
+    header = (
+        b"#define PY_MAJOR_VERSION 3\n#define PY_MINOR_VERSION 12\n#define PY_MICRO_VERSION "
+        + (b"14" if fault == "version" else b"15")
+        + b"\n"
+    )
+    payload = b"independent source bytes\n"
+
+    def object_id(data):
+        return hashlib.sha1(
+            b"blob " + str(len(data)).encode() + b"\0" + data
+        ).hexdigest()
+
+    blobs = {object_id(header): header, object_id(payload): payload}
+
+    def git(args, *, cwd):
+        if args[0] == "init":
+            return b""
+        assert args[0] == "-C"
+        command = args[2:]
+        if command[0] in {"remote", "fetch"}:
+            return b""
+        if command[:2] == ["rev-parse", "--verify"]:
+            expression = command[2]
+            if expression.endswith("^{commit}"):
+                return (("2" if fault == "commit" else "1") * 40).encode() + b"\n"
+            data = header if expression.endswith(":Include/patchlevel.h") else payload
+            return object_id(data).encode() + b"\n"
+        assert command[:2] == ["cat-file", "blob"]
+        data = blobs[command[2]]
+        return b"wrong source bytes" if fault == "content" and data == payload else data
+
+    monkeypatch.setattr(pinned, "_git", git)
+    capture = SA.compatibility_errors.capture_reference_sources
+    arguments = (
+        "3.12.15",
+        ("Objects/memoryobject.c",),
+        "1" * 40,
+        "https://github.com/python/cpython.git",
+    )
+    if fault is None:
+        assert capture(*arguments) == {"Objects/memoryobject.c": payload}
+    else:
+        message = {
+            "commit": "pinned revision",
+            "version": "source release",
+            "content": "blob content identity",
+        }[fault]
+        with pytest.raises(ValueError, match=message):
+            capture(*arguments)
+
+
+@pytest.mark.parametrize("fault", ["missing", "extra", "text"])
+def test_compatibility_source_refresh_refuses_incomplete_capture(tmp_path, fault):
+    protocol = SA.compatibility_errors
+    _compatibility_source_policy_fixture(tmp_path)
+
+    def fetch(version, paths, _revision, _git_url):
+        return {path: f"complete fixture {version}/{path}".encode() for path in paths}
+
+    assert protocol.refresh_sources(fetch, root=tmp_path) == 0
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    original = receipt.read_bytes()
+    visited = []
+
+    def malformed(version, paths, revision, git_url):
+        visited.append((version, paths))
+        result = fetch(version, paths, revision, git_url)
+        assert paths
+        if fault == "missing":
+            del result[paths[0]]
+        elif fault == "extra":
+            result["unrequested.c"] = b"unrequested bytes"
+        else:
+            result[paths[0]] = "decoded text is not a captured Git blob"
+        return result
+
+    with pytest.raises(ValueError, match="capture is incomplete"):
+        protocol.refresh_sources(malformed, root=tmp_path)
+    assert len(visited) == 1
+    assert receipt.read_bytes() == original
+    assert not (tmp_path / protocol.RUST_PATH).exists()
+
+
 def test_compatibility_protocol_generation_requires_receipts_and_witnesses(
     tmp_path, monkeypatch
 ):
     protocol = SA.compatibility_errors
+    monkeypatch.setattr(
+        protocol,
+        "capture_reference_sources",
+        lambda *args: pytest.fail("ordinary projection must be offline"),
+    )
+    from tools import gen_stdlib_module_union as pinned
+
+    monkeypatch.setattr(
+        pinned,
+        "_git",
+        lambda *args, **kwargs: pytest.fail(
+            "ordinary projection must not capture Git sources"
+        ),
+    )
     assert protocol.main(["--check"]) == 0
     assert set(protocol.generated_outputs()) == {
         protocol.ROOT / name for name in protocol.projections()
@@ -2932,6 +3162,7 @@ def test_compatibility_protocol_generation_requires_receipts_and_witnesses(
     pins.write_text(
         protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    _compatibility_source_policy_fixture(tmp_path)
     with pytest.raises(ValueError, match="missing compatibility witness"):
         protocol.main(["--check"])
     for facts in protocol.OUTCOMES.values():
@@ -2951,55 +3182,69 @@ def test_compatibility_source_refresh_preserves_independent_evidence_and_is_atom
     import json
 
     protocol = SA.compatibility_errors
+    _compatibility_source_policy_fixture(tmp_path)
     monkeypatch.setattr(protocol, "ROOT", tmp_path)
-    receipt = tmp_path / protocol.SOURCE_RECEIPTS
-    receipt.parent.mkdir(parents=True)
-    original = (ROOT / protocol.SOURCE_RECEIPTS).read_bytes()
-    receipt.write_bytes(original)
-    pins = tmp_path / protocol.CPYTHON_SOURCES.relative_to(ROOT)
-    pins.write_bytes(protocol.CPYTHON_SOURCES.read_bytes())
     for facts in protocol.OUTCOMES.values():
         witness = tmp_path / facts.witness
         witness.parent.mkdir(parents=True, exist_ok=True)
         witness.touch()
+
+    def body(version, path):
+        return f"independent source fixture {version}: {path}\n".encode("utf-8")
+
+    def fetch(version, paths, _revision, git_url):
+        assert git_url == "https://github.com/python/cpython.git"
+        return {path: body(version, path) for path in paths}
+
+    # Synthetic byte bodies exercise receipt publication only. Actual Git
+    # commit/release/blob admission has its separate negative controls above;
+    # repository projection tests still require the real committed receipts.
+    assert protocol.refresh_sources(fetch, root=tmp_path) == 0
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    original = receipt.read_bytes()
     document = json.loads(original)
     expected = [row for row in document["sources"] if "revision" not in row]
     calls = []
-    count = len([row for row in document["sources"] if "revision" in row])
+    count = len({row["version"] for row in document["sources"]})
 
-    def fail_late(url):
-        calls.append(url)
+    def fail_late(version, paths, revision, git_url):
+        calls.append(version)
         if len(calls) == count:
             raise OSError("last source unavailable")
-        return url.encode("utf-8")
+        return fetch(version, paths, revision, git_url)
 
     with pytest.raises(OSError, match="last source unavailable"):
-        protocol.refresh_sources(tmp_path, fetch=fail_late)
+        protocol.refresh_sources(fail_late, root=tmp_path)
+    assert len(calls) == count
     assert receipt.read_bytes() == original
     assert not (tmp_path / protocol.RUST_PATH).exists()
 
-    def changed_receipt(url):
+    def changed_receipt(version, paths, revision, git_url):
         receipt.write_bytes(original + b"\n")
-        return url.encode("utf-8")
+        return fetch(version, paths, revision, git_url)
 
-    with pytest.raises(ValueError, match="changed during refresh"):
-        protocol.refresh_sources(tmp_path, fetch=changed_receipt)
+    with pytest.raises(ValueError, match="changed since identity capture"):
+        protocol.refresh_sources(changed_receipt, root=tmp_path)
     assert receipt.read_bytes() == original + b"\n"
     receipt.write_bytes(original)
-    assert (
-        protocol.refresh_sources(tmp_path, fetch=lambda url: url.encode("utf-8")) == 0
-    )
+    assert protocol.refresh_sources(fetch, root=tmp_path) == 0
     captured = json.loads(receipt.read_bytes())
+    assert captured == document
     assert [row for row in captured["sources"] if "revision" not in row] == expected
-    fresh = [row for row in captured["sources"] if "revision" in row]
-    assert len(fresh) == count
-    for row in fresh:
-        assert row["sha256"] == hashlib.sha256(row["url"].encode("utf-8")).hexdigest()
-        assert f"/{row['revision']}/{row['path']}" in row["url"]
+    for row in captured["sources"]:
+        assert (
+            row["sha256"]
+            == hashlib.sha256(body(row["version"], row["path"])).hexdigest()
+        )
+        coordinate = row.get("revision", "v" + row["version"])
+        assert row["url"] == (
+            f"https://raw.githubusercontent.com/python/cpython/{coordinate}/{row['path']}"
+        )
     assert protocol.source_errors(tmp_path) == []
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as conflict:
         protocol.main(["--refresh-sources", "--check"])
-    assert json.loads(receipt.read_bytes()) == captured
+    assert conflict.value.code == 2
+    assert receipt.read_bytes() == original
     with pytest.raises(SystemExit) as help_exit:
         protocol.main(["--help"])
     assert help_exit.value.code == 0
@@ -3039,11 +3284,24 @@ def test_compatibility_outcomes_have_their_own_pinned_target_support(
     pins.write_text(
         protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    _compatibility_source_policy_fixture(tmp_path)
     assert protocol.source_errors(tmp_path) == []
     source_versions = [
         row["version"] for row in data["sources"] if row["path"] == source_path
     ]
     assert len(source_versions) == 4
+    for fault in ("hash", "duplicate"):
+        malformed = json.loads(json.dumps(data))
+        row = next(row for row in malformed["sources"] if row["path"] == source_path)
+        if fault == "hash":
+            row["sha256"] = "g" * 64
+        else:
+            malformed["sources"].append(dict(row))
+        receipt.write_text(json.dumps(malformed), encoding="utf-8")
+        assert (
+            "compatibility source coordinates are incomplete or unpinned"
+            in protocol.source_errors(tmp_path)
+        )
     for version in source_versions:
         changed = json.loads(json.dumps(data))
         changed["sources"] = [
@@ -3585,6 +3843,7 @@ def test_glob_compatibility_source_coordinates_are_version_specific(tmp_path):
     pins.write_text(
         protocol.CPYTHON_SOURCES.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    _compatibility_source_policy_fixture(tmp_path)
     assert protocol.source_errors(tmp_path) == []
     # Modern native splitroot is a C provider; Python fallback bytes alone do
     # not establish its Windows UTF-16 coordinate contract.

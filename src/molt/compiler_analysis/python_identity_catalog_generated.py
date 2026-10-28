@@ -61,6 +61,14 @@ class PythonIdentity(IntFlag):
     BUILTIN_OPEN = 1 << 48
     INTRINSIC_SYS_PLATFORM = 1 << 49
     INTRINSIC_OS_NAME = 1 << 50
+    INTRINSIC_MODULE_IMPORT = 1 << 51
+    INTRINSIC_IMPORTLIB_IMPORT_MODULE = 1 << 52
+    INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL = 1 << 53
+    INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK = 1 << 54
+    INTRINSIC_IMPORTLIB_IMPORT_REQUIRED = 1 << 55
+    INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION = 1 << 56
+    INTRINSIC_IMPORTLIB_FIND_SPEC = 1 << 57
+    INTRINSICS_LOAD = 1 << 58
 
 
 class PythonMember(IntFlag):
@@ -98,6 +106,7 @@ class PythonMember(IntFlag):
     BUILTINS_SETATTR = 1 << 31
     BUILTINS_EVAL = 1 << 32
     BUILTINS_EXEC = 1 << 33
+    INTRINSICS_LOAD = 1 << 34
 
 
 class PythonTargetProperty(Enum):
@@ -113,12 +122,21 @@ UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
 UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 SENTINEL_IDENTITIES: Final[IdentityMask] = UNKNOWN_IDENTITY
 NO_INVALID_MEMBERS: Final[MemberMask] = 0
-ALL_INVALID_MEMBERS: Final[MemberMask] = 17179869183
+ALL_INVALID_MEMBERS: Final[MemberMask] = 34359738367
 
 INTRINSIC_CALLABLE_IDENTITIES: Final[Mapping[str, PythonIdentity]] = MappingProxyType(
     {
         'molt_sys_platform': PythonIdentity.INTRINSIC_SYS_PLATFORM,
         'molt_os_name': PythonIdentity.INTRINSIC_OS_NAME,
+        'molt_module_import': PythonIdentity.INTRINSIC_MODULE_IMPORT,
+        'molt_importlib_import_module': PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_MODULE,
+        'molt_importlib_import_optional': PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL,
+        'molt_importlib_import_or_fallback': PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK,
+        'molt_importlib_import_required': PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_REQUIRED,
+        'molt_importlib_import_transaction': PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION,
+        'molt_importlib_find_spec': PythonIdentity.INTRINSIC_IMPORTLIB_FIND_SPEC,
+        'molt_require_intrinsic_runtime': PythonIdentity.INTRINSICS_REQUIRE,
+        'molt_load_intrinsic_runtime': PythonIdentity.INTRINSICS_LOAD,
     }
 )
 
@@ -127,6 +145,43 @@ INTRINSIC_TARGET_PROPERTIES: Final[Mapping[IdentityMask, PythonTargetProperty]] 
         int(PythonIdentity.INTRINSIC_SYS_PLATFORM): PythonTargetProperty.SYS_PLATFORM,
         int(PythonIdentity.INTRINSIC_OS_NAME): PythonTargetProperty.OS_NAME,
     }
+)
+
+INTRINSIC_RUNTIME_IMPORT_IDENTITIES: Final[IdentityMask] = (
+    int(PythonIdentity.INTRINSIC_MODULE_IMPORT) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_MODULE) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_REQUIRED) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_FIND_SPEC) |
+    0
+)
+
+ALL_INTRINSIC_CALLABLE_IDENTITIES: Final[IdentityMask] = (
+    int(PythonIdentity.INTRINSIC_SYS_PLATFORM) |
+    int(PythonIdentity.INTRINSIC_OS_NAME) |
+    int(PythonIdentity.INTRINSIC_MODULE_IMPORT) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_MODULE) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_REQUIRED) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION) |
+    int(PythonIdentity.INTRINSIC_IMPORTLIB_FIND_SPEC) |
+    int(PythonIdentity.INTRINSICS_REQUIRE) |
+    int(PythonIdentity.INTRINSICS_LOAD) |
+    0
+)
+
+INTRINSIC_ACQUISITION_IDENTITIES: Final[IdentityMask] = (
+    int(PythonIdentity.INTRINSICS_REQUIRE) |
+    int(PythonIdentity.INTRINSICS_LOAD) |
+    0
+)
+
+OPTIONAL_INTRINSIC_ACQUISITION_IDENTITIES: Final[IdentityMask] = (
+    int(PythonIdentity.INTRINSICS_LOAD) |
+    0
 )
 
 BUILTIN_IDENTITIES: Final[Mapping[str, tuple[PythonIdentity, PythonMember]]] = MappingProxyType(
@@ -225,6 +280,9 @@ CANONICAL_FROM_IMPORT_IDENTITIES: Final[Mapping[tuple[str, str], tuple[PythonIde
         ('typing', 'TYPE_CHECKING'): (PythonIdentity.STATIC_FALSE, PythonMember.TYPING_TYPE_CHECKING),
         ('typing_extensions', 'TYPE_CHECKING'): (PythonIdentity.STATIC_FALSE, PythonMember.TYPING_TYPE_CHECKING),
         ('_intrinsics', 'require_intrinsic'): (PythonIdentity.INTRINSICS_REQUIRE, PythonMember.INTRINSICS_REQUIRE),
+        ('_intrinsics', '_require_intrinsic'): (PythonIdentity.INTRINSICS_REQUIRE, PythonMember.INTRINSICS_REQUIRE),
+        ('_intrinsics', 'load_intrinsic'): (PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),
+        ('_intrinsics', '_load_intrinsic'): (PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),
         ('builtins', '__import__'): (PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),
         ('builtins', 'globals'): (PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),
         ('builtins', 'locals'): (PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),
@@ -261,6 +319,9 @@ CANONICAL_MEMBER_IDENTITIES: Final[Mapping[str, tuple[tuple[PythonIdentity, Pyth
         'currentframe': ((PythonIdentity.INSPECT_MODULE, PythonIdentity.INSPECT_CURRENTFRAME, PythonMember.INSPECT_CURRENTFRAME),),
         'TYPE_CHECKING': ((PythonIdentity.TYPING_MODULE, PythonIdentity.STATIC_FALSE, PythonMember.TYPING_TYPE_CHECKING),),
         'require_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, PythonIdentity.INTRINSICS_REQUIRE, PythonMember.INTRINSICS_REQUIRE),),
+        '_require_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, PythonIdentity.INTRINSICS_REQUIRE, PythonMember.INTRINSICS_REQUIRE),),
+        'load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),),
+        '_load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, PythonIdentity.INTRINSICS_LOAD, PythonMember.INTRINSICS_LOAD),),
         '__import__': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTINS_IMPORT, PythonMember.BUILTINS_IMPORT),),
         'globals': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_GLOBALS, PythonMember.BUILTINS_GLOBALS),),
         'locals': ((PythonIdentity.BUILTINS_MODULE, PythonIdentity.BUILTIN_LOCALS, PythonMember.BUILTINS_LOCALS),),
@@ -297,6 +358,9 @@ CANONICAL_MEMBER_WRITES: Final[Mapping[str, tuple[tuple[PythonIdentity, MemberMa
         'currentframe': ((PythonIdentity.INSPECT_MODULE, 32),),
         'TYPE_CHECKING': ((PythonIdentity.TYPING_MODULE, 1024),),
         'require_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, 2048),),
+        '_require_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, 2048),),
+        'load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, 17179869184),),
+        '_load_intrinsic': ((PythonIdentity.INTRINSICS_MODULE, 17179869184),),
         '__import__': ((PythonIdentity.BUILTINS_MODULE, 136),),
         'globals': ((PythonIdentity.BUILTINS_MODULE, 268435456),),
         'locals': ((PythonIdentity.BUILTINS_MODULE, 536870912),),

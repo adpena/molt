@@ -7,6 +7,8 @@ separate under-ceiling mixins.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
+
 import ast
 from molt.python_private_names import (
     python_import_binding,
@@ -666,7 +668,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             # Protocol, Any, cast, etc.) must be loaded from the actual
             # typing module.  Fall through to the normal import path.
             pass
-        if not runtime_relative and self._is_intrinsics_module_name(module_name):
+        if not runtime_relative and is_compiler_intrinsics_module(module_name):
             # _intrinsics is a synthetic runtime module whose
             # require_intrinsic/load_intrinsic calls are validated at compile
             # time and then resolved through the runtime intrinsic registry by
@@ -718,7 +720,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
                 level=transaction_level,
             )
         else:
-            module_val = self._emit_module_load_with_parents(module_name)
+            module_val = self._emit_bootstrap_from_import(module_name, fromlist_names)
         for alias in node.names:
             if alias.name == "*":
                 if self.module_obj is None:

@@ -193,9 +193,19 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_frozen_external_payload as *const (),
             ))
         }
+        "molt_importlib_frozen_external_commit" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_frozen_external_commit",
+                crate::molt_importlib_frozen_external_commit as *const (),
+            ))
+        }
         "molt_importlib_import_transaction" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_import_transaction",
             crate::molt_importlib_import_transaction as *const (),
+        )),
+        "molt_importlib_prepare_fromlist" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_prepare_fromlist",
+            crate::molt_importlib_prepare_fromlist as *const (),
         )),
         "molt_importlib_find_in_path_package_context" => {
             Some(crate::builtins::functions::runtime_fn_addr(
@@ -206,6 +216,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_module_spec_type" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_module_spec_type",
             crate::molt_importlib_module_spec_type as *const (),
+        )),
+        "molt_importlib_suffixes" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_suffixes",
+            crate::molt_importlib_suffixes as *const (),
         )),
         "molt_importlib_compiled_loader" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_compiled_loader",
@@ -220,6 +234,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_importlib_admit_spec" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_admit_spec",
             crate::molt_importlib_admit_spec as *const (),
+        )),
+        "molt_importlib_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_find_spec",
+            crate::molt_importlib_find_spec as *const (),
         )),
         "molt_importlib_filefinder_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_filefinder_find_spec",

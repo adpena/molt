@@ -81,19 +81,13 @@ pub unsafe extern "C" fn PyImport_ImportModule(name: *const c_char) -> *mut PyOb
     unsafe { import_module_bytes(name_bytes) }
 }
 
-/// Resolve the runtime's real `sys.modules` dict without collapsing an
+/// Resolve the interpreter's import dictionary without collapsing an
 /// execution error into an ordinary missing value.
-unsafe fn sys_modules_result() -> hooks::DecodedHandleResult {
+unsafe fn module_dictionary_result() -> hooks::DecodedHandleResult {
     let Some(h) = hooks::hooks() else {
         return hooks::DecodedHandleResult::Missing;
     };
-    decode_borrowed_hook_result(unsafe {
-        (h.sys_get_object_borrowed)(
-            b"modules".as_ptr(),
-            b"modules".len(),
-            hooks::SysLookupPolicy::Propagate,
-        )
-    })
+    decode_borrowed_hook_result(unsafe { (h.import_module_dict_borrowed)() })
 }
 
 /// Decode a borrowed runtime-hook result without allowing a non-error status
@@ -177,10 +171,9 @@ pub unsafe extern "C" fn PyImport_AddModule(name: *const c_char) -> *mut PyObjec
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
-    // CPython returns the interpreter's REAL modules dict (== sys.modules).
-    // There is one modules-dict authority: the runtime's sys.modules. A
-    // detached hook-less dictionary would make imports and this API disagree.
-    match unsafe { sys_modules_result() } {
+    // CPython returns interp->imports.modules, including after sys.modules
+    // attribute rebinding. The runtime import dictionary owns this borrowed view.
+    match unsafe { module_dictionary_result() } {
         hooks::DecodedHandleResult::Ok(bits) => {
             return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
         }
@@ -199,12 +192,20 @@ pub unsafe extern "C" fn PyImport_GetModuleDict() -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyImport_GetModule(name: *mut PyObject) -> *mut PyObject {
-    let modules = unsafe { PyImport_GetModuleDict() };
-    if modules.is_null() {
+    if name.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let module = unsafe { crate::api::mapping::PyDict_GetItemWithError(modules, name) };
-    unsafe { crate::api::object::Py_XNewRef(module) }
+    let Some(hooks) = hooks::hooks() else {
+        unsafe { set_import_unavailable(ptr::null()) };
+        return ptr::null_mut();
+    };
+    let Some(name) = (unsafe { crate::bridge::RuntimeValue::acquire(name) }) else {
+        return ptr::null_mut();
+    };
+    // This operation is cache-only. Its initialization/probe policy differs
+    // from __import__, and cannot be reconstructed with GetModuleDict + get.
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj((hooks.import_get_module)(name.bits())) }
 }
 
 /// Read a `str`-valued item from a `globals` dict by C-string key, into an

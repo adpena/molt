@@ -109,6 +109,7 @@ class zipimporter:
         spec = _ModuleSpec(
             fullname, loader=loader, origin=origin, is_package=is_package
         )
+        spec.has_location = True
         if is_package:
             locations = payload.get("submodule_search_locations")
             if isinstance(locations, list) and all(

@@ -286,6 +286,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
             target_python=(version.major, version.minor),
             module_chunking=chunked,
             module_chunk_max_ops=1,
+            module_source_role="user",
         )
         generator.visit(ast.parse("first = 1\nsecond = 2\nthird = 3\n"))
         document = generator.to_json(scope="module")
@@ -320,6 +321,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
+        module_is_namespace_by_module={name: False for name in module_graph},
         known_modules=set(modules),
         stdlib_allowlist=set(),
         integration_state=state,
@@ -334,6 +336,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         target_python=version,
         stdlib_profile=stdlib_profile,
         target=_select_codegen_backend(target, "auto")[0],
+        module_source_role_by_module={name: "user" for name in module_graph},
     )
     assert error is None
     assert prepared is not None
@@ -435,6 +438,7 @@ def test_shared_module_code_payload_is_stable_when_an_earlier_module_is_added() 
                 known_modules={"earlier", "common"},
                 source_path=f"generated/{module}.py",
                 target_python=(3, 12),
+                module_source_role="user",
             )
             generator.visit(
                 ast.parse(

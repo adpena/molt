@@ -269,27 +269,27 @@ def _rust_name_literal(tokens: list[str]) -> str:
     return tokens[0][1:-1]
 
 
-def _exception_default_module(text: str, constructor: str) -> str:
+def _exception_default_binding(text: str, constructor: str) -> bool:
     body = _rust_function_body(text, constructor)
     if body is None:
         raise ValueError(f"missing exception schema constructor: {constructor}")
     tokens = [token.text for token in rust_source_tokens(body)]
     values = [
-        _rust_name_literal([tokens[index + 2]])
+        tokens[index + 2]
         for index in range(len(tokens) - 2)
-        if tokens[index : index + 2] == ["module", ":"]
+        if tokens[index : index + 2] == ["builtin_binding", ":"]
     ]
-    if len(values) != 1:
-        raise ValueError(f"ambiguous exception schema module: {constructor}")
-    return values[0]
+    if len(values) != 1 or values[0] not in {"true", "false"}:
+        raise ValueError(f"ambiguous exception schema builtin binding: {constructor}")
+    return values[0] == "true"
 
 
 def _parse_builtin_exception_names(text: str) -> set[str]:
     """Project the declared namespace superset, including Windows-only aliases.
 
     The frontend set spans target versions/platforms. It must never be filtered
-    by the compiler host. Modules and alias identity come from the same schema
-    rows used by runtime construction; roots need no separate registry.
+    by the compiler host. Explicit builtin bindings and alias identity come
+    from the runtime schema; class origin does not determine publication.
     """
     with scan_memo():
         header = rust_token_range(
@@ -301,13 +301,13 @@ def _parse_builtin_exception_names(text: str) -> set[str]:
         if end is None:
             raise ValueError("unclosed BUILTIN_EXCEPTION_SPECS")
         defaults = {
-            kind: _exception_default_module(text, kind)
+            kind: _exception_default_binding(text, kind)
             for kind in ("exception_spec", "exception_alias")
         }
         rows = _split_rust_arguments(
             [token.text for token in rust_source_tokens(text[header[1] : end - 1])]
         )
-        modules: dict[str, str] = {}
+        bindings: dict[str, bool] = {}
         aliases: dict[str, str] = {}
         for row in rows:
             kind = row[0]
@@ -317,9 +317,9 @@ def _parse_builtin_exception_names(text: str) -> set[str]:
             if len(args) != (3 if kind == "exception_spec" else 2):
                 raise ValueError(f"invalid exception schema constructor arity: {kind}")
             name = _rust_name_literal(args[0])
-            if name in modules:
+            if name in bindings:
                 raise ValueError(f"duplicate exception schema name: {name}")
-            module = defaults[kind]
+            binding = defaults[kind]
             if kind == "exception_alias":
                 aliases[name] = _rust_name_literal(args[1])
             while cursor < len(row):
@@ -329,10 +329,14 @@ def _parse_builtin_exception_names(text: str) -> set[str]:
                 values, cursor = _rust_call_arguments(row, cursor + 2)
                 if modifier in ("on_windows_only", "with_base_render_slots"):
                     valid = not values
+                elif modifier == "without_builtin_binding":
+                    valid = not values
+                    if valid:
+                        binding = False
                 elif modifier == "with_heap_class":
                     valid = len(values) == 1
                     if valid:
-                        module = _rust_name_literal(values[0])
+                        _rust_name_literal(values[0])
                 elif modifier == "since_python_minor":
                     valid = (
                         len(values) == 1
@@ -351,15 +355,15 @@ def _parse_builtin_exception_names(text: str) -> set[str]:
                     raise ValueError(
                         f"unsupported exception schema modifier: {name}.{modifier}"
                     )
-            modules[name] = module
+            bindings[name] = binding
         names: set[str] = set()
-        for name in modules:
+        for name in bindings:
             canonical = aliases.get(name, name)
-            if canonical not in modules:
+            if canonical not in bindings:
                 raise ValueError(f"missing canonical exception: {name}->{canonical}")
             if canonical in aliases:
                 raise ValueError(f"non-canonical exception alias: {name}->{canonical}")
-            if modules[canonical] == "builtins":
+            if bindings[name]:
                 names.add(name)
         if not names:
             raise ValueError("empty builtin exception schema")

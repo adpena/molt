@@ -6,9 +6,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 ## Counts
 
-- `authority-routed` files: 66
+- `authority-routed` files: 69
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 351
+- `scattered-assumption` files: 350
 
 ## Files
 
@@ -293,11 +293,12 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/io_path.rs` | 1 | scattered-assumption | `3.14` |
 | `runtime/molt-runtime/src/builtins/io_path_utils.rs` | 2 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/json_tests.rs` | 2 | scattered-assumption | `3.12` |
-| `runtime/molt-runtime/src/builtins/module_table.rs` | 1 | scattered-assumption | `version_info` |
-| `runtime/molt-runtime/src/builtins/modules/type_attributes.rs` | 2 | scattered-assumption | `3.13` |
+| `runtime/molt-runtime/src/builtins/module_table.rs` | 4 | authority-routed | `3.13` |
+| `runtime/molt-runtime/src/builtins/modules/execution.rs` | 2 | scattered-assumption | `3.15` |
 | `runtime/molt-runtime/src/builtins/modules.rs` | 7 | authority-routed | `version_info` |
 | `runtime/molt-runtime/src/builtins/numbers.rs` | 20 | authority-routed | `3.14` |
-| `runtime/molt-runtime/src/builtins/platform_tests.rs` | 3 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/platform_importlib_ffi/find_spec.rs` | 2 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/platform_tests.rs` | 4 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/builtins/pwd.rs` | 4 | scattered-assumption | `3.13` |
 | `runtime/molt-runtime/src/builtins/sys_ext.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/class_construction.rs` | 1 | scattered-assumption | `3.12` |
@@ -322,6 +323,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/cpython_abi_hooks/inquiry_tests.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/cpython_abi_hooks/native_lifecycle_tests.rs` | 4 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/cpython_abi_hooks/native_namespace_tests/readiness.rs` | 3 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/cpython_abi_hooks/native_namespace_tests.rs` | 1 | authority-routed | `3.13` |
 | `runtime/molt-runtime/src/cpython_abi_hooks/semantic_retirement_tests.rs` | 2 | authority-routed | `3.14` |
 | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 2 | authority-routed | `3.12` |
 | `runtime/molt-runtime/src/gpu_runtime_tests.rs` | 30 | scattered-assumption | `3.0` |
@@ -424,7 +426,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/ci_resource_env.py` | 1 | scattered-assumption | `3.06` |
 | `tools/cold_start_decompose.py` | 1 | scattered-assumption | `3.45` |
 | `tools/command_execution.py` | 1 | scattered-assumption | `3.12` |
-| `tools/compatibility_error_protocol.py` | 19 | authority-routed | `3.12` |
+| `tools/compatibility_error_protocol.py` | 13 | authority-routed | `3.12` |
 | `tools/compile_progress.py` | 2 | scattered-assumption | `3.12` |
 | `tools/correctness_dashboard.py` | 3 | operational-tooling | `3.12` |
 | `tools/cpython_regrtest.py` | 13 | authority-routed | `3.12` |
@@ -481,9 +483,9 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `tools/specialization_slo.py` | 2 | operational-tooling | `3.12` |
 | `tools/stdlib_full_coverage_manifest.py` | 1 | scattered-assumption | `3.12` |
 | `tools/stdlib_module_union.py` | 6 | operational-tooling | `3.12` |
-| `tools/stdlib_module_union_3_12.py` | 3 | operational-tooling | `3.12` |
-| `tools/stdlib_module_union_3_13.py` | 3 | operational-tooling | `3.13` |
-| `tools/stdlib_module_union_3_14.py` | 3 | operational-tooling | `3.14` |
+| `tools/stdlib_module_union_3_12.py` | 2 | operational-tooling | `3.12` |
+| `tools/stdlib_module_union_3_13.py` | 2 | operational-tooling | `3.13` |
+| `tools/stdlib_module_union_3_14.py` | 2 | operational-tooling | `3.14` |
 | `tools/subagent_contract.py` | 1 | scattered-assumption | `3.12` |
 | `tools/test_report.py` | 4 | operational-tooling | `3.12` |
 | `tools/theorem_to_test.py` | 1 | operational-tooling | `3.12` |

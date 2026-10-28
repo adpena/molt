@@ -24,7 +24,6 @@ from molt.compiler_analysis import python_import_scan as _source_import_scan
 import ast
 
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
-import builtins as py_builtins
 import contextlib
 import hashlib
 import importlib
@@ -49,7 +48,6 @@ from typing import Any, Callable, Collection, Iterator, Mapping, Sequence, cast
 
 import msgpack
 import pytest
-from tests.module_isolation import forget_module
 
 from molt.backend_environment import CodegenSelection
 from molt.backend_protocol import BACKEND_DAEMON_PROTOCOL_VERSION
@@ -117,6 +115,7 @@ from molt.cli.external_native import (
 )
 from molt.cli.frontend_parallel import _FrontendWorkerResourceDecision
 from molt.compiler_analysis.python_imports import (
+    ModuleSourceRole,
     _ImportScanRequests,
     _StaticSourceExecutionRequest,
 )
@@ -533,35 +532,6 @@ def _runtime_callable_projection_fixture(path: Path):
     )
 
 
-def _load_generated_importer(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    intrinsics: dict[str, object],
-):
-    importer_path = cli_module_graph._write_importer_module(tmp_path)
-    intrinsics_mod = types.ModuleType("_intrinsics")
-
-    def require_intrinsic(name: str, namespace=None):
-        value = intrinsics.get(name)
-        if value is None:
-            raise RuntimeError(f"intrinsic unavailable: {name}")
-        if namespace is not None:
-            namespace[name] = value
-        return value
-
-    intrinsics_mod.require_intrinsic = require_intrinsic
-    monkeypatch.setitem(sys.modules, "_intrinsics", intrinsics_mod)
-    module_name = "molt_test_generated_importer"
-    forget_module(monkeypatch, module_name)
-    spec = importlib.util.spec_from_file_location(module_name, importer_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_resolve_module_path_prefers_package_over_module(tmp_path: Path) -> None:
     module = tmp_path / "shadowed.py"
     module.write_text("value = 'module'\n", encoding="utf-8")
@@ -716,20 +686,7 @@ def test_stdlib_test_support_layout_resolves_like_cpython() -> None:
     assert warnings_helper == stdlib_root / "test" / "support" / "warnings_helper.py"
 
 
-def test_write_importer_module_is_transaction_shim(tmp_path: Path) -> None:
-    importer = cli_module_graph._write_importer_module(tmp_path)
-    text = importer.read_text(encoding="utf-8")
-    assert "molt_importlib_import_transaction" in text
-    assert "return _IMPORT_TRANSACTION(name, globals, locals, fromlist, level)" in text
-    assert "_KNOWN_MODULES" not in text
-    assert "_TOP_LEVEL_BY_MODULE" not in text
-    assert "_resolve_name" not in text
-    assert "_runtime_import_support" not in text
-    assert "molt_module_import" not in text
-    assert "molt_importlib_import_module" not in text
-
-
-def test_write_importer_module_avoids_rewriting_identical_content(
+def test_generated_module_source_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     original_replace = ATOMIC_IO.file_publication.durable_replace
@@ -743,67 +700,17 @@ def test_write_importer_module_avoids_rewriting_identical_content(
 
     monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
 
-    importer_path = cli_module_graph._write_importer_module(tmp_path)
-    assert cli_module_graph._write_importer_module(tmp_path) == importer_path
-
-    assert replaced_destinations == [importer_path]
-
-
-def test_generated_importer_delegates_to_import_transaction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    loaded = types.ModuleType("demo_math")
-    calls: list[tuple[object, object, object, object, object]] = []
-
-    def fake_import_transaction(
-        name: object,
-        globals_obj: object,
-        locals_obj: object,
-        fromlist: object,
-        level: object,
-    ):
-        calls.append((name, globals_obj, locals_obj, fromlist, level))
-        return loaded
-
-    importer = _load_generated_importer(
-        tmp_path,
-        monkeypatch,
-        intrinsics={"molt_importlib_import_transaction": fake_import_transaction},
+    generated_path = cli_module_graph._write_generated_module_source(
+        "generated", "value = 42\n", tmp_path
+    )
+    assert (
+        cli_module_graph._write_generated_module_source(
+            "generated", "value = 42\n", tmp_path
+        )
+        == generated_path
     )
 
-    globals_obj = {"__package__": "pkg"}
-    locals_obj = {"marker": object()}
-    result = importer._molt_import("demo_math", globals_obj, locals_obj, ("sqrt",), 1)
-
-    assert result is loaded
-    assert calls == [("demo_math", globals_obj, locals_obj, ("sqrt",), 1)]
-
-
-def test_generated_importer_can_import_builtins_through_transaction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import_calls: list[tuple[object, object, object, object, object]] = []
-
-    def fake_import_transaction(
-        name: object,
-        globals_obj: object,
-        locals_obj: object,
-        fromlist: object,
-        level: object,
-    ):
-        import_calls.append((name, globals_obj, locals_obj, fromlist, level))
-        return py_builtins
-
-    importer = _load_generated_importer(
-        tmp_path,
-        monkeypatch,
-        intrinsics={"molt_importlib_import_transaction": fake_import_transaction},
-    )
-
-    result = importer._molt_import("builtins")
-
-    assert result is py_builtins
-    assert import_calls == [("builtins", None, None, (), 0)]
+    assert replaced_destinations == [generated_path]
 
 
 def _frontend_main_ops_for_import_source(
@@ -948,6 +855,7 @@ def test_deferred_relative_import_preserves_call_time_globals_transaction() -> N
         module_spec_name="pkg.entry",
         source_path="/tmp/pkg/entry.py",
         known_modules={"pkg", "pkg.child", "other.pkg", "other.pkg.child"},
+        module_source_role="user",
     )
     gen.visit(
         ast.parse(
@@ -970,6 +878,7 @@ def test_import_transaction_implementation_modules_use_bootstrap_imports() -> No
     ops = _frontend_main_ops_for_import_source(
         "import os\nimport sys\n",
         module_name="importlib",
+        module_source_role="stdlib",
         known_modules={"os", "sys"},
         stdlib_allowlist={"os", "sys"},
     )
@@ -978,26 +887,58 @@ def test_import_transaction_implementation_modules_use_bootstrap_imports() -> No
     assert not _frontend_import_transaction_calls(ops)
 
 
-def test_generated_importer_does_not_require_import_support_modules(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("module_name", "module_source_role"),
+    [
+        ("builtins", "stdlib"),
+        ("importlib", "stdlib"),
+        ("importlib.util", "stdlib"),
+    ],
+)
+def test_bootstrap_module_functions_still_use_public_import_transactions(
+    module_name: str,
+    module_source_role: ModuleSourceRole,
 ) -> None:
-    loaded = types.ModuleType("demo_math")
-    calls: list[str] = []
+    gen = SimpleTIRGenerator(
+        module_name=module_name,
+        known_modules={"os", "sys"},
+        module_source_role=module_source_role,
+    )
+    gen.visit(ast.parse("import sys\ndef load():\n    import os\n    return os\n"))
+    functions = gen.to_json()["functions"]
+    body = next(
+        function["ops"] for function in functions if function["name"] == "molt_main"
+    )
+    load = next(
+        function["ops"]
+        for function in functions
+        if str(function["name"]).endswith("__load")
+    )
+    assert any(op["kind"] == "module_import" for op in body)
+    assert not _frontend_import_transaction_calls(body)
+    assert ("os", (), 0, False) in _frontend_import_transaction_calls(load)
+    assert all(op["kind"] != "module_import" for op in load)
 
-    def fake_import_transaction(name, _globals, _locals, _fromlist, _level):
-        calls.append(name)
-        return loaded
 
-    importer = _load_generated_importer(
-        tmp_path,
-        monkeypatch,
-        intrinsics={"molt_importlib_import_transaction": fake_import_transaction},
+@pytest.mark.parametrize(
+    "module_name", ["builtins", "_molt_importer", "importlib", "importlib.util"]
+)
+@pytest.mark.parametrize("explicit_role", [False, True])
+def test_user_module_bootstrap_spelling_keeps_public_import_transactions(
+    module_name: str,
+    explicit_role: bool,
+) -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "import os\nimport sys\n",
+        module_name=module_name,
+        known_modules={"os", "sys"},
+        **({"module_source_role": "user"} if explicit_role else {}),
     )
 
-    result = importer._molt_import("demo_math")
-
-    assert result is loaded
-    assert calls == ["demo_math"]
+    assert all(op["kind"] != "module_import" for op in ops)
+    calls = _frontend_import_transaction_calls(ops)
+    assert ("os", (), 0, False) in calls
+    assert ("sys", (), 0, False) in calls
 
 
 @pytest.mark.long_pole
@@ -2033,6 +1974,7 @@ def test_materialize_import_plan_preserves_source_and_lowers_selected_native_sup
         ),
         module_body_selection=authority.body_selection,
         target_python=prepared.target_python.feature_version,
+        module_source_role="user",
     )
     generator.visit(
         ast.parse(
@@ -3231,6 +3173,7 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         namespace_module_names=import_plan.namespace_module_names,
         module_source_catalog=frontend_analysis.module_source_catalog,
         module_deps=frontend_analysis.module_deps,
+        stdlib_root=import_plan.stdlib_root,
     )
     backend_setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
@@ -3289,7 +3232,6 @@ def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported
 
     assert error is None
     assert prepared is not None
-    assert not prepared.runtime_import_support_policy.needs_generated_importer
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
     assert "importlib.util" in prepared.module_graph
     assert "importlib.machinery" in prepared.module_graph
@@ -3321,7 +3263,6 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
 
     assert error is None
     assert prepared is not None
-    assert not prepared.runtime_import_support_policy.needs_generated_importer
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
 
 
@@ -3630,11 +3571,13 @@ def test_prepare_entry_module_graph_closes_added_package_parent_imports(
     )
 
 
-def test_prepare_entry_module_graph_marks_generated_importer_references_explicitly(
+def test_prepare_entry_module_graph_preserves_user_importer_spelling(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import _molt_importer\n", encoding="utf-8")
+    user_importer = tmp_path / "_molt_importer.py"
+    user_importer.write_text("value = 42\n", encoding="utf-8")
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -3653,8 +3596,8 @@ def test_prepare_entry_module_graph_marks_generated_importer_references_explicit
 
     assert error is None
     assert prepared is not None
-    assert prepared.runtime_import_support_policy.needs_generated_importer
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
+    assert prepared.module_graph["_molt_importer"] == user_importer
 
 
 def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
@@ -3662,6 +3605,8 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import _molt_importer\n", encoding="utf-8")
+    user_importer = tmp_path / "_molt_importer.py"
+    user_importer.write_text("value = 42\n", encoding="utf-8")
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -3680,7 +3625,8 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
 
     assert error is None
     assert prepared is not None
-    assert cli_module_import_scanner.IMPORTER_MODULE_NAME not in prepared.module_graph
+    before = dict(prepared.module_graph)
+    assert before["_molt_importer"] == user_importer
 
     import_plan = cli_module_graph._materialize_import_plan(
         prepared_module_graph=prepared,
@@ -3691,12 +3637,14 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
         diagnostics_enabled=False,
     )
 
-    assert cli_module_import_scanner.IMPORTER_MODULE_NAME not in prepared.module_graph
-    assert cli_module_import_scanner.IMPORTER_MODULE_NAME in import_plan.module_graph
+    assert dict(prepared.module_graph) == before
+    assert import_plan.module_graph["_molt_importer"] == user_importer
+    assert "_molt_importer" not in import_plan.generated_module_source_paths
     assert (
-        cli_module_import_scanner.IMPORTER_MODULE_NAME
-        in import_plan.generated_module_source_paths
+        import_plan.module_graph_metadata.module_source_role_by_module["_molt_importer"]
+        == "user"
     )
+    assert user_importer.read_text(encoding="utf-8") == "value = 42\n"
 
 
 def test_import_plan_freezes_graph_and_allowlist(tmp_path: Path) -> None:
@@ -3742,11 +3690,11 @@ def test_import_plan_freezes_graph_and_allowlist(tmp_path: Path) -> None:
     assert isinstance(import_plan.stdlib_allowlist_sorted, tuple)
 
 
-def test_generated_importer_import_plan_includes_runtime_support_modules(
+def test_public_import_transaction_plan_includes_runtime_support_modules(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import _molt_importer\n", encoding="utf-8")
+    entry_path.write_text("__import__('gc')\n", encoding="utf-8")
     entry_tree = ast.parse(
         entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
     )
@@ -3783,12 +3731,7 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
     assert "importlib.machinery" in import_plan.runtime_import_dispatch_roots
     assert "importlib._bootstrap" in import_plan.runtime_import_dispatch_roots
     assert "importlib._bootstrap_external" in import_plan.runtime_import_dispatch_roots
-    importer_path = import_plan.module_graph[
-        cli_module_import_scanner.IMPORTER_MODULE_NAME
-    ]
-    importer_source = importer_path.read_text(encoding="utf-8")
-    assert "molt_importlib_import_transaction" in importer_source
-    assert "_KNOWN_MODULES" not in importer_source
+    assert "_molt_importer" not in import_plan.module_graph
 
 
 def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
@@ -3826,6 +3769,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
+        module_is_namespace_by_module={name: False for name in module_graph},
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -3839,6 +3783,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
         emit_ir_path=None,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         validate_inputs=lambda: None,
+        module_source_role_by_module={name: "user" for name in module_graph},
     )
 
     assert error is None
@@ -3905,6 +3850,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
+        module_is_namespace_by_module={name: False for name in module_graph},
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -3923,6 +3869,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
         emit_ir_path=None,
         target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
         validate_inputs=lambda: None,
+        module_source_role_by_module={name: "user" for name in module_graph},
     )
 
     assert error is None
@@ -4023,6 +3970,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
+        module_is_namespace_by_module={name: False for name in module_graph},
         known_modules=set(module_graph) | native_artifact_plan.native_module_names(),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -4038,6 +3986,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         target=admit_target("wasm"),
         native_artifact_plan=native_artifact_plan,
         validate_inputs=lambda: None,
+        module_source_role_by_module={name: "user" for name in module_graph},
     )
 
     assert error is None
@@ -4242,7 +4191,7 @@ def test_pure_wasm_dme_roots_do_not_seed_runtime_support_closure() -> None:
         package_parent_modules=frozenset(),
         namespace_module_names=frozenset(),
         runtime_import_dispatch_roots=frozenset({"array", "importlib", "typing"}),
-        runtime_support_modules=frozenset({"importlib", "_molt_importer"}),
+        runtime_support_modules=frozenset({"importlib"}),
         stdlib_support_modules=frozenset({"builtins", "sys", "typing"}),
     )
 
@@ -6393,6 +6342,7 @@ def vectorized_filter(value):
                 "abi": "molt.object_call_v1",
             }
         },
+        module_source_role="user",
     )
 
     gen.visit(ast.parse(source))
@@ -9265,6 +9215,7 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         native_callable_exports={export.qualified_name: export.digest_payload()},
+        module_source_role="user",
     )
     generator.visit(
         ast.parse(
@@ -9344,11 +9295,27 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
     const_strings = {
         op["out"]: op["s_value"] for op in init_ops if op["kind"] == "const_str"
     }
-    spec_index = next(
+    spec_indices = [
         index
         for index, op in enumerate(init_ops)
-        if op["kind"] == "module_set_attr"
+        if op["kind"] == "call"
+        and op.get("s_value") == "molt_module_initialization_spec"
+    ]
+    assert len(spec_indices) == 1
+    spec_index = spec_indices[0]
+    module_value, spec_value = init_ops[spec_index]["args"]
+    assert module_value == envelope["publication"]["module_value"]
+    spec_constructor = next(op for op in init_ops if op.get("out") == spec_value)
+    assert spec_constructor["kind"] == "call_func"
+    spec_type = next(
+        op for op in init_ops if op.get("out") == spec_constructor["args"][0]
+    )
+    assert spec_type["kind"] == "call"
+    assert spec_type["s_value"] == "molt_importlib_module_spec_type"
+    assert not any(
+        op["kind"] == "module_set_attr"
         and const_strings.get(op["args"][1]) == "__spec__"
+        for op in init_ops
     )
     enter_index = next(
         index for index, op in enumerate(init_ops) if op["kind"] == "trace_enter_slot"
@@ -9741,6 +9708,7 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         module_name="application",
         module_execution_kind="module",
         source_path="/virtual/application.py",
+        module_source_role="user",
     )
     generator.visit(ast.parse("pass\n"))
     document = json.loads(json.dumps(generator.to_json(scope="module")))
@@ -9787,11 +9755,15 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         entry_module="application",
         module_graph={"application": Path("/virtual/application.py")},
         logical_source_path_by_module={"application": "/virtual/application.py"},
+        module_is_namespace_by_module={"application": False},
         module_order=["application"],
         runtime_import_dispatch_roots=(),
         native_module_init_specs=(),
         generated_native_init_modules=(),
         spawn_enabled=False,
+        module_source_role_by_module={
+            name: "user" for name in {"application": Path("/virtual/application.py")}
+        },
     )
     rows = {row.name: row for row in registry.rows}
     assert rows["__main__"].init_symbol == rows["application"].init_symbol
@@ -10152,6 +10124,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         is_luau_transpile=False,
+        stdlib_root=import_plan.stdlib_root,
     )
     assert config_error is None
     assert config is not None
@@ -11181,6 +11154,7 @@ def test_frontend_known_modules_do_not_authorize_unknown_children() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"externalpkg"},
         stdlib_allowlist=set(),
+        module_source_role="user",
     )
 
     assert gen._is_known_project_module("externalpkg")
@@ -16593,6 +16567,7 @@ def test_module_lowering_reuses_generated_source_across_output_paths(tmp_path):
             module_chunk_max_ops=0,
             optimization_profile="dev",
             pgo_hot_function_names=(),
+            module_source_role="user",
         )
 
     first_key, second_key = context(first), context(second)
@@ -17014,11 +16989,13 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     def fake_context_payload(
         *args: object,
         source_lease: cli_module_source._ModuleSourceLease,
+        module_source_role: ModuleSourceRole,
         **kwargs: object,
     ) -> dict[str, object] | None:
         del args, kwargs
         nonlocal context_payload_calls
         context_payload_calls += 1
+        assert module_source_role == "user"
         source_lease.validate_path(module_path)
         assert (
             source_lease.source_sha256
@@ -17067,6 +17044,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
         entry_module="__main__",
         entry_execution_kind="script",
         namespace_module_names=set(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
@@ -17169,6 +17147,7 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
         entry_module="__main__",
         entry_execution_kind="script",
         namespace_module_names=set(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
@@ -17322,6 +17301,7 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
         context_digest=context_digest,
+        module_source_role="user",
     )
 
     assert result is not None
@@ -17432,6 +17412,7 @@ def test_frontend_analysis_resolves_known_native_artifact_dependencies(
         entry_module="field_solve",
         entry_execution_kind="script",
         namespace_module_names=set(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     analysis, failure = cli_frontend_pipeline._prepare_frontend_analysis(
@@ -17501,6 +17482,7 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults(
         known_modules_sorted=("alpha", "beta", "main"),
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
+        module_source_role="user",
     )
 
     assert payload is not None
@@ -17542,13 +17524,17 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-a"
     )
     payload_a = cli_module_cache._module_lowering_context_payload(
-        source_lease=source_lease, **kwargs
+        source_lease=source_lease,
+        **kwargs,
+        module_source_role="user",
     )
     monkeypatch.setattr(
         cli_module_cache, "_frontend_semantic_tooling_fingerprint", lambda: "tool-b"
     )
     payload_b = cli_module_cache._module_lowering_context_payload(
-        source_lease=source_lease, **kwargs
+        source_lease=source_lease,
+        **kwargs,
+        module_source_role="user",
     )
 
     assert payload_a is not None
@@ -17600,6 +17586,7 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
             "unrelated::nope",
         ),
         module_dep_closures={"main": frozenset({"main", "alpha", "beta"})},
+        module_source_role="user",
     )
 
     assert payload is not None
@@ -17639,6 +17626,7 @@ def test_module_lowering_context_payload_scopes_known_classes(tmp_path: Path) ->
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
+        module_source_role="user",
     )
 
     assert payload is not None
@@ -17685,6 +17673,7 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
         optimization_profile="dev",
         pgo_hot_function_names=("main::hot", "unrelated::cold"),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
+        module_source_role="user",
     )
 
     assert payload["known_modules"] == ["alpha", "main"]
@@ -17695,6 +17684,7 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     assert set(payload["known_func_defaults"]) == {"main", "alpha"}
     assert set(payload["known_func_kinds"]) == {"main", "alpha"}
     assert payload["pgo_hot_functions"] == ["main::hot"]
+    assert payload["module_source_role"] == "user"
     assert "source" not in payload
     assert payload["source_lease"]["kind"] == "inline"
 
@@ -17725,6 +17715,7 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
         optimization_profile="dev",
         pgo_hot_function_names=(),
         module_dep_closures={"main": frozenset({"main"})},
+        module_source_role="user",
     )
 
     assert payload["stdlib_allowlist"] is stdlib_allowlist_payload
@@ -17815,6 +17806,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
         entry_module="__main__",
         entry_execution_kind="script",
         namespace_module_names=set(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
@@ -17882,6 +17874,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
         namespace_module_names=set(),
         module_source_catalog=module_source_catalog,
         module_deps={"main": {"alpha"}, "alpha": set()},
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     cached_results, worker_payloads, context_digest_by_module, batch_error = (
@@ -17956,6 +17949,7 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
             optimization_profile="dev",
             pgo_hot_function_names=(),
             module_dep_closures={"main": frozenset({"main"})},
+            module_source_role="user",
         )
     )
 
@@ -18010,6 +18004,7 @@ def test_module_lowering_context_payload_scopes_type_facts(tmp_path: Path) -> No
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
+        module_source_role="user",
     )
 
     assert payload is not None
@@ -18052,6 +18047,7 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         optimization_profile="dev",
         pgo_hot_function_names=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
+        module_source_role="user",
     )
 
     scoped = payload["type_facts"]
@@ -18356,6 +18352,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         pgo_hot_function_names=set(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_inputs=scoped_inputs,
+        module_source_role="user",
     )
 
     assert payload is not None
@@ -18410,6 +18407,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         pgo_hot_function_names=(),
         module_dep_closures={"main": frozenset({"main", "alpha"})},
         scoped_inputs=scoped_inputs,
+        module_source_role="user",
     )
 
     assert payload["known_modules"] == ["alpha", "main"]
@@ -18486,6 +18484,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
             type_facts=None,
         ),
         scoped_known_classes={},
+        module_source_role="user",
     )
 
     assert result is not None
@@ -18516,10 +18515,12 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
         ),
         scoped_known_classes={ClassId("main", "MainClass"): {"fields": {}}},
         target_sys_platform=None,
+        module_source_role="user",
     )
 
     assert gen.module_name == "main"
     assert gen.module_execution_kind == "script"
+    assert gen.module_source_role == "user"
     assert gen.target_python == (3, 14)
     assert gen.eager_annotations is False
     assert gen.known_modules == {"alpha", "main"}
@@ -18566,6 +18567,7 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
             type_facts=None,
         ),
         scoped_known_classes={},
+        module_source_role="user",
     )
 
     assert isinstance(digest, str)
@@ -18626,6 +18628,7 @@ def test_module_lowering_context_digest_includes_native_callable_exports(
         source_lease=source_lease,
         native_callable_exports=export_a,
         **common,
+        module_source_role="user",
     )
     digest_b = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
@@ -18633,11 +18636,28 @@ def test_module_lowering_context_digest_includes_native_callable_exports(
         source_lease=source_lease,
         native_callable_exports=export_b,
         **common,
+        module_source_role="user",
     )
 
     assert digest_a is not None
     assert digest_b is not None
     assert digest_a != digest_b
+
+    roles: tuple[ModuleSourceRole, ...] = ("user", "stdlib")
+    role_digests = {
+        role: cli_module_cache._module_lowering_context_digest_for_module(
+            "main",
+            module_path,
+            source_lease=source_lease,
+            native_callable_exports=export_a,
+            module_source_role=role,
+            **common,
+        )
+        for role in roles
+    }
+    assert role_digests["user"] == digest_a
+    assert all(isinstance(digest, str) and digest for digest in role_digests.values())
+    assert len(set(role_digests.values())) == len(roles)
 
 
 def test_module_lowering_context_digest_includes_native_python_exports(
@@ -18676,6 +18696,7 @@ def test_module_lowering_context_digest_includes_native_python_exports(
         source_lease=source_lease,
         native_python_exports={"nativepkg.ndimage.distance_transform_edt"},
         **common,
+        module_source_role="user",
     )
     digest_b = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
@@ -18683,6 +18704,7 @@ def test_module_lowering_context_digest_includes_native_python_exports(
         source_lease=source_lease,
         native_python_exports={"nativepkg.ndimage.gaussian_filter"},
         **common,
+        module_source_role="user",
     )
 
     assert digest_a is not None
@@ -18726,6 +18748,7 @@ def test_module_lowering_context_digest_includes_target_sys_platform(
         source_lease=source_lease,
         target_sys_platform="wasm",
         **common,
+        module_source_role="user",
     )
     digest_darwin = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
@@ -18733,6 +18756,7 @@ def test_module_lowering_context_digest_includes_target_sys_platform(
         source_lease=source_lease,
         target_sys_platform="darwin",
         **common,
+        module_source_role="user",
     )
 
     assert digest_wasm is not None
@@ -18775,6 +18799,7 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         known_func_kinds={"helpers": {"cpu_profile": "sync"}},
         **common,
+        module_source_role="user",
     )
     gen_digest = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
@@ -18782,6 +18807,7 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
         source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
         known_func_kinds={"helpers": {"cpu_profile": "gen"}},
         **common,
+        module_source_role="user",
     )
 
     assert sync_digest is not None
@@ -18846,6 +18872,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
             type_facts=facts_a,
         ),
         scoped_known_classes={},
+        module_source_role="user",
     )
     digest_b = cli_module_cache._module_lowering_context_digest_for_module(
         "main",
@@ -18877,6 +18904,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
             type_facts=facts_b,
         ),
         scoped_known_classes={},
+        module_source_role="user",
     )
 
     assert isinstance(digest_a, str)
@@ -19643,6 +19671,7 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
         entry_module="main",
         entry_execution_kind="script",
         namespace_module_names=set(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
     resolution_cache = cli_module_resolution._ModuleResolutionCache()
 
@@ -20423,6 +20452,7 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
         namespace_module_names={"pkg"},
         module_sources={"app_entry": "print('ok')\n", "pkg": ""},
         module_deps={"app_entry": {"pkg"}, "pkg": set()},
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     assert metadata.logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
@@ -20431,6 +20461,10 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
     assert metadata.module_execution_kind_by_module == {
         "app_entry": "script",
         "pkg": "imported",
+    }
+    assert metadata.module_source_role_by_module == {
+        "app_entry": "user",
+        "pkg": "user",
     }
     assert metadata.frontend_module_costs is not None
     assert metadata.frontend_module_costs["app_entry"] == 12.0 + 512.0
@@ -20753,6 +20787,7 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
         entry_module="pkg",
         entry_execution_kind="module",
         namespace_module_names=set(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     view = cli_module_cache._module_lowering_metadata_view(
@@ -20764,6 +20799,7 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
     assert view.module_is_namespace is False
     assert view.is_package is False
     assert view.module_execution_kind == "module"
+    assert view.module_source_role == "user"
 
 
 def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
@@ -20777,6 +20813,7 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
         entry_module="main",
         entry_execution_kind="script",
         namespace_module_names=set(),
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
     execution_view = cli_module_cache._module_lowering_execution_view(
         "main",
@@ -20915,6 +20952,7 @@ def test_frontend_lower_module_worker_smoke(
         "optimization_profile": "dev",
         "pgo_hot_functions": ["worker_module::molt_main"],
         "target_python": "3.14",
+        "module_source_role": "user",
     }
     result = cli_frontend_worker._frontend_lower_module_worker(payload)
     assert result["ok"] is True
@@ -20965,6 +21003,7 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         is_luau_transpile=False,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     assert failure is None
@@ -21022,6 +21061,7 @@ def test_prepare_frontend_lowering_config_keeps_guarded_policy_for_external_impo
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         is_luau_transpile=False,
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
     assert failure is None
@@ -22050,6 +22090,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
+        module_source_role_by_module={},
     )
     monkeypatch.setattr(
         cli_backend_compile,
@@ -22168,6 +22209,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
+        module_source_role_by_module={},
     )
     _stub_backend_binary_ensure(monkeypatch, tmp_path)
 
@@ -22299,6 +22341,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
+        module_source_role_by_module={},
     )
     _stub_backend_binary_ensure(monkeypatch, tmp_path)
 
@@ -22426,6 +22469,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
+        module_source_role_by_module={},
     )
     _stub_backend_binary_ensure(monkeypatch, tmp_path)
 
@@ -22560,6 +22604,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
+        module_source_role_by_module={},
     )
     _stub_backend_binary_ensure(monkeypatch, tmp_path)
 
@@ -25337,6 +25382,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module=None,
+        module_source_role_by_module={},
     )
     frontend_run_ticket = cli_models._PreparedFrontendRunTicket(
         module_order=[],
@@ -33616,6 +33662,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
     common = dict(
         cache_enabled=True,
@@ -33698,6 +33745,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
@@ -33776,6 +33824,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),

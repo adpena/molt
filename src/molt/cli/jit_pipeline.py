@@ -94,11 +94,14 @@ def _run_jit_pipeline(
     native_artifact_plan = prepared_frontend_pipeline_bundle.native_artifact_plan
     module_graph = prepared_frontend_pipeline_bundle.module_graph
     # The AOT backend pipeline's one source of logical paths (HF-372).
-    logical_source_path_by_module = prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.logical_source_path_by_module
+    graph_metadata = prepared_frontend_pipeline_bundle.prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata
+    logical_source_path_by_module = graph_metadata.logical_source_path_by_module
     prepared_backend_ir, prepared_backend_ir_error = _backend_ir._prepare_backend_ir(
         entry_module=resolved_build_entry.entry_module,
         module_graph=module_graph,
         logical_source_path_by_module=logical_source_path_by_module,
+        module_is_namespace_by_module=graph_metadata.module_is_namespace_by_module,
+        module_source_role_by_module=graph_metadata.module_source_role_by_module,
         known_modules=prepared_frontend_pipeline_bundle.known_modules,
         stdlib_allowlist=prepared_frontend_pipeline_bundle.stdlib_allowlist,
         integration_state=prepared_frontend_pipeline_bundle.integration_state,

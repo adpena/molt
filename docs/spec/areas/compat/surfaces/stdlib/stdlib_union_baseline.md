@@ -76,6 +76,11 @@ Failure of any invariant is a hard CI failure.
 - Generated status artifact:
   - `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 
+Generated union data repeats no tag or commit stamp. Source provenance stays
+in the pins and snapshot, so an unchanged membership table keeps identical
+bytes across a provenance refresh. Token tables use the same rule; see the
+[version-addition workflow](../../../../../DEVELOPER_GUIDE.md#adding-a-cpython-version).
+
 ## 5. Standard Operator Workflows
 ### 5.1 Daily/Feature Work (No Version Change)
 1. Verify that no union name is missing and no stub has drifted:

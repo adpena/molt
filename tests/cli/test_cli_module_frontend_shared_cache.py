@@ -431,6 +431,7 @@ def test_retired_policy_context_cannot_reuse_a_persisted_lowering(
         logical_source_path=str(path),
         is_package=False,
         **_LOWERING_CTX,
+        module_source_role="user",
     )
     assert context is not None and "fallback_policy" not in context
     current_digest = MC._module_lowering_context_digest(context)
@@ -492,6 +493,7 @@ def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None
         logical_source_path=str(path),
         is_package=False,
         **_LOWERING_CTX,
+        module_source_role="user",
     )
     _bump_mtime(path)
     digest_after = MC._module_lowering_context_digest_for_module(
@@ -501,6 +503,7 @@ def test_lowering_context_digest_is_independent_of_mtime(tmp_path: Path) -> None
         logical_source_path=str(path),
         is_package=False,
         **_LOWERING_CTX,
+        module_source_role="user",
     )
     assert digest_before is not None and digest_before == digest_after
 
@@ -779,6 +782,7 @@ def test_changed_target_python_is_not_reused_from_shared(tmp_path, monkeypatch):
             is_package=False,
             target_python=target,
             **_LOWERING_CTX,
+            module_source_role="user",
         )
 
     py312, py313 = TargetPythonVersion(3, 12, 0), TargetPythonVersion(3, 13, 0)
@@ -1023,7 +1027,7 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
     from molt.frontend import SimpleTIRGenerator
 
     path = _write_module(tmp_path, "m", "def answer(value):\n    return value\n")
-    gen = SimpleTIRGenerator(module_name="m")
+    gen = SimpleTIRGenerator(module_name="m", module_source_role="user")
     gen.visit(ast.parse(path.read_text(encoding="utf-8")))
     document = gen.to_json(scope="module")
     result = {

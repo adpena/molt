@@ -110,7 +110,7 @@ def test_serial_lowering_mutation_does_not_change_discovery_tree(
     tree = frontend_worker._resolve_tree_for_serial_frontend_module(
         "app", path, lowering_context=context
     )
-    gen = SimpleTIRGenerator()
+    gen = SimpleTIRGenerator(module_source_role="user")
     gen.visit(tree)
     assert any(
         isinstance(node, ast.Attribute) and node.attr == "_Private__value"
@@ -176,6 +176,7 @@ def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
         optimization_profile="dev",
         pgo_hot_function_names=(),
         module_dep_closures={"app": frozenset({"app"})},
+        module_source_role="user",
     )
 
 
@@ -240,6 +241,7 @@ def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
         scoped_lowering_inputs=scoped,
         module_graph_metadata=_build_module_graph_metadata(
             {"app": path},
+            stdlib_root=tmp_path / "stdlib",
             generated_module_source_paths={},
             entry_module="app",
             entry_execution_kind="script",
@@ -361,7 +363,7 @@ def test_worker_success_carries_the_consumed_source_generation(
 def test_serial_payload_uses_serialized_module_owners_without_rewriting_records() -> (
     None
 ):
-    gen = SimpleTIRGenerator(module_name="app")
+    gen = SimpleTIRGenerator(module_name="app", module_source_role="user")
     gen.visit(ast.parse("def answer(value):\n    return value + 1\n"))
     document = gen.to_json(scope="module")
     assert "molt_main" in gen.func_code_ids
@@ -489,7 +491,7 @@ def test_module_syntax_error_keeps_native_class_args_and_spans(source) -> None:
     assert not any(isinstance(node, ast.Name) for node in ast.walk(tree))
 
     # Exercise the actual protected constructor producer, not a Python fake.
-    gen = SimpleTIRGenerator(module_name="invalid_module")
+    gen = SimpleTIRGenerator(module_name="invalid_module", module_source_role="user")
     gen.visit(tree)
     operations = [op for function in gen.funcs_map.values() for op in function["ops"]]
     constructors = [op for op in operations if op.kind == "EXCEPTION_NEW"]
@@ -518,7 +520,7 @@ def test_module_syntax_error_preserves_print_flag_and_missing_details() -> None:
     ):
         setattr(restored, name, ast.literal_eval(value))
     assert _parser_error_signature(restored) == _parser_error_signature(original)
-    gen = SimpleTIRGenerator(module_name="invalid_module")
+    gen = SimpleTIRGenerator(module_name="invalid_module", module_source_role="user")
     gen.visit(tree)
     operations = [op for function in gen.funcs_map.values() for op in function["ops"]]
     assert any(

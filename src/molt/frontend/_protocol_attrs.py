@@ -146,3 +146,4 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
+    imported_module_attr_mutations: set[tuple[str, str]]

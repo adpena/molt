@@ -21,10 +21,7 @@ _MOLT_IMPORTLIB_SOURCE_FROM_CACHE = _require_intrinsic(
     "molt_importlib_source_from_cache"
 )
 _MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic("molt_importlib_resolve_name")
-_MOLT_IMPORTLIB_ADMIT_SPEC = _require_intrinsic("molt_importlib_admit_spec")
-_MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH = _require_intrinsic(
-    "molt_importlib_ensure_default_meta_path"
-)
+_MOLT_IMPORTLIB_FIND_SPEC = _require_intrinsic("molt_importlib_find_spec")
 _MOLT_IMPORTLIB_MODULE_FROM_SPEC = _require_intrinsic("molt_importlib_module_from_spec")
 _MOLT_IMPORTLIB_SPEC_FROM_LOADER = _require_intrinsic("molt_importlib_spec_from_loader")
 _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION = _require_intrinsic(
@@ -61,10 +58,6 @@ class LazyLoader(metaclass=_abc.ABCMeta):
 MAGIC_NUMBER = b"\x00\x00\x00\x00"
 types = sys.modules.get("types", sys)
 
-def _ensure_default_meta_path() -> None:
-    _MOLT_IMPORTLIB_ENSURE_DEFAULT_META_PATH(_machinery)
-
-
 def _cache_from_source(path: str) -> str:
     cached = _MOLT_IMPORTLIB_CACHE_FROM_SOURCE(path)
     if not isinstance(cached, str):
@@ -93,38 +86,8 @@ def resolve_name(name: str, package: str | None) -> str:
     return _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)
 
 
-_ensure_default_meta_path()
-
-
 def _find_spec(name, path, target=None):
-    # CPython's ordered finder protocol. Finder callbacks own their state;
-    # neither successful results nor absence may be memoized by object identity.
-    meta_path = sys.meta_path
-    if meta_path is None:
-        raise ImportError("sys.meta_path is None, Python is likely shutting down")
-    if not meta_path:
-        from _warnings import warn
-
-        warn("sys.meta_path is empty", ImportWarning)
-    is_reload = name in sys.modules
-    for finder in meta_path:
-        try:
-            find_spec = finder.find_spec
-        except AttributeError:
-            continue
-        spec = find_spec(name, path, target)
-        if spec is not None:
-            if not is_reload and name in sys.modules:
-                try:
-                    published_spec = sys.modules[name].__spec__
-                except AttributeError:
-                    pass
-                else:
-                    if published_spec is not None:
-                        spec = published_spec
-            _MOLT_IMPORTLIB_ADMIT_SPEC(name, spec)
-            return spec
-    return None
+    return _MOLT_IMPORTLIB_FIND_SPEC(name, path, target)
 
 
 def find_spec(name: str, package: str | None = None):

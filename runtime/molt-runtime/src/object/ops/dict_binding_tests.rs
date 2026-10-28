@@ -18,12 +18,19 @@ const PROBE_UNEQUAL: u64 = 0;
 const PROBE_RAISE: u64 = 1;
 const PROBE_RESTRUCTURE: u64 = 2;
 const PROBE_EQUAL: u64 = 3;
+const PROBE_REPLACE_FIRST: u64 = 4;
+const PROBE_REPLACE_SECOND: u64 = 5;
+const PROBE_DELETE_SELF: u64 = 6;
+const PROBE_REPLACE_FIRST_REFUSE_REPEAT: u64 = 7;
+const PROBE_RAISE_OWNED: u64 = 8;
 
 static PROBE_MODE: AtomicU64 = AtomicU64::new(PROBE_UNEQUAL);
 static PROBE_CALLS: AtomicU64 = AtomicU64::new(0);
 static PROBE_DICT: AtomicU64 = AtomicU64::new(0);
 static PROBE_DELETE: AtomicU64 = AtomicU64::new(0);
 static PROBE_INSERT: AtomicU64 = AtomicU64::new(0);
+static PROBE_VALUE: AtomicU64 = AtomicU64::new(0);
+static PROBE_HASH: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_DICT: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_VALUE: AtomicU64 = AtomicU64::new(0);
 static OBSERVED_COMMITTED: AtomicU64 = AtomicU64::new(0);
@@ -31,12 +38,59 @@ static FINALIZER_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// `__eq__` of a key stored under the hash of a bound `str`: ordinary lookup of
 /// that `str` must consult it, and it may raise or restructure the mapping.
-extern "C" fn same_hash_key_eq(_self_bits: u64, _other_bits: u64) -> u64 {
+extern "C" fn same_hash_key_eq(self_bits: u64, _other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let call = PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
         match PROBE_MODE.load(Ordering::SeqCst) {
             PROBE_EQUAL => MoltObject::from_bool(true).bits(),
             PROBE_RAISE => raise_exception::<u64>(py, "RuntimeError", "probe equality failure"),
+            PROBE_RAISE_OWNED => {
+                crate::builtins::exceptions::molt_exception_set_last(
+                    PROBE_VALUE.load(Ordering::SeqCst),
+                );
+                MoltObject::none().bits()
+            }
+            PROBE_DELETE_SELF => {
+                let dict = obj_from_bits(PROBE_DICT.load(Ordering::SeqCst))
+                    .as_ptr()
+                    .unwrap();
+                let detached = unsafe {
+                    dict_remove_identity_with_hash_deferred(
+                        py,
+                        dict,
+                        self_bits,
+                        PROBE_HASH.load(Ordering::SeqCst),
+                    )
+                };
+                drop(detached);
+                MoltObject::from_bool(true).bits()
+            }
+            mode @ (PROBE_REPLACE_FIRST
+            | PROBE_REPLACE_SECOND
+            | PROBE_REPLACE_FIRST_REFUSE_REPEAT) => {
+                if mode == PROBE_REPLACE_FIRST_REFUSE_REPEAT && call != 0 {
+                    return raise_exception::<u64>(
+                        py,
+                        "RuntimeError",
+                        "unexpected second equality",
+                    );
+                }
+                if call == u64::from(mode == PROBE_REPLACE_SECOND) {
+                    let dict = obj_from_bits(PROBE_DICT.load(Ordering::SeqCst))
+                        .as_ptr()
+                        .unwrap();
+                    unsafe {
+                        assert!(dict_set_with_hash_in_place(
+                            py,
+                            dict,
+                            self_bits,
+                            PROBE_VALUE.load(Ordering::SeqCst),
+                            PROBE_HASH.load(Ordering::SeqCst),
+                        ));
+                    }
+                }
+                MoltObject::from_bool(true).bits()
+            }
             PROBE_RESTRUCTURE if call == 0 => {
                 let dict = obj_from_bits(PROBE_DICT.load(Ordering::SeqCst))
                     .as_ptr()
@@ -1210,6 +1264,405 @@ fn prehashed_setdefault_preserves_canonical_key_and_owned_result() {
             assert!(!exception_pending(py));
         }
     });
+}
+
+#[test]
+fn expected_value_removal_resolves_equality_once_and_checks_the_final_value() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let (probe, class, function) = same_hash_probe_key(py);
+            let key = string_key(py, b"expected-value-removal");
+            let hash = dict_key_hash(py, key).unwrap();
+            let original = mortal_value(py);
+            let replacement = mortal_value(py);
+            for mode in [PROBE_REPLACE_FIRST, PROBE_REPLACE_SECOND] {
+                let dict = dict_with_same_hash_key(py, &[], probe, b"expected-value-removal");
+                assert!(dict_set_with_hash_in_place(py, dict, probe, original, hash));
+                PROBE_DICT.store(MoltObject::from_ptr(dict).bits(), Ordering::SeqCst);
+                PROBE_VALUE.store(replacement, Ordering::SeqCst);
+                PROBE_HASH.store(hash, Ordering::SeqCst);
+                PROBE_CALLS.store(0, Ordering::SeqCst);
+                PROBE_MODE.store(mode, Ordering::SeqCst);
+                let retired = dict_del_if_value_deferred(py, dict, key, Some(original)).unwrap();
+                assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
+                if mode == PROBE_REPLACE_FIRST {
+                    assert!(
+                        retired.is_none(),
+                        "callback replacement is outside rollback custody"
+                    );
+                    assert_eq!(dict_entries(dict)[0].value, replacement);
+                    assert_eq!(owners(original), 1);
+                    assert_eq!(owners(replacement), 2);
+                } else {
+                    assert!(retired.is_some(), "one lookup removes the original value");
+                    assert_eq!(dict_len(dict), 0);
+                    assert_eq!(owners(original), 2, "release remains deferred");
+                    assert_eq!(owners(replacement), 1);
+                }
+                drop(retired);
+                PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+                dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+                assert_eq!(owners(original), 1);
+                assert_eq!(owners(replacement), 1);
+            }
+            for bits in [key, original, replacement, probe, class, function] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn eval_builtins_dictionary_survives_last_module_owner_deleted_during_lookup() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = string_key(py, b"builtins");
+            let module = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
+            let builtins = crate::module_dict_bits(obj_from_bits(module).as_ptr().unwrap());
+            crate::builtins::module_table::publish_interpreter_builtins_for_test(py, module);
+            let (probe, class, function) = same_hash_probe_key(py);
+            let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
+            let dict = obj_from_bits(dictionary).as_ptr().unwrap();
+            let previous =
+                crate::builtins::module_table::replace_module_owned_for_test(py, "builtins", None);
+            let hash = dict_key_hash(py, name).unwrap();
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            assert!(dict_set_with_hash_in_place(py, dict, probe, module, hash));
+            dec_ref_bits(py, module); // the entry is the module's sole owner
+            PROBE_DICT.store(dictionary, Ordering::SeqCst);
+            PROBE_HASH.store(hash, Ordering::SeqCst);
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            PROBE_MODE.store(PROBE_DELETE_SELF, Ordering::SeqCst);
+            assert!(
+                crate::builtins::module_table::module_lookup(py, "builtins")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                PROBE_CALLS.load(Ordering::SeqCst),
+                1,
+                "the lookup actually ran destructive Python equality"
+            );
+            assert_eq!(
+                owners(builtins),
+                1,
+                "the interpreter role is the surviving runtime owner"
+            );
+            let view = molt_cpython_abi::api::eval::PyEval_GetBuiltins();
+            assert!(!view.is_null());
+            assert_eq!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .observed_handle_for_pyobj(view)
+                    .unwrap()
+                    .bits(),
+                builtins
+            );
+            assert_eq!(
+                PROBE_CALLS.load(Ordering::SeqCst),
+                1,
+                "the interpreter-role borrow runs no module lookup callbacks"
+            );
+            let projected_owners = owners(builtins);
+            assert_eq!(molt_cpython_abi::api::eval::PyEval_GetBuiltins(), view);
+            assert_eq!(
+                owners(builtins),
+                projected_owners,
+                "reborrowing the stable C view adds no runtime owner"
+            );
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            crate::builtins::module_table::replace_module_owned_for_test(py, "builtins", previous);
+            for bits in [name, probe, class, function] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+            assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        }
+    });
+}
+
+#[test]
+fn shutdown_role_census_does_not_execute_python_key_equality() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = string_key(py, b"_molt_shutdown_census");
+            let (probe, class, function) = same_hash_probe_key(py);
+            let value = mortal_value(py);
+            let state = runtime_state(py);
+            let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
+            let dict = obj_from_bits(dictionary).as_ptr().unwrap();
+            let hash = dict_key_hash(py, name).unwrap();
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            assert!(dict_set_with_hash_in_place(py, dict, probe, value, hash));
+            PROBE_MODE.store(PROBE_RAISE, Ordering::SeqCst);
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            assert_eq!(
+                crate::builtins::module_table::retain_shutdown_namespace(
+                    py,
+                    state,
+                    "_molt_shutdown_census"
+                ),
+                None
+            );
+            assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 0);
+            assert!(!exception_pending(py));
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            assert!(dict_set_in_place(py, dict, name, value));
+            let before = owners(value);
+            PROBE_MODE.store(PROBE_RAISE, Ordering::SeqCst);
+            // Inserting the measured exact name legitimately compared it to
+            // the colliding key. Measure only the following shutdown census.
+            PROBE_CALLS.store(0, Ordering::SeqCst);
+            let retained = crate::builtins::module_table::retain_shutdown_namespace(
+                py,
+                state,
+                "_molt_shutdown_census",
+            )
+            .unwrap();
+            assert_eq!(retained, value);
+            assert_eq!(owners(value), before + 1);
+            dec_ref_bits(py, retained);
+            assert_eq!(owners(value), before);
+            assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 0);
+            for key in [name, probe] {
+                drop(dict_remove_identity_with_hash_deferred(py, dict, key, hash).unwrap());
+            }
+            PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+            for bits in [name, value, probe, class, function] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn module_rollback_keeps_a_value_replaced_by_key_equality() {
+    use crate::builtins::module_table::{self, tests::ModuleTestRestore};
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Phase {
+        Unregistered,
+        Ready,
+        Replaced,
+        Initializing,
+    }
+    for phase in [
+        Phase::Unregistered,
+        Phase::Ready,
+        Phase::Replaced,
+        Phase::Initializing,
+    ] {
+        for ordinary_delete in [false, true] {
+            for already_pending in [false, true] {
+                let _transaction = crate::test_support::RuntimeTestTransaction::new();
+                module_table::tests::install_test_registry();
+                crate::with_gil_entry_nopanic!(py, {
+                    unsafe {
+                        let registered = phase != Phase::Unregistered;
+                        let text = if registered {
+                            "g4_src"
+                        } else {
+                            "_molt_callback_rollback"
+                        };
+                        let (_restore, original) = if registered {
+                            let (scope, module) = ModuleTestRestore::fresh(py, text);
+                            (Some(scope), module)
+                        } else {
+                            (None, mortal_value(py))
+                        };
+                        let name = string_key(py, text.as_bytes());
+                        let (probe, class, function) = same_hash_probe_key(py);
+                        let dictionary =
+                            crate::builtins::module_table::module_dictionary(py).unwrap();
+                        let dict = obj_from_bits(dictionary).as_ptr().unwrap();
+                        if phase == Phase::Replaced {
+                            crate::builtins::modules::module_cache_publish(
+                                name,
+                                original,
+                                crate::builtins::modules::ModuleCachePublication::Extension,
+                            );
+                            assert!(!exception_pending(py));
+                        }
+                        let initializing = (phase == Phase::Initializing)
+                            .then(|| ModuleTestRestore::initializing(py, text, original));
+                        if registered {
+                            // Remove the exact public entry before installing the custom
+                            // key, preserving the actually produced registry phase.
+                            drop(dict_del_deferred(py, dict, name).unwrap());
+                        }
+                        let before = owners(original);
+                        let replacement = mortal_value(py);
+                        let hash = dict_key_hash(py, name).unwrap();
+                        PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+                        assert!(dict_set_with_hash_in_place(py, dict, probe, original, hash));
+                        PROBE_DICT.store(dictionary, Ordering::SeqCst);
+                        PROBE_HASH.store(hash, Ordering::SeqCst);
+                        PROBE_VALUE.store(replacement, Ordering::SeqCst);
+                        PROBE_CALLS.store(0, Ordering::SeqCst);
+                        PROBE_MODE.store(PROBE_REPLACE_FIRST_REFUSE_REPEAT, Ordering::SeqCst);
+                        let pending = already_pending.then(|| {
+                            raise_exception::<()>(py, "ValueError", "original rollback failure");
+                            crate::builtins::exceptions::molt_exception_last_pending()
+                        });
+                        crate::builtins::modules::module_cache_remove(
+                            name,
+                            (!ordinary_delete).then_some(original),
+                        );
+                        assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
+                        if let Some(expected) = pending {
+                            let observed =
+                                crate::builtins::exceptions::molt_exception_last_pending();
+                            assert_eq!(
+                                observed, expected,
+                                "rollback preserves the original exception identity"
+                            );
+                            dec_ref_bits(py, observed);
+                            crate::clear_exception(py);
+                            dec_ref_bits(py, expected);
+                        } else {
+                            assert!(
+                                !exception_pending(py),
+                                "no second equality may raise after the mutation"
+                            );
+                        }
+                        assert_eq!(
+                            dict_find_entry_kv_with_hash(py, dict, probe, hash).unwrap(),
+                            (!ordinary_delete).then_some((probe, replacement))
+                        );
+                        assert_eq!(
+                            owners(original),
+                            before - u32::from(phase == Phase::Initializing)
+                        );
+                        assert_eq!(owners(replacement), if ordinary_delete { 1 } else { 2 });
+                        assert!(!module_table::module_execution_owns_initializing_namespace(
+                            py, text, original
+                        ));
+                        if !ordinary_delete {
+                            drop(
+                                dict_remove_identity_with_hash_deferred(py, dict, probe, hash)
+                                    .unwrap(),
+                            );
+                        }
+                        assert_eq!(owners(replacement), 1);
+                        PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+                        drop(initializing);
+                        if registered {
+                            assert!(module_table::module_lookup(py, text).unwrap().is_none());
+                            let fresh = module_table::module_ensure(
+                                py,
+                                module_table::module_id_of(text).unwrap(),
+                            );
+                            assert!(!exception_pending(py));
+                            assert_ne!(
+                                fresh, original,
+                                "ordinary Missing admission reruns the initializer"
+                            );
+                            dec_ref_bits(py, fresh);
+                        }
+                        for bits in [name, original, replacement, probe, class, function] {
+                            dec_ref_bits(py, bits);
+                        }
+                        assert!(!exception_pending(py));
+                    }
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn module_failure_cleanup_selects_exact_error_and_chains_callback_context() {
+    use crate::builtins::exceptions::{self, ExceptionFieldSlot};
+    for conditional in [false, true] {
+        for pending in [false, true] {
+            for kind in ["KeyError", "RuntimeError"] {
+                let _transaction = crate::test_support::RuntimeTestTransaction::new();
+                crate::with_gil_entry_nopanic!(py, {
+                    unsafe {
+                        let text = b"_molt_failure_cleanup";
+                        let name = string_key(py, text);
+                        let (probe, class, function) = same_hash_probe_key(py);
+                        let dictionary =
+                            crate::builtins::module_table::module_dictionary(py).unwrap();
+                        let dict = obj_from_bits(dictionary).as_ptr().unwrap();
+                        let publication = mortal_value(py);
+                        let hash = hash_string_bytes(py, text) as u64;
+                        PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+                        assert!(dict_set_with_hash_in_place(
+                            py,
+                            dict,
+                            probe,
+                            publication,
+                            hash
+                        ));
+                        let prior = MoltObject::from_ptr(exceptions::alloc_exception(
+                            py,
+                            "ValueError",
+                            "source body",
+                        ))
+                        .bits();
+                        let cleanup = MoltObject::from_ptr(exceptions::alloc_exception(
+                            py,
+                            kind,
+                            "cleanup callback",
+                        ))
+                        .bits();
+                        if pending {
+                            exceptions::molt_exception_set_last(prior);
+                        }
+                        PROBE_VALUE.store(cleanup, Ordering::SeqCst);
+                        PROBE_CALLS.store(0, Ordering::SeqCst);
+                        PROBE_MODE.store(PROBE_RAISE_OWNED, Ordering::SeqCst);
+                        crate::builtins::modules::module_cache_remove(
+                            name,
+                            conditional.then_some(publication),
+                        );
+                        assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
+                        assert!(exception_pending(py));
+                        let selected = exceptions::molt_exception_last_pending();
+                        let preserves = pending && (conditional || kind == "KeyError");
+                        assert_eq!(selected, if preserves { prior } else { cleanup });
+                        let context =
+                            exceptions::exception_field(py, cleanup, ExceptionFieldSlot::Context)
+                                .unwrap();
+                        assert_eq!(
+                            context.bits(),
+                            if pending && !conditional {
+                                prior
+                            } else {
+                                MoltObject::none().bits()
+                            }
+                        );
+                        drop(context);
+                        crate::clear_exception(py);
+                        dec_ref_bits(py, selected);
+                        PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
+                        drop(
+                            dict_remove_identity_with_hash_deferred(py, dict, probe, hash).unwrap(),
+                        );
+                        // Explicitly sever the graph so retirement proves that
+                        // neither the callback nor context transfer leaked an edge.
+                        exceptions::exception_replace_field_bits(
+                            py,
+                            cleanup,
+                            ExceptionFieldSlot::Context,
+                            MoltObject::none().bits(),
+                        )
+                        .unwrap();
+                        for bits in [name, probe, class, function, publication, prior, cleanup] {
+                            dec_ref_bits(py, bits);
+                        }
+                        assert!(!exception_pending(py));
+                    }
+                });
+            }
+        }
+    }
 }
 
 #[test]

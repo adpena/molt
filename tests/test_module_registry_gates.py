@@ -20,6 +20,7 @@ G7  test_module_registry_schema_authority_is_synchronized — the blob layout
 from __future__ import annotations
 
 from molt.cli.config_resolution import _select_codegen_backend
+
 from tests.process_guard_common import run_guarded_test_process
 
 import json
@@ -77,12 +78,16 @@ def _sample_registry():
     return build_module_registry(
         [
             ModuleRegistryEntry(
+                is_stdlib_provider=False,
+                has_location=True,
                 name="demo",
                 kind="source",
                 init_symbol="molt_init_demo",
                 origin="/app/demo.py",
             ),
             ModuleRegistryEntry(
+                is_stdlib_provider=False,
+                has_location=True,
                 name="pkg",
                 kind="source",
                 init_symbol="molt_init_pkg",
@@ -90,18 +95,40 @@ def _sample_registry():
                 origin="/app/pkg/__init__.py",
             ),
             ModuleRegistryEntry(
-                name="pkg.sub", kind="source", init_symbol="molt_init_pkg__sub"
+                is_stdlib_provider=False,
+                has_location=False,
+                name="pkg.sub",
+                kind="source",
+                init_symbol="molt_init_pkg__sub",
             ),
             ModuleRegistryEntry(
+                is_stdlib_provider=False,
+                has_location=False,
                 name="ext._native",
                 kind="extension",
                 init_symbol="molt_init_ext___native",
             ),
-            ModuleRegistryEntry(name="os.path", kind="alias", alias_of="pkg.sub"),
             ModuleRegistryEntry(
-                name="sys", kind="runtime_builtin", init_symbol="molt_init_sys"
+                is_stdlib_provider=False,
+                has_location=False,
+                name="os.path",
+                kind="alias",
+                alias_of="pkg.sub",
             ),
-            ModuleRegistryEntry(name="lazy_row", kind="source", init_symbol=""),
+            ModuleRegistryEntry(
+                is_stdlib_provider=False,
+                has_location=False,
+                name="sys",
+                kind="runtime_builtin",
+                init_symbol="molt_init_sys",
+            ),
+            ModuleRegistryEntry(
+                is_stdlib_provider=False,
+                has_location=False,
+                name="lazy_row",
+                kind="source",
+                init_symbol="",
+            ),
         ]
     )
 
@@ -125,6 +152,16 @@ def test_module_registry_projection_digests(tmp_path: Path) -> None:
 
     # The emitted diagnostics projection re-derives cleanly.
     assert check_registry_json_payload(json_payload) == []
+    old_schema = dict(json_payload, schema=2)
+    assert any(
+        "schema mismatch" in issue for issue in check_registry_json_payload(old_schema)
+    )
+    changed_location = json.loads(json.dumps(json_payload))
+    changed_location["rows"][0]["flags"] ^= authority.MODULE_FLAG_HAS_LOCATION
+    assert any(
+        "registry_digest mismatch" in issue
+        for issue in check_registry_json_payload(changed_location)
+    ), "file provenance participates in the existing digest"
 
     # The checker CLI is the out-of-build gate: clean file passes...
     clean_path = tmp_path / "module_registry.json"
@@ -187,9 +224,41 @@ def test_module_registry_json_checker_rejects_malformed_rows() -> None:
     assert any(problem.startswith("registry_digest mismatch") for problem in problems)
 
 
+@pytest.mark.parametrize("flags", [None, False, True, -1, 256, 0x20, 0x80, 1.0, "0"])
+def test_module_registry_json_checker_rejects_untyped_or_unknown_flags(flags) -> None:
+    payload = _sample_registry().registry_json_payload()
+    payload["rows"][0]["flags"] = flags
+    assert any(
+        "flags must be a required integer byte" in issue
+        for issue in check_registry_json_payload(payload)
+    )
+
+
+def test_module_registry_json_checker_requires_flags_and_admits_all_known_bits() -> (
+    None
+):
+    payload = _sample_registry().registry_json_payload()
+    del payload["rows"][0]["flags"]
+    assert any(
+        "flags must be a required integer byte" in issue
+        for issue in check_registry_json_payload(payload)
+    )
+    for flags in range(authority.MODULE_FLAG_KNOWN_MASK + 1):
+        payload["rows"][0]["flags"] = flags
+        assert not any(
+            "flags must be a required integer byte" in issue
+            for issue in check_registry_json_payload(payload)
+        )
+
+
 def test_runtime_builtin_declaration_requires_initializer() -> None:
     with pytest.raises(ValueError, match="runtime builtin.*requires init_symbol"):
-        ModuleRegistryEntry(name="builtins", kind="runtime_builtin")
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=False,
+            name="builtins",
+            kind="runtime_builtin",
+        )
 
 
 @pytest.mark.parametrize("missing", ["init_symbol", "flags"])
@@ -277,6 +346,10 @@ def test_module_registry_blob_layout_matches_schema() -> None:
     package_row = registry.row_of("pkg")
     assert package_row is not None
     assert package_row.flags & authority.MODULE_FLAG_PACKAGE
+    assert package_row.flags & authority.MODULE_FLAG_HAS_LOCATION
+    assert registry.row_of("demo").flags & authority.MODULE_FLAG_HAS_LOCATION
+    assert not registry.row_of("pkg.sub").flags & authority.MODULE_FLAG_HAS_LOCATION
+    assert not registry.row_of("sys").flags & authority.MODULE_FLAG_HAS_LOCATION
     assert set(payload["init_symbols"]) == reloc_symbols
 
 
@@ -296,9 +369,9 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
     )
     assert (
         _rust_const(reader, "MODULE_REGISTRY_MAGIC")
-        == 'u64::from_le_bytes(*b"MOLTMOD2")'
+        == 'u64::from_le_bytes(*b"MOLTMOD4")'
     )
-    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD2", "little")
+    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD4", "little")
     assert _rust_const(reader, "MODULE_REGISTRY_HEADER_BYTES") == str(
         authority.MODULE_REGISTRY_HEADER_BYTES
     )
@@ -311,6 +384,10 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
     assert authority.MODULE_FLAG_PACKAGE == 0x02
     assert _rust_const(reader, "MODULE_FLAG_HAS_BODY") == "0x04"
     assert authority.MODULE_FLAG_HAS_BODY == 0x04
+    assert _rust_const(reader, "MODULE_FLAG_HAS_LOCATION") == "0x08"
+    assert authority.MODULE_FLAG_STDLIB_PROVIDER == 0x10
+    assert _rust_const(reader, "MODULE_FLAG_STDLIB_PROVIDER") == "0x10"
+    assert authority.MODULE_FLAG_HAS_LOCATION == 0x08
     for kind_name, code in (
         ("MODULE_KIND_SOURCE", authority.MODULE_KIND_SOURCE),
         ("MODULE_KIND_EXTENSION", authority.MODULE_KIND_EXTENSION),
@@ -319,6 +396,110 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
         ("MODULE_KIND_RUNTIME_BUILTIN", authority.MODULE_KIND_RUNTIME_BUILTIN),
     ):
         assert _rust_const(reader, kind_name) == str(code)
+
+
+def test_module_registry_file_provenance_uses_existing_namespace_plan() -> None:
+    from molt.cli import backend_ir
+
+    # Identical-looking source paths do not imply identical roles. The
+    # namespace fact is the same admitted input consumed by the frontend.
+    graph = {
+        "entry": Path("/virtual/entry.py"),
+        "namespace": Path("/virtual/namespace.py"),
+        "sys": Path("/virtual/sys.py"),
+    }
+    registry = backend_ir._build_module_registry(
+        entry_module="entry",
+        module_graph=graph,
+        logical_source_path_by_module={name: str(path) for name, path in graph.items()},
+        module_source_role_by_module={name: "user" for name in graph},
+        module_is_namespace_by_module={
+            "entry": False,
+            "namespace": True,
+            "sys": False,
+        },
+        module_order=list(graph),
+        runtime_import_dispatch_roots=set(graph),
+        native_module_init_specs=(),
+        generated_native_init_modules=(),
+        spawn_enabled=False,
+    )
+    for name in ("entry", "__main__", "sys"):
+        assert registry.row_of(name).flags & authority.MODULE_FLAG_HAS_LOCATION
+    assert not registry.row_of("namespace").flags & authority.MODULE_FLAG_HAS_LOCATION
+
+
+def test_registry_provider_role_comes_from_resolved_source_not_module_or_path_spelling(
+    tmp_path: Path,
+) -> None:
+    from molt.cli import backend_ir, module_graph
+
+    root = tmp_path / "stdlib"
+    external = tmp_path / "project"
+    boundary = tmp_path / "stdlib-suffix"
+    for directory in (root, external, boundary):
+        directory.mkdir()
+        (directory / "msilib.py").write_text("marker = 42\n", encoding="utf-8")
+    for directory, expected in ((root, True), (external, False), (boundary, False)):
+        graph = {"msilib": directory / "msilib.py"}
+        metadata = module_graph._build_module_graph_metadata(
+            graph,
+            stdlib_root=root,
+            generated_module_source_paths={},
+            entry_module="msilib",
+            entry_execution_kind="script",
+            namespace_module_names=(),
+        )
+        registry = backend_ir._build_module_registry(
+            entry_module="msilib",
+            module_graph=graph,
+            logical_source_path_by_module=metadata.logical_source_path_by_module,
+            module_source_role_by_module=metadata.module_source_role_by_module,
+            module_is_namespace_by_module=metadata.module_is_namespace_by_module,
+            module_order=list(graph),
+            runtime_import_dispatch_roots=set(graph),
+            native_module_init_specs=(),
+            generated_native_init_modules=(),
+            spawn_enabled=False,
+        )
+        assert (
+            bool(
+                registry.row_of("msilib").flags & authority.MODULE_FLAG_STDLIB_PROVIDER
+            )
+            is expected
+        )
+        # Only the fixed program-entry body is a direct-file capability.
+        # The named catalog row above keeps its actual provider policy.
+        assert not (
+            registry.row_of("__main__").flags & authority.MODULE_FLAG_STDLIB_PROVIDER
+        )
+        assert (
+            registry.row_of("__main__").init_symbol
+            == registry.row_of("msilib").init_symbol
+        )
+        assert registry.row_of("__main__").origin == registry.row_of("msilib").origin
+        assert check_registry_json_payload(registry.registry_json_payload()) == []
+
+
+def test_source_provider_flag_is_required_closed_boolean_and_digest_fact() -> None:
+    from dataclasses import replace
+
+    base = ModuleRegistryEntry(
+        name="msilib",
+        kind="source",
+        has_location=True,
+        is_stdlib_provider=False,
+        init_symbol="molt_init_msilib",
+        origin="/admitted/msilib.py",
+    )
+    user = build_module_registry([base])
+    stdlib = build_module_registry([replace(base, is_stdlib_provider=True)])
+    assert user.digest != stdlib.digest
+    assert not user.row_of("msilib").flags & authority.MODULE_FLAG_STDLIB_PROVIDER
+    assert stdlib.row_of("msilib").flags & authority.MODULE_FLAG_STDLIB_PROVIDER
+    for invalid in (None, 0, 1, "stdlib"):
+        with pytest.raises(TypeError, match="is_stdlib_provider"):
+            replace(base, is_stdlib_provider=invalid)
 
 
 def test_module_registry_blob_symbol_is_one_name_everywhere() -> None:
@@ -389,6 +570,8 @@ def _prepare_binary_ir(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
+        module_is_namespace_by_module={name: False for name in module_graph},
+        module_source_role_by_module={name: "user" for name in module_graph},
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -477,6 +660,8 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
     demo_row = registry.row_of("demo")
     main_row = registry.row_of("__main__")
     assert demo_row is not None and main_row is not None
+    assert demo_row.flags & authority.MODULE_FLAG_HAS_LOCATION
+    assert main_row.flags & authority.MODULE_FLAG_HAS_LOCATION
     assert main_row.init_symbol == demo_row.init_symbol
 
 
@@ -628,7 +813,7 @@ def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
     assert {"kind": "check_exception", "value": 1} in ops
 
 
-def test_rewrite_lowers_a_lone_plain_import_and_keeps_siteless_functions() -> None:
+def test_rewrite_preserves_public_transactions_and_siteless_functions() -> None:
     from molt.cli import backend_ir as BACKEND_IR
 
     registry = _sample_registry()
@@ -660,21 +845,16 @@ def test_rewrite_lowers_a_lone_plain_import_and_keeps_siteless_functions() -> No
 
     assert BACKEND_IR._rewrite_native_import_lanes(functions, registry) is None
 
-    ops = functions[0]["ops"]
-    calls = [op for op in ops if op.get("s_value") == "molt_module_ensure"]
-    # `import a.b` ensures a.b, then binds the top-level module.
-    assert [_ensure_call_module_name(ops, op) for op in calls] == ["pkg.sub", "pkg"]
-    assert calls[-1]["out"] == "v5"
-    assert not [op for op in ops if op.get("kind") == "call_func"]
+    # Catalog admission does not prove the public finder binding. Preserve
+    # the complete transaction (including globals/fromlist/level), not only a
+    # replacement opcode that happens to return the same module on a cache hit.
+    assert functions[0]["ops"] is plain_import
     assert functions[1]["ops"] is siteless
 
 
-@pytest.mark.parametrize(
-    ("module", "expected_owners"),
-    [("pkg", ["pkg"]), ("pkg.sub", ["pkg.sub", "pkg"])],
-)
-def test_frontend_plain_imports_lower_to_symbolic_ensure_slots(
-    module: str, expected_owners: list[str]
+@pytest.mark.parametrize("module", ["pkg", "pkg.sub"])
+def test_frontend_plain_imports_preserve_public_transaction_arguments(
+    module: str,
 ) -> None:
     import ast
     from copy import deepcopy
@@ -706,17 +886,9 @@ def test_frontend_plain_imports_lower_to_symbolic_ensure_slots(
         backend_ir._rewrite_native_import_lanes(functions, _sample_registry()) is None
     )
     assert original == before
-    assert functions[0] is not original
-    ops = functions[0]["ops"]
-    ensures = [op for op in ops if op.get("s_value") == "molt_module_ensure"]
-    assert [_ensure_call_module_name(ops, op) for op in ensures] == expected_owners
-    assert ensures[-1]["out"] == transaction["out"]
-    assert not any(
-        op.get("s_value") == "molt_importlib_import_transaction" for op in ops
-    )
-    assert [op for op in ops if op["kind"] == "check_exception"] == [
-        op for op in before["ops"] if op["kind"] == "check_exception"
-    ]
+    assert functions[0] is original
+    assert functions[0]["ops"] == before["ops"]
+    assert transaction in functions[0]["ops"]
 
 
 @pytest.mark.parametrize("statement", ["from pkg import sub", "import missing"])
@@ -812,15 +984,41 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
     from molt.cli import backend_ir
 
     entries = [
-        ModuleRegistryEntry(name="pkg", kind="source", init_symbol="molt_init_pkg"),
         ModuleRegistryEntry(
-            name="pkg.sub", kind="source", init_symbol="molt_init_pkg_sub"
+            is_stdlib_provider=False,
+            has_location=False,
+            name="pkg",
+            kind="source",
+            init_symbol="molt_init_pkg",
         ),
-        ModuleRegistryEntry(name="alias", kind="alias", alias_of="pkg.sub"),
         ModuleRegistryEntry(
-            name="__main__", kind="source", init_symbol="molt_init_entry"
+            is_stdlib_provider=False,
+            has_location=False,
+            name="pkg.sub",
+            kind="source",
+            init_symbol="molt_init_pkg_sub",
         ),
-        ModuleRegistryEntry(name="entry", kind="source", init_symbol="molt_init_entry"),
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=False,
+            name="alias",
+            kind="alias",
+            alias_of="pkg.sub",
+        ),
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=False,
+            name="__main__",
+            kind="source",
+            init_symbol="molt_init_entry",
+        ),
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=False,
+            name="entry",
+            kind="source",
+            init_symbol="molt_init_entry",
+        ),
     ]
     original: list[dict[str, Any]] = [
         {
@@ -848,7 +1046,15 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
     bindings = []
     for additional in [
         [],
-        [ModuleRegistryEntry(name="aaa", kind="source", init_symbol="molt_init_aaa")],
+        [
+            ModuleRegistryEntry(
+                is_stdlib_provider=False,
+                has_location=False,
+                name="aaa",
+                kind="source",
+                init_symbol="molt_init_aaa",
+            )
+        ],
     ]:
         registry = build_module_registry(entries + additional)
         functions = deepcopy(original)
@@ -861,9 +1067,10 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
         assert [_ensure_call_module_name(ops, op) for op in calls] == [
             "alias",
             "__main__",
-            "pkg.sub",
-            "pkg",
         ]
+        assert original[0]["ops"][7] in ops, (
+            "ordinary transaction is independent of catalog growth"
+        )
     assert bindings[0] != bindings[1]
     assert snapshots[0] == snapshots[1]
 
@@ -879,9 +1086,17 @@ def _strip_line_comments(text: str) -> str:
 
 def test_module_ensure_is_the_only_state_transition_owner() -> None:
     owner = MODULE_TABLE_RS
+    owner_tests = RUNTIME_SRC / "builtins" / "module_table" / "tests.rs"
+    # Tests stay inside the same private owner module behind its actual
+    # cfg(test) declaration; production files retain the strict scan below.
+    owner_source = owner.read_text(encoding="utf-8")
+    assert re.search(
+        r'#\[cfg\(test\)\]\s*#\[path\s*=\s*"module_table/tests.rs"\]\s*pub\(crate\)\s+mod tests;',
+        owner_source,
+    )
     offenders: list[str] = []
     for path in RUNTIME_SRC.rglob("*.rs"):
-        if path == owner:
+        if path in (owner, owner_tests):
             continue
         text = _strip_line_comments(path.read_text(encoding="utf-8", errors="replace"))
         if "fn molt_module_ensure" in text:
@@ -897,20 +1112,23 @@ def test_module_ensure_is_the_only_state_transition_owner() -> None:
             if needle in text:
                 offenders.append(
                     f"{path}: calls the sys.modules view mutation entry point "
-                    f"{needle} (PR2 owns wiring it to the dict view)"
+                    f"{needle} (only the module owner reconciles initialization metadata)"
                 )
     # Publication and deferred detachment have exactly one sanctioned caller:
     # module_cache_set/remove in builtins/modules.rs. Detachment returns an
     # owned reference for release after every namespace owner agrees.
     modules_rs = (RUNTIME_SRC / "builtins" / "modules.rs").read_text(encoding="utf-8")
-    assert "publish_from_cache_set" in modules_rs
+    assert "publish_initializing_namespace" in modules_rs
     assert "detach_cache_publication" in modules_rs
     for path in RUNTIME_SRC.rglob("*.rs"):
-        if path in (owner, RUNTIME_SRC / "builtins" / "modules.rs"):
+        if path in (owner, owner_tests, RUNTIME_SRC / "builtins" / "modules.rs"):
             continue
         text = _strip_line_comments(path.read_text(encoding="utf-8", errors="replace"))
-        if "publish_from_cache_set" in text or "detach_cache_publication" in text:
-            offenders.append(f"{path}: unsanctioned publication-bridge caller")
+        if (
+            "publish_initializing_namespace" in text
+            or "detach_cache_publication" in text
+        ):
+            offenders.append(f"{path}: unsanctioned initializer-publication caller")
     assert offenders == [], "\n".join(offenders)
 
 

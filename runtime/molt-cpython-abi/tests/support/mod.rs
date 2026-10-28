@@ -294,6 +294,8 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             iter_check,
             iter_next,
             sys_get_object_borrowed,
+            import_module_dict_borrowed,
+            import_get_module,
             eval_get_builtins_borrowed,
             object_hash,
             type_dict_borrowed,

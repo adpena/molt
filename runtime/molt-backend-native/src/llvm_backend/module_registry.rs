@@ -6,7 +6,7 @@
 //! (`molt.cli.module_registry`); this emitter splits them at the relocation
 //! offsets into a packed LLVM constant struct whose pointer fields carry the
 //! init-function-address relocations.  Every relocation offset is 8-aligned
-//! by the layout contract (header 48 bytes, rows 32 bytes, init pointer at
+//! by the layout contract (header 48 bytes, rows 40 bytes, init pointer at
 //! row offset 8), so the packed struct with global alignment 8 places each
 //! pointer exactly at its blob offset.
 

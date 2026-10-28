@@ -17,7 +17,6 @@ from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 from molt.target_python import TargetPythonVersion
 
 _MODULE_IMPORT_SCANNER_NAMES = (
-    "IMPORTER_MODULE_NAME",
     "_IMPORT_SCAN_MODES",
     "_RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES",
     "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
@@ -29,7 +28,6 @@ _MODULE_IMPORT_SCANNER_NAMES = (
     "_collect_static_source_execution_requests",
     "_expand_static_package_all_star_children",
     "_complete_import_scan",
-    "_explicit_imports_reference_generated_importer",
     "_module_graph_needs_runtime_import_support",
     "_module_init_scan_nodes",
     "_StaticImportCallPayload",
@@ -39,7 +37,6 @@ _MODULE_IMPORT_SCANNER_NAMES = (
 )
 
 _MODULE_IMPORT_SCANNER_DEFINITIONS = (
-    "IMPORTER_MODULE_NAME =",
     "_IMPORT_SCAN_MODES =",
     "_RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES =",
     "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES =",
@@ -51,7 +48,6 @@ _MODULE_IMPORT_SCANNER_DEFINITIONS = (
     "def _collect_static_source_execution_requests(",
     "def _expand_static_package_all_star_children(",
     "def _complete_import_scan(",
-    "def _explicit_imports_reference_generated_importer(",
     "def _module_graph_needs_runtime_import_support(",
     "def _module_init_scan_nodes(",
     "class _StaticImportCallPayload:",

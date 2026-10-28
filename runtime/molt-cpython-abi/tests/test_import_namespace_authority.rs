@@ -9,8 +9,7 @@ mod support;
 
 use molt_cpython_abi::abi_types::{MoltTypeTag, PyObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
-use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
-use molt_lang_obj_model::MoltObject;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, OwnedHandleResult, RuntimeHooks};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -24,8 +23,6 @@ static DICTS: LazyLock<Mutex<HashMap<u64, HashMap<u64, u64>>>> =
 static MODULES: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 static MODULE_DICTS: LazyLock<Mutex<HashMap<u64, u64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static REFCOUNTS: LazyLock<Mutex<HashMap<u64, usize>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static SYS_MODULES: Mutex<u64> = Mutex::new(0);
 static DEFAULT_BUILTINS: Mutex<u64> = Mutex::new(0);
@@ -35,44 +32,60 @@ static FAIL_ADD_PUBLICATION: AtomicBool = AtomicBool::new(false);
 static FAIL_BUILTINS_LOOKUP: AtomicBool = AtomicBool::new(false);
 static ADD_CALLS: AtomicUsize = AtomicUsize::new(0);
 static IMPORT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static GET_MODE: AtomicUsize = AtomicUsize::new(0);
+static GET_CALLS: AtomicUsize = AtomicUsize::new(0);
 static MODULE_ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static MODULE_DECREFS: AtomicUsize = AtomicUsize::new(0);
+static MODULE_RETIREMENTS: AtomicUsize = AtomicUsize::new(0);
 
-fn fresh_handle() -> u64 {
-    let ptr: *mut u64 = Box::leak(Box::new(0u64));
-    let bits = MoltObject::from_ptr(ptr.cast::<u8>()).bits();
-    REFCOUNTS.lock().unwrap().insert(bits, 1);
-    bits
-}
-
-unsafe extern "C" fn inc_ref(bits: u64) {
-    let mut refs = REFCOUNTS.lock().unwrap();
-    let count = refs.get_mut(&bits).expect("retained handle must be live");
-    *count = count.checked_add(1).expect("test refcount overflow");
-}
-
-unsafe extern "C" fn dec_ref(bits: u64) {
-    let is_module = MODULES.lock().unwrap().contains(&bits);
-    if is_module {
-        MODULE_DECREFS.fetch_add(1, Ordering::SeqCst);
+fn retire_fixture_handle(bits: u64) {
+    let is_module = MODULES.lock().unwrap().remove(&bits);
+    let module_dict = MODULE_DICTS.lock().unwrap().remove(&bits);
+    let entries = DICTS.lock().unwrap().remove(&bits);
+    let string = STRINGS.lock().unwrap().remove(&bits);
+    if let Some(string) = string {
+        let mut interned = INTERNED.lock().unwrap();
+        if interned.get(&string) == Some(&bits) {
+            interned.remove(&string);
+        }
     }
-    let reached_zero = {
-        let mut refs = REFCOUNTS.lock().unwrap();
-        let count = refs.get_mut(&bits).expect("released handle must be live");
-        assert!(*count > 0, "test refcount underflow for {bits:#x}");
-        *count -= 1;
-        *count == 0
-    };
-    if reached_zero && is_module {
-        MODULES.lock().unwrap().remove(&bits);
-        if let Some(dict) = MODULE_DICTS.lock().unwrap().remove(&bits) {
-            unsafe { dec_ref(dict) };
+    // Retirement is selected by the shared bridge-aware runtime owner. No
+    // payload mutex survives recursive release of the module/dictionary edges.
+    if is_module {
+        MODULE_RETIREMENTS.fetch_add(1, Ordering::SeqCst);
+    }
+    if let Some(dict) = module_dict {
+        unsafe { dec_ref(dict) };
+    }
+    if let Some(entries) = entries {
+        for (key, value) in entries {
+            unsafe {
+                dec_ref(key);
+                dec_ref(value);
+            }
         }
     }
 }
 
+fn fresh_handle() -> u64 {
+    let bits = support::fake_runtime::fresh_handle();
+    support::fake_runtime::observe_retirement(bits, retire_fixture_handle);
+    bits
+}
+
+unsafe extern "C" fn inc_ref(bits: u64) {
+    unsafe { support::fake_runtime::inc_ref(bits) };
+}
+
+unsafe extern "C" fn dec_ref(bits: u64) {
+    if MODULES.lock().unwrap().contains(&bits) {
+        MODULE_DECREFS.fetch_add(1, Ordering::SeqCst);
+    }
+    unsafe { support::fake_runtime::dec_ref(bits) };
+}
+
 unsafe extern "C" fn ref_count(bits: u64) -> usize {
-    REFCOUNTS.lock().unwrap().get(&bits).copied().unwrap_or(0)
+    unsafe { support::fake_runtime::ref_count(bits) }
 }
 
 unsafe extern "C" fn alloc_str(data: *const u8, len: usize) -> u64 {
@@ -148,6 +161,23 @@ fn store_dict_entry(dict: u64, key: u64, value: u64) -> bool {
     true
 }
 
+fn remove_dict_entry(dict: u64, key: u64) -> bool {
+    let removed = DICTS
+        .lock()
+        .unwrap()
+        .get_mut(&dict)
+        .and_then(|entries| entries.remove_entry(&key));
+    if let Some((key, value)) = removed {
+        unsafe {
+            dec_ref(key);
+            dec_ref(value);
+        }
+        true
+    } else {
+        false
+    }
+}
+
 fn lookup_name(dict: u64, name: &[u8]) -> Option<u64> {
     let key = INTERNED.lock().unwrap().get(name).copied()?;
     DICTS.lock().unwrap().get(&dict)?.get(&key).copied()
@@ -169,16 +199,7 @@ fn set_exact_hook_error(exc_type: *mut PyObject) {
     }
 }
 
-unsafe extern "C" fn sys_get_object_borrowed(
-    data: *const u8,
-    len: usize,
-    _policy: molt_cpython_abi::hooks::SysLookupPolicy,
-) -> BorrowedHandleResult {
-    assert_eq!(_policy, molt_cpython_abi::hooks::SysLookupPolicy::Propagate);
-    let name = unsafe { std::slice::from_raw_parts(data, len) };
-    if name != b"modules" {
-        return BorrowedHandleResult::missing();
-    }
+unsafe extern "C" fn import_module_dict_borrowed() -> BorrowedHandleResult {
     if FAIL_SYS_MODULES.load(Ordering::SeqCst) {
         set_exact_hook_error(
             (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast::<PyObject>(),
@@ -193,6 +214,32 @@ unsafe extern "C" fn sys_get_object_borrowed(
         BorrowedHandleResult::error()
     } else {
         BorrowedHandleResult::ok(modules)
+    }
+}
+
+unsafe extern "C" fn import_get_module(name: u64) -> OwnedHandleResult {
+    GET_CALLS.fetch_add(1, Ordering::SeqCst);
+    match GET_MODE.load(Ordering::SeqCst) {
+        1 => return OwnedHandleResult::missing(),
+        2 => {
+            set_exact_hook_error((&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast());
+            return OwnedHandleResult::error();
+        }
+        _ => {}
+    }
+    let dictionary = *SYS_MODULES.lock().unwrap();
+    let value = DICTS
+        .lock()
+        .unwrap()
+        .get(&dictionary)
+        .and_then(|dict| dict.get(&name))
+        .copied();
+    match value {
+        Some(bits) => {
+            unsafe { inc_ref(bits) };
+            OwnedHandleResult::ok(bits)
+        }
+        None => OwnedHandleResult::missing(),
     }
 }
 
@@ -326,11 +373,13 @@ fn imports_share_one_namespace_and_publication_is_transactional() {
     hooks.alloc_str = Some(alloc_str);
     hooks.str_data = str_data;
     hooks.classify_heap = Some(classify_heap);
-    hooks.sys_get_object_borrowed = sys_get_object_borrowed;
+    hooks.import_module_dict_borrowed = import_module_dict_borrowed;
+    hooks.import_get_module = import_get_module;
     hooks.eval_get_builtins_borrowed = eval_get_builtins_borrowed;
     hooks.inc_ref = inc_ref;
     hooks.dec_ref = dec_ref;
     hooks.ref_count = Some(ref_count);
+    hooks.try_mark_abi_view = support::fake_runtime::try_mark_abi_view;
     hooks.alloc_module = alloc_module;
     hooks.module_get_dict_borrowed = module_get_dict_borrowed;
     hooks.import_add_module_borrowed = import_add_module_borrowed;
@@ -407,6 +456,91 @@ fn imports_share_one_namespace_and_publication_is_transactional() {
         MODULE_ALLOCS.load(Ordering::SeqCst),
         allocations_before_success + 1,
         "an existing module must be returned without a second allocation"
+    );
+
+    let get_key = unsafe { alloc_str(b"published".as_ptr(), b"published".len()) };
+    let get_name = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(get_key) };
+    let before_get = unsafe { ref_count(first_bits) };
+    let before_c_get = unsafe { (*first).ob_refcnt };
+    let found = unsafe { molt_cpython_abi::api::imports::PyImport_GetModule(get_name) };
+    assert_eq!(found, first, "GetModule returns the canonical C view");
+    assert_eq!(bits_of(found), first_bits);
+    assert_eq!(
+        unsafe { (*found).ob_refcnt },
+        before_c_get + 1,
+        "GetModule returns a new direct C reference"
+    );
+    assert_eq!(
+        unsafe { ref_count(first_bits) },
+        before_get,
+        "the hook's owned runtime result transfers into the existing C view"
+    );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(found) };
+    assert_eq!(unsafe { (*first).ob_refcnt }, before_c_get);
+    assert_eq!(unsafe { ref_count(first_bits) }, before_get);
+
+    // A hook miss can mean post-probe identity changed. The ABI must not
+    // reconstruct the value from the dictionary or load it on a cache miss.
+    GET_MODE.store(1, Ordering::SeqCst);
+    assert!(unsafe { molt_cpython_abi::api::imports::PyImport_GetModule(get_name) }.is_null());
+    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    GET_MODE.store(2, Ordering::SeqCst);
+    assert!(unsafe { molt_cpython_abi::api::imports::PyImport_GetModule(get_name) }.is_null());
+    assert_matches((&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    GET_MODE.store(0, Ordering::SeqCst);
+
+    // The owned C result must outlive public dictionary deletion, with no
+    // hidden name/cache owner. Its final DECREF retires the module, dictionary
+    // and bridge identity through the shared fixture runtime's real lifecycle.
+    let retained = unsafe { molt_cpython_abi::api::imports::PyImport_GetModule(get_name) };
+    assert_eq!(retained, first);
+    let module_dictionary = *MODULE_DICTS.lock().unwrap().get(&first_bits).unwrap();
+    let retired_before = MODULE_RETIREMENTS.load(Ordering::SeqCst);
+    assert!(remove_dict_entry(sys_modules, get_key));
+    assert_eq!(lookup_name(sys_modules, b"published"), None);
+    assert_eq!(
+        unsafe { ref_count(first_bits) },
+        1,
+        "only the C view hold remains"
+    );
+    assert_eq!(
+        unsafe { (*retained).ob_refcnt },
+        1,
+        "only the returned C reference remains"
+    );
+    assert!(GLOBAL_BRIDGE.has_direct_c_refs(first_bits));
+    assert!(MODULES.lock().unwrap().contains(&first_bits));
+    assert_eq!(MODULE_RETIREMENTS.load(Ordering::SeqCst), retired_before);
+    assert_eq!(unsafe { ref_count(module_dictionary) }, 1);
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(retained) };
+    assert_eq!(unsafe { ref_count(first_bits) }, 0);
+    assert_eq!(unsafe { ref_count(module_dictionary) }, 0);
+    assert!(!MODULES.lock().unwrap().contains(&first_bits));
+    assert!(!MODULE_DICTS.lock().unwrap().contains_key(&first_bits));
+    assert!(!DICTS.lock().unwrap().contains_key(&module_dictionary));
+    assert_eq!(
+        MODULE_RETIREMENTS.load(Ordering::SeqCst),
+        retired_before + 1
+    );
+    assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(retained).is_none());
+    let absent_bits = unsafe { alloc_str(b"not_cached".as_ptr(), b"not_cached".len()) };
+    let absent = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(absent_bits) };
+    assert!(unsafe { molt_cpython_abi::api::imports::PyImport_GetModule(absent) }.is_null());
+    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    assert_eq!(GET_CALLS.load(Ordering::SeqCst), 5);
+    assert_eq!(IMPORT_CALLS.load(Ordering::SeqCst), 0);
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(get_name);
+        molt_cpython_abi::api::refcount::Py_DECREF(absent);
+    }
+    assert_eq!(unsafe { ref_count(get_key) }, 0);
+    assert!(!STRINGS.lock().unwrap().contains_key(&get_key));
+    assert!(
+        !INTERNED
+            .lock()
+            .unwrap()
+            .contains_key(b"published".as_slice())
     );
 
     let replacement_key = unsafe { alloc_str(b"replacement".as_ptr(), b"replacement".len()) };

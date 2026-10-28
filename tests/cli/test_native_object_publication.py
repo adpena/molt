@@ -37,6 +37,7 @@ from molt.cli.backend_ir import _PreparedBackendIR
 from molt.cli.build_output_layout import _BuildOutputLayout
 from molt.cli.output import fail
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
+from molt.cli.module_graph import _build_module_graph_metadata
 from molt.cli.installed_runtime_contract import InstalledNativeAdmission
 from molt.cli.native_link_manifest import (
     native_link_dependency_manifest_path,
@@ -364,17 +365,23 @@ def test_native_object_publication_is_one_admitted_transaction(
         target_sys_platform=None,
         codegen=CodegenSelection(),
     )
+    module_graph = {"app": source}
+    module_graph_metadata = _build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths={},
+        entry_module="app",
+        entry_execution_kind="direct_main",
+        namespace_module_names=(),
+        stdlib_root=tmp_path / "stdlib",
+    )
     bundle = NS(
         module_source_catalog=source_catalog,
         prepared_frontend_run_ticket=NS(
             frontend_layer_execution_context=NS(
-                # A program module reports the file it was compiled from.
-                module_graph_metadata=NS(
-                    logical_source_path_by_module={"app": str(source)}
-                )
+                module_graph_metadata=module_graph_metadata
             )
         ),
-        module_graph={},
+        module_graph=module_graph,
         runtime_import_dispatch_roots=set(),
         stdlib_allowlist=set(),
         spawn_enabled=False,
@@ -393,9 +400,7 @@ def test_native_object_publication_is_one_admitted_transaction(
             project_root=tmp_path, molt_root=tmp_path, sysroot_path=None
         ),
         prepared_build_config=config,
-        resolved_build_entry=NS(
-            entry_module="__main__", source_path=tmp_path / "app.py"
-        ),
+        resolved_build_entry=NS(entry_module="app", source_path=source),
         prepared_frontend_pipeline_bundle=bundle,
         profile="dev",
         json_output=True,

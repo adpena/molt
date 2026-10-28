@@ -4,6 +4,7 @@ from molt.compilation_target import Target
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 from molt.compiler_analysis.python_imports import (
     SourceImportSite,
+    ModuleSourceRole,
     SourceAllExports,
     _ImportScanRequests,
     _SourceImportBinding,
@@ -480,6 +481,7 @@ class _ModuleGraphMetadata:
     module_is_namespace_by_module: Mapping[str, bool]
     module_is_package_by_module: Mapping[str, bool]
     module_execution_kind_by_module: Mapping[str, ModuleExecutionKind]
+    module_source_role_by_module: Mapping[str, ModuleSourceRole]
     frontend_module_costs: Mapping[str, float] | None
     stdlib_like_by_module: Mapping[str, bool] | None
 
@@ -771,7 +773,6 @@ class _FrontendTimingRecorderConfig:
 
 @dataclass(frozen=True)
 class _RuntimeImportSupportPolicy:
-    needs_generated_importer: bool
     needs_runtime_import_support: bool
 
 
@@ -1773,9 +1774,6 @@ class _ImportPlan:
                     dict(self.runtime_import_scan_custody.owner_ast_digests)
                     if self.runtime_import_scan_custody is not None
                     else {}
-                ),
-                "needs_generated_importer": (
-                    self.runtime_import_support_policy.needs_generated_importer
                 ),
                 "needs_runtime_import_support": (
                     self.runtime_import_support_policy.needs_runtime_import_support

@@ -14,6 +14,8 @@ use crate::builtins::platform::molt_importlib_import_transaction;
 use crate::builtins::types::{
     molt_importlib_compiled_loader_create_module, molt_importlib_compiled_loader_exec_module,
     molt_importlib_compiled_loader_find_spec, molt_importlib_compiled_loader_load_module,
+    molt_importlib_module_spec_cached_get, molt_importlib_module_spec_cached_set,
+    molt_importlib_module_spec_has_location_get, molt_importlib_module_spec_has_location_set,
     molt_importlib_module_spec_init, molt_importlib_module_spec_parent,
     molt_importlib_module_spec_repr, molt_object_new_bound, molt_type_init, molt_type_new,
     molt_types_capsule_new, molt_types_cell_new, molt_types_coroutine,

@@ -18,3 +18,9 @@ if globals().get("capture_globals"):
     globals_seen = globals()
 if globals().get("raise_from_runpy"):
     raise RuntimeError("runpy compiled fixture failure")
+# Loader transaction witnesses opt in; ordinary runpy executions keep their metadata.
+if globals().get("mutate_loader_metadata"):
+    value = 404
+    __loader__ = "mutated-loader"
+    __file__ = "mutated-file"
+    __package__ = "mutated-package"

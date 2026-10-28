@@ -62,9 +62,17 @@ def normalize_stdlib_module_name(module_name: str | None) -> str | None:
     return module_name
 
 
+def is_compiler_intrinsics_module(module_name: str | None) -> bool:
+    """The compiler-reserved intrinsic namespace, including qualified providers."""
+    return module_name is not None and (
+        module_name == "_intrinsics" or module_name.endswith("._intrinsics")
+    )
+
+
 StaticValueKind = Literal["known", "none", "absent", "invalid", "unknown"]
 ImportOperationKind = Literal["statement", "import_module", "dunder_import"]
 ModuleExecutionKind = Literal["imported", "module", "script"]
+ModuleSourceRole = Literal["user", "stdlib"]
 ImportNodeKey = PythonSourceKey
 ImportResolutionError = Literal[
     "no_parent",

@@ -71,7 +71,9 @@ def _snapshot(value: object) -> object:
 
 
 def _lowered_classes(module_name: str, source: str, known: dict | None = None):
-    generator = SimpleTIRGenerator(module_name=module_name, known_classes=known)
+    generator = SimpleTIRGenerator(
+        module_name=module_name, known_classes=known, module_source_role="user"
+    )
     generator.visit(ast.parse(source))
     return generator, {
         class_id: generator.classes[class_id] for class_id in generator.local_class_ids

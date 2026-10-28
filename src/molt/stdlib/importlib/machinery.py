@@ -24,10 +24,8 @@ _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = _require_intrinsic(
 )
 
 
-SOURCE_SUFFIXES = [".py"]
-BYTECODE_SUFFIXES = [".pyc"]
-DEBUG_BYTECODE_SUFFIXES = [".pyc"]
-OPTIMIZED_BYTECODE_SUFFIXES = [".pyc"]
+SOURCE_SUFFIXES, BYTECODE_SUFFIXES = _require_intrinsic("molt_importlib_suffixes")()
+DEBUG_BYTECODE_SUFFIXES = OPTIMIZED_BYTECODE_SUFFIXES = BYTECODE_SUFFIXES
 import sys as _sys
 
 
@@ -509,12 +507,9 @@ class FileFinder:
 
     def find_spec(self, fullname: str, target: object | None = None):
         del target
-        machinery_module = _sys.modules.get(__name__)
-        if machinery_module is None:
-            raise RuntimeError("importlib.machinery module unavailable")
-        return _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC(
-            fullname, self.path, machinery_module
-        )
+        # Functions retain their defining namespace even if the public module
+        # dictionary entry is replaced or removed.
+        return _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC(fullname, self.path, globals())
 
     def invalidate_caches(self) -> None:
         # The native leaf has no directory-result cache. PathFinder owns the
@@ -547,18 +542,14 @@ _default_path_hooks = [
 
 class NamespaceLoader:
     def __init__(self, name: str, path, path_finder=None) -> None:
-        del path_finder
-        self.name = str(name)
+        del name, path_finder
         if isinstance(path, str):
             values = [path] if path else []
         elif isinstance(path, (list, tuple)):
             values = [entry for entry in path if isinstance(entry, str) and entry]
         else:
             values = []
-        self.path = list(values)
-
-    def __repr__(self) -> str:
-        return f"<MoltNamespaceLoader name={self.name!r}>"
+        self._path = list(values)
 
     def create_module(self, _spec: ModuleSpec):
         return None
@@ -571,9 +562,8 @@ class NamespaceLoader:
 
     def get_resource_reader(self, fullname: str):
         _ensure_intrinsics()
-        if fullname != self.name:
-            return None
-        return _MoltResourceReader(list(self.path))
+        del fullname
+        return _MoltResourceReader(list(self._path))
 
 
 class WindowsRegistryFinder:
@@ -739,3 +729,8 @@ __all__ = [
     "WindowsRegistryFinder",
     "all_suffixes",
 ]
+
+
+# Complete only the exact initial interpreter-owned finder/hook generations.
+# Public customization is policy; this call never repairs or replaces it.
+_require_intrinsic("molt_importlib_ensure_default_meta_path")(globals())

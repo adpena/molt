@@ -217,15 +217,44 @@ def test_alias_target_must_be_canonical(target: str) -> None:
     )
 
 
-def test_declared_module_owns_frontend_namespace_exclusion() -> None:
+def test_explicit_binding_owns_frontend_namespace_exclusion() -> None:
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
             "EXCEPTION_SCHEMA_RS",
+            '.with_heap_class("asyncio.exceptions")\n    .without_builtin_binding()',
             '.with_heap_class("asyncio.exceptions")',
-            '.with_heap_class("builtins")',
         ),
     )
+
+
+def test_class_origin_does_not_override_explicit_namespace_exclusion() -> None:
+    source = GATE.EXCEPTION_SCHEMA_RS.read_text(encoding="utf-8")
+    source = source.replace(
+        '.with_heap_class("asyncio.exceptions")', '.with_heap_class("builtins")'
+    )
+    assert "CancelledError" not in GATE._parse_builtin_exception_names(source)
+
+
+@pytest.mark.parametrize("arguments", ["true", '"builtins"'])
+def test_hidden_binding_modifier_rejects_arguments(arguments: str) -> None:
+    source = GATE.EXCEPTION_SCHEMA_RS.read_text(encoding="utf-8")
+    source = source.replace(
+        ".without_builtin_binding()", f".without_builtin_binding({arguments})", 1
+    )
+    with pytest.raises(ValueError, match="unsupported exception schema modifier"):
+        GATE._parse_builtin_exception_names(source)
+
+
+def test_hidden_binding_modifier_excludes_declared_builtin_without_origin_guess() -> (
+    None
+):
+    source = GATE.EXCEPTION_SCHEMA_RS.read_text(encoding="utf-8")
+    source = source.replace(
+        '    exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None),',
+        '    exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None).without_builtin_binding(),',
+    )
+    assert "MemoryError" not in GATE._parse_builtin_exception_names(source)
 
 
 def test_platform_alias_is_in_the_target_superset_without_host_filtering() -> None:
@@ -235,6 +264,7 @@ def test_platform_alias_is_in_the_target_superset_without_host_filtering() -> No
     assert {"WindowsError", "EnvironmentError", "IOError", "OSError"} <= names
     assert "CancelledError" not in names
     assert "UnsupportedOperation" not in names
+    assert "_DeadlockError" not in names
 
 
 @pytest.mark.parametrize(

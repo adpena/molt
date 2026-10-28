@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
+
 import ast
 from typing import (
     Any,
@@ -237,7 +239,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
     ) -> MoltValue | None:
         if func_id not in {"require_intrinsic", "_require_intrinsic"}:
             return None
-        if not self._is_intrinsics_module_name(imported_from):
+        if not is_compiler_intrinsics_module(imported_from):
             return None
         if len(node.args) > 2 or any(kw.arg is None for kw in node.keywords):
             return None

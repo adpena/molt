@@ -1250,18 +1250,19 @@ fn function_set_builtin_class_with_convention(
         let module = if globals == 0 || obj_from_bits(globals).is_none() {
             None
         } else {
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let modules = cache.lock().unwrap();
-            modules
-                .values()
-                .copied()
-                .find(|bits| {
-                    obj_from_bits(*bits).as_ptr().is_some_and(|module| {
-                        object_type_id(module) == TYPE_ID_MODULE
-                            && module_dict_bits(module) == globals
+            crate::builtins::module_table::existing_module_dictionary(_py).and_then(|dictionary| {
+                crate::builtins::containers::dict_entries(crate::ptr_from_bits(dictionary))
+                    .iter()
+                    .filter(|row| row.hash.is_some())
+                    .map(|row| row.value)
+                    .find(|bits| {
+                        obj_from_bits(*bits).as_ptr().is_some_and(|module| {
+                            object_type_id(module) == TYPE_ID_MODULE
+                                && module_dict_bits(module) == globals
+                        })
                     })
-                })
-                .inspect(|bits| inc_ref_bits(_py, *bits))
+                    .inspect(|bits| inc_ref_bits(_py, *bits))
+            })
         };
         let _module_owner = module
             .and_then(|bits| obj_from_bits(bits).as_ptr())
@@ -1631,11 +1632,12 @@ unsafe fn function_set_globals_from_module_name(
         let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
             return Ok(());
         };
-        let module_bits = {
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let guard = cache.lock().unwrap();
-            guard.get(&module_name).copied().unwrap_or(0)
-        };
+        let module_bits = crate::builtins::module_table::module_lookup(_py, &module_name)
+            .map_err(|_| ())?
+            .unwrap_or(0);
+        let _module_owner = obj_from_bits(module_bits)
+            .as_ptr()
+            .map(crate::PtrDropGuard::new);
         let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
             return Ok(());
         };

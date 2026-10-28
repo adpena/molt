@@ -2525,7 +2525,19 @@ pub(crate) unsafe fn dict_del_deferred<'a, 'py>(
     ptr: *mut u8,
     key_bits: u64,
 ) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
-    unsafe { dict_delete_deferred(py, ptr, key_bits, None) }
+    unsafe { dict_del_if_value_deferred(py, ptr, key_bits, None) }
+}
+
+/// Resolve ordinary Python key equality once, then compare the final admitted
+/// row's value before detaching it without another callback. Rollback must not
+/// erase a value replaced by hashing or equality during that resolution.
+pub(crate) unsafe fn dict_del_if_value_deferred<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    key_bits: u64,
+    expected: Option<u64>,
+) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
+    unsafe { dict_delete_deferred(py, ptr, key_bits, None, expected) }
 }
 
 /// The supplied hash belongs to the caller's retained actual dictionary entry.
@@ -2537,7 +2549,7 @@ pub(crate) unsafe fn dict_del_with_hash_deferred<'a, 'py>(
     hash: u64,
 ) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
     let hash = admit_stored_hash(py, hash).ok_or(())?;
-    unsafe { dict_delete_deferred(py, ptr, key_bits, Some(hash.get())) }
+    unsafe { dict_delete_deferred(py, ptr, key_bits, Some(hash.get()), None) }
 }
 
 /// Remove an exact retained entry without hashing, equality or decref. This
@@ -2585,6 +2597,7 @@ unsafe fn dict_delete_deferred<'a, 'py>(
     ptr: *mut u8,
     key: u64,
     hash: Option<u64>,
+    expected: Option<u64>,
 ) -> Result<Option<DetachedDictReferences<'a, 'py>>, ()> {
     unsafe {
         if !dict_require_writable(py, ptr) {
@@ -2594,7 +2607,13 @@ unsafe fn dict_delete_deferred<'a, 'py>(
             Some(hash) => hash,
             None => dict_key_hash(py, key).ok_or(())?,
         };
-        Ok(dict_probe_with_hash(py, ptr, key, hash)?.map(|probe| dict_remove_row(py, ptr, probe)))
+        let Some(probe) = dict_probe_with_hash(py, ptr, key, hash)? else {
+            return Ok(None);
+        };
+        if expected.is_some_and(|bits| dict_entries(ptr)[probe.row].value != bits) {
+            return Ok(None);
+        }
+        Ok(Some(dict_remove_row(py, ptr, probe)))
     }
 }
 

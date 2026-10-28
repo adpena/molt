@@ -948,6 +948,12 @@ pub struct RuntimeHooks {
         name_len: usize,
         policy: SysLookupPolicy,
     ) -> BorrowedHandleResult,
+    /// Borrow the interpreter-owned import dictionary, including before sys
+    /// bootstrap. Rebinding the public sys.modules attribute does not retarget it.
+    pub import_module_dict_borrowed: unsafe extern "C" fn() -> BorrowedHandleResult,
+    /// Cache-only PyImport_GetModule lookup with target-version initialization
+    /// probing. Missing never loads a module; Ok transfers one owned reference.
+    pub import_get_module: unsafe extern "C" fn(name_bits: u64) -> OwnedHandleResult,
     /// Resolve the current frame's effective builtins dict, or the interpreter
     /// default when no frame-specific override exists. Returns borrowed.
     pub eval_get_builtins_borrowed: unsafe extern "C" fn() -> BorrowedHandleResult,
@@ -1487,12 +1493,15 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // Version 65 exposes sealed managed scalar fields as borrowed payloads.
 // Version 67 removes physical buffer eligibility; semantic slots own the protocol.
 // Version 68 adds the native CName type-metadata domain, distinct from Name.
+// Version 69 on the retained branch borrowed the interpreter import dictionary.
 // Version 71 on the retained branch combined struct-sequence factories with
-// import-dictionary hooks that are absent from this main-line hook table.
+// import-dictionary hooks absent from the then-current main-line Version 68 table.
 // Version 72 adds sealed struct-sequence factories and physical hidden tuple
 // storage to main's Version 68 table without reusing that distinct ABI identity.
 // Version 73 replaces the minor-only target query with a full-version predicate.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 73;
+// Version 74 joins interpreter dictionary/cache-only import hooks with Version 73's
+// struct-sequence factories and full-version target predicate.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 74;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2282,6 +2291,12 @@ unsafe extern "C" fn stub_sys_get_object_borrowed(
 unsafe extern "C" fn stub_eval_get_builtins_borrowed() -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
+unsafe extern "C" fn stub_import_module_dict_borrowed() -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
+}
+unsafe extern "C" fn stub_import_get_module(_name: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
 unsafe extern "C" fn stub_classify_heap(_bits: u64) -> u8 {
     crate::abi_types::MoltTypeTag::Other as u8
 }
@@ -2846,6 +2861,8 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     iter_check: stub_object_is_callable,
     iter_next: stub_iter_next,
     sys_get_object_borrowed: stub_sys_get_object_borrowed,
+    import_module_dict_borrowed: stub_import_module_dict_borrowed,
+    import_get_module: stub_import_get_module,
     eval_get_builtins_borrowed: stub_eval_get_builtins_borrowed,
     classify_heap: None,
     object_hash: stub_object_hash,

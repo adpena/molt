@@ -565,6 +565,14 @@ unsafe fn chain_implicit_exception_context(value: *mut PyObject) -> bool {
     let Ok(context) = (unsafe { handled_exception() }) else {
         return false;
     };
+    unsafe { chain_owned_exception_context(value, context) }
+}
+
+/// Attach an explicit exception context through the same cycle-safe physical
+/// and managed field authority as implicit raising. `value` is borrowed and
+/// must stay pinned across callbacks; `context` transfers one owned reference
+/// (or NULL) on every outcome. Cause and suppression fields are unchanged.
+pub unsafe fn chain_owned_exception_context(value: *mut PyObject, context: *mut PyObject) -> bool {
     if context.is_null() {
         return true;
     }

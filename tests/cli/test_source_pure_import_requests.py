@@ -1307,6 +1307,68 @@ def test_runtime_import_protocol_follows_the_namespace_premise() -> None:
 
 
 @pytest.mark.parametrize(
+    "intrinsic,arguments",
+    [
+        ("molt_module_import", "'leaf'"),
+        ("molt_importlib_import_module", "'leaf', None"),
+        ("molt_importlib_import_optional", "'leaf'"),
+        ("molt_importlib_import_or_fallback", "'leaf', None"),
+        ("molt_importlib_import_required", "'leaf'"),
+        ("molt_importlib_import_transaction", "'leaf', None, None, (), 0"),
+        ("molt_importlib_find_spec", "'leaf', None, None"),
+    ],
+)
+def test_acquired_import_intrinsics_demand_protocol_by_callable_identity(
+    intrinsic, arguments
+):
+    prefix = (
+        "from _intrinsics import require_intrinsic as acquire\n"
+        f"load = acquire({intrinsic!r})\n"
+    )
+    for suffix, expected in (
+        (f"alias = load\nalias({arguments})\n", True),
+        ("", False),
+        (f"if False:\n    load({arguments})\n", False),
+        (f"load = lambda *args: None\nload({arguments})\n", False),
+    ):
+        result = _source_import_scan._collect_imports_for_graph(
+            ast.parse(prefix + suffix), "entry", False
+        )
+        assert result.uses_runtime_import_protocol is expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from _intrinsics import load_intrinsic as acquire\n"
+        "load = acquire('molt_module_import')\nload('leaf')\n",
+        "from _intrinsics import _require_intrinsic as acquire\n"
+        "load = acquire('molt_module_import')\nload('leaf')\n",
+        "from _intrinsics import _load_intrinsic as acquire\n"
+        "load = acquire('molt_module_import')\nload('leaf')\n",
+        "from package._intrinsics import require_intrinsic as acquire\n"
+        "load = acquire('molt_module_import')\nload('leaf')\n",
+        "from _intrinsics import require_intrinsic as acquire\n"
+        "load = acquire(input())\nload('leaf')\n",
+        "from _intrinsics import require_intrinsic as acquire\n"
+        "load = acquire(*arguments)\nload('leaf')\n",
+        "from _intrinsics import require_intrinsic as acquire\n"
+        "load = acquire(**keywords)\nload('leaf')\n",
+        "from _intrinsics import require_intrinsic as acquire\n"
+        "resolve = acquire('molt_require_intrinsic_runtime')\n"
+        "resolve('molt_module_import')('leaf')\n",
+        "from _intrinsics import require_intrinsic as acquire\n"
+        "resolve = acquire('molt_load_intrinsic_runtime')\n"
+        "resolve('molt_module_import')('leaf')\n",
+    ],
+)
+def test_intrinsic_acquisition_family_preserves_possible_import_demand(source):
+    assert _source_import_scan._collect_imports_for_graph(
+        ast.parse(source), "entry", False
+    ).uses_runtime_import_protocol
+
+
+@pytest.mark.parametrize(
     "source,mode,expected",
     [
         ("values = [i for i in range(2)]\n", "full", False),

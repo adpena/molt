@@ -21,7 +21,7 @@ same arc for any layout change.
 Blob layout (little-endian, 8-byte aligned):
 
     header (HEADER_BYTES = 48):
-        0..8    magic       u64  = b"MOLTMOD2"
+        0..8    magic       u64  = b"MOLTMOD4"
         8..12   schema      u32
         12..16  count       u32
         16..32  digest      [u8; 16]  (first 16 bytes of the registry sha256)
@@ -56,9 +56,9 @@ import struct
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-MODULE_REGISTRY_SCHEMA_VERSION = 2
+MODULE_REGISTRY_SCHEMA_VERSION = 4
 MODULE_REGISTRY_BLOB_SYMBOL = "molt_module_registry_blob"
-MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD2", "little")
+MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD4", "little")
 MODULE_REGISTRY_HEADER_BYTES = 48
 MODULE_REGISTRY_ROW_BYTES = 40
 MODULE_REGISTRY_ROW_INIT_PTR_OFFSET = 8
@@ -111,6 +111,15 @@ def _optional_row_index(
 MODULE_FLAG_REINIT_RESURRECT = 0x01
 MODULE_FLAG_PACKAGE = 0x02
 MODULE_FLAG_HAS_BODY = 0x04
+MODULE_FLAG_HAS_LOCATION = 0x08
+MODULE_FLAG_STDLIB_PROVIDER = 0x10
+MODULE_FLAG_KNOWN_MASK = (
+    MODULE_FLAG_REINIT_RESURRECT
+    | MODULE_FLAG_PACKAGE
+    | MODULE_FLAG_HAS_BODY
+    | MODULE_FLAG_HAS_LOCATION
+    | MODULE_FLAG_STDLIB_PROVIDER
+)
 
 # Modules whose registry kind is RuntimeBuiltin: the runtime itself
 # participates in their construction (sys populates argv/stdio during
@@ -124,6 +133,8 @@ class ModuleRegistryEntry:
 
     name: str
     kind: str
+    has_location: bool
+    is_stdlib_provider: bool
     init_symbol: str = ""
     alias_of: str = ""
     deps: tuple[str, ...] = ()
@@ -135,6 +146,10 @@ class ModuleRegistryEntry:
             raise ValueError(
                 f"module registry entry '{self.name}' has unknown kind '{self.kind}'"
             )
+        if not isinstance(self.has_location, bool):
+            raise TypeError("module registry has_location must be bool")
+        if not isinstance(self.is_stdlib_provider, bool):
+            raise TypeError("module registry is_stdlib_provider must be bool")
         if self.kind == "runtime_builtin" and not self.init_symbol:
             raise ValueError(
                 f"runtime builtin registry entry '{self.name}' requires init_symbol"
@@ -402,6 +417,10 @@ def build_module_registry(
             flags |= MODULE_FLAG_PACKAGE
         if entry.init_symbol:
             flags |= MODULE_FLAG_HAS_BODY
+        if entry.has_location:
+            flags |= MODULE_FLAG_HAS_LOCATION
+        if entry.is_stdlib_provider:
+            flags |= MODULE_FLAG_STDLIB_PROVIDER
         rows.append(
             ModuleRegistryRow(
                 id=idx,
@@ -481,11 +500,21 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
             problems.append(f"row {row.get('name')!r} has id {row.get('id')} != {idx}")
         row_name = row.get("name")
         init_symbol = row.get("init_symbol", "")
-        flags = row.get("flags", 0)
+        flags = row.get("flags")
+        valid_flags = (
+            type(flags) is int
+            and 0 <= flags <= 0xFF
+            and flags & ~MODULE_FLAG_KNOWN_MASK == 0
+        )
+        if not valid_flags:
+            problems.append(
+                f"row {row_name!r} flags must be a required integer byte "
+                f"containing only known bits: {flags!r}"
+            )
         if row.get("kind") == "runtime_builtin" and (
             not isinstance(init_symbol, str)
             or not init_symbol
-            or not isinstance(flags, int)
+            or not valid_flags
             or not flags & MODULE_FLAG_HAS_BODY
         ):
             problems.append(
@@ -512,7 +541,7 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
                 "parent": None if parent is None else names[parent],
                 "alias_target": None if alias_target is None else names[alias_target],
                 "init_symbol": row.get("init_symbol", ""),
-                "flags": row.get("flags", 0),
+                "flags": flags,
                 "deps": _row_deps(row.get("deps", ())),
                 "origin": row.get("origin", ""),
             }

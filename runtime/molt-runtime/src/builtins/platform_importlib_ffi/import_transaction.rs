@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins::exceptions::ExceptionValue;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 pub(super) fn importlib_find_in_path_payload(
@@ -350,18 +351,7 @@ pub(super) fn importlib_import_resolved_transaction(
             leaf_bits,
         ));
     }
-    // Presence is the package boundary, including a falsey/dynamic __path__.
-    // Use the ordinary attribute protocol so only AttributeError is a miss.
-    let path_name = intern_runtime_static_name(_py, b"__path__");
-    let has_path = molt_has_attr_name(leaf_bits, path_name);
-    if exception_pending(_py) {
-        dec_ref_bits(_py, leaf_bits);
-        return Err(MoltObject::none().bits());
-    }
-    if is_truthy(_py, obj_from_bits(has_path))
-        && let Err(err) =
-            importlib_transaction_prepare_fromlist(_py, resolved, leaf_bits, fromlist_bits)
-    {
+    if let Err(err) = importlib_prepare_package_fromlist(_py, resolved, leaf_bits, fromlist_bits) {
         dec_ref_bits(_py, leaf_bits);
         return Err(err);
     }
@@ -654,76 +644,101 @@ pub(super) fn importlib_dict_get_raw_key_bits(
     Ok(value_bits)
 }
 
-pub(super) fn importlib_none_in_modules_error(_py: &PyToken<'_>, resolved: &str) -> u64 {
-    raise_exception::<_>(
+pub(super) fn importlib_none_in_modules_error(
+    _py: &PyToken<'_>,
+    resolved: &str,
+    name_bits: u64,
+) -> u64 {
+    crate::builtins::exceptions::raise_module_not_found(
         _py,
-        "ModuleNotFoundError",
-        &format!("import of {resolved} halted; None in sys.modules"),
+        format!("import of {resolved} halted; None in sys.modules").as_bytes(),
+        name_bits,
     )
 }
 
-pub(super) fn importlib_import_resolved_module(
+pub(crate) fn importlib_import_resolved_attempt(
     _py: &PyToken<'_>,
     resolved: &str,
     resolved_key_bits: u64,
     modules_ptr: *mut u8,
-    strict_spec_probe: bool,
-) -> u64 {
-    let cached_bits = match importlib_dict_get_raw_key_bits(_py, modules_ptr, resolved_key_bits) {
-        Ok(bits) => bits,
-        Err(err) => return err,
-    };
+    policy: crate::builtins::module_table::ModuleImportPolicy,
+) -> Result<crate::builtins::modules::ModuleImportOutcome, u64> {
+    use crate::builtins::modules::ModuleImportOutcome;
+    let cached_bits = importlib_dict_get_raw_key_bits(_py, modules_ptr, resolved_key_bits)?;
     if let Some(cached_bits) = cached_bits {
         if obj_from_bits(cached_bits).is_none() {
-            return importlib_none_in_modules_error(_py, resolved);
+            return Err(importlib_none_in_modules_error(
+                _py,
+                resolved,
+                resolved_key_bits,
+            ));
         }
-        // sys.modules is authoritative, including a partially initialized
-        // package and an explicitly installed empty or non-module object.
-        // Namespace contents cannot distinguish either from an uninitialized
-        // module; the module table owns that transition. Pin before metadata
-        // callbacks, which may remove this exact sys.modules entry.
+        // Keep the actual caller dictionary and one owned observation through
+        // metadata callbacks; only the selected policy may require a refresh.
         inc_ref_bits(_py, cached_bits);
-        let probe = importlib_cached_initialization_probe(_py, cached_bits);
-        if probe.is_err() {
-            if strict_spec_probe {
-                dec_ref_bits(_py, cached_bits);
-                return MoltObject::none().bits();
+        match crate::builtins::module_table::resolve_cached_module(
+            _py,
+            resolved,
+            Some(resolved_key_bits),
+            MoltObject::from_ptr(modules_ptr).bits(),
+            cached_bits,
+            policy,
+        ) {
+            Ok(crate::builtins::module_table::CachedModuleOutcome::Return(bits)) => {
+                return Ok(ModuleImportOutcome::Imported(bits));
             }
-            // CPython's C __import__ path ignores spec-probe failures;
-            // importlib's Python _find_and_load path propagates them.
-            clear_exception(_py);
+            Ok(crate::builtins::module_table::CachedModuleOutcome::Missing) => {
+                unreachable!("ordinary import reloads")
+            }
+            Ok(crate::builtins::module_table::CachedModuleOutcome::Reload) => {
+                // Re-enter existing importer/recursion admission once, rather
+                // than spinning on user metadata that replaces its own entry.
+                let Some(_depth) = crate::builtins::module_table::enter_import_recursion(_py)
+                else {
+                    return Err(MoltObject::none().bits());
+                };
+                return importlib_import_resolved_attempt(
+                    _py,
+                    resolved,
+                    resolved_key_bits,
+                    modules_ptr,
+                    policy,
+                );
+            }
+            Err(error) => return Err(error),
         }
-        return cached_bits;
     }
 
-    let imported_bits =
-        match importlib_import_with_fallback(_py, resolved, resolved_key_bits, modules_ptr) {
-            Ok(bits) => bits,
-            Err(err) => return err,
-        };
-
-    // The load completion already selected and owns its result, and already
-    // ran any fresh-child publication. Re-reading sys.modules here would erase
-    // replacement/deletion effects of the parent's __setattr__ callback.
-    imported_bits
+    match importlib_import_via_spec(_py, resolved, resolved_key_bits, modules_ptr)? {
+        Some(bits) => Ok(ModuleImportOutcome::Imported(bits)),
+        None => Ok(ModuleImportOutcome::Missing {
+            diagnostic_name: resolved.to_owned(),
+        }),
+    }
 }
 
-fn importlib_cached_initialization_probe(py: &PyToken<'_>, module: u64) -> Result<(), u64> {
-    let spec_name = intern_runtime_static_name(py, b"__spec__");
-    let Some(spec) = getattr_optional_bits(py, module, spec_name)? else {
-        return Ok(());
-    };
-    let initializing_name = intern_runtime_static_name(py, b"_initializing");
-    let initializing = getattr_optional_bits(py, spec, initializing_name);
-    dec_ref_bits(py, spec);
-    if let Some(initializing) = initializing? {
-        let _ = is_truthy(py, obj_from_bits(initializing));
-        dec_ref_bits(py, initializing);
-    }
-    if exception_pending(py) {
-        Err(MoltObject::none().bits())
+pub(super) fn importlib_import_resolved_module(
+    py: &PyToken<'_>,
+    resolved: &str,
+    name: u64,
+    modules: *mut u8,
+    strict_spec_probe: bool,
+) -> u64 {
+    let policy = if strict_spec_probe {
+        crate::builtins::module_table::ModuleImportPolicy::Python
     } else {
-        Ok(())
+        crate::builtins::module_table::ModuleImportPolicy::CImport
+    };
+    match importlib_import_resolved_attempt(py, resolved, name, modules, policy) {
+        Ok(crate::builtins::modules::ModuleImportOutcome::Imported(bits)) => bits,
+        Ok(crate::builtins::modules::ModuleImportOutcome::Missing { .. }) => {
+            crate::builtins::exceptions::raise_module_not_found(
+                py,
+                format!("No module named '{resolved}'").as_bytes(),
+                name,
+            )
+        }
+        Err(error) => error,
     }
 }
 
@@ -745,20 +760,23 @@ pub(super) fn importlib_import_parent_chain(
                 modules_ptr,
                 false,
             );
-            dec_ref_bits(_py, parent_key_bits);
             if exception_pending(_py) {
+                dec_ref_bits(_py, parent_key_bits);
                 if !obj_from_bits(parent_bits).is_none() {
                     dec_ref_bits(_py, parent_bits);
                 }
                 return Err(MoltObject::none().bits());
             }
             if obj_from_bits(parent_bits).is_none() {
-                return Err(raise_exception::<_>(
+                let error = crate::builtins::exceptions::raise_module_not_found(
                     _py,
-                    "ModuleNotFoundError",
-                    &format!("No module named '{parent_name}'"),
-                ));
+                    format!("No module named '{parent_name}'").as_bytes(),
+                    parent_key_bits,
+                );
+                dec_ref_bits(_py, parent_key_bits);
+                return Err(error);
             }
+            dec_ref_bits(_py, parent_key_bits);
             dec_ref_bits(_py, parent_bits);
         }
         search_from = dot + 1;
@@ -905,11 +923,15 @@ pub(super) fn importlib_transaction_resolved_name(
         return Ok(base);
     }
     if name.starts_with('.') {
-        return Err(raise_exception::<_>(
+        let missing_name = format!("{base}.");
+        let key = alloc_str_bits(_py, &missing_name)?;
+        let error = crate::builtins::exceptions::raise_module_not_found(
             _py,
-            "ModuleNotFoundError",
-            &format!("No module named '{base}.'"),
-        ));
+            format!("No module named '{missing_name}'").as_bytes(),
+            key,
+        );
+        dec_ref_bits(_py, key);
+        return Err(error);
     }
     if base.is_empty() {
         Ok(name.to_string())
@@ -1001,16 +1023,19 @@ pub(super) fn importlib_transaction_top_level_value(
             return err;
         }
     };
-    dec_ref_bits(_py, top_key_bits);
     let Some(top_bits) = top_bits else {
+        dec_ref_bits(_py, top_key_bits);
         return leaf_bits;
     };
     if obj_from_bits(top_bits).is_none() {
         if !obj_from_bits(leaf_bits).is_none() {
             dec_ref_bits(_py, leaf_bits);
         }
-        return importlib_none_in_modules_error(_py, top_name);
+        let error = importlib_none_in_modules_error(_py, top_name, top_key_bits);
+        dec_ref_bits(_py, top_key_bits);
+        return error;
     }
+    dec_ref_bits(_py, top_key_bits);
     inc_ref_bits(_py, top_bits);
     if top_bits != leaf_bits && !obj_from_bits(leaf_bits).is_none() {
         dec_ref_bits(_py, leaf_bits);
@@ -1197,6 +1222,55 @@ pub(super) fn importlib_transaction_prepare_fromlist(
         importlib_transaction_prepare_fromlist_item(_py, resolved, module_bits, &item)?;
     }
     Ok(())
+}
+
+fn importlib_prepare_package_fromlist(
+    py: &PyToken<'_>,
+    resolved: &str,
+    module_bits: u64,
+    fromlist_bits: u64,
+) -> Result<(), u64> {
+    // Presence is the package boundary, including a falsey/dynamic __path__.
+    // Only AttributeError is a miss. Both public imports and bootstrap bodies
+    // use this owner before IMPORT_FROM observes any of the resulting names.
+    let path_name = intern_runtime_static_name(py, b"__path__");
+    let has_path = molt_has_attr_name(module_bits, path_name);
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
+    }
+    if is_truthy(py, obj_from_bits(has_path)) {
+        importlib_transaction_prepare_fromlist(py, resolved, module_bits, fromlist_bits)?;
+    }
+    Ok(())
+}
+
+/// Complete the fromlist stage of a compiler-owned bootstrap import. The raw
+/// module load already happened; public __import__ is not entered recursively.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_prepare_fromlist(
+    name_bits: u64,
+    module_bits: u64,
+    fromlist_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let _name = ExceptionValue::pin(py, name_bits);
+        let _module = ExceptionValue::pin(py, module_bits);
+        let _fromlist = ExceptionValue::pin(py, fromlist_bits);
+        let name = match string_arg_from_bits(py, name_bits, "module name") {
+            Ok(name) => name,
+            Err(error) => return error,
+        };
+        if !is_truthy(py, obj_from_bits(fromlist_bits)) || exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        match importlib_prepare_package_fromlist(py, &name, module_bits, fromlist_bits) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(error) => error,
+        }
+    })
 }
 
 #[unsafe(no_mangle)]

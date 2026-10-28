@@ -29,6 +29,9 @@ from types import MappingProxyType
 from typing import Final, Literal, Sequence, assert_never, cast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    ALL_INTRINSIC_CALLABLE_IDENTITIES,
+    INTRINSIC_ACQUISITION_IDENTITIES,
+    OPTIONAL_INTRINSIC_ACQUISITION_IDENTITIES,
     ALL_INVALID_MEMBERS,
     ANY_CANONICAL_MODULE_IDENTITY,
     BUILTIN_IDENTITIES,
@@ -151,7 +154,10 @@ from molt.compiler_analysis.python_effects import (
     iterable_unpack_effects,
     mapping_unpack_effects,
 )
-from molt.compiler_analysis.python_imports import import_metadata_target_name
+from molt.compiler_analysis.python_imports import (
+    import_metadata_target_name,
+    is_compiler_intrinsics_module,
+)
 from molt.compiler_analysis.python_lexical_scope import (
     PythonDependencyAuthority,
     PythonScopeDeclarations,
@@ -2075,16 +2081,18 @@ def _literal_string(node: ast.AST | None) -> str | None:
 def _intrinsic_acquisition_identity(
     node: ast.Call, arguments: tuple[StaticExpressionResult, ...]
 ) -> IdentityMask:
-    """A successful exact require_intrinsic(name, namespace=None) acquisition.
+    """Possible successful results of the canonical intrinsic acquisition API.
 
     Argument execution and failure remain owned by the normal call transfer.
-    Unknown expansions or invalid bindings never establish a callable fact.
+    Unknown selectors/expansions join the declared callable identities with
+    OTHER; they never establish an exact target-property specialization.
     """
-    if (
-        len(node.args) > 2
-        or any(isinstance(argument, ast.Starred) for argument in node.args)
-        or len(arguments) != len(node.args) + len(node.keywords)
+    unknown = ALL_INTRINSIC_CALLABLE_IDENTITIES | OTHER_IDENTITY
+    if any(isinstance(argument, ast.Starred) for argument in node.args) or any(
+        keyword.arg is None for keyword in node.keywords
     ):
+        return unknown
+    if len(node.args) > 2 or len(arguments) != len(node.args) + len(node.keywords):
         return OTHER_IDENTITY
     bound = dict(zip(("name", "namespace"), arguments[: len(node.args)]))
     for keyword, argument in zip(
@@ -2095,7 +2103,11 @@ def _intrinsic_acquisition_identity(
             return OTHER_IDENTITY
         bound[name] = argument
     name = bound.get("name")
-    if name is None or not name.value_known or type(name.value) is not str:
+    if name is None:
+        return OTHER_IDENTITY
+    if not name.value_known:
+        return unknown
+    if type(name.value) is not str:
         return OTHER_IDENTITY
     return int(INTRINSIC_CALLABLE_IDENTITIES.get(name.value, PythonIdentity.OTHER))
 
@@ -3903,8 +3915,14 @@ class _Analyzer:
                 ),
                 method_shape.retained_argument_indices,
             )
-        if exact and callee == int(PythonIdentity.INTRINSICS_REQUIRE):
-            result = _intrinsic_acquisition_identity(node, argument_results)
+        if callee & INTRINSIC_ACQUISITION_IDENTITIES:
+            result = (
+                _intrinsic_acquisition_identity(node, argument_results)
+                if exact
+                else ALL_INTRINSIC_CALLABLE_IDENTITIES | OTHER_IDENTITY
+            )
+            if callee & OPTIONAL_INTRINSIC_ACQUISITION_IDENTITIES:
+                result |= int(PythonIdentity.INERT_VALUE)
             result_fact = StaticExpressionResult(
                 identities=result, evaluation_required=True
             )
@@ -5974,7 +5992,11 @@ class _Analyzer:
         )
 
     def _import_identity(self, module: str, state_id: int) -> IdentityMask:
-        identity = CANONICAL_IMPORT_IDENTITIES.get(module)
+        identity = (
+            PythonIdentity.INTRINSICS_MODULE
+            if is_compiler_intrinsics_module(module)
+            else CANONICAL_IMPORT_IDENTITIES.get(module)
+        )
         if identity is None:
             return OTHER_IDENTITY
         return (

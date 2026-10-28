@@ -15,7 +15,7 @@ This spec defines:
 - package/module metadata expectations,
 - compatibility boundaries for dynamic imports.
 
-Implemented: project-root/package builds, relative imports (explicit and
+Source implementation: project-root/package builds, relative imports (explicit and
 implicit) with deterministic package resolution for the currently lowered
 paths, `__init__` handling, covered namespace-package stubs/basics, a Rust
 import transaction for the active importlib/`builtins.__import__` runtime paths,
@@ -35,6 +35,15 @@ resolver and load-module cases, dynamic/broader CPython `fromlist`
 star/`__all__` expansion, and namespace-package edge cases still need structural
 reconciliation against CPython 3.12.
 
+
+The joined module/import implementation is not yet execution-qualified. Native
+and WASM public imports, initialization/rollback, C-API publication, and
+provenance-bound startup, import-cost and memory qualification remain required
+on the final joined source and generated consumers. Earlier donor source or
+static controls do not establish those results. Luau import capability remains
+an explicit gap; the catalog and shared source lowering do not imply target
+support. The release ledger retains these open obligations.
+
 Compiler and tooling dependencies use the actual frontend interpreter's import
 semantics; compiled program dependencies use the selected target version.
 The pinned [CPython 3.15.0 `resolve_name`](https://github.com/python/cpython/blob/d220409a13b77de7a6c30abe16ea90db01528edc/Python/import.c#L3498)
@@ -46,33 +55,53 @@ before producing eager facts or code. These developer-side dependency and
 admission checks introduce no guest interpreter or guest verification work;
 they do not admit Python 3.15 as a compiled-program target.
 
-Import bedrock (native lane, design
-`docs/design/foundation/import_bedrock_frozen_module_layer.md`, PR1):
-within a build, module identity is a dense `ModuleId` from the generated
-per-build `ModuleRegistry` (`molt.cli.module_registry`, emitted into the
-application object as the relocated `molt_module_registry_blob` whose
-init-pointer column is the `MODULE_INIT_TABLE`).  `molt_module_ensure(id)`
-(`runtime/molt-runtime/src/builtins/module_table.rs`) is the only
-module-state transition owner: compiled literal import sites lower to
-`ensure(const ModuleId)`, the importlib/`__import__`/`PyImport_*`/runpy
-dynamic lanes resolve string→id at most once per call and enter the same
-function, and generated module init bodies carry no cache-guard preambles —
-init-exactly-once is the ensure `Uninit→Initializing` CAS.  The former
-app-owned `molt_isolate_import` string-comparison dispatch chain is deleted
-on native (wasm32 keeps its env import until PR3 unifies the WASM
-projection). Normal imports and `MODULE_CACHE_GET` read the current
-`sys.modules` dictionary directly, including arbitrary replacement values and
-deletions. Public reads never populate the private module cache. Registered
-imports reconcile public replacement/deletion through the existing table
-transitions; foreign initialization still waits, and parent execution/retry
-refreshes the public observation. Bootstrap before `sys` and explicit
-runpy/loader execution suppression retain the private publication path.
-This public-cache projection includes dictionary lookup and locking; the
-registered slot lookup alone is not a performance claim for a public import.
-Known absence of a Molt provider permits spec/backport resolution, including
-children of removed providers. A declared execution dependency failure and an
-actual initializer/loader exception remain failures. Public cache presence
-takes precedence over provider policy.
+Import bedrock uses one interpreter-owned ordinary Python dictionary from
+bootstrap onward. `sys.modules` exposes that object; arbitrary values, `None`,
+deletions and callback mutations are authoritative. Semantic interpreter sys and
+builtins roles and temporary initializer/private execution owners have separate,
+explicit lifetimes. No private name-keyed module store adopts or replays public
+membership.
+
+Ordinary Python imports, including literal statements whose bodies are admitted
+in the application catalog, consult the dictionary first and then the same
+ordered `sys.meta_path` protocol in the runtime finder core. The frozen/bootstrap
+facade and `util._find_spec` project that same protocol; rebinding the public
+`util.find_spec` helper affects direct helper calls, not ordinary imports or reload. The compiled
+catalog is one finder/provider; it proves executable-body custody, not an immutable
+finder binding. A required source-role fact distinguishes actual Molt stdlib
+providers from same-name user sources. Availability is checked only for that
+provider, including shared body execution through explicit source loaders.
+The fixed synthetic `__main__` row represents the compiler-selected program
+entry body and is an explicit source-execution capability, not an advertised
+stdlib provider; the original named row retains its provider flag. The backend
+binds that row only to the selected entry initializer, so callers cannot use it
+to select an arbitrary named stdlib body. Named loader execution and aliases
+remain subject to their actual provider facts.
+FileFinder may decline its catalog-origin candidate after actual target-filesystem
+canonicalization proves the physical coordinate matches; a historical compiler
+path alone grants no target ownership. Earlier/custom finders and external
+backport paths retain their own admission. Execution dependency errors occur only
+when the selected admitted body executes. Earlier user finders may supply any admitted loader.
+
+The dense per-build `ModuleRegistry` (`molt.cli.module_registry`, schema4) and
+`MODULE_INIT_TABLE` remain the authority for compiled body identity and execution.
+`molt_module_ensure(ModuleId)` owns catalog initializer state. Entry/sys/spawn,
+compiler-owned provider initialization and actual import-support module bodies
+use this explicit internal capability. Python functions defined in those support
+modules still perform ordinary public imports. Private loader/runpy execution
+uses its scoped namespace owner and does not replace public import resolution.
+The backend cannot replace a public transaction with numeric initialization merely
+because its literal name has a catalog row.
+
+A completed public cache hit keeps its existing dictionary/spec-probe policy and
+avoids finder dispatch. A cold ordinary miss pays admitted initial finder completion, one
+ordered finder traversal and the admitted spec transaction rather than a compiled-first
+attempt followed by fallback. These callback/locking/allocation costs require
+native and WASM qualification and the existing cached-import probes; source
+structure alone is not a performance result. See the current
+[storage and execution contract](../../../../design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md)
+and [catalog design](../../../../design/foundation/import_bedrock_frozen_module_layer.md).
+
 
 Public argument validation and `importlib.util.resolve_name` precede finder
 discovery and require no host filesystem authority. Following
@@ -89,14 +118,26 @@ arbitrary source file: the source/sourceless loaders execute admitted compiled
 bodies, and dynamic native extensions retain their separate target, ABI and
 execution admission. No host or fallback Python interpreter is introduced.
 
-Finder dispatch follows the ordered protocol in
-[CPython 3.12.13's `_find_spec`](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/_bootstrap.py)
-and [`util.find_spec`](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/util.py).
-[PyPy's Python 3.11 bootstrap](https://github.com/pypy/pypy/blob/py3.11/lib-python/3/importlib/_bootstrap.py)
-uses the same ordered callback/result boundary; its older legacy finder fallback
-is outside Molt's Python 3.12+ contract. Molt compiles the Python protocol into the
-program and retains native physical lookup and extension admission. This adds no
-host interpreter or fallback interpreter.
+Finder dispatch follows the ordered protocol in pinned
+[CPython 3.12.15](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap.py#L1144),
+[3.13.16](https://github.com/python/cpython/blob/v3.13.16/Lib/importlib/_bootstrap.py#L1144),
+[3.14.8](https://github.com/python/cpython/blob/v3.14.8/Lib/importlib/_bootstrap.py#L1147)
+and [3.15.0](https://github.com/python/cpython/blob/v3.15.0/Lib/importlib/_bootstrap.py#L1103).
+3.12 walks the live finder iterable; 3.13+ snapshots it first. Each finder lookup
+and callback holds the same runtime-owned reentrant lock exposed by `_imp`;
+post-callback cache/spec reads occur after release. `util.find_spec` retains its
+separate relative-name, parent-path and cached-spec API. No import enters that
+public helper to bootstrap its own implementation.
+
+The initial runtime catalog finder exists before Python importlib facades. Actual
+stdlib source-role capability and the body's defining namespace, not a cached
+object with a matching spelling, own default PathFinder/hook publication. Exact
+initial-list identities and backing epochs prevent replacing or repairing public
+customization. Pending owners retire on completion, cancellation, failure and
+shutdown. The compiler's one reached-call identity/demand authority admits this
+finite support source even for public low-level intrinsic entrypoints; merely
+acquiring, rebinding or leaving a call unreachable does not retain it. There is
+no unconditional full-stdlib expansion for a microbinary.
 
 The protocol uses ordered control flow; persistent initialization state stays in
 the existing module registry. [V8's module state model](https://chromium.googlesource.com/v8/v8/+/refs/heads/main/src/objects/module.h)
@@ -116,7 +157,7 @@ protocol; it does not establish preservation of arbitrary finder results.
 | --- | --- |
 | Public cached module | Return its `__spec__`; a cached `None` returns `None`, while missing/`None` metadata raises `ValueError`. |
 | Uncached child | Import the parent through the existing module transaction, then pass its exact `__path__` object to the finders. |
-| Registered finder returns `None` | Advance only to the next registered finder. Exhaustion, including an empty meta path, returns `None`. |
+| Registered finder returns `None` | Advance only to the next registered finder. Exhaustion returns `None`; an empty path first calls `_warnings.warn("sys.meta_path is empty", ImportWarning)` and propagates its failure. |
 | Finder raises | Propagate that exception after the single specified call; `TypeError` is not an arity probe. |
 | Finder supplies a spec | Select any callback-published public spec under CPython's precedence rule, apply extension admission, then return it. |
 
@@ -253,6 +294,13 @@ replacement, deletion, and re-import. Module bodies and generated chunks carry
 their held module owner explicitly. Frame ownership, exception cleanup, and
 annotation publication follow the compiler's registered entry and chunk
 identities; user module and function names do not select execution roles.
+Raw admitted module dispatch establishes its handler baseline at the caller's
+current stack depth. An initializer's explicit raise can therefore clear its
+own handlers while the enclosing importer retains the handled exception for
+bare re-raise. The same scalar scope covers ordinary imports, direct loader
+execution, native, LLVM, JIT and WASM; chunks inherit their enclosing body.
+Frontend handler cleanup owns stack depth. This boundary adds no context
+snapshot, heap allocation or work to cached imports.
 
 Generated module metadata, the machinery facade and bootstrap-free extension
 initialization share one runtime-owned `ModuleSpec` class and its initializer.
@@ -276,11 +324,35 @@ its file, source and extension loader classes.
 Module-name recovery reads `ModuleSpec.name` (not `ModuleSpec.__name__`) in
 loader coercion, reload and resource lookup. Coercion propagates failure to
 publish a recovered module name; it does not clear a failed attribute write.
-Its current Python facade contract remains partial: the constructor accepts
-positional `origin` and `is_package`, coerces the name to `str`, and treats
-`cached`, `loader_state` and
-`has_location` as mutable fields. This authority consolidation does not claim
-complete CPython `ModuleSpec` signature, property or equality conformance.
+`cached` and `has_location` are runtime-owned properties, following
+[CPython 3.12's ModuleSpec and cache derivation](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap.py).
+Location assignment coerces truth once and preserves the previous value if
+that coercion fails. Cache derivation is lazy: a non-`None` cached value is
+returned unchanged, while assigning `None` permits derivation again from the
+current origin. Source and bytecode suffix dispatch observes ordinary
+`origin.endswith` calls and the defining frozen-external namespace's mutable
+suffix policy. Machinery initially exports the same list objects; rebinding
+only its facade attribute does not replace the defining policy.
+
+Before that defining source body succeeds, one runtime bootstrap dictionary
+owns the suffix lists. Payload preparation stages values; the verified body
+commits its defining globals only after all assignments succeed. Failed
+initialization keeps the bootstrap owner, and a later distinct module body
+cannot retarget the first successful defining namespace. Warm cache reads do
+no filesystem access or imports. Cold derivation allocates suffix tuples and
+uses the existing cache-path primitive. The focused `importlib_module_spec.py`
+differential receiver exercises property callbacks, mutation, shared policy,
+rebinding and ZIP metadata on native and WASM; enrollment is not qualification.
+Pure path discovery leaves source cache paths unset, so the first property
+read observes the current implementation tag and bytecode suffix instead of
+an eagerly captured path. The shared default formatter follows
+[CPython's filename partition and tagged layout](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap_external.py#L463-L525)
+while retaining Molt's declared `sys.implementation.cache_tag`.
+
+The constructor still accepts positional `origin` and `is_package` and coerces
+the name to `str`. Complete CPython signature and equality conformance,
+`importlib._bootstrap_external` alias identity, and all cache-path options
+remain outside this partial contract.
 
 Cache publication borrows its name and module arguments and returns `None` on
 every successful path, including first-init-wins duplicate initialization.
@@ -770,6 +842,18 @@ separate from host graph and binding-fact validation.
   preserves existing package exports, converts an absent requested child into
   the final `IMPORT_FROM` `ImportError`, and propagates dependency import errors
   without broad suppression.
+- Actual stdlib bootstrap entry bodies and generated chunks retain their raw
+  module-load boundary, then call `molt_importlib_prepare_fromlist` once with the
+  complete ordered fromlist before any `IMPORT_FROM` or alias binding. This
+  joins the same package-presence and child-preparation owner as the public
+  transaction, following CPython's
+  [`_handle_fromlist`](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap.py).
+  Existing exports, including falsey values, win; a later child failure leaves
+  earlier import side effects and prevents all statement bindings. The stage
+  avoids recursive public `__import__` entry but can enter ordered child
+  finders. User source and functions inside bootstrap modules retain the public
+  transaction. Native/WASM execution qualification is pending; Luau support for
+  the surrounding import operations remains a separate open capability.
 - The shared import transaction evaluates `fromlist` truth once. A falsey
   fromlist selects the ordinary top-level return without inspecting package
   attributes. For a truthy fromlist, only observable `__path__` presence admits

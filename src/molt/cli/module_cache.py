@@ -47,6 +47,7 @@ from molt.cli.models import (
     _RuntimeImportScanCustody,
     ImportScanMode,
     ModuleExecutionKind,
+    ModuleSourceRole,
     _ModuleGraphMetadata,
     _ScopedLoweringInputView,
     _ScopedLoweringInputs,
@@ -78,6 +79,7 @@ class _ModuleLoweringMetadataView:
     module_is_namespace: bool
     is_package: bool
     module_execution_kind: ModuleExecutionKind
+    module_source_role: ModuleSourceRole
 
 
 @dataclass(frozen=True)
@@ -678,6 +680,9 @@ def _module_lowering_metadata_view(
     module_graph_metadata: _ModuleGraphMetadata,
 ) -> _ModuleLoweringMetadataView:
     return _ModuleLoweringMetadataView(
+        module_source_role=module_graph_metadata.module_source_role_by_module[
+            module_name
+        ],
         logical_source_path=module_graph_metadata.logical_source_path_by_module[
             module_name
         ],
@@ -1284,6 +1289,7 @@ def _module_lowering_context_payload(
     source_lease: _ModuleSourceLease,
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
+    module_source_role: ModuleSourceRole,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
@@ -1367,6 +1373,7 @@ def _module_lowering_context_payload(
         "is_package": is_package,
         "module_is_namespace": module_is_namespace,
         "module_execution_kind": module_execution_kind,
+        "module_source_role": module_source_role,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "target_python": target_python.tag,
         "target_sys_platform": target_sys_platform,
@@ -1529,6 +1536,7 @@ def _module_lowering_context_digest_for_module(
     source_lease: _ModuleSourceLease,
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
+    module_source_role: ModuleSourceRole,
     known_classes_snapshot: Mapping[ClassId, ClassInfo],
     type_hint_policy: TypeHintPolicy,
     type_facts: TypeFacts | None,
@@ -1567,6 +1575,7 @@ def _module_lowering_context_digest_for_module(
         source_lease=source_lease,
         logical_source_path=logical_source_path,
         module_execution_kind=module_execution_kind,
+        module_source_role=module_source_role,
         known_classes_snapshot=known_classes_snapshot,
         type_hint_policy=type_hint_policy,
         type_facts=type_facts,
@@ -1810,6 +1819,7 @@ def _load_cached_module_lowering_result(
     source_lease: _ModuleSourceLease,
     logical_source_path: str,
     module_execution_kind: ModuleExecutionKind,
+    module_source_role: ModuleSourceRole,
     is_package: bool,
     known_classes_snapshot: dict[ClassId, ClassInfo],
     type_hint_policy: TypeHintPolicy,
@@ -1852,6 +1862,7 @@ def _load_cached_module_lowering_result(
             source_lease=source_lease,
             logical_source_path=logical_source_path,
             module_execution_kind=module_execution_kind,
+            module_source_role=module_source_role,
             known_classes_snapshot=known_classes_snapshot,
             type_hint_policy=type_hint_policy,
             type_facts=type_facts,
@@ -1920,6 +1931,7 @@ def _module_worker_payload(
     type_hint_policy: TypeHintPolicy,
     module_is_namespace: bool,
     module_execution_kind: ModuleExecutionKind,
+    module_source_role: ModuleSourceRole,
     type_facts: TypeFacts | None,
     enable_phi: bool,
     known_modules: Collection[str],
@@ -1988,6 +2000,7 @@ def _module_worker_payload(
         "type_hint_policy": type_hint_policy,
         "module_is_namespace": module_is_namespace,
         "module_execution_kind": module_execution_kind,
+        "module_source_role": module_source_role,
         "enable_phi": enable_phi,
         "known_modules": scoped_inputs.known_modules_payload,
         "direct_call_modules": scoped_inputs.direct_call_modules_payload,

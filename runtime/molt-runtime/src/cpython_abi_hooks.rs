@@ -5,6 +5,8 @@
 
 mod contextvars;
 mod extension_init;
+#[cfg(test)]
+pub(crate) use extension_init::with_test_module_publication;
 mod gc_control;
 mod slice;
 mod unicode;
@@ -2094,22 +2096,70 @@ unsafe extern "C" fn hook_sys_get_object_borrowed(
     sys_module_attr_borrowed(name.as_bytes(), policy)
 }
 
+unsafe extern "C" fn hook_import_module_dict_borrowed() -> BorrowedHandleResult {
+    with_gil(
+        |py| match crate::builtins::module_table::module_dictionary(&py) {
+            Some(bits) => BorrowedHandleResult::ok(bits),
+            None => BorrowedHandleResult::error(),
+        },
+    )
+}
+
+unsafe extern "C" fn hook_import_get_module(name_bits: u64) -> OwnedHandleResult {
+    with_gil(|py| {
+        use crate::builtins::module_table::{CachedModuleOutcome, ModuleImportPolicy};
+        if crate::exception_pending(&py) {
+            return OwnedHandleResult::error();
+        }
+        let Some(dictionary) = crate::builtins::module_table::module_dictionary(&py) else {
+            return OwnedHandleResult::error();
+        };
+        let observed =
+            match unsafe { dict_get_in_place(&py, crate::ptr_from_bits(dictionary), name_bits) } {
+                Ok(Some(bits)) => {
+                    inc_ref_bits(&py, bits);
+                    bits
+                }
+                Ok(None) => return OwnedHandleResult::missing(),
+                Err(()) => return OwnedHandleResult::error(),
+            };
+        // PyImport_GetModule accepts any hashable key. Only an actual string
+        // can identify a registered initializer; the dictionary probe uses the
+        // original key, including for target-version identity revalidation.
+        // The ABI caller pins the immutable input key through the hook. A
+        // borrowed UTF-8 view avoids a new String allocation on cache lookup;
+        // arbitrary/non-UTF8 keys still use their original dictionary identity.
+        let name = crate::obj_from_bits(name_bits)
+            .as_ptr()
+            .and_then(|pointer| unsafe {
+                (object_type_id(pointer) == TYPE_ID_STRING)
+                    .then(|| {
+                        std::str::from_utf8(std::slice::from_raw_parts(
+                            string_bytes(pointer),
+                            string_len(pointer),
+                        ))
+                        .ok()
+                    })
+                    .flatten()
+            });
+        match crate::builtins::module_table::resolve_cached_module(
+            &py,
+            name.unwrap_or(""),
+            Some(name_bits),
+            dictionary,
+            observed,
+            ModuleImportPolicy::CGetModule,
+        ) {
+            Ok(CachedModuleOutcome::Return(bits)) => OwnedHandleResult::ok(bits),
+            Ok(CachedModuleOutcome::Missing) => OwnedHandleResult::missing(),
+            Ok(CachedModuleOutcome::Reload) => unreachable!("cache-only import never loads"),
+            Err(_) => OwnedHandleResult::error(),
+        }
+    })
+}
+
 unsafe extern "C" fn hook_eval_get_builtins_borrowed() -> BorrowedHandleResult {
     with_gil(|_py| {
-        let as_builtins_dict = |bits: u64| -> Option<u64> {
-            let ptr = crate::obj_from_bits(bits).as_ptr()?;
-            match unsafe { object_type_id(ptr) } {
-                TYPE_ID_DICT => Some(bits),
-                TYPE_ID_MODULE => {
-                    let dict_bits = unsafe { module_dict_bits(ptr) };
-                    crate::obj_from_bits(dict_bits)
-                        .as_ptr()
-                        .is_some_and(|dict_ptr| unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT)
-                        .then_some(dict_bits)
-                }
-                _ => None,
-            }
-        };
         if let Some(frame_builtins) = crate::builtins::frames::frame_stack_active_builtins() {
             // CPython exposes f_builtins itself, including custom mappings and
             // explicit nonmappings. Protocol validation belongs to item lookup.
@@ -2123,11 +2173,9 @@ unsafe extern "C" fn hook_eval_get_builtins_borrowed() -> BorrowedHandleResult {
             );
             return BorrowedHandleResult::error();
         }
-        let builtins_bits = {
-            let cache = crate::builtins::exceptions::internals::module_cache(&_py);
-            cache.lock().unwrap().get("builtins").copied()
-        };
-        if let Some(dict_bits) = builtins_bits.and_then(as_builtins_dict) {
+        if let Some(dict_bits) =
+            crate::builtins::module_table::interpreter_builtins_dictionary(&_py)
+        {
             BorrowedHandleResult::ok(dict_bits)
         } else {
             let _ = crate::raise_exception::<u64>(
@@ -3556,36 +3604,16 @@ unsafe extern "C" fn hook_module_get_dict_borrowed(module_bits: u64) -> Borrowed
 
 /// CPython import_add_module: an owned current public module, or a raw new
 /// module published before its caller populates it. This operation neither
-/// adopts a compiler LoaderNamespace nor copies public values into the private
-/// cache. Both PyImport_AddModule and legacy extension replay use this primitive.
+/// adopts a compiler LoaderNamespace nor requires sys bootstrap. Both
+/// PyImport_AddModule and legacy extension replay use this primitive.
 fn import_add_module_owned(
     py: &crate::PyToken<'_>,
     name_bits: u64,
     on_admitted: impl FnOnce(u64),
 ) -> Result<u64, u64> {
-    let sys = crate::builtins::modules::interpreter_sys_module(py);
-
-    let Some(sys) = sys else {
-        return Err(crate::raise_exception::<u64>(
-            py,
-            "SystemError",
-            "sys.modules is unavailable",
-        ));
-    };
-    let modules = crate::builtins::modules::sys_modules_dict_bits(py, sys);
-    if crate::exception_pending(py) {
-        if let Some(bits) = modules {
-            crate::dec_ref_bits(py, bits);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    let Some(modules) = modules else {
-        return Err(crate::raise_exception::<u64>(
-            py,
-            "SystemError",
-            "sys.modules is unavailable",
-        ));
-    };
+    let modules = crate::builtins::module_table::module_dictionary(py)
+        .ok_or_else(|| MoltObject::none().bits())?;
+    crate::inc_ref_bits(py, modules);
     let result = (|| {
         let Some(modules_ptr) = crate::obj_from_bits(modules).as_ptr() else {
             return Err(crate::raise_exception::<u64>(
@@ -5544,6 +5572,8 @@ pub fn register_cpython_hooks() -> bool {
                 object_richcompare: hook_object_richcompare,
                 object_richcompare_builtin: hook_object_richcompare_builtin,
                 sys_get_object_borrowed: hook_sys_get_object_borrowed,
+                import_module_dict_borrowed: hook_import_module_dict_borrowed,
+                import_get_module: hook_import_get_module,
                 eval_get_builtins_borrowed: hook_eval_get_builtins_borrowed,
                 classify_heap: Some(hook_classify_heap),
                 object_hash: hook_object_hash,
@@ -9718,6 +9748,27 @@ mod tests {
     fn pyimport_importmodule_routes_through_runtime_import_pipeline() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         register_cpython_hooks();
+        // Hook registration installs callbacks. Ordered finder admission also
+        // needs the real sys namespace and its early BuiltinImporter producer.
+        let _sys_restore = with_gil(|py| {
+            let name = crate::attr_name_bits_from_bytes(&py, b"sys").unwrap();
+            let restore = ModuleCacheRestore::new(&py, name);
+            let module_ptr = alloc_module_obj(&py, name);
+            assert!(!module_ptr.is_null());
+            let module = MoltObject::from_ptr(module_ptr).bits();
+            let published =
+                crate::builtins::module_table::publish_interpreter_sys_for_test(&py, module);
+            if !MoltObject::from_bits(published).is_none() {
+                dec_ref_bits(&py, published);
+            }
+            assert!(!crate::exception_pending(&py));
+            assert_eq!(
+                crate::builtins::modules::interpreter_sys_module(&py),
+                Some(module)
+            );
+            dec_ref_bits(&py, module);
+            restore
+        });
 
         let module = unsafe {
             molt_cpython_abi::api::imports::PyImport_ImportModule(
@@ -9726,6 +9777,14 @@ mod tests {
         };
 
         assert!(module.is_null());
+        assert_eq!(
+            unsafe {
+                molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_ModuleNotFoundError).cast(),
+                )
+            },
+            1
+        );
         // The runtime import pipeline owns the failure: the pending error is
         // the real ModuleNotFoundError, never the standalone ABI stub text.
         let message = pending_exception_message_for_assertion();
@@ -10149,8 +10208,8 @@ mod tests {
                     usize::from(minor >= 13)
                 );
             }
-            // The sibling import API deliberately propagates; it must not use
-            // PySys_GetObject's suppression or unraisable reporting policy.
+            // Import custody does not consult the mutable sys.modules
+            // attribute. Its dedicated hook cannot invoke this raising key.
             let modules_name = crate::attr_name_bits_from_bytes(&py, b"modules").unwrap();
             crate::dict_del_in_place(&py, dict, modules_name)
                 .expect("sys namespace deletion must succeed whether or not modules is present");
@@ -10164,16 +10223,13 @@ mod tests {
             ));
             SYS_LOOKUP_MODE.store(1, AtomicOrdering::SeqCst);
             let reports = SYS_LOOKUP_REPORTS.load(AtomicOrdering::SeqCst);
-            assert!(molt_cpython_abi::api::imports::PyImport_GetModuleDict().is_null());
-            assert_eq!(
-                molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                    (&raw mut molt_cpython_abi::abi_types::PyExc_RuntimeError).cast::<PyObject>()
-                ),
-                1
-            );
+            let calls = SYS_LOOKUP_CALLS.load(AtomicOrdering::SeqCst);
+            let modules = molt_cpython_abi::api::imports::PyImport_GetModuleDict();
+            assert!(!modules.is_null());
+            assert_eq!(SYS_LOOKUP_CALLS.load(AtomicOrdering::SeqCst), calls);
             assert_eq!(SYS_LOOKUP_REPORTS.load(AtomicOrdering::SeqCst), reports);
-            molt_cpython_abi::api::errors::PyErr_Clear();
-            crate::clear_exception(&py);
+            assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+            assert!(!crate::exception_pending(&py));
             // Release the adversarial namespace before cache restoration.
             crate::dict_clear_in_place(&py, dict);
             *state.sys_version_info.lock().unwrap() = Some(previous);

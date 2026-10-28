@@ -110,13 +110,11 @@ def test_discovery_authority_retains_raw_source_generation(
 
 
 @pytest.mark.parametrize("changed_module", ["entry", "writer"])
-@pytest.mark.parametrize("phase", ["before", "generated-importer"])
 def test_runtime_import_policy_fences_complete_source_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     compiler_sources: Path,
     changed_module: str,
-    phase: str,
 ) -> None:
     import os
     from molt.cli import module_import_scanner
@@ -138,7 +136,6 @@ def test_runtime_import_policy_fences_complete_source_generation(
     options = dict(
         module_graph=graph.graph,
         scan_authority=graph.scan_authority,
-        explicit_imports=(),
     )
     # The decision reads the scans' bits: the entry imports the writer.
     baseline = module_import_scanner._module_graph_needs_runtime_import_support(
@@ -157,8 +154,6 @@ def test_runtime_import_policy_fences_complete_source_generation(
         assert changed.read_bytes() != content
 
     mutate()
-    if phase == "generated-importer":
-        options["explicit_imports"] = (module_import_scanner.IMPORTER_MODULE_NAME,)
     with pytest.raises(
         module_source.PythonSourceChangedError, match="generation changed"
     ):
@@ -976,6 +971,7 @@ def test_frontend_analysis_keeps_the_snapshot_that_supplied_its_facts(
         entry_module="entry",
         entry_execution_kind="script",
         namespace_module_names=set(),
+        stdlib_root=tmp_path / "stdlib",
     )
     seen: list[PythonSourceSnapshot] = []
 

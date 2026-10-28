@@ -997,6 +997,67 @@ mod native_retirement {
     }
 
     #[test]
+    fn explicit_context_chain_consumes_owner_breaks_cycles_and_preserves_cause() {
+        let _abi_test = init();
+        let (class, _input_class) = classes();
+        unsafe {
+            let selected = exception(class.as_ptr(), 0);
+            let prior = exception(class.as_ptr(), 0);
+            let link = exception(class.as_ptr(), 0);
+            let cause = exception(class.as_ptr(), 0);
+            errors::PyException_SetCause(selected.as_ptr(), object::Py_NewRef(cause.as_ptr()));
+            for cycle in [false, true] {
+                errors::PyException_SetContext(selected.as_ptr(), ptr::null_mut());
+                errors::PyException_SetContext(prior.as_ptr(), object::Py_NewRef(link.as_ptr()));
+                errors::PyException_SetContext(
+                    link.as_ptr(),
+                    object::Py_NewRef(if cycle {
+                        selected.as_ptr()
+                    } else {
+                        prior.as_ptr()
+                    }),
+                );
+                let before = (*prior.as_ptr()).ob_refcnt;
+                assert!(errors::chain_owned_exception_context(
+                    selected.as_ptr(),
+                    object::Py_NewRef(prior.as_ptr()),
+                ));
+                assert_eq!((*prior.as_ptr()).ob_refcnt, before + 1);
+                let context = refcount::OwnedPyObject::from_owned(errors::PyException_GetContext(
+                    selected.as_ptr(),
+                ));
+                assert_eq!(context.as_ptr(), prior.as_ptr());
+                let observed_cause = refcount::OwnedPyObject::from_owned(
+                    errors::PyException_GetCause(selected.as_ptr()),
+                );
+                assert_eq!(observed_cause.as_ptr(), cause.as_ptr());
+                assert_eq!(
+                    (*selected.as_ptr().cast::<PyBaseExceptionObject>()).suppress_context,
+                    1
+                );
+                if cycle {
+                    assert!(errors::PyException_GetContext(link.as_ptr()).is_null());
+                }
+                // A repeated instance never gains a self context or a leaked
+                // reference; the existing graph is preserved.
+                let before = (*selected.as_ptr()).ob_refcnt;
+                assert!(errors::chain_owned_exception_context(
+                    selected.as_ptr(),
+                    object::Py_NewRef(selected.as_ptr()),
+                ));
+                assert_eq!((*selected.as_ptr()).ob_refcnt, before);
+                drop(context);
+                drop(observed_cause);
+                for value in [selected.as_ptr(), prior.as_ptr(), link.as_ptr()] {
+                    errors::PyException_SetContext(value, ptr::null_mut());
+                }
+            }
+            errors::PyException_SetCause(selected.as_ptr(), ptr::null_mut());
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    }
+
+    #[test]
     fn replacement_publishes_exact_next_before_native_old_owner_retirement() {
         let _abi_test = init();
         let (class, _input_class) = classes();

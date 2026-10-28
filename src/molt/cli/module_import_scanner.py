@@ -9,7 +9,7 @@ import ntpath
 import os
 import posixpath
 import stat
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from molt.cli import module_resolution as _module_resolution
@@ -26,9 +26,6 @@ from molt.target_python import (
 )
 
 
-IMPORTER_MODULE_NAME = "_molt_importer"
-
-
 _RUNTIME_IMPORT_SUPPORT_ROOT_MODULES = (
     "importlib",
     "importlib.util",
@@ -42,7 +39,6 @@ _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
         "_intrinsics",
         *_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES,
         "importlib.abc",
-        IMPORTER_MODULE_NAME,
     }
 )
 
@@ -283,20 +279,10 @@ def _complete_import_scan(
     )
 
 
-def _explicit_imports_reference_generated_importer(
-    explicit_imports: Collection[str],
-) -> bool:
-    return any(
-        name == IMPORTER_MODULE_NAME or name.startswith(f"{IMPORTER_MODULE_NAME}.")
-        for name in explicit_imports
-    )
-
-
 def _module_graph_needs_runtime_import_support(
     *,
     module_graph: Mapping[str, Path],
     scan_authority: _ModuleGraphScanAuthority,
-    explicit_imports: Collection[str],
 ) -> _RuntimeImportSupportPolicy:
     """Whether the closed graph needs the runtime import protocol.
 
@@ -307,13 +293,7 @@ def _module_graph_needs_runtime_import_support(
     """
     scan_authority.validate_graph(module_graph)
     scan_authority.validate_source_generations()
-    if _explicit_imports_reference_generated_importer(explicit_imports):
-        return _RuntimeImportSupportPolicy(
-            needs_generated_importer=True,
-            needs_runtime_import_support=True,
-        )
     return _RuntimeImportSupportPolicy(
-        needs_generated_importer=False,
         needs_runtime_import_support=any(
             source.uses_runtime_import_protocol
             for source in scan_authority.sources

@@ -394,6 +394,7 @@ def _prepare_frontend_analysis(
 
 def _prepare_frontend_lowering_config(
     *,
+    stdlib_root: Path,
     type_facts_path: str | None,
     type_hint_policy: TypeHintPolicy,
     module_graph: Mapping[str, Path],
@@ -473,6 +474,7 @@ def _prepare_frontend_lowering_config(
     )
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
+        stdlib_root=stdlib_root,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
         entry_execution_kind=entry_execution_kind,
@@ -985,6 +987,7 @@ def _prepare_frontend_stage_state(
         phase_starts["ir_lowering"] = time.perf_counter()
     prepared_frontend_lowering_config, prepared_frontend_lowering_config_error = (
         _prepare_frontend_lowering_config(
+            stdlib_root=stdlib_root,
             type_facts_path=type_facts_path,
             type_hint_policy=type_hint_policy,
             module_graph=import_plan.module_graph,

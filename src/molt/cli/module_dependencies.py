@@ -5,7 +5,6 @@ import functools
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from pathlib import Path
 
-from molt.cli import module_import_scanner as _module_import_scanner
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 
 
@@ -364,7 +363,6 @@ _DEAD_MODULE_ELIMINATION_SAFELIST: frozenset[str] = frozenset(
         "operator",
         "reprlib",
         "itertools",
-        _module_import_scanner.IMPORTER_MODULE_NAME,
         "molt.stdlib",
     }
 )

@@ -422,3 +422,102 @@ pub extern "C" fn molt_context_closing(payload_bits: u64) -> u64 {
     // Keep legacy lowering wired to contextlib semantics.
     crate::molt_contextlib_closing(payload_bits)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static EXIT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn enter(_payload: u64) -> u64 {
+        MoltObject::none().bits()
+    }
+    extern "C" fn exit(_payload: u64, _exception: u64) -> u64 {
+        EXIT_CALLS.fetch_add(1, Ordering::SeqCst);
+        MoltObject::from_bool(false).bits()
+    }
+
+    #[test]
+    fn source_raise_keeps_contexts_until_lexical_or_terminal_owner_exits() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            assert_eq!(context_stack_depth(), 0);
+            assert!(!crate::exception_handler_active());
+            for policy in 0..3 {
+                EXIT_CALLS.store(0, Ordering::SeqCst);
+                let outer = MoltObject::from_ptr(alloc_context_manager(
+                    py,
+                    enter as *const (),
+                    exit as *const (),
+                    MoltObject::none().bits(),
+                ))
+                .bits();
+                let inner = MoltObject::from_ptr(alloc_context_manager(
+                    py,
+                    enter as *const (),
+                    exit as *const (),
+                    MoltObject::none().bits(),
+                ))
+                .bits();
+                molt_context_enter(outer);
+                molt_context_enter(inner);
+                assert!(!exception_pending(py));
+                let exception = ExceptionValue::adopt(
+                    py,
+                    MoltObject::from_ptr(crate::alloc_exception(
+                        py,
+                        "ValueError",
+                        "nested body failure",
+                    ))
+                    .bits(),
+                );
+                crate::builtins::exceptions::molt_raise(exception.bits());
+                assert!(exception_pending(py));
+                let pending = ExceptionValue::adopt(py, crate::molt_exception_last_pending());
+                assert_eq!(
+                    pending.bits(),
+                    exception.bits(),
+                    "raise preserves the actual exception"
+                );
+                assert_eq!(
+                    EXIT_CALLS.load(Ordering::SeqCst),
+                    0,
+                    "raising does not run exits"
+                );
+                assert_eq!(
+                    context_stack_depth(),
+                    2,
+                    "caller and callee contexts remain live"
+                );
+                crate::clear_exception(py);
+                match policy {
+                    0 => {
+                        molt_context_exit(inner, MoltObject::none().bits());
+                    }
+                    1 => context_stack_unwind_to(py, 1, exception.bits()),
+                    _ => context_stack_unwind(py, exception.bits()),
+                }
+                assert!(!exception_pending(py));
+                if policy != 2 {
+                    assert_eq!(
+                        context_stack_depth(),
+                        1,
+                        "lexical cleanup cannot unwind its caller"
+                    );
+                    assert_eq!(EXIT_CALLS.load(Ordering::SeqCst), 1);
+                    molt_context_exit(outer, MoltObject::none().bits());
+                }
+                assert!(!exception_pending(py));
+                assert_eq!(context_stack_depth(), 0);
+                assert_eq!(
+                    EXIT_CALLS.load(Ordering::SeqCst),
+                    2,
+                    "each owner exits exactly once"
+                );
+                dec_ref_bits(py, inner);
+                dec_ref_bits(py, outer);
+            }
+        });
+    }
+}

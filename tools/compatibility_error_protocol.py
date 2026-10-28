@@ -37,13 +37,16 @@ from tools.generator_io import (  # noqa: E402
     rustfmt_source,
     write_generated_text,
 )
-from tools.cpython_regrtest import CPYTHON_SOURCES, load_cpython_sources  # noqa: E402
+from tools.cpython_regrtest import (  # noqa: E402
+    CPYTHON_SOURCES,
+    CPythonSource,
+    load_cpython_sources,
+)
 
 PYTHON_PATH = "src/molt/stdlib/_compatibility_errors.py"
 RUST_PATH = "runtime/molt-runtime/src/builtins/compatibility_error.rs"
 TARGETS = ("3.12", "3.13", "3.14")
 SOURCE_RECEIPTS = "config/python_compatibility_error_sources.json"
-MEMORYVIEW_REFERENCES = {"3.12": "3.12.13", "3.13": "3.13.11", "3.14": "3.14.3"}
 PATHLIB_REFERENCES = {
     "3.12": ("Lib/pathlib.py",),
     "3.13": ("Lib/pathlib/_local.py", "Modules/posixmodule.c", "Python/fileutils.c"),
@@ -500,146 +503,272 @@ class InventoryHit:
     detail: str
 
 
-def _pinned_source_coordinates(root: Path) -> dict[tuple[str, str], str]:
-    pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
-    return {
-        (pins[version].tag.removeprefix("v"), path): pins[version].revision
-        for facts in OUTCOMES.values()
-        for version in facts.versions
-        for path in facts.pinned_source_paths
+def _reference_coordinates(
+    root: Path, *, pins: dict[str, CPythonSource] | None = None
+) -> dict[tuple[str, str], str | None]:
+    """Source roles join the admitted references and their exact source pins."""
+    from molt.verified_subset import load_verified_subset_policy
+
+    policy = load_verified_subset_policy(root / "config/verified_subset.toml")
+    references = dict(
+        zip(policy.python_versions, policy.reference_cpython, strict=True)
+    )
+    if pins is None:
+        pins = load_cpython_sources(root / CPYTHON_SOURCES.relative_to(_REPO_ROOT))
+    for version in TARGETS:
+        if pins[version].tag != "v" + references[version]:
+            raise ValueError(f"CPython {version} reference and source pin disagree")
+    coordinates: dict[tuple[str, str], str | None] = {
+        (
+            references[version] if path == "Objects/memoryobject.c" else version + ".0",
+            path,
+        ): pins[version].revision if path == "Objects/memoryobject.c" else None
+        for version in TARGETS
+        for path in (
+            *REFERENCE_FILES,
+            *PATHLIB_REFERENCES[version],
+            "Lib/ntpath.py",
+            "Lib/posixpath.py",
+        )
     }
+    coordinates.update(
+        {
+            (pins[version].tag.removeprefix("v"), path): pins[version].revision
+            for facts in OUTCOMES.values()
+            for version in facts.versions
+            for path in facts.pinned_source_paths
+        }
+    )
+    return coordinates
 
 
-def _source_errors_from_document(root: Path, receipt: object) -> list[str]:
-    if not isinstance(receipt, dict):
-        return ["compatibility source receipts are missing or malformed"]
+def _reference_url(version: str, path: str, revision: str | None) -> str:
+    return (
+        "https://raw.githubusercontent.com/python/cpython/"
+        + (revision or "v" + version)
+        + "/"
+        + path
+    )
+
+
+def _receipt_sources(receipt: object) -> dict[tuple[str, str], dict[str, str]]:
+    if not isinstance(receipt, dict) or receipt.get("schema_version") != 1:
+        raise ValueError("invalid compatibility source receipt schema")
+    rows = receipt.get("sources")
+    if not isinstance(rows, list):
+        raise ValueError("invalid compatibility source rows")
+    result = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("invalid compatibility source row")
+        version, path, revision = (
+            row.get("version"),
+            row.get("path"),
+            row.get("revision"),
+        )
+        if (
+            not isinstance(version, str)
+            or re.fullmatch(r"3\.\d+\.\d+", version) is None
+            or not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or any(part in ("", ".", "..") for part in path.split("/"))
+            or (
+                revision is not None
+                and (
+                    not isinstance(revision, str)
+                    or re.fullmatch(r"[0-9a-f]{40}", revision) is None
+                )
+            )
+            or row.get("url") != _reference_url(version, path, revision)
+            or not isinstance(row.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
+            or (version, path) in result
+        ):
+            raise ValueError(
+                "invalid compatibility source coordinate or content identity"
+            )
+        result[version, path] = row
+    return result
+
+
+def capture_reference_sources(
+    version: str, paths: tuple[str, ...], revision: str | None, git_url: str
+) -> dict[str, bytes]:
+    """Read exact Git blobs using the existing guarded CPython capture owner."""
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from tools.gen_stdlib_module_union import _git, _git_blob_id
+
+    with OwnedTemporaryDirectory(prefix="molt-compatibility-sources-") as scratch:
+        repo = Path(scratch)
+        _git(["init", "--quiet", "--bare", str(repo)], cwd=repo)
+
+        def git(*args: str) -> bytes:
+            return _git(["-C", str(repo), *args], cwd=repo)
+
+        tag = "refs/tags/v" + version
+        git("remote", "add", "origin", git_url)
+        git(
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--depth=1",
+            "--filter=blob:none",
+            "origin",
+            f"+{tag}:{tag}",
+        )
+        observed = git("rev-parse", "--verify", tag + "^{commit}").decode().strip()
+        if re.fullmatch(r"[0-9a-f]{40}", observed) is None or (
+            revision is not None and observed != revision
+        ):
+            raise ValueError(
+                f"CPython {version} tag does not match its pinned revision"
+            )
+
+        def blob(path: str) -> bytes:
+            object_id = (
+                git("rev-parse", "--verify", f"{observed}:{path}").decode().strip()
+            )
+            data = git("cat-file", "blob", object_id)
+            if _git_blob_id(data) != object_id:
+                raise ValueError(
+                    f"CPython {version} {path}: blob content identity differs"
+                )
+            return data
+
+        header = blob("Include/patchlevel.h").decode("utf-8")
+        numbers = [
+            re.search(
+                r"^#define\s+PY_" + field + r"_VERSION\s+(\d+)\b", header, re.MULTILINE
+            )
+            for field in ("MAJOR", "MINOR", "MICRO")
+        ]
+        if (
+            any(match is None for match in numbers)
+            or ".".join(match.group(1) for match in numbers if match is not None)
+            != version
+        ):
+            raise ValueError(
+                f"CPython {version} source release does not match its coordinate"
+            )
+        return {path: blob(path) for path in paths}
+
+
+def refresh_sources(
+    fetch: Callable[
+        [str, tuple[str, ...], str | None, str], dict[str, bytes]
+    ] = capture_reference_sources,
+    *,
+    root: Path = ROOT,
+) -> int:
+    """Capture all inputs before atomically replacing the receipt, never relabel it."""
+    from molt.toolchain_identity import (
+        capture_stable_regular_file,
+        verify_stable_regular_file_identity,
+    )
+
+    policy_path = root / "config/verified_subset.toml"
+    pins_path = root / CPYTHON_SOURCES.relative_to(_REPO_ROOT)
+    inputs = [
+        capture_stable_regular_file(path, label="compatibility source authority")[0]
+        for path in (policy_path, pins_path)
+    ]
+    pins = load_cpython_sources(pins_path)
+    expected = _reference_coordinates(root, pins=pins)
+    for identity in inputs:
+        verify_stable_regular_file_identity(
+            identity, label="compatibility source authority", hash_content=True
+        )
+    destination = root / SOURCE_RECEIPTS
+    try:
+        destination.lstat()
+    except FileNotFoundError:
+        prior_identity, prior_bytes = None, None
+    else:
+        prior_identity, prior_bytes = capture_stable_regular_file(
+            destination, label="compatibility source receipt"
+        )
+    prior = _receipt_sources(json.loads(prior_bytes)) if prior_bytes is not None else {}
+    rows = []
+    versions = sorted(
+        {version for version, _path in expected},
+        key=lambda version: tuple(map(int, version.split("."))),
+    )
+    for version in versions:
+        paths = tuple(sorted(path for current, path in expected if current == version))
+        revisions = {expected[version, path] for path in paths}
+        if len(revisions) != 1:
+            raise ValueError(f"CPython {version} has conflicting source revisions")
+        revision = next(iter(revisions))
+        minor = version.rsplit(".", 1)[0]
+        fetched = fetch(version, paths, revision, pins[minor].git_url)
+        if set(fetched) != set(paths) or any(
+            not isinstance(data, bytes) for data in fetched.values()
+        ):
+            raise ValueError(f"CPython {version} capture is incomplete")
+        for path in paths:
+            row = {
+                "version": version,
+                "url": _reference_url(version, path, revision),
+                "path": path,
+                "sha256": hashlib.sha256(fetched[path]).hexdigest(),
+            }
+            if revision is not None:
+                row["revision"] = revision
+            previous = prior.get((version, path))
+            if previous is not None and previous != row:
+                raise ValueError(
+                    f"CPython {version} {path}: unchanged coordinate differs from its receipt; nothing was written"
+                )
+            rows.append(row)
+    text = json.dumps({"schema_version": 1, "sources": rows}, indent=2) + "\n"
+    for identity in inputs:
+        verify_stable_regular_file_identity(
+            identity, label="compatibility source authority", hash_content=True
+        )
+    if prior_identity is not None:
+        verify_stable_regular_file_identity(
+            prior_identity, label="compatibility source receipt", hash_content=True
+        )
+    else:
+        try:
+            destination.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(
+                "compatibility source receipt appeared during capture; nothing was written"
+            )
+    if not generated_file_matches(destination, text):
+        write_generated_text(destination, text)
+        print(f"wrote {SOURCE_RECEIPTS}; now run --write")
+    return 0
+
+
+def source_errors(root: Path) -> list[str]:
+    """Pinned CPython source receipts and differential witnesses for every outcome."""
     errors = []
     try:
-        sources = receipt["sources"]
-        coordinates = {(row["version"], row["path"]) for row in sources}
-        expected_coordinates = {
-            (
-                MEMORYVIEW_REFERENCES[version]
-                if path == "Objects/memoryobject.c"
-                else version + ".0",
-                path,
-            )
-            for version in TARGETS
-            for path in (
-                *REFERENCE_FILES,
-                *PATHLIB_REFERENCES[version],
-                "Lib/ntpath.py",
-                "Lib/posixpath.py",
-            )
-        }
-        pinned_coordinates = _pinned_source_coordinates(root)
-        expected_coordinates.update(pinned_coordinates)
-        valid = (
-            receipt["schema_version"] == 1
-            and coordinates == expected_coordinates
-            and len(sources) == len(expected_coordinates)
-            and all(
-                re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
-                and row["url"]
-                == (
-                    "https://raw.githubusercontent.com/python/cpython/"
-                    + pinned_coordinates.get(
-                        (row["version"], row["path"]), "v" + row["version"]
-                    )
-                    + "/"
-                    + row["path"]
-                )
-                and (
-                    (row["version"], row["path"]) not in pinned_coordinates
-                    or row.get("revision")
-                    == pinned_coordinates[(row["version"], row["path"])]
-                )
-                for row in sources
-            )
+        sources = _receipt_sources(
+            json.loads((root / SOURCE_RECEIPTS).read_text(encoding="utf-8"))
+        )
+        expected_coordinates = _reference_coordinates(root)
+        valid = sources.keys() == expected_coordinates.keys() and all(
+            row.get("revision") == revision
+            and row["url"] == _reference_url(version, path, revision)
+            for (version, path), revision in expected_coordinates.items()
+            for row in (sources[version, path],)
         )
         if not valid:
             errors.append("compatibility source coordinates are incomplete or unpinned")
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, json.JSONDecodeError, TypeError):
         errors.append("compatibility source receipts are missing or malformed")
+    except (ValueError, KeyError):
+        errors.append("compatibility source coordinates are incomplete or unpinned")
     for outcome, facts in OUTCOMES.items():
         if not (root / facts.witness).is_file():
             errors.append(f"missing compatibility witness: {outcome}")
     return errors
-
-
-def source_errors(root: Path) -> list[str]:
-    """Pinned source-body receipts and differential witnesses for every outcome."""
-    try:
-        receipt = json.loads((root / SOURCE_RECEIPTS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ["compatibility source receipts are missing or malformed"]
-    return _source_errors_from_document(root, receipt)
-
-
-def refresh_sources(root: Path, *, fetch: Callable[[str], bytes] | None = None) -> int:
-    """Refresh pin-bound body receipts, never semantic or execution attestation."""
-    if fetch is None:
-        from tools.pin_freshness import fetch_bytes
-
-        fetch = fetch_bytes
-    path = root / SOURCE_RECEIPTS
-    original = path.read_bytes()
-    receipt = json.loads(original)
-    if (
-        not isinstance(receipt, dict)
-        or receipt.get("schema_version") != 1
-        or not isinstance(receipt.get("sources"), list)
-    ):
-        raise ValueError("compatibility source receipts are missing or malformed")
-    coordinates = _pinned_source_coordinates(root)
-    owned = {(version.rpartition(".")[0], source) for version, source in coordinates}
-    independent = []
-    previous = {}
-    for row in receipt["sources"]:
-        if not isinstance(row, dict):
-            raise ValueError("compatibility source receipts are missing or malformed")
-        if "revision" not in row:
-            independent.append(row)
-            continue
-        if not all(
-            isinstance(row.get(key), str) for key in ("version", "path", "revision")
-        ):
-            raise ValueError("malformed pin-bound compatibility source receipt")
-        key = (row["version"].rpartition(".")[0], row["path"])
-        if key not in owned or key in previous:
-            raise ValueError(
-                "unknown or duplicate pin-bound compatibility source receipt"
-            )
-        previous[key] = row
-    captured = []
-    for (version, source), revision in sorted(coordinates.items()):
-        url = f"https://raw.githubusercontent.com/python/cpython/{revision}/{source}"
-        payload = fetch(url)
-        payload.decode("utf-8")
-        captured.append(
-            {
-                "version": version,
-                "revision": revision,
-                "path": source,
-                "url": url,
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
-    candidate = {**receipt, "sources": [*independent, *captured]}
-    errors = _source_errors_from_document(root, candidate)
-    if errors:
-        raise ValueError("compatibility source refresh refused: " + "; ".join(errors))
-    if path.read_bytes() != original:
-        raise ValueError("compatibility source receipts changed during refresh")
-    write_generated_text(path, json.dumps(candidate, indent=2) + "\n")
-    print(
-        "Source receipts refreshed; review changed body hashes. No semantic or execution attestation."
-    )
-    for row in captured:
-        key = (row["version"].rpartition(".")[0], row["path"])
-        old = previous.get(key, {}).get("sha256", "MISSING")
-        print(f"{row['version']} {row['path']}: {old} -> {row['sha256']}")
-    return 0
 
 
 def projection_errors(root: Path) -> list[str]:
@@ -824,7 +953,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.refresh_sources:
-        return refresh_sources(ROOT)
+        return refresh_sources(root=ROOT)
     return generator_main(
         generated_outputs, ["--write" if args.write else "--check"], description=__doc__
     )

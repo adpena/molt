@@ -983,6 +983,15 @@ identity transport without claiming compatibility with an unknown release.
 The snapshot retains unmodified upstream text under the existing
 [CPython license](../src/molt/stdlib/collections/LICENSE.cpython).
 
+Generated token and module-union tables contain semantic data and a stable
+pointer to that snapshot. Exact tags, commits and source hashes stay in the
+source pins and snapshot: a provenance-only refresh must emit identical table
+bytes, while changed token values or module membership must change them. This
+applies the result-equality rule behind
+[rustc's red-green algorithm](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html#improving-accuracy-the-red-green-algorithm)
+and [Salsa's change propagation](https://salsa-rs.github.io/salsa/reference/algorithm.html)
+at the generator boundary, avoiding downstream work for an unchanged result.
+
 1. Verify the official release/tag and add its full peeled commit to the existing
    source-pin file. Retain the source-versus-reference patch distinction.
 2. Run `python3 tools/gen_stdlib_module_union.py --refresh-sources`. It captures

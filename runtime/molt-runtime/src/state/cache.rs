@@ -268,6 +268,7 @@ define_runtime_static_names! {
     files_name => b"files",
     find_spec_name => b"find_spec",
     generic_name => b"Generic",
+    get_filename_name => b"get_filename",
     get_resource_reader_name => b"get_resource_reader",
     get_source_name => b"get_source",
     has_location_name => b"has_location",
@@ -299,6 +300,7 @@ define_runtime_static_names! {
     optimized_bytecode_suffixes_name => b"OPTIMIZED_BYTECODE_SUFFIXES",
     optional_name => b"Optional",
     origin_name => b"origin",
+    loader_origin_name => b"_ORIGIN",
     overload_name => b"overload",
     param_spec_args_name => b"_ParamSpecArgs",
     param_spec_kwargs_name => b"_ParamSpecKwargs",
@@ -499,118 +501,5 @@ pub(crate) fn clear_runtime_static_names(_py: &PyToken<'_>, state: &RuntimeState
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        INTERNED_NAME_SLOT_COUNT, InternedNames, METHOD_CACHE_SLOT_COUNT, MethodCache,
-        RUNTIME_STATIC_NAME_SLOT_COUNT, RuntimeStaticNames, clear_method_cache,
-        clear_runtime_static_names, intern_runtime_static_name,
-    };
-    use crate::{MoltObject, alloc_string, runtime_state};
-    use std::collections::HashSet;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    #[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
-    #[test]
-    fn bridge_name_failure_is_distinct_from_an_unsupported_name() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            assert_eq!(
-                super::intern_bridge_protocol_name(py, b"unsupported-name"),
-                Ok(None)
-            );
-            crate::raise_exception::<u64>(py, "MemoryError", "original bridge allocation failure");
-            let original = crate::exception_last_bits_noinc(py);
-            for key in [b"__float__".as_slice(), b"unsupported-name"] {
-                assert_eq!(super::intern_bridge_protocol_name(py, key), Err(()));
-            }
-            assert_eq!(crate::exception_last_bits_noinc(py), original);
-            let _ = crate::molt_exception_clear();
-        });
-    }
-
-    #[test]
-    fn method_cache_slots_are_manifest_complete_and_unique() {
-        let cache = MethodCache::new();
-        let slots = cache.slots();
-        assert_eq!(slots.len(), METHOD_CACHE_SLOT_COUNT);
-
-        let mut seen = HashSet::with_capacity(slots.len());
-        for slot in slots {
-            let addr = slot as *const AtomicU64 as usize;
-            assert!(seen.insert(addr));
-            assert_eq!(slot.load(Ordering::Acquire), 0);
-        }
-    }
-
-    #[test]
-    fn interned_name_slots_are_manifest_complete_and_unique() {
-        let names = InternedNames::new();
-        let slots = names.slots();
-        assert_eq!(slots.len(), INTERNED_NAME_SLOT_COUNT);
-
-        let mut seen = HashSet::with_capacity(slots.len());
-        for slot in slots {
-            let addr = slot as *const AtomicU64 as usize;
-            assert!(seen.insert(addr));
-            assert_eq!(slot.load(Ordering::Acquire), 0);
-        }
-    }
-
-    #[test]
-    fn runtime_static_name_slots_are_manifest_complete_and_unique() {
-        let names = RuntimeStaticNames::new();
-        let slots = names.slots();
-        assert_eq!(slots.len(), RUNTIME_STATIC_NAME_SLOT_COUNT);
-
-        let mut seen = HashSet::with_capacity(slots.len());
-        for slot in slots {
-            let addr = slot as *const AtomicU64 as usize;
-            assert!(seen.insert(addr));
-            assert_eq!(slot.load(Ordering::Acquire), 0);
-        }
-
-        assert!(names.slot_for(b"__spec__").is_some());
-        assert!(names.slot_for(b"path_importer_cache").is_some());
-        assert!(names.slot_for(b"certfile").is_some());
-        assert!(names.slot_for(b"missing-runtime-static-name").is_none());
-    }
-
-    #[test]
-    fn clear_method_cache_releases_every_remaining_private_callback() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            clear_method_cache(_py, state);
-            for slot in state.method_cache.slots() {
-                let ptr = alloc_string(_py, b"private callback cache sentinel");
-                assert!(!ptr.is_null());
-                slot.store(MoltObject::from_ptr(ptr).bits(), Ordering::Release);
-            }
-            clear_method_cache(_py, state);
-            for slot in state.method_cache.slots() {
-                assert_eq!(slot.load(Ordering::Acquire), 0);
-            }
-        });
-    }
-
-    #[test]
-    fn clear_runtime_static_names_releases_every_manifest_slot() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            clear_runtime_static_names(_py, state);
-
-            let spec_bits = intern_runtime_static_name(_py, b"__spec__");
-            let cache_bits = intern_runtime_static_name(_py, b"path_importer_cache");
-            assert_ne!(spec_bits, 0);
-            assert_ne!(cache_bits, 0);
-            assert_ne!(spec_bits, cache_bits);
-
-            clear_runtime_static_names(_py, state);
-
-            for slot in state.runtime_static_names.slots() {
-                assert_eq!(slot.load(Ordering::Acquire), 0);
-            }
-        });
-    }
-}
+#[path = "cache/tests.rs"]
+mod tests;

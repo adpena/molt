@@ -243,9 +243,25 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_module_import",
             crate::molt_module_import as *const (),
         )),
+        "molt_imp_acquire_lock" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_imp_acquire_lock",
+            crate::molt_imp_acquire_lock as *const (),
+        )),
+        "molt_imp_release_lock" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_imp_release_lock",
+            crate::molt_imp_release_lock as *const (),
+        )),
+        "molt_imp_lock_held" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_imp_lock_held",
+            crate::molt_imp_lock_held as *const (),
+        )),
         "molt_module_cache_set" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_module_cache_set",
             crate::molt_module_cache_set as *const (),
+        )),
+        "molt_module_initialization_spec" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_module_initialization_spec",
+            crate::molt_module_initialization_spec as *const (),
         )),
         "molt_cpython_abi_run_static_extension_init" => {
             Some(crate::builtins::functions::runtime_fn_addr(

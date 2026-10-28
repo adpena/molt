@@ -78,15 +78,23 @@ def _discover(
 
 
 @pytest.mark.parametrize("first_full", [False, True])
+@pytest.mark.parametrize(
+    "helper_source",
+    [
+        "def invoke():\n    return __import__('leaf')\n",
+        "from _intrinsics import require_intrinsic as acquire\n"
+        "load = acquire('molt_importlib_import_module')\n"
+        "def invoke():\n    return load('leaf', None)\n",
+    ],
+)
 def test_role_receipt_survives_cache_hits_and_protocol_detection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     first_full: bool,
+    helper_source: str,
 ) -> None:
     entry = _source(tmp_path / "entry.py", "pass\n")
-    helper = _source(
-        tmp_path / "helper.py", "def invoke():\n    return __import__('leaf')\n"
-    )
+    helper = _source(tmp_path / "helper.py", helper_source)
     _source(tmp_path / "leaf.py", "pass\n")
     monkeypatch.setattr(
         graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "roles"
@@ -118,7 +126,6 @@ def test_role_receipt_survives_cache_hits_and_protocol_detection(
         policy = scanner._module_graph_needs_runtime_import_support(
             module_graph=graph,
             scan_authority=authority,
-            explicit_imports=result.explicit_imports,
         )
         assert policy.needs_runtime_import_support is full
 
@@ -359,15 +366,16 @@ def test_runtime_protocol_bit_counts_statements_the_scan_reaches() -> None:
 
 
 @pytest.mark.parametrize("target", ["native", "wasm", "rust", "luau", "mlir"])
-def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
+def test_late_native_root_refreshes_policy_and_catalog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     target: str,
 ) -> None:
     entry = _source(tmp_path / "entry.py", "pass\n")
     late = _source(
-        tmp_path / "late.py", "def invoke():\n    return __import__('_molt_importer')\n"
+        tmp_path / "late.py", "def invoke():\n    return __import__('late_leaf')\n"
     )
+    leaf = _source(tmp_path / "late_leaf.py", "pass\n")
     owner = _source(tmp_path / "stdlib" / "runtime_owner.py", "pass\n")
     monkeypatch.setattr(
         scanner, "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES", ("runtime_owner",)
@@ -395,7 +403,7 @@ def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
         runtime_import_dispatch_roots=frozenset(),
         stub_parents=set(),
         spawn_enabled=False,
-        runtime_import_support_policy=_RuntimeImportSupportPolicy(False, False),
+        runtime_import_support_policy=_RuntimeImportSupportPolicy(False),
         native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
         target_python=PYTHON,
     )
@@ -416,15 +424,10 @@ def test_late_native_root_refreshes_policy_catalog_and_generated_importer(
         entry_module="entry",
         diagnostics_enabled=False,
     )
-    assert plan.runtime_import_support_policy.needs_generated_importer
     assert plan.runtime_import_support_policy.needs_runtime_import_support
-    assert "_molt_importer" in plan.module_graph
     assert plan.runtime_import_scan_custody is not None
     assert plan.runtime_import_scan_custody.catalog_by_module["late"] == late
-    assert (
-        plan.runtime_import_scan_custody.catalog_by_module["_molt_importer"]
-        == plan.module_graph["_molt_importer"].resolve()
-    )
+    assert plan.runtime_import_scan_custody.catalog_by_module["late_leaf"] == leaf
     assert plan.module_graph_operation_counts["native_support_iterations"] < 6
     assert "late" in plan.runtime_import_dispatch_roots
     assert plan.scan_authority.mode_for("late", late) == "full"
@@ -752,11 +755,9 @@ def test_generated_sources_are_content_addressed_without_self_referential_identi
     second = graphs._write_generated_module_source("generated", "VALUE = 2\n", tmp_path)
     assert first != second
     assert first.read_text(encoding="utf-8") == "VALUE = 1\n"
-    importer = graphs._write_importer_module(tmp_path)
-    assert graphs._write_importer_module(tmp_path) == importer
     namespace = graphs._write_namespace_module("pkg", ["/source/pkg"], tmp_path)
     assert graphs._write_namespace_module("pkg", ["/source/pkg"], tmp_path) == namespace
-    for path in (first, second, importer, namespace):
+    for path in (first, second, namespace):
         assert path.name not in path.read_text(encoding="utf-8")
 
 
@@ -1679,7 +1680,7 @@ def test_materialized_namespace_package_identity_matches_cpython(
         runtime_import_dispatch_roots=frozenset(),
         stub_parents=set(),
         spawn_enabled=False,
-        runtime_import_support_policy=_RuntimeImportSupportPolicy(False, False),
+        runtime_import_support_policy=_RuntimeImportSupportPolicy(False),
         native_artifact_plan=_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
         target_python=PYTHON,
     )

@@ -39,20 +39,20 @@
     },
     {
       "version": "3.12.0",
-      "path": "Lib/ntpath.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/ntpath.py",
+      "path": "Lib/ntpath.py",
       "sha256": "0ba5b71169c209deaf39bb3c6f043f65586c931424236ed10cfe9b932b1e6197"
     },
     {
       "version": "3.12.0",
-      "path": "Lib/pathlib.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/pathlib.py",
+      "path": "Lib/pathlib.py",
       "sha256": "b48c9afd06eaf5b60ed3a0be4232fd3e3a72564e10c84d03b7ba388e0b703199"
     },
     {
       "version": "3.12.0",
-      "path": "Lib/posixpath.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/posixpath.py",
+      "path": "Lib/posixpath.py",
       "sha256": "8396232224e1b9df7896a32980046825b64c00bb010ddd2a4ccc23fe4fbfe262"
     },
     {
@@ -62,10 +62,25 @@
       "sha256": "8e81dc644129386dfc8d10fbb57a8e15ca31f7b07baf289d9685695b06745769"
     },
     {
-      "version": "3.12.13",
-      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.13/Objects/memoryobject.c",
+      "version": "3.12.15",
+      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/logging/__init__.py",
+      "path": "Lib/logging/__init__.py",
+      "sha256": "43f86bbc08fdd5c7b6e697abffe1381f534a92bb32e1f1aee8360d6a142592a1",
+      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+    },
+    {
+      "version": "3.12.15",
+      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Modules/_io/iobase.c",
+      "path": "Modules/_io/iobase.c",
+      "sha256": "ccdd159eeb82fe58906242e1357f6d558a1a089c033cb3c7eabcc638bb11b71f",
+      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+    },
+    {
+      "version": "3.12.15",
+      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Objects/memoryobject.c",
       "path": "Objects/memoryobject.c",
-      "sha256": "43728748a34eab47c0f7c7d3e3d7b0f155ee236ce6eb768ba64d202c902f9bb5"
+      "sha256": "43728748a34eab47c0f7c7d3e3d7b0f155ee236ce6eb768ba64d202c902f9bb5",
+      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
     },
     {
       "version": "3.13.0",
@@ -105,20 +120,20 @@
     },
     {
       "version": "3.13.0",
-      "path": "Lib/ntpath.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/ntpath.py",
+      "path": "Lib/ntpath.py",
       "sha256": "77edf1340e16ed4a955aacf47fd65cb0872fb769aabd371c2a81173d219c7054"
     },
     {
       "version": "3.13.0",
-      "path": "Lib/pathlib/_local.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/pathlib/_local.py",
+      "path": "Lib/pathlib/_local.py",
       "sha256": "cca3cb1978b8ffc85c1a1cb29d84bd40f2bc174472bed1e1f2decf650951c0cf"
     },
     {
       "version": "3.13.0",
-      "path": "Lib/posixpath.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/posixpath.py",
+      "path": "Lib/posixpath.py",
       "sha256": "26f8f7b1eace1c0f9929d23152676f43c69ef3524f5b1262fc2eba15377cf497"
     },
     {
@@ -129,21 +144,36 @@
     },
     {
       "version": "3.13.0",
-      "path": "Modules/posixmodule.c",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Modules/posixmodule.c",
+      "path": "Modules/posixmodule.c",
       "sha256": "657d82732cb839817fa047c314b2c671089f7ac50ef3f04b2d7511af17f948cf"
     },
     {
       "version": "3.13.0",
-      "path": "Python/fileutils.c",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Python/fileutils.c",
+      "path": "Python/fileutils.c",
       "sha256": "34a371c5d2b84bd74c2499997594ab8b4044427705fa971b7e0b2d9ef646089f"
     },
     {
-      "version": "3.13.11",
-      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.11/Objects/memoryobject.c",
+      "version": "3.13.17",
+      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Lib/logging/__init__.py",
+      "path": "Lib/logging/__init__.py",
+      "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519",
+      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+    },
+    {
+      "version": "3.13.17",
+      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Modules/_io/iobase.c",
+      "path": "Modules/_io/iobase.c",
+      "sha256": "6386f179c88d51d74a0374aad35671e5371578fcc8e1f89cb901a9d355d66c14",
+      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
+    },
+    {
+      "version": "3.13.17",
+      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Objects/memoryobject.c",
       "path": "Objects/memoryobject.c",
-      "sha256": "53cf958a7a9e4a07f13f7ff13c3d2620e6998e418d4b342263b6b0aa53285af5"
+      "sha256": "3dc91a84d6700f95e55b1c7a44c20a7e9e11503ed18a28e311fbb31031f31be9",
+      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
     },
     {
       "version": "3.14.0",
@@ -183,20 +213,20 @@
     },
     {
       "version": "3.14.0",
-      "path": "Lib/ntpath.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/ntpath.py",
+      "path": "Lib/ntpath.py",
       "sha256": "674d29eafaa20e47790c5700b78c08697f99ba7009c98475cd7e62094da58f53"
     },
     {
       "version": "3.14.0",
-      "path": "Lib/pathlib/__init__.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/pathlib/__init__.py",
+      "path": "Lib/pathlib/__init__.py",
       "sha256": "66b69c1a661f64298eb8f347a3f26a859e2a95ddc8abcf6bcb91c670439bc72a"
     },
     {
       "version": "3.14.0",
-      "path": "Lib/posixpath.py",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/posixpath.py",
+      "path": "Lib/posixpath.py",
       "sha256": "222726e4e986cfe3c9c06aae151ccb339bb25e47703357f69fada82c86c5e855"
     },
     {
@@ -207,77 +237,50 @@
     },
     {
       "version": "3.14.0",
-      "path": "Modules/posixmodule.c",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Modules/posixmodule.c",
+      "path": "Modules/posixmodule.c",
       "sha256": "1d7d6dc77a28d0cbc16054a3e382a1d50cc60656ac6ea7beb38baa88b2bac86a"
     },
     {
       "version": "3.14.0",
-      "path": "Python/fileutils.c",
       "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Python/fileutils.c",
+      "path": "Python/fileutils.c",
       "sha256": "7141679d2d4d1ac7faa9f17b4fa3596e042bbd4d32bbab659bb5336c24b79d95"
     },
     {
-      "version": "3.14.3",
-      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.3/Objects/memoryobject.c",
-      "path": "Objects/memoryobject.c",
-      "sha256": "afc705f7c5f1543e6fac358034d2f39693576d1abd03b85f8914ca05989fc4b1"
-    },
-    {
-      "version": "3.12.15",
-      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36",
-      "path": "Lib/logging/__init__.py",
-      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/logging/__init__.py",
-      "sha256": "43f86bbc08fdd5c7b6e697abffe1381f534a92bb32e1f1aee8360d6a142592a1"
-    },
-    {
-      "version": "3.12.15",
-      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36",
-      "path": "Modules/_io/iobase.c",
-      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Modules/_io/iobase.c",
-      "sha256": "ccdd159eeb82fe58906242e1357f6d558a1a089c033cb3c7eabcc638bb11b71f"
-    },
-    {
-      "version": "3.13.17",
-      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30",
-      "path": "Lib/logging/__init__.py",
-      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Lib/logging/__init__.py",
-      "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519"
-    },
-    {
-      "version": "3.13.17",
-      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30",
-      "path": "Modules/_io/iobase.c",
-      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Modules/_io/iobase.c",
-      "sha256": "6386f179c88d51d74a0374aad35671e5371578fcc8e1f89cb901a9d355d66c14"
-    },
-    {
       "version": "3.14.9",
-      "revision": "ead82c07db1f111d613926ed1b6667411d768125",
-      "path": "Lib/logging/__init__.py",
       "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/logging/__init__.py",
-      "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519"
+      "path": "Lib/logging/__init__.py",
+      "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519",
+      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
     },
     {
       "version": "3.14.9",
-      "revision": "ead82c07db1f111d613926ed1b6667411d768125",
-      "path": "Modules/_io/iobase.c",
       "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Modules/_io/iobase.c",
-      "sha256": "a85fdf5cb43a8217757e271de886e6ed86f4dd929a1059dc875708a366044a62"
-    },
-    {
-      "version": "3.15.1",
-      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61",
-      "path": "Lib/logging/__init__.py",
-      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Lib/logging/__init__.py",
-      "sha256": "87a1907cd9081e07c3a92e678015f94cd77acb2fe8987b70a4d589bcf89338ea"
-    },
-    {
-      "version": "3.15.1",
-      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61",
       "path": "Modules/_io/iobase.c",
+      "sha256": "a85fdf5cb43a8217757e271de886e6ed86f4dd929a1059dc875708a366044a62",
+      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+    },
+    {
+      "version": "3.14.9",
+      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Objects/memoryobject.c",
+      "path": "Objects/memoryobject.c",
+      "sha256": "d72422b672d25b5decb9ab027e0a9b7d9d56500a372adcd9d401bb582f820301",
+      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+    },
+    {
+      "version": "3.15.1",
+      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Lib/logging/__init__.py",
+      "path": "Lib/logging/__init__.py",
+      "sha256": "87a1907cd9081e07c3a92e678015f94cd77acb2fe8987b70a4d589bcf89338ea",
+      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
+    },
+    {
+      "version": "3.15.1",
       "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Modules/_io/iobase.c",
-      "sha256": "d38b6f321127cbca71700fe1587e27ff67c8db09bda54d2a92584d0ca5dd45cf"
+      "path": "Modules/_io/iobase.c",
+      "sha256": "d38b6f321127cbca71700fe1587e27ff67c8db09bda54d2a92584d0ca5dd45cf",
+      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
     }
   ]
 }

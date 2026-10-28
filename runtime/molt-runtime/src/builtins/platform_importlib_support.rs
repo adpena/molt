@@ -427,14 +427,30 @@ pub(super) fn importlib_zip_source_exec_payload(
     ))
 }
 
-pub(super) fn importlib_cache_from_source(path: &str) -> String {
+/// Default PEP 3147 layout; policy is supplied by the runtime owner rather
+/// than inferred from host Python or a second target-version authority.
+pub(super) fn importlib_cache_from_source(
+    path: &str,
+    cache_tag: &str,
+    bytecode_suffix: &str,
+) -> String {
     let sep = bootstrap_path_sep();
-    let base = path_basename_text(path, sep);
-    if base.ends_with(".py") {
-        let cache_dir = path_join_text(path_dirname_text(path, sep), "__pycache__", sep);
-        return path_join_text(cache_dir, &format!("{base}c"), sep);
-    }
-    format!("{path}c")
+    // Split at the final separator without stripping a trailing separator;
+    // a path is metadata here and need not identify an existing source file.
+    let split = path.rfind(|ch| ch == sep || (sep == '\\' && ch == '/'));
+    let (head, tail) = split.map_or(("", path), |index| (&path[..index], &path[index + 1..]));
+    let filename = match tail.rsplit_once('.') {
+        Some((base, rest)) => {
+            format!(
+                "{}.{cache_tag}{bytecode_suffix}",
+                if base.is_empty() { rest } else { base }
+            )
+        }
+        None => format!("{tail}{cache_tag}{bytecode_suffix}"),
+    };
+    let head = head.trim_end_matches(|ch| ch == sep || (sep == '\\' && ch == '/'));
+    let cache_dir = path_join_text(head.to_string(), "__pycache__", sep);
+    path_join_text(cache_dir, &filename, sep)
 }
 
 pub(super) fn importlib_is_extension_filename(name: &str, module_name: &str) -> bool {
@@ -563,7 +579,9 @@ pub(super) fn importlib_find_in_path(
                         origin: Some(init_file.clone()),
                         is_package: true,
                         submodule_search_locations: Some(vec![pkg_dir]),
-                        cached: Some(importlib_cache_from_source(&init_file)),
+                        // Source specs derive cached paths lazily from the
+                        // current policy on their first property read.
+                        cached: None,
                         has_location: true,
                         loader_kind: "source".to_string(),
                         zip_archive: None,
@@ -611,7 +629,7 @@ pub(super) fn importlib_find_in_path(
                         origin: Some(mod_file.clone()),
                         is_package: false,
                         submodule_search_locations: None,
-                        cached: Some(importlib_cache_from_source(&mod_file)),
+                        cached: None,
                         has_location: true,
                         loader_kind: "source".to_string(),
                         zip_archive: None,
@@ -926,6 +944,26 @@ pub(super) fn importlib_enforce_extension_spec_boundary(
     importlib_require_extension_metadata(_py, module_name, origin)
 }
 
+/// Compare physical target-runtime coordinates, not compiler-host prefixes.
+/// Only a potentially unavailable stdlib catalog provider pays these cold
+/// resolutions. A historical origin unavailable on this target proves nothing;
+/// selected body execution separately enforces its provider role.
+pub(super) fn importlib_catalog_origin_matches(
+    py: &PyToken<'_>,
+    candidate: &str,
+    catalog_origin: &str,
+) -> Result<bool, u64> {
+    if catalog_origin.is_empty() {
+        return Ok(false);
+    }
+    let candidate = match std::fs::canonicalize(candidate) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(raise_importlib_io_error(py, error)),
+    };
+    Ok(std::fs::canonicalize(catalog_origin).is_ok_and(|origin| origin == candidate))
+}
+
 /// Resolve only the explicitly supplied path entries. Caller-owned bootstrap
 /// search policy must not be injected into a raw path-entry lookup.
 pub(super) fn importlib_resolve_spec_in_paths(
@@ -937,6 +975,18 @@ pub(super) fn importlib_resolve_spec_in_paths(
     let Some(resolution) = importlib_find_in_path(fullname, search_paths, package_context) else {
         return Ok(None);
     };
+    if let Some(provider) = crate::builtins::module_table::module_registry()
+        .and_then(|registry| registry.provider_spec(fullname))
+        && provider.is_stdlib_provider
+        && matches!(
+            known_import_absence(py, provider.provider_name),
+            Some(KnownImportAbsence::Provider(_))
+        )
+        && let Some(candidate) = resolution.origin.as_deref()
+        && importlib_catalog_origin_matches(py, candidate, provider.origin)?
+    {
+        return Ok(None);
+    }
     importlib_enforce_extension_spec_boundary(py, fullname, &resolution)?;
     Ok(Some(resolution))
 }

@@ -25,12 +25,22 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
     /// runtime GIL. Dirty C construction state must already have crossed the
     /// bridge's observed-ingress commit boundary.
     pub(crate) unsafe fn begin(py: &'a PyToken<'py>, ptr: *mut u8) -> Option<Self> {
+        unsafe { Self::begin_storage(py, ptr, true) }
+    }
+
+    unsafe fn begin_storage(
+        py: &'a PyToken<'py>,
+        ptr: *mut u8,
+        require_view: bool,
+    ) -> Option<Self> {
         crate::gil_assert();
         if ptr.is_null() || unsafe { object_type_id(ptr) } != TYPE_ID_LIST {
             return None;
         }
         let header = unsafe { header_from_obj_ptr(ptr) };
-        if unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW == 0 {
+        if require_view
+            && unsafe { (*header).load_synchronized_flags() } & HEADER_FLAG_HAS_ABI_VIEW == 0
+        {
             return None;
         }
         let base = unsafe { seq_vec_ptr(ptr) };
@@ -192,21 +202,27 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
     /// Publish the new runtime storage and its already-staged ABI projection,
     /// then release old runtime and transaction-only edges.
     pub(crate) unsafe fn commit(self) -> bool {
-        unsafe { self.commit_with_projection(None) }
+        unsafe { self.commit_with_projection(None, true) }
     }
 
     pub(crate) unsafe fn commit_with_pyobjs(
         self,
         pointers: &[*mut molt_cpython_abi::abi_types::PyObject],
     ) -> bool {
-        unsafe { self.commit_with_projection(Some(pointers)) }
+        unsafe { self.commit_with_projection(Some(pointers), true) }
     }
 
     unsafe fn commit_with_projection(
         mut self,
         exact_pointers: Option<&[*mut molt_cpython_abi::abi_types::PyObject]>,
+        conflict_is_error: bool,
     ) -> bool {
-        let prepared = if let Some(pointers) = exact_pointers {
+        let has_view = unsafe { (*header_from_obj_ptr(self.ptr)).load_synchronized_flags() }
+            & HEADER_FLAG_HAS_ABI_VIEW
+            != 0;
+        let prepared = if !has_view {
+            None
+        } else if let Some(pointers) = exact_pointers {
             molt_cpython_abi::bridge::GLOBAL_BRIDGE.prepare_list_projection_from_pyobjs(
                 self.bits,
                 self.next(),
@@ -215,20 +231,25 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
         } else {
             molt_cpython_abi::bridge::GLOBAL_BRIDGE.prepare_list_projection(self.bits, self.next())
         };
-        let Some(prepared) = prepared else {
+        if has_view && prepared.is_none() {
             return false;
-        };
+        }
         let mutation_guard =
             unsafe { crate::object::backing::tracked_vec_mutation_lock(self.base) };
         let live = unsafe { seq_vec_ptr(self.ptr) };
         let live_epoch = unsafe { crate::object::backing::tracked_vec_mutation_epoch(live) };
-        if live != self.base || live_epoch != self.base_epoch {
+        let live_has_view = unsafe { (*header_from_obj_ptr(self.ptr)).load_synchronized_flags() }
+            & HEADER_FLAG_HAS_ABI_VIEW
+            != 0;
+        if live != self.base || live_epoch != self.base_epoch || live_has_view != has_view {
             drop(mutation_guard);
-            let _ = raise_exception::<u64>(
-                self.py,
-                "RuntimeError",
-                "list mutated during mutation transaction",
-            );
+            if conflict_is_error {
+                let _ = raise_exception::<u64>(
+                    self.py,
+                    "RuntimeError",
+                    "list mutated during mutation transaction",
+                );
+            }
             return false;
         }
         unsafe { crate::object::backing::tracked_vec_swap_contents(live, self.next) };
@@ -243,7 +264,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
             } else {
                 (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
             }
-            prepared.publish()
+            prepared.map(|prepared| prepared.publish())
         };
         drop(mutation_guard);
         drop(retired_projection);
@@ -966,6 +987,34 @@ pub(crate) unsafe fn reserve_additional(py: &PyToken<'_>, ptr: *mut u8, addition
         crate::record_memory_error_without_allocation(py);
     }
     admitted
+}
+
+/// Append only to the exact admitted backing generation. A clean mismatch
+/// leaves public policy untouched; allocation/projection failures stay pending.
+/// Preparation owns all values; comparison and publication share one backing lock.
+pub(crate) unsafe fn extend_if_epoch(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    expected: u64,
+    items: &[u64],
+) -> Result<Option<u64>, ()> {
+    let Some(mut txn) = (unsafe { ListMutationTxn::begin_storage(py, ptr, false) }) else {
+        return Err(());
+    };
+    if txn.base_epoch != expected {
+        return Ok(None);
+    }
+    let len = txn.next().len();
+    if !txn.replace_range(len, len, items) {
+        return Err(());
+    }
+    if unsafe { txn.commit_with_projection(None, false) } {
+        Ok(Some(expected.wrapping_add(1)))
+    } else if exception_pending(py) {
+        Err(())
+    } else {
+        Ok(None)
+    }
 }
 
 pub(crate) unsafe fn extend_from_slice(py: &PyToken<'_>, ptr: *mut u8, items: &[u64]) -> bool {

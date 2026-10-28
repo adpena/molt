@@ -5509,6 +5509,21 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_imp_acquire_lock",
+        arity: 0,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_imp_lock_held",
+        arity: 0,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_imp_release_lock",
+        arity: 0,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_importlib_admit_spec",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -5599,8 +5614,18 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_importlib_frozen_external_payload",
+        symbol: "molt_importlib_find_spec",
+        arity: 3,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_frozen_external_commit",
         arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_frozen_external_payload",
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5689,6 +5714,26 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_importlib_module_spec_cached_get",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_module_spec_cached_set",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_module_spec_has_location_get",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_module_spec_has_location_set",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_importlib_module_spec_init",
         arity: 5,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -5711,6 +5756,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_importlib_package_root_from_origin",
         arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_prepare_fromlist",
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5936,6 +5986,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_importlib_stabilize_module_state",
         arity: 6,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_importlib_suffixes",
+        arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -7440,6 +7495,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_module_init",
+        arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_module_initialization_spec",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
@@ -13034,14 +13094,14 @@ pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
         "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[240]),
         "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[246]),
         "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[247]),
-        "string_count" => Some(&RUNTIME_BOXED_ABIS[2159]),
-        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2160]),
-        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2161]),
-        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2162]),
-        "string_find" => Some(&RUNTIME_BOXED_ABIS[2164]),
-        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2165]),
-        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2187]),
-        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2188]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2171]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2172]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2173]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2174]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2176]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2177]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2199]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2200]),
         _ => None,
     }
 }

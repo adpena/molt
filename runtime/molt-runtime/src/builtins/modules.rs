@@ -49,6 +49,14 @@ pub use runpy::{molt_runpy_run_module, molt_runpy_run_path};
 pub use type_attributes::*;
 pub use type_protocol::*;
 
+/// Original defining globals for an admitted initializer/private body.
+pub(crate) fn module_body_owns_globals(py: &PyToken<'_>, name: &str, globals: u64) -> bool {
+    execution::execution_owns_globals(py, name, globals)
+        || crate::builtins::module_table::module_execution_owns_initializing_globals(
+            py, name, globals,
+        )
+}
+
 fn trace_module_cache() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_MODULE_CACHE)
 }
@@ -608,7 +616,11 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
             crate::molt_sys_builtin_module_names(),
         )?;
 
-        let meta_path_ptr = alloc_list(_py, &[]);
+        let builtin_finder = crate::builtins::types::compiled_loader_builtin_class(_py);
+        if builtin_finder == 0 || exception_pending(_py) {
+            return Err(());
+        }
+        let meta_path_ptr = alloc_list(_py, &[builtin_finder]);
         if meta_path_ptr.is_null() {
             return Err(());
         }
@@ -640,6 +652,12 @@ unsafe fn sys_populate_bootstrap_metadata(_py: &PyToken<'_>, sys_ptr: *mut u8) -
             "path_importer_cache",
             MoltObject::from_ptr(path_importer_cache_ptr).bits(),
         )?;
+
+        crate::builtins::platform::importlib_seed_default_generation(
+            _py,
+            MoltObject::from_ptr(meta_path_ptr).bits(),
+            MoltObject::from_ptr(path_hooks_ptr).bits(),
+        );
 
         Ok(())
     }
@@ -733,10 +751,9 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
     })
 }
 
-/// One owned projection of the public cache. Unavailable means bootstrap
-/// before sys exists, or an explicit runpy/loader execution suppression scope.
+/// One owned observation of the canonical public dictionary, independent of
+/// explicit loader/runpy execution contexts.
 pub(crate) enum PublicModuleCache {
-    Unavailable,
     Missing,
     Present(u64),
 }
@@ -745,46 +762,15 @@ pub(crate) fn public_module_cache_lookup(
     py: &PyToken<'_>,
     name: &str,
 ) -> Result<PublicModuleCache, u64> {
-    if execution::python_import_publication_policy(py, name)
-        != execution::PythonImportPublication::Normal
-    {
-        return Ok(PublicModuleCache::Unavailable);
-    }
-    let Some(sys) = interpreter_sys_module(py) else {
-        return Ok(PublicModuleCache::Unavailable);
-    };
-    let modules = sys_modules_dict_bits(py, sys);
-
-    if exception_pending(py) {
-        if let Some(bits) = modules {
-            dec_ref_bits(py, bits);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    let Some(modules) = modules else {
-        return Err(raise_exception::<_>(
-            py,
-            "RuntimeError",
-            "canonical sys.modules is unavailable",
-        ));
-    };
-    let key = attr_name_bits_from_bytes(py, name.as_bytes());
-    let Some(key) = key else {
-        dec_ref_bits(py, modules);
-        return Err(MoltObject::none().bits());
-    };
-    let borrowed = unsafe { dict_get_in_place(py, ptr_from_bits(modules), key) };
-    let value = borrowed.map(|value| value.inspect(|bits| inc_ref_bits(py, *bits)));
-    dec_ref_bits(py, key);
-    dec_ref_bits(py, modules);
-    let value = value.map_err(|()| MoltObject::none().bits())?;
-    Ok(match value {
-        Some(bits) => PublicModuleCache::Present(bits),
-        None => PublicModuleCache::Missing,
-    })
+    Ok(
+        match crate::builtins::module_table::module_lookup(py, name)? {
+            Some(bits) => PublicModuleCache::Present(bits),
+            None => PublicModuleCache::Missing,
+        },
+    )
 }
 
-fn private_module_cache_admits(bits: u64) -> bool {
+fn module_publication_admits(bits: u64) -> bool {
     obj_from_bits(bits)
         .as_ptr()
         .is_some_and(|ptr| unsafe { matches!(object_type_id(ptr), TYPE_ID_MODULE | TYPE_ID_DICT) })
@@ -819,28 +805,13 @@ pub extern "C" fn molt_module_cache_get(name_bits: u64) -> u64 {
             };
             name_owned.as_str()
         };
-        // Once sys exists, deletion/replacement is public import state,
-        // including arbitrary values. Never revive a private shadow entry.
+        // Before and after sys bootstrap, the same dictionary owns deletion,
+        // replacement and arbitrary public values.
         match public_module_cache_lookup(_py, name) {
-            Ok(PublicModuleCache::Present(bits)) => return bits,
-            Ok(PublicModuleCache::Missing) => return MoltObject::none().bits(),
-            Ok(PublicModuleCache::Unavailable) => {}
-            Err(error) => return error,
+            Ok(PublicModuleCache::Present(bits)) => bits,
+            Ok(PublicModuleCache::Missing) => MoltObject::none().bits(),
+            Err(error) => error,
         }
-        let trace = trace_module_cache();
-        let cache = crate::builtins::exceptions::internals::module_cache(_py);
-        let guard = cache.lock().unwrap();
-        if let Some(bits) = guard.get(name) {
-            inc_ref_bits(_py, *bits);
-            if trace {
-                eprintln!("module cache hit: {name}");
-            }
-            return *bits;
-        }
-        if trace {
-            eprintln!("module cache miss: {name}");
-        }
-        MoltObject::none().bits()
     })
 }
 
@@ -876,97 +847,100 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         match module_import_attempt(name_bits) {
             Ok(ModuleImportOutcome::Imported(bits)) => bits,
-            Ok(ModuleImportOutcome::Missing { diagnostic_name }) => raise_exception::<_>(
-                py,
-                "ModuleNotFoundError",
-                &format!("No module named '{diagnostic_name}'"),
-            ),
+            Ok(ModuleImportOutcome::Missing { diagnostic_name }) => {
+                let Some(name) = attr_name_bits_from_bytes(py, diagnostic_name.as_bytes()) else {
+                    return MoltObject::none().bits();
+                };
+                let error = crate::builtins::exceptions::raise_module_not_found(
+                    py,
+                    format!("No module named '{diagnostic_name}'").as_bytes(),
+                    name,
+                );
+                dec_ref_bits(py, name);
+                error
+            }
             Err(error) => error,
         }
     })
 }
 
-/// Resolve the admitted compiled/bootstrap lane. Public values are never copied
-/// into private module storage; the spec route owns resolution after a miss.
+/// Public dynamic/fromlist/isolate imports use exactly the same cache and
+/// ordered finder transaction as importlib. Missing remains a typed outcome so
+/// a fromlist probe can distinguish absence from a loader's actual exception.
 pub(crate) fn module_import_attempt(name_bits: u64) -> Result<ModuleImportOutcome, u64> {
     crate::with_gil_entry_nopanic!(py, {
         if exception_pending(py) {
             return Err(MoltObject::none().bits());
         }
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            trace_bad_module_name_arg(py, "module_import", name_bits);
             return Err(raise_exception::<_>(
                 py,
                 "TypeError",
                 "module name must be str",
             ));
         };
-        let private_available = match public_module_cache_lookup(py, &name)? {
-            PublicModuleCache::Present(bits) => {
-                if let Some(id) = crate::builtins::module_table::module_id_of(&name) {
-                    return registered_module_import(py, id, PublicModuleCache::Present(bits));
-                }
-                if obj_from_bits(bits).is_none() {
-                    dec_ref_bits(py, bits);
-                    return Err(raise_exception::<_>(
-                        py,
-                        "ModuleNotFoundError",
-                        &format!("import of {name} halted; None in sys.modules"),
-                    ));
-                }
-                return Ok(ModuleImportOutcome::Imported(bits));
-            }
-            PublicModuleCache::Missing => false,
-            PublicModuleCache::Unavailable => true,
+        let Some(dictionary) = crate::builtins::module_table::module_dictionary(py) else {
+            return Err(MoltObject::none().bits());
         };
-        if execution::python_import_publication_policy(py, &name)
-            == execution::PythonImportPublication::Normal
-            && let Some(absence) = crate::builtins::platform::known_import_absence(py, &name)
-        {
-            match absence {
-                crate::builtins::platform::KnownImportAbsence::Provider(diagnostic_name) => {
-                    return Ok(ModuleImportOutcome::Missing { diagnostic_name });
-                }
-                crate::builtins::platform::KnownImportAbsence::Dependency(missing) => {
-                    return Err(raise_exception::<_>(
-                        py,
-                        "ModuleNotFoundError",
-                        &format!("No module named '{missing}'"),
-                    ));
-                }
+        let pointer = ptr_from_bits(dictionary);
+        crate::builtins::platform::importlib_import_resolved_attempt(
+            py,
+            &name,
+            name_bits,
+            pointer,
+            crate::builtins::module_table::ModuleImportPolicy::CImport,
+        )
+    })
+}
+
+/// Explicit runtime-support bootstrap. A catalog body is an internal execution
+/// capability, never permission to bypass finders for an ordinary Python import.
+pub(crate) fn catalog_import_attempt(name_bits: u64) -> Result<ModuleImportOutcome, u64> {
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
+            return Err(raise_exception::<_>(
+                py,
+                "TypeError",
+                "module name must be str",
+            ));
+        };
+        let observed = public_module_cache_lookup(py, &name)?;
+        if let PublicModuleCache::Present(bits) = observed {
+            if let Some(id) = crate::builtins::module_table::module_id_of(&name) {
+                return registered_module_import(py, id, PublicModuleCache::Present(bits));
             }
+            let Some(dictionary) = crate::builtins::module_table::module_dictionary(py) else {
+                dec_ref_bits(py, bits);
+                return Err(MoltObject::none().bits());
+            };
+            return match crate::builtins::module_table::resolve_cached_module(
+                py,
+                &name,
+                Some(name_bits),
+                dictionary,
+                bits,
+                crate::builtins::module_table::ModuleImportPolicy::CImport,
+            )? {
+                crate::builtins::module_table::CachedModuleOutcome::Return(bits) => {
+                    Ok(ModuleImportOutcome::Imported(bits))
+                }
+                crate::builtins::module_table::CachedModuleOutcome::Reload => {
+                    let Some(_depth) = crate::builtins::module_table::enter_import_recursion(py)
+                    else {
+                        return Err(MoltObject::none().bits());
+                    };
+                    catalog_import_attempt(name_bits)
+                }
+                crate::builtins::module_table::CachedModuleOutcome::Missing => {
+                    unreachable!("ordinary import may reload")
+                }
+            };
         }
         if let Some(id) = crate::builtins::module_table::module_id_of(&name) {
-            return registered_module_import(
-                py,
-                id,
-                if private_available {
-                    PublicModuleCache::Unavailable
-                } else {
-                    PublicModuleCache::Missing
-                },
-            );
-        }
-        if private_available {
-            let bits = {
-                let cache = crate::builtins::exceptions::internals::module_cache(py);
-                let guard = cache.lock().unwrap();
-                guard
-                    .get(&name)
-                    .copied()
-                    .inspect(|bits| inc_ref_bits(py, *bits))
-            };
-            if let Some(bits) = bits {
-                if !private_module_cache_admits(bits) {
-                    dec_ref_bits(py, bits);
-                    return Err(raise_exception::<_>(
-                        py,
-                        "TypeError",
-                        "import returned non-module payload",
-                    ));
-                }
-                return Ok(ModuleImportOutcome::Imported(bits));
-            }
+            return registered_module_import(py, id, observed);
         }
         Ok(ModuleImportOutcome::Missing {
             diagnostic_name: name,
@@ -1958,52 +1932,37 @@ pub(crate) fn ensure_interpreter_sys_module(py: &PyToken<'_>) -> Option<u64> {
         return None;
     }
     let name = attr_name_bits_from_bytes(py, b"sys")?;
-    let imported = molt_module_import(name);
+    let imported = catalog_import_attempt(name);
     dec_ref_bits(py, name);
-    dec_ref_bits(py, imported);
-    if exception_pending(py) {
-        None
-    } else {
-        interpreter_sys_module(py)
+    match imported {
+        Ok(ModuleImportOutcome::Imported(bits)) => {
+            dec_ref_bits(py, bits);
+            interpreter_sys_module(py)
+        }
+        Ok(ModuleImportOutcome::Missing { .. }) | Err(_) => None,
     }
 }
 
 pub(crate) fn sys_modules_dict_bits(py: &PyToken<'_>, sys_bits: u64) -> Option<u64> {
     let sys_ptr = obj_from_bits(sys_bits).as_ptr()?;
-    unsafe {
-        if object_type_id(sys_ptr) != TYPE_ID_MODULE {
-            return None;
-        }
-        let name = intern_static_name(py, &runtime_state(py).interned.modules_name, b"modules");
-        if name == 0 {
-            return None;
-        }
-        let modules =
-            crate::object::accessors::instance_attribute_lookup(py, sys_ptr, name, None).ok()?;
-        let modules = match modules {
-            Some(bits) => bits,
-            None => {
-                let ptr = alloc_dict_with_pairs(py, &[]);
-                if ptr.is_null() {
-                    return None;
-                }
-                let bits = MoltObject::from_ptr(ptr).bits();
-                if module_set_attr(py, sys_bits, name, bits).is_err() {
-                    dec_ref_bits(py, bits);
-                    return None;
-                }
-                bits
-            }
-        };
-        if obj_from_bits(modules)
-            .as_ptr()
-            .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
-        {
-            dec_ref_bits(py, modules);
-            return raise_exception::<_>(py, "TypeError", "sys.modules must be dict");
-        }
-        Some(modules)
+    if unsafe { object_type_id(sys_ptr) } != TYPE_ID_MODULE {
+        return None;
     }
+    let bits = crate::builtins::module_table::module_dictionary(py)?;
+    let name = intern_static_name(py, &runtime_state(py).interned.modules_name, b"modules");
+    if name == 0 {
+        return None;
+    }
+    let visible =
+        unsafe { crate::object::accessors::instance_attribute_lookup(py, sys_ptr, name, None) }
+            .ok()?;
+    if let Some(visible) = visible {
+        dec_ref_bits(py, visible);
+    } else if module_set_attr(py, sys_bits, name, bits).is_err() {
+        return None;
+    }
+    inc_ref_bits(py, bits);
+    Some(bits)
 }
 
 fn sys_modules_set_canonical_name<'a, 'py>(
@@ -2022,21 +1981,21 @@ fn sys_modules_set_canonical_name<'a, 'py>(
 }
 
 /// Publish a borrowed module without transferring either argument's ownership.
-/// Every successful path returns None, including first-init-wins publication.
+/// Every successful path returns None; typed initializer admission owns once-only execution.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64 {
     module_cache_publish(
         name_bits,
         module_bits,
-        ModuleCachePublication::FirstInitialization,
+        ModuleCachePublication::CompilerNamespace,
     )
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ModuleCachePublication {
-    FirstInitialization,
+    CompilerNamespace,
     // Every admitted extension result, including multi-phase execution,
-    // owns its exact publication. Stale private entries cannot substitute it.
+    // owns its exact publication. Earlier values cannot substitute its identity.
     Extension,
 }
 
@@ -2050,16 +2009,22 @@ pub(crate) fn module_cache_publish(
             Some(val) => val,
             None => return raise_exception::<_>(_py, "TypeError", "module name must be str"),
         };
-        if !private_module_cache_admits(module_bits) {
+        if !module_publication_admits(module_bits) {
             return raise_exception::<_>(_py, "TypeError", "import returned non-module payload");
+        }
+        if publication == ModuleCachePublication::CompilerNamespace
+            && crate::builtins::module_table::executing_private_body(_py, &name)
+        {
+            return match execution::on_module_publish(_py, &name, module_bits) {
+                Ok(()) => MoltObject::none().bits(),
+                Err(error) => error,
+            };
         }
         let initializing_builtins = name == "builtins"
             && crate::builtins::module_table::module_initialization_awaits_publication(_py, &name);
         let is_sys = name == "sys";
         let initializing_sys = is_sys
             && crate::builtins::module_table::module_initialization_awaits_publication(_py, &name);
-        let bootstrap_sys =
-            initializing_sys && runtime_state(_py).interpreter_sys.allows_bootstrap(_py);
         // A new initializer namespace needs bootstrap facts; a public cache
         // rewrite or republished retained namespace must preserve user changes.
         let initialize_sys_namespace =
@@ -2076,9 +2041,6 @@ pub(crate) fn module_cache_publish(
             );
         }
         let trace_cache = trace_module_cache();
-        if let Err(bits) = execution::on_module_publish(_py, &name, module_bits) {
-            return bits;
-        }
         let builtins_dict = if initializing_builtins {
             obj_from_bits(module_bits)
                 .as_ptr()
@@ -2107,134 +2069,48 @@ pub(crate) fn module_cache_publish(
             // aliases or the Python facade can run any code (HF-79).
             crate::builtins::binding_guards::seal_builtins_namespace(_py, dict, prior_guard_bits);
         }
-        let sys_modules_policy = execution::python_import_publication_policy(_py, &name);
-        let suppress_sys_modules = sys_modules_policy != execution::PythonImportPublication::Normal;
         if trace_cache {
-            eprintln!(
-                "module cache set: {name} bits=0x{module_bits:x} sys_modules_policy={sys_modules_policy:?}"
-            );
+            eprintln!("module cache set: {name} bits=0x{module_bits:x}");
         }
-        let mut retired_public = Vec::new();
-        let (cached_modules, previous) = {
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let mut guard = cache.lock().unwrap();
-            // First-init-wins: if a module is already cached under this name
-            // with a valid (non-None, non-zero) module object, do NOT overwrite
-            // it.  WASM linked binaries can include duplicate init sequences for
-            // the same module (e.g., `abc` pulled in from both `os` and
-            // `typing`).  Overwriting destroys class identity — objects created
-            // during the first init hold references to the original type objects,
-            // but code that fetches the class via MODULE_GET_ATTR on the
-            // overwritten module gets a new, incompatible type object.  This
-            // causes `super(type, obj)` failures and isinstance mismatches.
-            if publication == ModuleCachePublication::FirstInitialization
-                && !bootstrap_sys
-                && let Some(&existing) = guard.get(&name)
-                && existing != 0
-                && !obj_from_bits(existing).is_none()
-                && existing != module_bits
-            {
-                if trace_cache {
-                    eprintln!(
-                        "module cache set: {name} SKIPPED (already cached as 0x{existing:x})"
-                    );
-                }
-                // Still need to sync sys.modules, but use the EXISTING bits.
-                // Do NOT dec_ref module_bits — the caller still holds a local
-                // reference and will populate the orphan module (harmlessly).
-                // The WASM function's epilogue releases its locals normally.
-                inc_ref_bits(_py, existing);
-                drop(guard);
-                let _existing_owner = obj_from_bits(existing)
-                    .as_ptr()
-                    .map(crate::PtrDropGuard::new);
-
-                // Import bedrock: mirror the effective publication into the
-                // ModuleTable slot while its ensure transaction is open
-                // (publish-before-exec, invariant I6).
-                crate::builtins::module_table::publish_from_cache_set(_py, &name, existing);
-                let modules_bits = if suppress_sys_modules {
-                    None
-                } else {
-                    interpreter_sys_module(_py).and_then(|bits| sys_modules_dict_bits(_py, bits))
-                };
-                let _modules_owner = modules_bits
-                    .and_then(|bits| obj_from_bits(bits).as_ptr())
-                    .map(crate::PtrDropGuard::new);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                if let Some(modules_bits) = modules_bits {
-                    let modules_ptr = ptr_from_bits(modules_bits);
-                    match sys_modules_set_canonical_name(_py, modules_ptr, &name, existing) {
-                        Ok(retired) => retired_public.push(retired),
-                        Err(error) => return error,
-                    }
-                }
+        // Private publication returned above; imports update the sole dictionary.
+        let retired;
+        {
+            let Some(dictionary) = crate::builtins::module_table::module_dictionary(_py) else {
                 return MoltObject::none().bits();
-            }
-            // Acquire the cache's new owner before releasing its old one: the
-            // borrowed input may be the same object held solely by this entry.
-            inc_ref_bits(_py, module_bits);
-            let previous = guard.insert(name.clone(), module_bits);
-            if bootstrap_sys {
-                let entries = guard
-                    .iter()
-                    .map(|(key, &bits)| {
-                        inc_ref_bits(_py, bits);
-                        let owner = obj_from_bits(bits).as_ptr().map(crate::PtrDropGuard::new);
-                        (key.clone(), bits, owner)
-                    })
-                    .collect::<Vec<_>>();
-                (Some(entries), previous)
-            } else {
-                (None, previous)
-            }
-        };
-
-        let _previous_owner = previous
-            .and_then(|bits| obj_from_bits(bits).as_ptr())
-            .map(crate::PtrDropGuard::new);
-        // Import bedrock: mirror the publication into the ModuleTable slot
-        // while its ensure transaction is open (publish-before-exec, I6).
+            };
+            retired = match sys_modules_set_canonical_name(
+                _py,
+                ptr_from_bits(dictionary),
+                &name,
+                module_bits,
+            ) {
+                Ok(displaced) => displaced,
+                Err(error) => return error,
+            };
+        }
         let previous_table = if publication == ModuleCachePublication::Extension {
             crate::builtins::module_table::publish_extension_result(_py, &name, module_bits)
         } else {
-            crate::builtins::module_table::publish_from_cache_set(_py, &name, module_bits);
+            crate::builtins::module_table::publish_initializing_namespace(_py, &name, module_bits);
             0
         };
         let _previous_table_owner = obj_from_bits(previous_table)
             .as_ptr()
             .map(crate::PtrDropGuard::new);
-        let modules_bits = if suppress_sys_modules {
-            None
-        } else {
-            interpreter_sys_module(_py).and_then(|bits| sys_modules_dict_bits(_py, bits))
-        };
-        let _modules_owner = modules_bits
-            .and_then(|bits| obj_from_bits(bits).as_ptr())
-            .map(crate::PtrDropGuard::new);
+        if initializing_sys {
+            let Some(dictionary) = sys_modules_dict_bits(_py, module_bits) else {
+                return MoltObject::none().bits();
+            };
+            dec_ref_bits(_py, dictionary);
+        }
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        if let Some(modules_bits) = modules_bits {
-            let modules_ptr = ptr_from_bits(modules_bits);
-            if let Some(entries) = cached_modules {
-                for (key, bits, _owner) in entries {
-                    match sys_modules_set_canonical_name(_py, modules_ptr, &key, bits) {
-                        Ok(retired) => retired_public.push(retired),
-                        Err(error) => return error,
-                    }
-                }
-            } else {
-                match sys_modules_set_canonical_name(_py, modules_ptr, &name, module_bits) {
-                    Ok(retired) => retired_public.push(retired),
-                    Err(error) => return error,
-                }
-            }
-        }
-        // A provider may recursively import builtins. Its base namespace,
-        // private cache, table slot, and public cache are all visible now.
+        // Displaced dictionary edges remain pinned until namespace/transaction
+        // metadata is coherent; their finalizers cannot observe partial publication.
+        let _retired = retired;
+        // A provider may recursively import builtins. Its dictionary entry,
+        // interpreter role and temporary initializer namespace are visible.
         if initializing_builtins
             && !crate::intrinsics::registry::publish_python_builtin_aliases(_py, module_bits)
         {
@@ -2319,25 +2195,12 @@ pub(crate) fn module_cache_publish(
     })
 }
 
-/// Legacy import_add_module has already chosen and published this public
-/// identity. Retire any different private owner without adopting a public
-/// observation into that cache, and use the same table projection transition
-/// as other trusted extension publications before callbacks can run.
+/// import_add_module already published this identity in the canonical dict.
+/// Reconcile only transient initialization custody before callbacks can run.
 pub(crate) fn reconcile_extension_publication(py: &PyToken<'_>, name: &str, bits: u64) {
-    let private = {
-        let cache = crate::builtins::exceptions::internals::module_cache(py);
-        let mut guard = cache.lock().unwrap();
-        if guard.get(name).is_some_and(|&old| old != bits) {
-            guard.remove(name)
-        } else {
-            None
-        }
-    };
-    let table = crate::builtins::module_table::publish_extension_result(py, name, bits);
-    for old in private.into_iter().chain(std::iter::once(table)) {
-        if old != 0 {
-            dec_ref_bits(py, old);
-        }
+    let previous = crate::builtins::module_table::publish_extension_result(py, name, bits);
+    if previous != 0 {
+        dec_ref_bits(py, previous);
     }
 }
 
@@ -2346,7 +2209,7 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
     module_cache_remove(name_bits, None)
 }
 
-/// Detach public/private/table owners before running any finalizer. An owned
+/// Detach dictionary and transient initializer owners before finalizers. An owned
 /// extension rollback supplies its identity so partial publication is removed
 /// without deleting a different public replacement or nested import.
 pub(crate) fn module_cache_remove(name_bits: u64, expected: Option<u64>) -> u64 {
@@ -2354,56 +2217,46 @@ pub(crate) fn module_cache_remove(name_bits: u64, expected: Option<u64>) -> u64 
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
             return raise_exception::<_>(py, "TypeError", "module name must be str");
         };
-        let saved = if exception_pending(py) {
-            let error = molt_exception_last_pending();
-            clear_exception(py);
-            Some(error)
+        if expected.is_none() && crate::builtins::module_table::executing_private_body(py, &name) {
+            return MoltObject::none().bits();
+        }
+        use crate::builtins::exceptions::take_raised;
+        let saved = exception_pending(py).then(|| take_raised(py));
+        let cleanup_name = if expected.is_none() && saved.is_some() {
+            crate::builtins::module_table::ordinary_failure_name(py, &name)
         } else {
-            None
+            Ok(None)
         };
-        let sys = interpreter_sys_module(py);
-
-        let modules = if execution::python_import_publication_policy(py, &name)
-            == execution::PythonImportPublication::Normal
-        {
-            sys.and_then(|bits| sys_modules_dict_bits(py, bits))
-        } else {
-            None
-        };
+        let modules = crate::builtins::module_table::existing_module_dictionary(py);
         // Removal detaches dictionary edges but defers their finalizers. No
-        // reference is released until public, private and table custody agree.
-        let public = modules.and_then(|bits| unsafe {
-            let ptr = ptr_from_bits(bits);
-            if let Some(own) = expected {
-                match dict_get_in_place(py, ptr, name_bits) {
-                    Ok(Some(value)) if value == own => {}
-                    Ok(_) | Err(()) => return None,
-                }
-            }
-            crate::object::ops::dict_del_deferred(py, ptr, name_bits).unwrap_or_default()
-        });
-        let private = {
-            let cache = crate::builtins::exceptions::internals::module_cache(py);
-            let mut guard = cache.lock().unwrap();
-            if expected.is_none_or(|own| guard.get(&name) == Some(&own)) {
-                guard.remove(&name)
-            } else {
-                None
-            }
+        // reference is released until dictionary and transaction custody agree.
+        // A failed live spec.name read is the cleanup error; it must not cause
+        // deletion using an obsolete catalog key instead.
+        let public = match cleanup_name.as_ref() {
+            Ok(key) => modules.and_then(|bits| unsafe {
+                let ptr = ptr_from_bits(bits);
+                let key = key.as_ref().map_or(name_bits, |key| key.bits());
+                crate::object::ops::dict_del_if_value_deferred(py, ptr, key, expected)
+                    .unwrap_or_default()
+            }),
+            Err(_) => None,
         };
         let table = crate::builtins::module_table::detach_cache_publication(py, &name, expected);
         // There are no name-based mutations after this release boundary.
         drop(public);
-        for bits in [private, Some(table), modules].into_iter().flatten() {
-            if bits != 0 {
-                dec_ref_bits(py, bits);
-            }
+        if table != 0 {
+            dec_ref_bits(py, table);
         }
-        if let Some(error) = saved {
-            clear_exception(py);
-            crate::molt_exception_set_last(error);
-            dec_ref_bits(py, error);
-        }
+        molt_cpython_abi::api::errors::with_preserved_error(|| drop(cleanup_name));
+        crate::builtins::exceptions::finish_exception_cleanup(
+            py,
+            saved,
+            if expected.is_some() {
+                crate::builtins::exceptions::ExceptionCleanupPolicy::Preserve
+            } else {
+                crate::builtins::exceptions::ExceptionCleanupPolicy::IgnoreKeyError
+            },
+        );
         MoltObject::none().bits()
     })
 }
@@ -2616,14 +2469,6 @@ fn import_from_attr<'a, 'py>(
         .map(|value| value.map(|bits| ExceptionValue::adopt(py, bits)))
 }
 
-fn import_from_initializing(py: &PyToken<'_>, spec: u64) -> Result<bool, u64> {
-    let Some(value) = import_from_attr(py, spec, b"_initializing")? else {
-        return Ok(false);
-    };
-    crate::object::ops::truth_value(py, obj_from_bits(value.bits()))
-        .map_err(|()| MoltObject::none().bits())
-}
-
 fn import_from_error(py: &PyToken<'_>, module: u64, attr: u64, name: Option<u64>) -> u64 {
     let modern = crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
     let none = MoltObject::none().bits();
@@ -2662,7 +2507,11 @@ fn import_from_error(py: &PyToken<'_>, module: u64, attr: u64, name: Option<u64>
                     Err(()) => return none,
                 };
             }
-            initializing = match import_from_initializing(py, spec.bits()) {
+            initializing = match crate::builtins::platform::spec_is_initializing(
+                py,
+                spec.bits(),
+                crate::builtins::module_table::ModuleImportPolicy::CImport,
+            ) {
                 Ok(value) => value,
                 Err(result) => return result,
             };
@@ -2682,7 +2531,11 @@ fn import_from_error(py: &PyToken<'_>, module: u64, attr: u64, name: Option<u64>
         } else {
             initializing = import_from_attr(py, module, b"__spec__")
                 .and_then(|spec| match spec {
-                    Some(spec) => import_from_initializing(py, spec.bits()),
+                    Some(spec) => crate::builtins::platform::spec_is_initializing(
+                        py,
+                        spec.bits(),
+                        crate::builtins::module_table::ModuleImportPolicy::CImport,
+                    ),
                     None => Ok(false),
                 })
                 .unwrap_or_else(|_| {
@@ -2760,12 +2613,6 @@ pub(crate) fn publish_import_child(
     child_name: &str,
     child_bits: u64,
 ) -> Result<(), u64> {
-    let full_name = format!("{parent_name}.{child_name}");
-    if execution::python_import_publication_policy(py, &full_name)
-        == execution::PythonImportPublication::Suppress
-    {
-        return Ok(());
-    }
     // The setter may remove either module from sys.modules or replace its
     // class. Keep the exact receiver and child alive throughout the callback.
     inc_ref_bits(py, parent_bits);
@@ -3655,6 +3502,71 @@ mod tests {
         assert!(!exception_pending(_py));
     }
 
+    fn assert_pending_module_not_found_metadata(
+        py: &PyToken<'_>,
+        expected_name: &str,
+        expected_name_identity: Option<u64>,
+        expected_message: &str,
+    ) {
+        assert!(exception_pending(py));
+        let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
+        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            py,
+            exception.bits(),
+            "ModuleNotFoundError"
+        ));
+        clear_exception(py);
+        let read = |field: &[u8]| {
+            let key = attr_name_bits_from_bytes(py, field).unwrap();
+            let value = crate::builtins::attributes::get_attr_name(py, exception.bits(), key)
+                .expect("public exception attribute");
+            dec_ref_bits(py, key);
+            ExceptionValue::adopt(py, value)
+        };
+        let name = read(b"name");
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(name.bits())).as_deref(),
+            Some(expected_name)
+        );
+        if let Some(expected) = expected_name_identity {
+            assert_eq!(
+                name.bits(),
+                expected,
+                "preserve the supplied Python name object"
+            );
+        }
+        for field in [b"path".as_slice(), b"name_from"] {
+            assert!(obj_from_bits(read(field).bits()).is_none());
+        }
+        let message = read(b"msg");
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(message.bits())).as_deref(),
+            Some(expected_message)
+        );
+        let args = read(b"args");
+        assert_eq!(
+            unsafe { object_type_id(ptr_from_bits(args.bits())) },
+            crate::TYPE_ID_TUPLE
+        );
+        unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(
+                ptr_from_bits(args.bits()),
+                |args| {
+                    assert_eq!(args, &[message.bits()], "one original message argument");
+                },
+            )
+        }
+        .expect("exception args tuple");
+        drop(exception);
+        // The public name result owns its reference independently of the now
+        // retired raised state and exception, rather than borrowing a field.
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(name.bits())).as_deref(),
+            Some(expected_name)
+        );
+        assert!(!exception_pending(py));
+    }
+
     #[test]
     fn modules_runtime_state_is_owned_and_clearable() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
@@ -3978,6 +3890,7 @@ mod tests {
             let cached_module = alloc_module_obj(py, cache_restore.name_bits());
             let cached_bits = MoltObject::from_ptr(cached_module).bits();
             molt_module_cache_set(cache_restore.name_bits(), cached_bits);
+            crate::builtins::module_table::publish_interpreter_builtins_for_test(py, cached_bits);
             let cached_dict = unsafe { module_dict_bits(cached_module) };
             let captured_ptr = alloc_dict_with_pairs(py, &[]);
             let captured = MoltObject::from_ptr(captured_ptr).bits();
@@ -4130,6 +4043,12 @@ mod tests {
             molt_module_cache_set(cache_restore.name_bits(), module);
             assert!(!exception_pending(py));
             assert_eq!(
+                crate::builtins::module_table::interpreter_builtins_dictionary(py),
+                None,
+                "public module publication alone does not select interpreter builtins"
+            );
+            crate::builtins::module_table::publish_interpreter_builtins_for_test(py, module);
+            assert_eq!(
                 crate::builtins::frames::frame_stack_active_builtins(),
                 Some(0)
             );
@@ -4220,6 +4139,10 @@ mod tests {
             let set_result = molt_module_cache_set(cache_restore.name_bits(), builtins_module_bits);
             assert!(obj_from_bits(set_result).is_none());
             assert!(!exception_pending(_py));
+            crate::builtins::module_table::publish_interpreter_builtins_for_test(
+                _py,
+                builtins_module_bits,
+            );
 
             let module_name_ptr = alloc_string(_py, b"empty_builtins_lookup_module");
             assert!(!module_name_ptr.is_null());
@@ -4289,11 +4212,11 @@ mod tests {
                 unsafe { (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot() }
             };
             // Exercise both bootstrap publication without sys.modules and the
-            // ordinary mirrored publication path.
-            for mirror_sys_modules in [false, true] {
+            // ordinary publication after sys bootstrap.
+            for publish_sys in [false, true] {
                 let sys_name = MoltObject::from_ptr(alloc_string(py, b"sys")).bits();
                 let sys_restore = ModuleCacheRestore::new(py, sys_name);
-                let sys_bits = if mirror_sys_modules {
+                let sys_bits = if publish_sys {
                     let bits = molt_module_new(sys_restore.name_bits());
                     assert!(!obj_from_bits(bits).is_none());
                     assert!(
@@ -4341,12 +4264,15 @@ mod tests {
                     // Model an unbound owned-result sink, as used by WASM.
                     dec_ref_bits(py, result);
                     assert!(!exception_pending(py));
-                    assert_eq!(refcount(first), first_owners);
-                    assert_eq!(refcount(duplicate), duplicate_owners);
+                    assert_eq!(refcount(first), first_owners - 1);
+                    assert_eq!(refcount(duplicate), duplicate_owners + 1);
                     let cached = molt_module_cache_get(name);
-                    assert_eq!(cached, first, "first initialization keeps its identity");
+                    assert_eq!(
+                        cached, duplicate,
+                        "publication installs the exact supplied namespace"
+                    );
                     dec_ref_bits(py, cached);
-                    if mirror_sys_modules {
+                    if publish_sys {
                         let modules =
                             sys_modules_dict_bits(py, sys_bits).expect("published sys.modules");
                         let dict = obj_from_bits(modules).as_ptr().unwrap();
@@ -4356,25 +4282,25 @@ mod tests {
                                 dict_get_in_place(py, dict, name)
                                     .expect("dictionary lookup succeeds")
                             },
-                            Some(first)
+                            Some(duplicate)
                         );
                     }
                 }
 
                 dec_ref_bits(py, duplicate);
                 dec_ref_bits(py, first);
-                let cache_owners = refcount(first);
-                if !mirror_sys_modules {
+                let cache_owners = refcount(duplicate);
+                if !publish_sys {
                     assert_eq!(cache_owners, 1, "the cache is now the sole owner");
                 }
                 // The argument is borrowed from the live cache entry. A
                 // release-before-retain replacement would destroy it here.
                 for _ in 0..3 {
-                    let result = molt_module_cache_set(name, first);
+                    let result = molt_module_cache_set(name, duplicate);
                     assert!(obj_from_bits(result).is_none());
                     dec_ref_bits(py, result);
                     assert!(!exception_pending(py));
-                    assert_eq!(refcount(first), cache_owners);
+                    assert_eq!(refcount(duplicate), cache_owners);
                 }
                 drop(cache_restore);
                 dec_ref_bits(py, sys_bits);
@@ -4410,9 +4336,10 @@ mod tests {
     }
 
     #[test]
-    fn import_outcome_public_values_never_poison_or_revive_private_cache() {
+    fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
+            let _resolver = crate::test_support::EmptyImportResolver::new(py);
             let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
             let _sys_restore = ModuleCacheRestore::new(py, sys_name);
             let text = "_molt_public_cache_outcome_probe";
@@ -4438,10 +4365,9 @@ mod tests {
                 };
                 assert_eq!(imported, value);
                 dec_ref_bits(py, imported);
-                {
-                    let cache = crate::builtins::exceptions::internals::module_cache(py);
-                    assert_eq!(cache.lock().unwrap().get(text).copied(), Some(bootstrap));
-                }
+                let stored = crate::builtins::module_table::module_lookup(py, text).unwrap();
+                assert_eq!(stored, Some(value));
+                dec_ref_bits(py, stored.unwrap());
                 assert!(unsafe {
                     dict_del_in_place(py, modules, name).expect("operation succeeds")
                 });
@@ -4449,8 +4375,35 @@ mod tests {
                 assert!(matches!(module_import_attempt(name),
                     Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == text));
                 assert!(obj_from_bits(molt_module_import(name)).is_none());
-                assert_pending_exception_class(py, "ModuleNotFoundError");
+                assert_pending_module_not_found_metadata(
+                    py,
+                    text,
+                    None,
+                    &format!("No module named '{text}'"),
+                );
             }
+            unsafe {
+                assert!(dict_set_in_place(
+                    py,
+                    modules,
+                    name,
+                    MoltObject::none().bits()
+                ))
+            };
+            let refs_before =
+                unsafe { (*crate::header_from_obj_ptr(ptr_from_bits(name))).ref_count_snapshot() };
+            assert!(obj_from_bits(molt_module_import(name)).is_none());
+            assert_pending_module_not_found_metadata(
+                py,
+                text,
+                Some(name),
+                &format!("import of {text} halted; None in sys.modules"),
+            );
+            assert_eq!(
+                unsafe { (*crate::header_from_obj_ptr(ptr_from_bits(name))).ref_count_snapshot() },
+                refs_before,
+                "error metadata releases its name edge"
+            );
             for bits in [module, dictionary, bootstrap, sys] {
                 dec_ref_bits(py, bits);
             }
@@ -4459,45 +4412,21 @@ mod tests {
     }
 
     #[test]
-    fn import_outcome_provider_parent_is_missing_and_public_cache_has_precedence() {
-        let _guard = crate::test_support::RuntimeTestTransaction::new();
+    fn catalog_lookup_uses_actual_image_membership_and_public_cache_precedence() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let state = runtime_state(py);
-            let original = state.sys_version_info.lock().unwrap().clone();
-            _guard.with_target_python(py, original, || {
-                let previous = crate::object::ops_sys::runtime_target_python_info(state);
-                let mut target = previous.clone();
-                target.minor = 13;
-                _guard.with_target_python(py, Some(target), || {
-                    let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
-                    let _sys_restore = ModuleCacheRestore::new(py, sys_name);
-                    let sys = molt_module_new(sys_name);
-                    crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
-                    let modules_bits = sys_modules_dict_bits(py, sys).unwrap();
-                    let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
-                    let _modules_owner = crate::PtrDropGuard::new(modules);
-                    let name = attr_name_bits_from_bytes(py, b"msilib.schema").unwrap();
-                    assert!(matches!(module_import_attempt(name),
-                        Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib"));
-                    assert!(!exception_pending(py));
-                    let replacement = MoltObject::from_int(42).bits();
-                    unsafe { assert!(dict_set_in_place(py, modules, name, replacement)) };
-                    assert!(matches!(module_import_attempt(name),
-                        Ok(ModuleImportOutcome::Imported(bits)) if bits == replacement));
-                    assert!(unsafe { dict_del_in_place(py, modules, name).expect("operation succeeds") });
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        let dependency =
-                            attr_name_bits_from_bytes(py, b"multiprocessing.popen_spawn_win32").unwrap();
-                        assert!(module_import_attempt(dependency).is_err());
-                        assert_pending_exception_class(py, "ModuleNotFoundError");
-                        dec_ref_bits(py, dependency);
-                    }
-                    dec_ref_bits(py, name);
-                    dec_ref_bits(py, sys);
-                    assert!(!exception_pending(py));
-                });
-            });
+            // This name can designate a user backport. A name-only stdlib
+            // availability table cannot turn an unregistered image miss into
+            // a different provider/dependency failure before execution.
+            let name = attr_name_bits_from_bytes(py, b"msilib.schema").unwrap();
+            let _restore = ModuleCacheRestore::new(py, name);
+            assert!(matches!(catalog_import_attempt(name),
+                Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib.schema"));
+            assert!(!exception_pending(py));
+            molt_module_cache_set(name, MoltObject::from_int(42).bits());
+            assert!(matches!(catalog_import_attempt(name),
+                Ok(ModuleImportOutcome::Imported(bits)) if bits == MoltObject::from_int(42).bits()));
+            assert!(!exception_pending(py));
         });
     }
 
@@ -4524,47 +4453,29 @@ mod tests {
     }
 
     #[test]
-    fn import_attempt_rejects_invalid_cache_hits_without_reporting_a_miss() {
+    fn canonical_module_dictionary_preserves_none_and_arbitrary_public_values() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(_py, {
-            let sys_name = attr_name_bits_from_bytes(_py, b"sys").unwrap();
-            let _sys_restore = ModuleCacheRestore::new(_py, sys_name);
-            let name_text = "_molt_invalid_import_outcome_cache";
-            let name = attr_name_bits_from_bytes(_py, name_text.as_bytes()).unwrap();
-            let _restore = ModuleCacheRestore::new(_py, name);
-            let string = MoltObject::from_ptr(alloc_string(_py, b"not a module")).bits();
-            let refcount = || unsafe {
-                (*crate::object::header_from_obj_ptr(obj_from_bits(string).as_ptr().unwrap()))
-                    .ref_count_snapshot()
-            };
-            for payload in [MoltObject::none().bits(), string] {
-                inc_ref_bits(_py, payload);
-                {
-                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                    assert!(
-                        cache
-                            .lock()
-                            .unwrap()
-                            .insert(name_text.to_owned(), payload)
-                            .is_none()
-                    );
-                }
-                let owners = refcount();
-                assert!(module_import_attempt(name).is_err());
-                assert_pending_exception_class(_py, "TypeError");
-                assert_eq!(
-                    refcount(),
-                    owners,
-                    "failed admission must release its dispatch owner"
-                );
-                let cached = {
-                    let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                    let mut guard = cache.lock().unwrap();
-                    guard.remove(name_text).unwrap()
-                };
-                dec_ref_bits(_py, cached);
-            }
-            dec_ref_bits(_py, string);
+        crate::with_gil_entry_nopanic!(py, {
+            let _resolver = crate::test_support::EmptyImportResolver::new(py);
+            let text = "_molt_single_store_arbitrary_values";
+            let name = attr_name_bits_from_bytes(py, text.as_bytes()).unwrap();
+            let _restore = ModuleCacheRestore::new(py, name);
+            let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
+            let pointer = ptr_from_bits(dictionary);
+            assert!(unsafe { dict_set_in_place(py, pointer, name, MoltObject::none().bits()) });
+            assert!(module_import_attempt(name).is_err());
+            assert_pending_exception_class(py, "ModuleNotFoundError");
+            let string = MoltObject::from_ptr(alloc_string(py, b"arbitrary public value")).bits();
+            assert!(unsafe { dict_set_in_place(py, pointer, name, string) });
+            assert!(
+                matches!(module_import_attempt(name), Ok(ModuleImportOutcome::Imported(bits)) if { assert_eq!(bits, string); dec_ref_bits(py, bits); true })
+            );
+            assert!(unsafe { dict_del_in_place(py, pointer, name).unwrap() });
+            assert!(matches!(
+                module_import_attempt(name),
+                Ok(ModuleImportOutcome::Missing { .. })
+            ));
+            dec_ref_bits(py, string);
         });
     }
 

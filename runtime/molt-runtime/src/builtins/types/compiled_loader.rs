@@ -185,6 +185,15 @@ pub extern "C" fn molt_importlib_compiled_loader_find_spec(
         else {
             return MoltObject::none().bits();
         };
+        // A user source with this same name is not the Molt stdlib provider.
+        if metadata.is_stdlib_provider
+            && matches!(
+                crate::builtins::platform::known_import_absence(py, metadata.provider_name),
+                Some(crate::builtins::platform::KnownImportAbsence::Provider(_))
+            )
+        {
+            return MoltObject::none().bits();
+        }
         let origin = metadata.origin;
         let is_package = metadata.is_package;
         let origin_ptr = alloc_string(py, origin.as_bytes());
@@ -208,6 +217,24 @@ pub extern "C" fn molt_importlib_compiled_loader_find_spec(
         let Some(spec_bits) = spec else {
             return MoltObject::none().bits();
         };
+        if metadata.has_location {
+            let Some(key) = attr_name_bits_from_bytes(py, b"has_location") else {
+                dec_ref_bits(py, spec_bits);
+                return MoltObject::none().bits();
+            };
+            let located = crate::builtins::attributes::mutate_attr_name(
+                py,
+                spec_bits,
+                key,
+                crate::builtins::attr::DescriptorMutation::Set(MoltObject::from_bool(true).bits()),
+                molt_cpython_abi::hooks::AttributeMutation::Normal,
+            );
+            dec_ref_bits(py, key);
+            if located.is_err() {
+                dec_ref_bits(py, spec_bits);
+                return MoltObject::none().bits();
+            }
+        }
         // A static extension package has a descriptive origin rather than a
         // directory. Leave its canonical empty locations intact; never insert
         // an empty path (which would accidentally authorize cwd discovery).
@@ -279,6 +306,7 @@ pub extern "C" fn molt_importlib_compiled_loader_create_module(
     MoltObject::none().bits()
 }
 
+#[cfg(test)]
 fn attr_or_none(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
     let attr = attr_name_bits_from_bytes(py, name)?;
     let bits = molt_getattr_builtin(target, attr, MoltObject::none().bits());
@@ -293,103 +321,6 @@ fn attr_or_none(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
     }
 }
 
-fn required_attr(py: &PyToken<'_>, target: u64, name: &[u8]) -> Option<u64> {
-    let attr = attr_name_bits_from_bytes(py, name)?;
-    let bits = crate::molt_get_attr_name(target, attr);
-    dec_ref_bits(py, attr);
-    if exception_pending(py) {
-        if !obj_from_bits(bits).is_none() {
-            dec_ref_bits(py, bits);
-        }
-        None
-    } else {
-        Some(bits)
-    }
-}
-
-/// The old machinery loader temporarily evicted a different visible module
-/// so `molt_module_import` executes the compiled body instead of returning
-/// that stale entry. Keep the displaced object owned until success or restore.
-struct DisplacedModule<'a, 'py> {
-    py: &'a PyToken<'py>,
-    modules: u64,
-    name: u64,
-    previous: Option<u64>,
-}
-
-impl<'a, 'py> DisplacedModule<'a, 'py> {
-    fn begin(py: &'a PyToken<'py>, name: u64, current: Option<u64>) -> Option<Self> {
-        let modules = match crate::builtins::platform::importlib_runtime_modules_bits(py) {
-            Ok(bits) => bits,
-            Err(_) => return None,
-        };
-        let Some(dict_ptr) = obj_from_bits(modules).as_ptr() else {
-            dec_ref_bits(py, modules);
-            let _ = raise_exception::<u64>(py, "RuntimeError", "sys.modules is unavailable");
-            return None;
-        };
-        let existing = unsafe { dict_get_in_place(py, dict_ptr, name) };
-        let existing = match existing {
-            Ok(value) => value,
-            Err(()) => {
-                dec_ref_bits(py, modules);
-                return None;
-            }
-        };
-        let previous =
-            existing.filter(|bits| !obj_from_bits(*bits).is_none() && current != Some(*bits));
-        if let Some(bits) = previous {
-            inc_ref_bits(py, bits);
-            if unsafe { dict_del_in_place(py, dict_ptr, name) }.is_err() {
-                dec_ref_bits(py, bits);
-                dec_ref_bits(py, modules);
-                return None;
-            }
-        }
-        inc_ref_bits(py, name);
-        Some(Self {
-            py,
-            modules,
-            name,
-            previous,
-        })
-    }
-
-    fn restore_on_error(&mut self) {
-        let Some(previous) = self.previous.take() else {
-            return;
-        };
-        let saved = crate::molt_exception_last_pending();
-        clear_exception(self.py);
-        let restored = if let Some(dict_ptr) = obj_from_bits(self.modules).as_ptr() {
-            match unsafe { dict_get_in_place(self.py, dict_ptr, self.name) } {
-                Ok(None) => unsafe { dict_set_in_place(self.py, dict_ptr, self.name, previous) },
-                Ok(Some(_)) => true,
-                Err(()) => false,
-            }
-        } else {
-            true
-        };
-        if restored && !exception_pending(self.py) && !obj_from_bits(saved).is_none() {
-            let _ = crate::molt_exception_set_last(saved);
-        }
-        if !obj_from_bits(saved).is_none() {
-            dec_ref_bits(self.py, saved);
-        }
-        dec_ref_bits(self.py, previous);
-    }
-}
-
-impl Drop for DisplacedModule<'_, '_> {
-    fn drop(&mut self) {
-        if let Some(bits) = self.previous.take() {
-            dec_ref_bits(self.py, bits);
-        }
-        dec_ref_bits(self.py, self.name);
-        dec_ref_bits(self.py, self.modules);
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_compiled_loader_exec_module(
     self_bits: u64,
@@ -401,67 +332,26 @@ pub extern "C" fn molt_importlib_compiled_loader_exec_module(
         if exception_pending(py) {
             return none;
         }
-        let Some(mut displaced) = DisplacedModule::begin(py, name, Some(module_bits)) else {
+        let Some(name_text) = string_obj_to_owned(obj_from_bits(name)) else {
             dec_ref_bits(py, name);
-            return none;
+            return raise_exception::<_>(py, "TypeError", "module name must be str");
         };
-        let imported = crate::molt_module_import(name);
+        let outcome = crate::builtins::modules::execute_compiled_module(
+            py,
+            &name_text,
+            &name_text,
+            None,
+            false,
+            crate::builtins::modules::ExecutionMetadata::LoaderNamespace { module_bits },
+        );
         dec_ref_bits(py, name);
-        if exception_pending(py) {
-            if !obj_from_bits(imported).is_none() {
-                dec_ref_bits(py, imported);
+        match outcome {
+            Ok(executed) => {
+                dec_ref_bits(py, executed);
+                none
             }
-            displaced.restore_on_error();
-            return none;
+            Err(error) => error.into_import_error(py, &name_text),
         }
-        let payload = match isinstance_runtime(py, imported, builtin_classes(py).dict) {
-            Some(true) => {
-                inc_ref_bits(py, imported);
-                imported
-            }
-            Some(false) => match attr_or_none(py, imported, b"__dict__") {
-                Some(bits) => match isinstance_runtime(py, bits, builtin_classes(py).dict) {
-                    Some(true) => bits,
-                    matched => {
-                        if !obj_from_bits(bits).is_none() {
-                            dec_ref_bits(py, bits);
-                        }
-                        if matched == Some(false) {
-                            let message = format!(
-                                "import returned non-module payload: {}",
-                                type_name(py, obj_from_bits(imported))
-                            );
-                            let _ = raise_exception::<u64>(py, "TypeError", &message);
-                        }
-                        none
-                    }
-                },
-                None => none,
-            },
-            None => none,
-        };
-        if !exception_pending(py)
-            && let Some(target) = required_attr(py, module_bits, b"__dict__")
-        {
-            if let Some(update) = required_attr(py, target, b"update") {
-                let out = unsafe { call_callable1(py, update, payload) };
-                if !obj_from_bits(out).is_none() {
-                    dec_ref_bits(py, out);
-                }
-                dec_ref_bits(py, update);
-            }
-            dec_ref_bits(py, target);
-        }
-        if !obj_from_bits(payload).is_none() {
-            dec_ref_bits(py, payload);
-        }
-        if !obj_from_bits(imported).is_none() {
-            dec_ref_bits(py, imported);
-        }
-        if exception_pending(py) {
-            displaced.restore_on_error();
-        }
-        none
     })
 }
 
@@ -472,18 +362,34 @@ pub extern "C" fn molt_importlib_compiled_loader_load_module(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let none = MoltObject::none().bits();
-        let Some(mut displaced) = DisplacedModule::begin(py, fullname_bits, None) else {
-            return none;
-        };
-        let imported = crate::molt_module_import(fullname_bits);
+        let spec = molt_importlib_compiled_loader_find_spec(_self_bits, fullname_bits, none, none);
         if exception_pending(py) {
-            if !obj_from_bits(imported).is_none() {
-                dec_ref_bits(py, imported);
-            }
-            displaced.restore_on_error();
             return none;
         }
-        imported
+        if obj_from_bits(spec).is_none() {
+            return raise_exception::<_>(
+                py,
+                "ImportError",
+                "module has no compiler-emitted body in this binary",
+            );
+        }
+        let Some(loader_name) = attr_name_bits_from_bytes(py, b"loader") else {
+            dec_ref_bits(py, spec);
+            return none;
+        };
+        crate::molt_set_attr_name(spec, loader_name, _self_bits);
+        dec_ref_bits(py, loader_name);
+        if exception_pending(py) {
+            dec_ref_bits(py, spec);
+            return none;
+        }
+        let result = crate::builtins::platform::molt_importlib_load_module_from_spec(
+            _self_bits,
+            fullname_bits,
+            spec,
+        );
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, spec));
+        result
     })
 }
 
@@ -780,21 +686,11 @@ mod tests {
     }
 
     #[test]
-    fn load_module_returns_the_runtime_module_and_restores_a_displaced_entry_on_error() {
+    fn load_module_rejects_invalid_name_without_mutating_public_entry() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let sys = SysFixture::new(py);
+            let _sys = SysFixture::new(py);
             let loader = molt_importlib_compiled_loader();
-            let sys_name = sys.name;
-            let imported = molt_importlib_compiled_loader_load_module(loader, sys_name);
-            assert!(!exception_pending(py), "{}", pending_exception_summary(py));
-            assert_eq!(imported, sys.module);
-            let observed_name = attr_or_none(py, imported, b"__name__").expect("sys name");
-            assert_eq!(
-                string_obj_to_owned(obj_from_bits(observed_name)).as_deref(),
-                Some("sys")
-            );
-
             let modules =
                 crate::builtins::platform::importlib_runtime_modules_bits(py).expect("sys.modules");
             let modules_ptr = obj_from_bits(modules).as_ptr().expect("modules dict");
@@ -823,16 +719,7 @@ mod tests {
             );
             let _ = unsafe { dict_del_in_place(py, modules_ptr, invalid_name) };
             assert!(!exception_pending(py));
-            for bits in [
-                kind,
-                exc,
-                stale,
-                stale_name,
-                modules,
-                observed_name,
-                imported,
-                loader,
-            ] {
+            for bits in [kind, exc, stale, stale_name, modules, loader] {
                 if !obj_from_bits(bits).is_none() {
                     dec_ref_bits(py, bits);
                 }
@@ -841,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_module_copies_imported_module_dict_into_supplied_module() {
+    fn exec_module_requires_compiled_body_without_copying_public_module() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let sys = SysFixture::new(py);
@@ -849,28 +736,24 @@ mod tests {
             let target_name = text(py, b"compiled_loader_copy_target");
             let target = crate::molt_module_new(target_name);
             assert!(!exception_pending(py));
-            let sys_name = sys.name;
-            set_attr(py, target, b"__name__", sys_name);
-            let outcome = molt_importlib_compiled_loader_exec_module(loader, target);
-            assert!(obj_from_bits(outcome).is_none());
-            assert!(!exception_pending(py), "{}", pending_exception_summary(py));
-            let copied_modules = attr_or_none(py, target, b"modules").expect("copied sys.modules");
-            assert_eq!(
-                isinstance_runtime(py, copied_modules, builtin_classes(py).dict),
-                Some(true)
-            );
             let modules =
                 crate::builtins::platform::importlib_runtime_modules_bits(py).expect("sys.modules");
-            let modules_ptr = obj_from_bits(modules).as_ptr().expect("modules dict");
-            let visible = unsafe {
-                dict_get_in_place(py, modules_ptr, sys_name).expect("dictionary lookup succeeds")
-            }
-            .expect("visible sys");
+            let modules_ptr = obj_from_bits(modules).as_ptr().unwrap();
+            assert!(unsafe { dict_set_in_place(py, modules_ptr, target_name, sys.module) });
+            let outcome = molt_importlib_compiled_loader_exec_module(loader, target);
+            assert!(obj_from_bits(outcome).is_none());
+            assert!(exception_pending(py));
+            assert!(pending_exception_summary(py).contains("no compiler-emitted body"));
+            clear_exception(py);
+            let visible = unsafe { dict_get_in_place(py, modules_ptr, target_name) }
+                .unwrap()
+                .unwrap();
             assert_ne!(
                 visible, target,
-                "direct exec_module must not publish its target"
+                "direct exec never adopts or publishes a public cached module"
             );
-            for bits in [modules, copied_modules, target, target_name, loader] {
+            assert!(unsafe { dict_del_in_place(py, modules_ptr, target_name) }.unwrap());
+            for bits in [modules, target, target_name, loader] {
                 if !obj_from_bits(bits).is_none() {
                     dec_ref_bits(py, bits);
                 }

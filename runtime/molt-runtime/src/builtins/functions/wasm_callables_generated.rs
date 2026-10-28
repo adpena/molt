@@ -78,7 +78,7 @@ pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 29;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 30;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 75;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 79;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
@@ -346,307 +346,335 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
     },
     ReservedRuntimeCallableInfo {
         index: 31,
+        runtime_name: "molt_importlib_module_spec_cached_get",
+        import_name: "importlib_module_spec_cached_get",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 32,
+        runtime_name: "molt_importlib_module_spec_cached_set",
+        import_name: "importlib_module_spec_cached_set",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 33,
+        runtime_name: "molt_importlib_module_spec_has_location_get",
+        import_name: "importlib_module_spec_has_location_get",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 34,
+        runtime_name: "molt_importlib_module_spec_has_location_set",
+        import_name: "importlib_module_spec_has_location_set",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 35,
         runtime_name: "molt_coroutine_send_method",
         import_name: "coroutine_send_method",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 32,
+        index: 36,
         runtime_name: "molt_coroutine_throw_method",
         import_name: "coroutine_throw_method",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 33,
+        index: 37,
         runtime_name: "molt_coroutine_close_method",
         import_name: "coroutine_close_method",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 34,
+        index: 38,
         runtime_name: "molt_awaitable_await",
         import_name: "awaitable_await",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 35,
+        index: 39,
         runtime_name: "molt_coroutine_wrapper_iter",
         import_name: "coroutine_wrapper_iter",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 36,
+        index: 40,
         runtime_name: "molt_coroutine_wrapper_next",
         import_name: "coroutine_wrapper_next",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 37,
+        index: 41,
         runtime_name: "molt_asyncgen_awaitable_self",
         import_name: "asyncgen_awaitable_self",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 38,
+        index: 42,
         runtime_name: "molt_asyncgen_awaitable_next",
         import_name: "asyncgen_awaitable_next",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 39,
+        index: 43,
         runtime_name: "molt_asyncgen_awaitable_send",
         import_name: "asyncgen_awaitable_send",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 40,
+        index: 44,
         runtime_name: "molt_asyncgen_awaitable_throw",
         import_name: "asyncgen_awaitable_throw",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 41,
+        index: 45,
         runtime_name: "molt_asyncgen_awaitable_close",
         import_name: "asyncgen_awaitable_close",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 42,
+        index: 46,
         runtime_name: "molt_generator_throw_method",
         import_name: "generator_throw_method",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 43,
+        index: 47,
         runtime_name: "molt_contextvars_types",
         import_name: "contextvars_types",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 44,
+        index: 48,
         runtime_name: "molt_contextvars_copy_current",
         import_name: "contextvars_copy_current",
         arity: 0,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 45,
+        index: 49,
         runtime_name: "molt_contextvars_new",
         import_name: "contextvars_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 46,
+        index: 50,
         runtime_name: "molt_contextvars_token_new",
         import_name: "contextvars_token_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 47,
+        index: 51,
         runtime_name: "molt_contextvars_missing_new",
         import_name: "contextvars_missing_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 48,
+        index: 52,
         runtime_name: "molt_contextvars_keys_new",
         import_name: "contextvars_keys_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 49,
+        index: 53,
         runtime_name: "molt_contextvars_values_new",
         import_name: "contextvars_values_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 50,
+        index: 54,
         runtime_name: "molt_contextvars_items_new",
         import_name: "contextvars_items_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 51,
+        index: 55,
         runtime_name: "molt_contextvars_var_new",
         import_name: "contextvars_var_new",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 52,
+        index: 56,
         runtime_name: "molt_contextvars_var_get",
         import_name: "contextvars_var_get",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 53,
+        index: 57,
         runtime_name: "molt_contextvars_var_set",
         import_name: "contextvars_var_set",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 54,
+        index: 58,
         runtime_name: "molt_contextvars_var_reset",
         import_name: "contextvars_var_reset",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 55,
+        index: 59,
         runtime_name: "molt_contextvars_var_hash",
         import_name: "contextvars_var_hash",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 56,
+        index: 60,
         runtime_name: "molt_contextvars_copy",
         import_name: "contextvars_copy",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 57,
+        index: 61,
         runtime_name: "molt_contextvars_len",
         import_name: "contextvars_len",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 58,
+        index: 62,
         runtime_name: "molt_contextvars_getitem",
         import_name: "contextvars_getitem",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 59,
+        index: 63,
         runtime_name: "molt_contextvars_contains",
         import_name: "contextvars_contains",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 60,
+        index: 64,
         runtime_name: "molt_contextvars_get",
         import_name: "contextvars_get",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 61,
+        index: 65,
         runtime_name: "molt_contextvars_run",
         import_name: "contextvars_run",
         arity: 3,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 62,
+        index: 66,
         runtime_name: "molt_contextvars_keys",
         import_name: "contextvars_keys",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 63,
+        index: 67,
         runtime_name: "molt_contextvars_values",
         import_name: "contextvars_values",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 64,
+        index: 68,
         runtime_name: "molt_contextvars_items",
         import_name: "contextvars_items",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 65,
+        index: 69,
         runtime_name: "molt_contextvars_iter_self",
         import_name: "contextvars_iter_self",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 66,
+        index: 70,
         runtime_name: "molt_contextvars_iter_next",
         import_name: "contextvars_iter_next",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 67,
+        index: 71,
         runtime_name: "molt_contextvars_eq",
         import_name: "contextvars_eq",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 68,
+        index: 72,
         runtime_name: "molt_contextvars_ne",
         import_name: "contextvars_ne",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 69,
+        index: 73,
         runtime_name: "molt_contextvars_property",
         import_name: "contextvars_property",
         arity: 2,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 70,
+        index: 74,
         runtime_name: "molt_contextvars_token_enter",
         import_name: "contextvars_token_enter",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 71,
+        index: 75,
         runtime_name: "molt_contextvars_token_exit",
         import_name: "contextvars_token_exit",
         arity: 4,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 72,
+        index: 76,
         runtime_name: "molt_contextvars_var_repr",
         import_name: "contextvars_var_repr",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 73,
+        index: 77,
         runtime_name: "molt_contextvars_token_repr",
         import_name: "contextvars_token_repr",
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
     ReservedRuntimeCallableInfo {
-        index: 74,
+        index: 78,
         runtime_name: "molt_contextvars_missing_repr",
         import_name: "contextvars_missing_repr",
         arity: 1,
@@ -772,50 +800,54 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         28 => Some(molt_importlib_module_spec_repr as *const ()),
         29 => Some(molt_importlib_module_spec_parent as *const ()),
         30 => Some(molt_importlib_compiled_loader_find_spec as *const ()),
-        31 => Some(crate::molt_coroutine_send_method as *const ()),
-        32 => Some(crate::molt_coroutine_throw_method as *const ()),
-        33 => Some(crate::molt_coroutine_close_method as *const ()),
-        34 => Some(crate::molt_awaitable_await as *const ()),
-        35 => Some(crate::molt_coroutine_wrapper_iter as *const ()),
-        36 => Some(crate::molt_coroutine_wrapper_next as *const ()),
-        37 => Some(crate::molt_asyncgen_awaitable_self as *const ()),
-        38 => Some(crate::molt_asyncgen_awaitable_next as *const ()),
-        39 => Some(crate::molt_asyncgen_awaitable_send as *const ()),
-        40 => Some(crate::molt_asyncgen_awaitable_throw as *const ()),
-        41 => Some(crate::molt_asyncgen_awaitable_close as *const ()),
-        42 => Some(crate::molt_generator_throw_method as *const ()),
-        43 => Some(crate::molt_contextvars_types as *const ()),
-        44 => Some(crate::molt_contextvars_copy_current as *const ()),
-        45 => Some(crate::molt_contextvars_new as *const ()),
-        46 => Some(crate::molt_contextvars_token_new as *const ()),
-        47 => Some(crate::molt_contextvars_missing_new as *const ()),
-        48 => Some(crate::molt_contextvars_keys_new as *const ()),
-        49 => Some(crate::molt_contextvars_values_new as *const ()),
-        50 => Some(crate::molt_contextvars_items_new as *const ()),
-        51 => Some(crate::molt_contextvars_var_new as *const ()),
-        52 => Some(crate::molt_contextvars_var_get as *const ()),
-        53 => Some(crate::molt_contextvars_var_set as *const ()),
-        54 => Some(crate::molt_contextvars_var_reset as *const ()),
-        55 => Some(crate::molt_contextvars_var_hash as *const ()),
-        56 => Some(crate::molt_contextvars_copy as *const ()),
-        57 => Some(crate::molt_contextvars_len as *const ()),
-        58 => Some(crate::molt_contextvars_getitem as *const ()),
-        59 => Some(crate::molt_contextvars_contains as *const ()),
-        60 => Some(crate::molt_contextvars_get as *const ()),
-        61 => Some(crate::molt_contextvars_run as *const ()),
-        62 => Some(crate::molt_contextvars_keys as *const ()),
-        63 => Some(crate::molt_contextvars_values as *const ()),
-        64 => Some(crate::molt_contextvars_items as *const ()),
-        65 => Some(crate::molt_contextvars_iter_self as *const ()),
-        66 => Some(crate::molt_contextvars_iter_next as *const ()),
-        67 => Some(crate::molt_contextvars_eq as *const ()),
-        68 => Some(crate::molt_contextvars_ne as *const ()),
-        69 => Some(crate::molt_contextvars_property as *const ()),
-        70 => Some(crate::molt_contextvars_token_enter as *const ()),
-        71 => Some(crate::molt_contextvars_token_exit as *const ()),
-        72 => Some(crate::molt_contextvars_var_repr as *const ()),
-        73 => Some(crate::molt_contextvars_token_repr as *const ()),
-        74 => Some(crate::molt_contextvars_missing_repr as *const ()),
+        31 => Some(molt_importlib_module_spec_cached_get as *const ()),
+        32 => Some(molt_importlib_module_spec_cached_set as *const ()),
+        33 => Some(molt_importlib_module_spec_has_location_get as *const ()),
+        34 => Some(molt_importlib_module_spec_has_location_set as *const ()),
+        35 => Some(crate::molt_coroutine_send_method as *const ()),
+        36 => Some(crate::molt_coroutine_throw_method as *const ()),
+        37 => Some(crate::molt_coroutine_close_method as *const ()),
+        38 => Some(crate::molt_awaitable_await as *const ()),
+        39 => Some(crate::molt_coroutine_wrapper_iter as *const ()),
+        40 => Some(crate::molt_coroutine_wrapper_next as *const ()),
+        41 => Some(crate::molt_asyncgen_awaitable_self as *const ()),
+        42 => Some(crate::molt_asyncgen_awaitable_next as *const ()),
+        43 => Some(crate::molt_asyncgen_awaitable_send as *const ()),
+        44 => Some(crate::molt_asyncgen_awaitable_throw as *const ()),
+        45 => Some(crate::molt_asyncgen_awaitable_close as *const ()),
+        46 => Some(crate::molt_generator_throw_method as *const ()),
+        47 => Some(crate::molt_contextvars_types as *const ()),
+        48 => Some(crate::molt_contextvars_copy_current as *const ()),
+        49 => Some(crate::molt_contextvars_new as *const ()),
+        50 => Some(crate::molt_contextvars_token_new as *const ()),
+        51 => Some(crate::molt_contextvars_missing_new as *const ()),
+        52 => Some(crate::molt_contextvars_keys_new as *const ()),
+        53 => Some(crate::molt_contextvars_values_new as *const ()),
+        54 => Some(crate::molt_contextvars_items_new as *const ()),
+        55 => Some(crate::molt_contextvars_var_new as *const ()),
+        56 => Some(crate::molt_contextvars_var_get as *const ()),
+        57 => Some(crate::molt_contextvars_var_set as *const ()),
+        58 => Some(crate::molt_contextvars_var_reset as *const ()),
+        59 => Some(crate::molt_contextvars_var_hash as *const ()),
+        60 => Some(crate::molt_contextvars_copy as *const ()),
+        61 => Some(crate::molt_contextvars_len as *const ()),
+        62 => Some(crate::molt_contextvars_getitem as *const ()),
+        63 => Some(crate::molt_contextvars_contains as *const ()),
+        64 => Some(crate::molt_contextvars_get as *const ()),
+        65 => Some(crate::molt_contextvars_run as *const ()),
+        66 => Some(crate::molt_contextvars_keys as *const ()),
+        67 => Some(crate::molt_contextvars_values as *const ()),
+        68 => Some(crate::molt_contextvars_items as *const ()),
+        69 => Some(crate::molt_contextvars_iter_self as *const ()),
+        70 => Some(crate::molt_contextvars_iter_next as *const ()),
+        71 => Some(crate::molt_contextvars_eq as *const ()),
+        72 => Some(crate::molt_contextvars_ne as *const ()),
+        73 => Some(crate::molt_contextvars_property as *const ()),
+        74 => Some(crate::molt_contextvars_token_enter as *const ()),
+        75 => Some(crate::molt_contextvars_token_exit as *const ()),
+        76 => Some(crate::molt_contextvars_var_repr as *const ()),
+        77 => Some(crate::molt_contextvars_token_repr as *const ()),
+        78 => Some(crate::molt_contextvars_missing_repr as *const ()),
         _ => None,
     }
 }
@@ -1678,50 +1710,54 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_repr), RUNTIME_CALLABLE_KEY_BASE, 28, molt_importlib_module_spec_repr as *const ());
     assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_parent), RUNTIME_CALLABLE_KEY_BASE, 29, molt_importlib_module_spec_parent as *const ());
     assert_runtime_symbol_key(fn_key!(molt_importlib_compiled_loader_find_spec), RUNTIME_CALLABLE_KEY_BASE, 30, molt_importlib_compiled_loader_find_spec as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_send_method), RUNTIME_CALLABLE_KEY_BASE, 31, crate::molt_coroutine_send_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_throw_method), RUNTIME_CALLABLE_KEY_BASE, 32, crate::molt_coroutine_throw_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_close_method), RUNTIME_CALLABLE_KEY_BASE, 33, crate::molt_coroutine_close_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_awaitable_await), RUNTIME_CALLABLE_KEY_BASE, 34, crate::molt_awaitable_await as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_iter), RUNTIME_CALLABLE_KEY_BASE, 35, crate::molt_coroutine_wrapper_iter as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_next), RUNTIME_CALLABLE_KEY_BASE, 36, crate::molt_coroutine_wrapper_next as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_self), RUNTIME_CALLABLE_KEY_BASE, 37, crate::molt_asyncgen_awaitable_self as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_next), RUNTIME_CALLABLE_KEY_BASE, 38, crate::molt_asyncgen_awaitable_next as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_send), RUNTIME_CALLABLE_KEY_BASE, 39, crate::molt_asyncgen_awaitable_send as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_throw), RUNTIME_CALLABLE_KEY_BASE, 40, crate::molt_asyncgen_awaitable_throw as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_close), RUNTIME_CALLABLE_KEY_BASE, 41, crate::molt_asyncgen_awaitable_close as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_generator_throw_method), RUNTIME_CALLABLE_KEY_BASE, 42, crate::molt_generator_throw_method as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_types), RUNTIME_CALLABLE_KEY_BASE, 43, crate::molt_contextvars_types as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy_current), RUNTIME_CALLABLE_KEY_BASE, 44, crate::molt_contextvars_copy_current as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_new), RUNTIME_CALLABLE_KEY_BASE, 45, crate::molt_contextvars_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_new), RUNTIME_CALLABLE_KEY_BASE, 46, crate::molt_contextvars_token_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_new), RUNTIME_CALLABLE_KEY_BASE, 47, crate::molt_contextvars_missing_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys_new), RUNTIME_CALLABLE_KEY_BASE, 48, crate::molt_contextvars_keys_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values_new), RUNTIME_CALLABLE_KEY_BASE, 49, crate::molt_contextvars_values_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items_new), RUNTIME_CALLABLE_KEY_BASE, 50, crate::molt_contextvars_items_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_new), RUNTIME_CALLABLE_KEY_BASE, 51, crate::molt_contextvars_var_new as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_get), RUNTIME_CALLABLE_KEY_BASE, 52, crate::molt_contextvars_var_get as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_set), RUNTIME_CALLABLE_KEY_BASE, 53, crate::molt_contextvars_var_set as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_reset), RUNTIME_CALLABLE_KEY_BASE, 54, crate::molt_contextvars_var_reset as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_hash), RUNTIME_CALLABLE_KEY_BASE, 55, crate::molt_contextvars_var_hash as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy), RUNTIME_CALLABLE_KEY_BASE, 56, crate::molt_contextvars_copy as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_len), RUNTIME_CALLABLE_KEY_BASE, 57, crate::molt_contextvars_len as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_getitem), RUNTIME_CALLABLE_KEY_BASE, 58, crate::molt_contextvars_getitem as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_contains), RUNTIME_CALLABLE_KEY_BASE, 59, crate::molt_contextvars_contains as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_get), RUNTIME_CALLABLE_KEY_BASE, 60, crate::molt_contextvars_get as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_run), RUNTIME_CALLABLE_KEY_BASE, 61, crate::molt_contextvars_run as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys), RUNTIME_CALLABLE_KEY_BASE, 62, crate::molt_contextvars_keys as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values), RUNTIME_CALLABLE_KEY_BASE, 63, crate::molt_contextvars_values as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items), RUNTIME_CALLABLE_KEY_BASE, 64, crate::molt_contextvars_items as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_self), RUNTIME_CALLABLE_KEY_BASE, 65, crate::molt_contextvars_iter_self as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_next), RUNTIME_CALLABLE_KEY_BASE, 66, crate::molt_contextvars_iter_next as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_eq), RUNTIME_CALLABLE_KEY_BASE, 67, crate::molt_contextvars_eq as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_ne), RUNTIME_CALLABLE_KEY_BASE, 68, crate::molt_contextvars_ne as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_property), RUNTIME_CALLABLE_KEY_BASE, 69, crate::molt_contextvars_property as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_enter), RUNTIME_CALLABLE_KEY_BASE, 70, crate::molt_contextvars_token_enter as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_exit), RUNTIME_CALLABLE_KEY_BASE, 71, crate::molt_contextvars_token_exit as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_repr), RUNTIME_CALLABLE_KEY_BASE, 72, crate::molt_contextvars_var_repr as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_repr), RUNTIME_CALLABLE_KEY_BASE, 73, crate::molt_contextvars_token_repr as *const ());
-    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_repr), RUNTIME_CALLABLE_KEY_BASE, 74, crate::molt_contextvars_missing_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_cached_get), RUNTIME_CALLABLE_KEY_BASE, 31, molt_importlib_module_spec_cached_get as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_cached_set), RUNTIME_CALLABLE_KEY_BASE, 32, molt_importlib_module_spec_cached_set as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_has_location_get), RUNTIME_CALLABLE_KEY_BASE, 33, molt_importlib_module_spec_has_location_get as *const ());
+    assert_runtime_symbol_key(fn_key!(molt_importlib_module_spec_has_location_set), RUNTIME_CALLABLE_KEY_BASE, 34, molt_importlib_module_spec_has_location_set as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_send_method), RUNTIME_CALLABLE_KEY_BASE, 35, crate::molt_coroutine_send_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_throw_method), RUNTIME_CALLABLE_KEY_BASE, 36, crate::molt_coroutine_throw_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_close_method), RUNTIME_CALLABLE_KEY_BASE, 37, crate::molt_coroutine_close_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_awaitable_await), RUNTIME_CALLABLE_KEY_BASE, 38, crate::molt_awaitable_await as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_iter), RUNTIME_CALLABLE_KEY_BASE, 39, crate::molt_coroutine_wrapper_iter as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_coroutine_wrapper_next), RUNTIME_CALLABLE_KEY_BASE, 40, crate::molt_coroutine_wrapper_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_self), RUNTIME_CALLABLE_KEY_BASE, 41, crate::molt_asyncgen_awaitable_self as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_next), RUNTIME_CALLABLE_KEY_BASE, 42, crate::molt_asyncgen_awaitable_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_send), RUNTIME_CALLABLE_KEY_BASE, 43, crate::molt_asyncgen_awaitable_send as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_throw), RUNTIME_CALLABLE_KEY_BASE, 44, crate::molt_asyncgen_awaitable_throw as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_awaitable_close), RUNTIME_CALLABLE_KEY_BASE, 45, crate::molt_asyncgen_awaitable_close as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_generator_throw_method), RUNTIME_CALLABLE_KEY_BASE, 46, crate::molt_generator_throw_method as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_types), RUNTIME_CALLABLE_KEY_BASE, 47, crate::molt_contextvars_types as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy_current), RUNTIME_CALLABLE_KEY_BASE, 48, crate::molt_contextvars_copy_current as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_new), RUNTIME_CALLABLE_KEY_BASE, 49, crate::molt_contextvars_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_new), RUNTIME_CALLABLE_KEY_BASE, 50, crate::molt_contextvars_token_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_new), RUNTIME_CALLABLE_KEY_BASE, 51, crate::molt_contextvars_missing_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys_new), RUNTIME_CALLABLE_KEY_BASE, 52, crate::molt_contextvars_keys_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values_new), RUNTIME_CALLABLE_KEY_BASE, 53, crate::molt_contextvars_values_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items_new), RUNTIME_CALLABLE_KEY_BASE, 54, crate::molt_contextvars_items_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_new), RUNTIME_CALLABLE_KEY_BASE, 55, crate::molt_contextvars_var_new as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_get), RUNTIME_CALLABLE_KEY_BASE, 56, crate::molt_contextvars_var_get as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_set), RUNTIME_CALLABLE_KEY_BASE, 57, crate::molt_contextvars_var_set as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_reset), RUNTIME_CALLABLE_KEY_BASE, 58, crate::molt_contextvars_var_reset as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_hash), RUNTIME_CALLABLE_KEY_BASE, 59, crate::molt_contextvars_var_hash as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_copy), RUNTIME_CALLABLE_KEY_BASE, 60, crate::molt_contextvars_copy as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_len), RUNTIME_CALLABLE_KEY_BASE, 61, crate::molt_contextvars_len as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_getitem), RUNTIME_CALLABLE_KEY_BASE, 62, crate::molt_contextvars_getitem as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_contains), RUNTIME_CALLABLE_KEY_BASE, 63, crate::molt_contextvars_contains as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_get), RUNTIME_CALLABLE_KEY_BASE, 64, crate::molt_contextvars_get as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_run), RUNTIME_CALLABLE_KEY_BASE, 65, crate::molt_contextvars_run as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_keys), RUNTIME_CALLABLE_KEY_BASE, 66, crate::molt_contextvars_keys as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_values), RUNTIME_CALLABLE_KEY_BASE, 67, crate::molt_contextvars_values as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_items), RUNTIME_CALLABLE_KEY_BASE, 68, crate::molt_contextvars_items as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_self), RUNTIME_CALLABLE_KEY_BASE, 69, crate::molt_contextvars_iter_self as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_iter_next), RUNTIME_CALLABLE_KEY_BASE, 70, crate::molt_contextvars_iter_next as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_eq), RUNTIME_CALLABLE_KEY_BASE, 71, crate::molt_contextvars_eq as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_ne), RUNTIME_CALLABLE_KEY_BASE, 72, crate::molt_contextvars_ne as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_property), RUNTIME_CALLABLE_KEY_BASE, 73, crate::molt_contextvars_property as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_enter), RUNTIME_CALLABLE_KEY_BASE, 74, crate::molt_contextvars_token_enter as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_exit), RUNTIME_CALLABLE_KEY_BASE, 75, crate::molt_contextvars_token_exit as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_var_repr), RUNTIME_CALLABLE_KEY_BASE, 76, crate::molt_contextvars_var_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_token_repr), RUNTIME_CALLABLE_KEY_BASE, 77, crate::molt_contextvars_token_repr as *const ());
+    assert_runtime_symbol_key(fn_key!(crate::molt_contextvars_missing_repr), RUNTIME_CALLABLE_KEY_BASE, 78, crate::molt_contextvars_missing_repr as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_async_sleep_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 1, crate::molt_async_sleep_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_anext_default_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 2, crate::molt_anext_default_poll as *const ());
     assert_runtime_symbol_key(fn_key!(crate::molt_asyncgen_poll), RUNTIME_POLL_CALLABLE_KEY_BASE, 3, crate::molt_asyncgen_poll as *const ());

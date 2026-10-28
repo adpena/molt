@@ -9,6 +9,8 @@ detection shared by import, call, class, expression, and pattern visitors.
 from __future__ import annotations
 
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
+from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
+
 from molt.opcode_literal_payloads import integer_literal_bytes
 
 import ast
@@ -185,12 +187,6 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         return res
 
     @staticmethod
-    def _is_intrinsics_module_name(module_name: str | None) -> bool:
-        if module_name is None:
-            return False
-        return module_name == "_intrinsics" or module_name.endswith("._intrinsics")
-
-    @staticmethod
     def _is_safe_intrinsic_namespace_expr(expr: ast.expr) -> bool:
         if isinstance(expr, ast.Constant) and expr.value is None:
             return True
@@ -229,7 +225,7 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
         if body and isinstance(body[0], ast.ImportFrom):
             import_stmt = body[0]
             del body[0]
-            if not self._is_intrinsics_module_name(import_stmt.module):
+            if not is_compiler_intrinsics_module(import_stmt.module):
                 return
             if len(import_stmt.names) != 1:
                 return
@@ -287,7 +283,7 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
             if ret.func.id not in {"require_intrinsic", "_require_intrinsic"}:
                 return
             imported_from = self.imported_names.get(ret.func.id)
-            if not self._is_intrinsics_module_name(imported_from):
+            if not is_compiler_intrinsics_module(imported_from):
                 return
         param_name = node.args.args[0].arg
         namespace_param = node.args.args[1].arg if len(node.args.args) == 2 else None

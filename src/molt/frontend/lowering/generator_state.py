@@ -42,7 +42,10 @@ from molt.native_callable_exports import (
 )
 
 if TYPE_CHECKING:
-    from molt.compiler_analysis.python_imports import ModuleExecutionKind
+    from molt.compiler_analysis.python_imports import (
+        ModuleExecutionKind,
+        ModuleSourceRole,
+    )
     from molt.type_facts import TypeFacts
 
 
@@ -307,6 +310,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         module_spec_name: str | None = None,
         module_is_namespace: bool = False,
         module_execution_kind: ModuleExecutionKind | None = None,
+        module_source_role: ModuleSourceRole = "user",
         enable_phi: bool = True,
         known_modules: set[str] | None = None,
         direct_call_modules: set[str] | None = None,
@@ -416,6 +420,9 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.in_annotation = False
         self._reset_type_hint_scope_state(reset_bytearray_len=True)
         self.global_elem_hints: dict[str, TypeHint] = {}
+        if module_source_role not in {"user", "stdlib"}:
+            raise ValueError(f"invalid source provider role: {module_source_role!r}")
+        self.module_source_role: ModuleSourceRole = module_source_role
         # A bundled stdlib module is identified by its logical source path,
         # which only the CLI's toolchain-root mapping assigns (HF-372).
         self.stdlib_hint_trust = source_path is not None and is_stdlib_logical_path(

@@ -10,6 +10,9 @@ _machinery = __import__("importlib.machinery", fromlist=("ModuleSpec",))
 _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD = _require_intrinsic(
     "molt_importlib_frozen_external_payload"
 )
+_MOLT_IMPORTLIB_FROZEN_EXTERNAL_COMMIT = _require_intrinsic(
+    "molt_importlib_frozen_external_commit"
+)
 _MOLT_IMPORTLIB_CACHE_FROM_SOURCE = _require_intrinsic(
     "molt_importlib_cache_from_source"
 )
@@ -23,7 +26,7 @@ _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION = _require_intrinsic(
 
 
 def _load_payload() -> dict[str, object]:
-    payload = _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD(_machinery)
+    payload = _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD(_machinery, globals())
     if not isinstance(payload, dict):
         raise RuntimeError("invalid importlib frozen external payload: dict expected")
     return payload
@@ -36,14 +39,11 @@ def _payload_get(payload: dict[str, object], name: str):
 
 
 _PAYLOAD = _load_payload()
-BYTECODE_SUFFIXES = list(_payload_get(_PAYLOAD, "BYTECODE_SUFFIXES"))
-DEBUG_BYTECODE_SUFFIXES = list(_payload_get(_PAYLOAD, "DEBUG_BYTECODE_SUFFIXES"))
-EXTENSION_SUFFIXES = list(_payload_get(_PAYLOAD, "EXTENSION_SUFFIXES"))
+BYTECODE_SUFFIXES = _payload_get(_PAYLOAD, "BYTECODE_SUFFIXES")
+DEBUG_BYTECODE_SUFFIXES = OPTIMIZED_BYTECODE_SUFFIXES = BYTECODE_SUFFIXES
+EXTENSION_SUFFIXES = _payload_get(_PAYLOAD, "EXTENSION_SUFFIXES")
 MAGIC_NUMBER = bytes(_payload_get(_PAYLOAD, "MAGIC_NUMBER"))
-OPTIMIZED_BYTECODE_SUFFIXES = list(
-    _payload_get(_PAYLOAD, "OPTIMIZED_BYTECODE_SUFFIXES")
-)
-SOURCE_SUFFIXES = list(_payload_get(_PAYLOAD, "SOURCE_SUFFIXES"))
+SOURCE_SUFFIXES = _payload_get(_PAYLOAD, "SOURCE_SUFFIXES")
 
 ExtensionFileLoader = _payload_get(_PAYLOAD, "ExtensionFileLoader")
 FileFinder = _payload_get(_PAYLOAD, "FileFinder")
@@ -114,4 +114,6 @@ __all__ = [
 ]
 
 
+globals().pop("_PAYLOAD", None)
 globals().pop("_require_intrinsic", None)
+_MOLT_IMPORTLIB_FROZEN_EXTERNAL_COMMIT(globals())

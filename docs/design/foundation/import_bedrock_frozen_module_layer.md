@@ -1,6 +1,7 @@
 # Molt Import Bedrock — The Frozen Module Layer
 
-**Status:** Design for one-shot implementation, hardening, and freeze.
+**Status:** Registry/state implementation with single-dictionary source cutover; runtime qualification remains open.
+**Current storage contract:** [single module dictionary cutover](import_bedrock_pr2_sys_modules_view_cutover.md). The 2026-07 historical incident analysis and proposal sections are retained as provenance, not a current source census or qualification claim. The current storage contract supersedes older table-view, overflow, journal and warm-import cost proposals; the pinned parity obligations remain applicable.
 **Scope:** bootstrap, module identity, import, module init, sys.modules,
 extension init, and every dispatch/callable/poll table projection of the module
 graph, across native / WASM / split-runtime targets.
@@ -13,48 +14,32 @@ native-image docs, MicroPython source, Codon docs. Citations inline.
 
 ## 0. Executive summary
 
-Molt is an AOT compiler: **the module graph is closed at compile time.** Yet
-the current runtime treats module identity as a *runtime string*, module state
-as *two-and-a-half stores that are synchronized after the fact* (a Rust
-`Mutex<HashMap<String, u64>>` living in `exceptions.rs`, the `sys.modules`
-dict, plus per-init-function cache-probe preambles), and the module→init
-mapping as *generated if/else string-comparison chains*. Every one of the
-eleven incidents in the adversarial corpus is a direct consequence of one of
-those three lies.
+Molt's compiled module graph is admitted through one generated `ModuleRegistry`.
+`ModuleTable` owns the ordinary interpreter module dictionary plus separate lazy
+initialization metadata. `sys.modules` exposes the same dictionary from bootstrap
+onward. Completed rows retain no duplicate module object; ordinary initializer
+slots and explicit execution contexts retain their own live namespaces. Interpreter sys and builtins
+roles have explicit lifetimes independent of mutable public module entries.
 
-The bedrock design replaces all of it with one compile-time artifact and one
-runtime object:
+`molt_module_ensure(ModuleId)` owns compiled initialization, recursive-import
+custody and foreign-thread waits. Normal native/WASM/C-API imports consult the
+same callback-safe dictionary before initialization. Ordinary public misses use
+the ordered finder protocol; the catalog is one provider. Only explicit internal
+bootstrap/initializer capabilities resolve directly through the sorted registry.
+No zero-hash/two-load warm-import or timing claim follows from the source design.
 
-1. **`ModuleRegistry`** (compile time): every module in the closed graph gets a
-   dense integer `ModuleId` from a sorted, generated registry. Init functions,
-   dependency edges, parent links, alias targets, extension init symbols, wasm
-   callable/poll/dispatch table slots, and the browser manifest are all
-   *projections of this one artifact*. Nothing about the module layer is ever
-   hand-listed twice.
-2. **`ModuleTable`** (runtime): a dense array indexed by `ModuleId` — one slot
-   (module object bits) + one state byte per module, with a Go-`inittask`-style
-   state machine {`Uninit`, `Initializing`, `Ready`, `Tombstone`, `Replaced`}.
-   `sys.modules` is a real dict object whose *backing storage is this table*
-   (plus an overflow lane for dynamic names), so Python-side mutation and
-   Rust-side custody are the same write — no mirror, no replay, no
-   first-init-wins patch.
-3. **`molt_module_ensure(ModuleId)`** — the only function in the process that
-   transitions module state. Compiled `import x` lowers to
-   `ensure(ID)`: two L1 loads and a predictable branch on the hot path,
-   zero allocation, zero string traffic. Dynamic imports (importlib, C
-   extensions via `PyImport_*`, isolate hosts) resolve string→id **once** via a
-   generated perfect-hash table and enter the same `ensure`.
-
-Everything else — CPython parity, the extension lane, wasm split-runtime
-coherence — is specified as behavior *of* those three things, gated by named
-invariants (§12), and then frozen.
+The canonical cutover contract linked above supersedes the earlier custom dict
+backing-tag proposal. It follows CPython's interpreter-owned ordinary module dict
+and avoids changes to the dict/iterator/GC/C-API representation family. The registry
+schema, layout generation, extension-phase behavior and parity obligations below
+continue to apply. Runtime qualification remains separate from implementation.
 
 ---
 
-## 1. Ground truth: what exists today and why it breaks weekly
+## 1. Historical source aperture (2026-07-02)
 
-Verified against the live tree. This section is the indictment; §10 is the
-acquittal.
+This pre-cutover source inventory explains the original design. Consult the current
+storage contract and live source for implemented behavior and qualification.
 
 ### 1.1 Module identity is a runtime string, everywhere
 
@@ -177,9 +162,10 @@ the C-source scan + alias edges).
   exists for the acyclic subgraph and is used only as a *verified
   optimization* (§8.3), never as the semantic authority, because Python
   permits cycles that a flattened order cannot express.
-- **Store**: `Table: [0,N) → (state, bits)` plus `Overflow: Dict` for names
-  outside `M`. `sys.modules ≡ view(Table ⊎ Overflow)` — not a copy, the same
-  storage.
+- **Store**: one interpreter-owned ordinary dictionary, exposed as the same
+  `sys.modules` object. Compiled initialization state is separate; only live
+  initializer/loader transactions retain namespace bits. Dynamic names need no
+  second map or overflow representation.
 
 ### 2.2 The one-transaction principle, made precise
 
@@ -192,14 +178,31 @@ module-state transition." The design gives that sentence a concrete type:
 > entry points for `Replaced`/`Tombstone`, §4.4, which are part of the same
 > compiled unit and hold the same lock discipline).
 
-Everything else in the process — compiled import sites, `__import__`,
-`importlib.import_module`, `IMPORT_FROM` child prep, `PyImport_*` hooks,
-isolate hosts, `runpy`, spawn overrides — is a *caller* of `ensure` and owns
-no module state.
+The earlier proposal that every public import could become a direct `ensure`
+call is superseded. Ordinary source statements, `__import__`, importlib/fromlist,
+C-API and isolate imports share public cache/finder admission. Only a selected
+compiled loader or an explicit internal bootstrap/entry capability dispatches
+an admitted body. Explicit runpy/loader execution retains its separate private
+namespace role; these roles reuse the same body dispatcher without bypassing
+public finder semantics.
 
 ---
 
 ## 3. Compile-time artifacts (the single authority)
+
+The current wire authority is schema 4, magic `MOLTMOD4`, with required
+stdlib-provider provenance (`0x10`) alongside file-location provenance (`0x08`).
+The metadata producer, frontend bootstrap role, worker/cache identity and catalog
+consume the same source-role fact. This does not encode a compiler filesystem
+root as target-runtime authority. The physical layout retains its existing
+48-byte header and 40-byte rows. Required typed entry field `has_location`
+projects into flag `0x08` and participates in the same JSON/digest/blob
+projections. Only actual source-file producers and file-location factories
+admit this fact; a descriptive origin or generated native source-kind row
+does not. Alias lookups use the terminal provider's flag. Runtime admission
+rejects older schema/magic, so artifact mixing cannot silently default the
+new fact. Native/LLVM/WASM emit the authority's opaque blob and relocations;
+they do not parse origin text or derive another file-location policy.
 
 One projection checker (`tools/check_module_registry.py`, same family as
 `gen_wasm_abi.py`/`gen_op_kinds.py`) consumes the closure plan that
@@ -262,56 +265,30 @@ The registry is per-build (it encodes the user's closed graph), so unlike
 
 ### 4.1 ModuleTable
 
-```rust
-pub struct ModuleTable {
-    // N = registry row count, fixed at build time.
-    slots:  Box<[AtomicU64]>,   // module object bits; 0 = absent
-    states: Box<[AtomicU8]>,    // ModuleState
-    owners: Box<[AtomicU32]>,   // initializing thread id (re-entrancy + deadlock)
-    ext_dict_copy: Box<[AtomicU64]>, // per-extension first-init dict snapshot
-                                     // (CPython import.c `extensions`-cache /
-                                     // m_copy analog; only for kind=Extension)
-    overflow: OverflowDict,     // names ∉ registry; insertion-ordered
-    journal: Mutex<OrderJournal>, // dict-parity iteration order (§4.4)
-}
-```
+`ModuleTable` owns `dictionary: AtomicU64`,
+`initialization: OnceLock<ModuleInitialization>` and one lazy execution-lock
+manager. The dictionary retains the ordinary Python dict; initialization lazily
+sizes compiled states, initializer slots and original-spec pins from the registry.
+The execution manager owns synchronization-only records for active registered or
+arbitrary names, with one reentrant owner/wait graph and Condvar wakeups. It keeps
+no Python object and removes completed name records.
+There is no separate module-object HashMap, overflow map, journal or dict backing
+tag. Names outside the compiled registry remain ordinary dictionary entries.
 
-One instance per isolate (per wasm instance pair member, per process). It
-lives in `runtime_state` under its own module (`builtins/module_table.rs`),
-evicting the store from `exceptions.rs`.
+States `Uninit`, `Initializing`, `Ready`, `Tombstone` and `Replaced` describe
+ordinary import admission. `Ready`/`Replaced` retain no namespace or spec owner.
+An active ordinary initializer retains its partial namespace and original spec
+through its finally setter. Public dictionary deletion/replacement is observed
+without adopting or replaying a shadow owner. Actual public spec truth gates
+foreign waits; a completed replacement cannot inherit the original's wait.
 
-```rust
-#[repr(u8)]
-enum ModuleState {
-    Uninit = 0,      // never initialized
-    Initializing,    // slot holds the partially-initialized module (CPython
-                     // publishes the module into sys.modules BEFORE exec)
-    Ready,           // slot holds the canonical module
-    Tombstone,       // `del sys.modules[name]` on a registry name
-    Replaced,        // user assigned an arbitrary object (incl. None) over a
-                     // registry name via sys.modules[name] = obj
-    ExecutionReserved, // transient internal custody while runpy/importlib
-                       // displaces a row for fresh compiled-body execution;
-                       // never observable through sys.modules
-}
-```
-
-`ExecutionReserved` is not a sixth user-visible cache condition. It is the
-free-threaded reservation between snapshotting a stable row and entering the
-ordinary `Initializing` transaction. The reserving thread alone may perform
-`ExecutionReserved -> Initializing`; foreign importers wait through the same
-owner/wait graph as ordinary initialization. This prevents re-execution from
-publishing `Tombstone` and racing an unrelated importer for the row. After body
-execution, runpy/importlib restores the exact displaced state and slot under
-the per-runtime execution lock.
-
-Fresh execution still publishes to the internal table/cache so self-imports
-and circular imports reach the executing module, but it suppresses the normal
-canonical-name synchronization into Python-visible `sys.modules`. `runpy`
-owns only its optional temporary `run_name` entry; `Loader.exec_module` leaves
-the caller's `sys.modules` state untouched. The suppression spans dispatch,
-failure cleanup, and restoration, so no transient canonical entry leaks into
-user code and a displaced entry remains visible exactly as it was.
+Fresh runpy/loader execution owns its namespace in `ExecutionContext`, without
+reserving or restoring global import rows. Its tagged cold execution identity
+and ordinary imports enter the same typed native/WASM body dispatcher. Imports
+performed by that private body still use public membership and ordinary import
+admission; name-wide suppression and the reserved-row state are removed. The
+optional run-name public swap remains independently owned and restored.
+Publication and rollback commit metadata before releasing displaced Python edges.
 
 ### 4.2 Name resolution (string → id), at most once per dynamic site
 
@@ -345,109 +322,53 @@ trusted-producer boundary: backends do not parse the blob to reconstruct a
 second registry, and arbitrary conflicting blob/row payloads are not claimed
 to be independently cross-validated there.
 
-### 4.3 `molt_module_ensure(id)` — the only state-transition owner
+### 4.3 Initialization transaction and dictionary ownership
 
-```
-ensure(id):
-  row = REGISTRY[id]
-  if row.kind == Alias(t): bits = ensure(t); publish_alias(id, bits); return bits
-  loop on states[id]:
-    Ready | Replaced(obj≠None) -> return slots[id]            # HOT PATH
-    Replaced(None)             -> raise ModuleNotFoundError(   # CPython parity §5.2
-                                    "import of {name} halted; None in sys.modules")
-    Initializing:
-        if owners[id] == self  -> return slots[id]             # cycle: partial module
-        else                   -> park on per-slot lock; on detected cross-thread
-                                  deadlock, accept the partial module (CPython
-                                  _lock_unlock_module semantics, §5.10)
-    ExecutionReserved:
-        if owners[id] == self  -> CAS to Initializing; run normal init transaction
-        else                   -> wait through the ordinary owner/wait graph
-    Tombstone:
-        per row.flags.reinit_policy:
-          Source     -> fall through to Uninit path (full re-exec, NEW module
-                        object; CPython §5.3)
-          Extension  -> fresh module object, dict updated from the first-init
-                        dict snapshot (CPython m_copy semantics); PyInit is
-                        NOT re-run                              # CPython §5.8
-    Uninit (CAS Uninit->Initializing, owners[id]=self):
-        for d in row.deps where d == row.parent: ensure(d)      # parent-first §5.5
-        m = match row.kind:
-              Source        -> alloc_module(row.name); publish(id, m);   # BEFORE exec
-                               MODULE_INIT_TABLE[row.init](m)            # body exec
-              Extension     -> prepare_abi(); PyInit via pyinit ABI;
-                               publish(id, m);
-                               ext_dict_copy[id] = snapshot(m.__dict__)  # m_copy analog
-              RuntimeBuiltin-> builtin ctor (sys populates argv/stdio/etc here)
-              NamespaceParent -> alloc namespace module
-        on unwind: unpublish(id); states[id]=Uninit; journal.remove; re-raise  # §5.6
-        states[id] = Ready
-        bind_parent_attr(row)     # setattr(parent, leaf_attr, m) after init;
-                                  # AttributeError -> ImportWarning, per §5.5
-        return m
-```
+Normal ensure first consumes one owned canonical dictionary observation.
+Present arbitrary values return unchanged; `None` raises the versioned import
+failure; absence enters the admitted parent-first initialization transaction.
+One all-name execution lease coordinates compiled initialization, arbitrary fresh
+spec loads and existing-target `_exec`; dense CAS state describes only compiled
+initializer namespace custody. False-flag completed imports bypass the lock map.
+A same-thread recursive import returns a partial module only while the public dictionary
+contains it. If its initializer deletes that entry, a same-thread import starts
+a fresh transaction through the same initializer. The existing execution
+snapshot retains the outer temporary namespace, original spec and state while
+the inner transaction runs; the reentrant name lease remains scoped outside the
+snapshot. Restoration changes only that initializer custody; it never restores
+the public dictionary. This follows CPython 3.12.15
+[`_find_and_load`](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap.py#L1349-L1376).
+Initializer publication installs the dictionary
+entry and temporary namespace owner before body execution. Successful ordinary
+completion releases that temporary owner; explicit execution releases its
+separate context-owned namespace after its own body and public run-name cleanup. Ordinary import-body
+failure removes the current name, including a nested replacement or `None`, as
+[`_load_unlocked`](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap.py#L911-L952)
+does. Extension construction rollback instead removes only its exact admitted
+publication; direct loader/runpy execution preserves its separate public-cache
+policy. Neither cleanup policy repeats dictionary equality to reconcile
+quiescent metadata: only a later ordinary Missing observation admits a new
+initialization.
+Parent attribute callbacks run while an independent return owner is pinned.
 
-Properties:
+### 4.4 `sys.modules`: one ordinary interpreter dictionary
 
-- **Hot path**: `states[id]` load + `slots[id]` load + inc_ref. No name
-  string, no hash, no mutex, no allocation. (§8)
-- **Init-exactly-once has one owner.** The generated `molt_init_*` bodies
-  lose their preambles entirely — they become pure module-body executors that
-  are *unreachable except through `ensure`* (enforced by making the init table
-  the only holder of their addresses; gate G3).
-- **Publication before exec** gives CPython partial-module cycle semantics
-  for free, and it is the *same* publication the dict view reads — a cyclic
-  importer and a `sys.modules` reader can never disagree.
-- **Aliases** are resolved at compile time to a target id; alias
-  co-publication happens inside the target's transaction. An alias init can
-  no longer "bypass the cache guard" because there is no separate alias init.
+The interpreter owns an ordinary Python dictionary before sys bootstrap and
+exposes that same object as `sys.modules`. This follows
+[CPython 3.12.15 `Python/import.c` lines 168-246](https://github.com/python/cpython/blob/v3.12.15/Python/import.c#L168-L246).
+Dictionary primitives own hashing/equality callbacks, deletion, arbitrary public
+values, insertion order, copying, views and GC edges. Import metadata never owns a
+second completed object projection. Rebinding the sys attribute does not replace
+the interpreter's internal dictionary, as in CPython.
 
-### 4.4 `sys.modules`: one home, dict-shaped
+The earlier `Materialized`/`ModuleTableView` backing-tag proposal is retired.
+It would require every dict operation, iterator, C view, GC projection and layout
+consumer to recognize a new storage form, while the maintained ordinary dict
+already provides the needed semantics. No measured gain justifies that cost.
+The removed Rust map, adoption helpers and bootstrap replay are not preserved as
+adapters. Semantic module lookup/publication/removal operations remain live and
+use the one dictionary; their identities still have real producers.
 
-Decision: **the indexed table is primary; `sys.modules` is a true dict object
-whose backing is the table.** Justification against the alternative
-(dict-primary + derived index): the hot path must be an array load with no
-hashing; all writers (Python dict ops, Rust machinery, C API) must converge on
-the same transition function; and a dict-primary design would need a write
-barrier *plus* index invalidation — that is sync machinery again.
-
-Mechanically: molt owns its dict implementation, and all dict operations
-funnel through a small primitive set (`dict_get_in_place`, `dict_set_in_place`,
-`dict_del_in_place`, `dict_clear_in_place`, `dict_order`, len/iter). Today
-there is no storage-variant dispatch in dicts (verified: no
-`DictStorage`/`DictRepr` enum in `runtime/`), so the design adds a one-byte
-backing tag to the dict header with exactly two values:
-
-- `Materialized` — today's storage, zero behavior change, the tag check is one
-  predictable branch already amortized inside functions that do type_id checks;
-- `ModuleTableView` — the singleton `sys.modules` object. Ops map to:
-  - `get(k)`: `module_id_of(k)` → registry lane (visible iff state ∈
-    {Initializing, Ready, Replaced}; `Replaced` returns the user object) else
-    overflow lane.
-  - `set(k, v)`: registry name → `Replaced(v)` transition (journal update);
-    non-registry name → overflow insert. **This is how Python-side mutation
-    becomes visible to Rust by construction.**
-  - `del(k)`: registry name → `Tombstone` (journal remove); overflow remove;
-    missing → KeyError.
-  - iteration/len/`.keys()`: walk the order journal (insertion-ordered union
-    of registry publications and overflow inserts, matching CPython dict
-    order semantics for sys.modules). Iteration is cold; the journal is only
-    touched on mutation.
-- `type(sys.modules) is dict` stays true — same type id, different backing
-  tag — so CPython-idiom code (`sys.modules.copy()`, `dict(sys.modules)`)
-  works unmodified.
-
-`sys.modules` is **the** view object (created during sys's
-`ensure`, before any other module can run — sys is a `RuntimeBuiltin` row that
-every other row implicitly depends on). The bootstrap-empty-dict lie
-(incident 4) and the full-replay-on-sys-registration machinery (incident 3)
-are deleted, not fixed.
-
-Rebinding the *attribute* (`sys.modules = {}`) follows CPython: the import
-system keeps using its own reference (the table); CPython documents that
-replacing `sys.modules` does not affect the import machinery's cached
-reference (§5.1). The attribute write succeeds and is user-visible; import
-semantics are unaffected. Documented in the subset contract.
 
 ### 4.5 The name-resolution family: one kernel, three miss policies
 
@@ -480,16 +401,16 @@ differential gate row (G8).
 
 | # | Behavior | Molt mechanism | CPython authority |
 |---|---|---|---|
-| 5.1 | `sys.modules` is *the* first-consulted module cache; "if present, the associated value is the module satisfying the import" — even an arbitrary non-module object is returned as-is; replacing the *dict object* itself "will not necessarily work as expected" (machinery keeps its own reference) | Table-backed view; machinery reads the table directly; `Replaced(obj)` passthrough | import reference §5.3.1 "The module cache"; `PyImport_ImportModuleLevelObject` (import.c) returns the sys.modules value whenever non-NULL and not None [A1] |
-| 5.2 | Cached entry returned without re-exec; entry `None` → **`ModuleNotFoundError`** `"import of {name} halted; None in sys.modules"` | `Ready`/`Replaced` return; `Replaced(None)` raises with the exact message | `_bootstrap._find_and_load` fast path [A2] |
-| 5.3 | `del sys.modules['x']` then `import x` → full re-execution, **new** module object; old references keep the old module; (`importlib.reload` by contrast reuses the same object) | `Tombstone` → Source reinit path; reload = labeled `Ready→Initializing(same obj)→Ready` transition (R2.9) | import reference §5.3.1 [A3] |
-| 5.4 | The module is placed in `sys.modules` **before** loader exec ("crucial because the module code may … import itself"); cyclic importers see the partial module; `from x import n` on a partial module raises `ImportError` `"cannot import name %R from partially initialized module %R (most likely due to a circular import)"` — wording is 3.9+ (bpo-20490) and lives in `import_from` in **Python/ceval.c**, keyed on `_PyModuleSpec_IsInitializing`; plain attribute access on a partial module raises the 3.8+ AttributeError variant (bpo-33237) | publish-before-exec (I6); `MissPolicy::ImportFrom` selects wording from the state byte (`Initializing` → partial-init message) | `_bootstrap._load` (`sys.modules[spec.name] = module` before `exec_module`, `del` on failure); `import_from` (ceval.c); commits 65366bc8bd, 3e429dcc24 [A4] |
+| 5.1 | `sys.modules` is *the* first-consulted module cache; "if present, the associated value is the module satisfying the import" — even an arbitrary non-module object is returned as-is; replacing the *dict object* itself "will not necessarily work as expected" (machinery keeps its own reference) | Canonical interpreter dictionary lookup; arbitrary present values pass through | import reference §5.3.1 "The module cache"; `PyImport_ImportModuleLevelObject` (import.c) returns the sys.modules value whenever non-NULL and not None [A1] |
+| 5.2 | Cached entry returned without re-exec; entry `None` → **`ModuleNotFoundError`** `"import of {name} halted; None in sys.modules"` | owned canonical dictionary observation plus public spec probe; a present None raises the exact import failure | `_bootstrap._find_and_load` fast path [A2] |
+| 5.3 | `del sys.modules['x']` then `import x` → full re-execution, **new** module object; old references keep the old module; (`importlib.reload` by contrast reuses the same object) | `Tombstone` → Source reinit path; reload uses the Exact existing target under its name lease, without changing `_initializing` | import reference §5.3.1 [A3] |
+| 5.4 | The module is placed in `sys.modules` **before** loader exec ("crucial because the module code may … import itself"); cyclic importers see the partial module; `from x import n` on a partial module raises `ImportError` `"cannot import name %R from partially initialized module %R (most likely due to a circular import)"` — wording is 3.9+ (bpo-20490) and lives in `import_from` in **Python/ceval.c**, keyed on `_PyModuleSpec_IsInitializing`; plain attribute access on a partial module raises the 3.8+ AttributeError variant (bpo-33237) | publish-before-exec (I6); import diagnostics observe the actual module spec's initializing truth with the target-version error policy | `_bootstrap._load` (`sys.modules[spec.name] = module` before `exec_module`, `del` on failure); `import_from` (ceval.c); commits 65366bc8bd, 3e429dcc24 [A4] |
 | 5.5 | Importing `a.b` imports `a` first (`if parent not in sys.modules: import_(parent)`); after child init, importlib does `setattr(parent_module, child, module)` — `AttributeError` there degrades to `ImportWarning`; `import a.b` binds top-level name `a` in the importer; `sys.modules['a.b']` must appear as attribute `b` of `sys.modules['a']`; `_handle_fromlist` deliberately swallows `ModuleNotFoundError` for fromlist submodules whose sys.modules entry is not None | parent dep edge + `bind_parent_attr` post-init (with the ImportWarning degradation); transaction return picks top-level for empty fromlist (existing `importlib_transaction_return_value`, now id-keyed); existing fromlist-swallow behavior kept | `_bootstrap._find_and_load_unlocked`, `_handle_fromlist`; import reference §5.4.2; simple_stmts import-statement binding rule [A5] |
 | 5.6 | Failed module exec removes the module from sys.modules (`_load`'s except: `del sys.modules[spec.name]`); next import retries fully | unwind path: unpublish → `Uninit` | `_bootstrap._load` [A6] |
 | 5.7 | PEP 562: `object.__getattribute__` (module `__dict__`) first, then module-level `__getattr__`; **direct global access (LOAD_GLOBAL) is explicitly unaffected by `__getattr__`** | unchanged `module_attr_lookup` shared by the one kernel; `MissPolicy::Global` correctly bypasses `__getattr__` — now a *cited* behavior, not an accident | PEP 562 Specification; datamodel §3.3.2.1 [A7] |
 | 5.8 | Single-phase C extensions (`m_size == -1`): import.c keeps a per-process `extensions` cache; "a copy of the module's dictionary is stored" (`m_copy`, via `_PyImport_FixupExtensionObject`) immediately after init succeeds; re-import after `del sys.modules[x]` creates a fresh module whose dict is updated from that snapshot — **PyInit is not re-run**; post-init dict mutations do NOT survive re-import; multi-phase (PEP 489) modules are "not singletons" and are re-created normally | `ext_dict_copy[id]` snapshot at init success; `Tombstone(kind=Extension)` → fresh module + `dict.update(snapshot)`; multi-phase support = future registry `phase` flag with Source-like reinit | c-api/module.html (single/multi-phase, PyState_FindModule borrowed ref); import.c `extensions` comment, `import_find_extension`, `_PyImport_FixupExtensionObject` [A8] |
 | 5.9 | Name validation at API boundary: C path (`builtins.__import__` → `PyImport_ImportModuleLevelObject`) raises `TypeError("module name must be a string")`; Python path (`_bootstrap._sanity_check`) raises `TypeError(f'module name must be str, not {type(name)}')`, plus level/package/empty-name errors | validation stays in the transaction prologue with the per-API exact message (already transaction-owned per import_system_contract.md §3.3); interior is typed `ModuleId` — the interior can no longer emit this error at all | import.c `PyImport_ImportModuleLevelObject`; `_bootstrap._sanity_check` [A9] |
-| 5.10 | Concurrent import: per-module recursive locks (`_ModuleLock`, `_blocking_on` wait-graph, `_DeadlockError`); waiting for an in-progress module goes through `_lock_unlock_module`, which **catches `_DeadlockError` and accepts the partially initialized module** ("Concurrent circular import, we'll accept a partially initialized module object") | per-slot owner/parking + owner-graph walk; on detected cross-thread cycle, return the partial module — CPython-exact, not an error | `_bootstrap._ModuleLock`, `_get_module_lock`, `_lock_unlock_module`; import.c `import_ensure_initialized` [A10] |
+| 5.10 | Concurrent import: per-module recursive locks (`_ModuleLock`, `_blocking_on` wait-graph, `_DeadlockError`); waiting for an in-progress module goes through `_lock_unlock_module`, which **catches `_DeadlockError` and accepts the partially initialized module** ("Concurrent circular import, we'll accept a partially initialized module object") | one transient all-name recursive execution lock and event wakeup; linear wait-graph cycle check accepts an already observed public partial without reviving a deleted entry | `_bootstrap._ModuleLock`, `_get_module_lock`, `_lock_unlock_module`; import.c `import_ensure_initialized` [A10] |
 | 5.11 | `PySys_GetObject`: "Return the object *name* from the `sys` module or `NULL` if it does not exist, **without setting an exception**"; borrowed reference | hook reads the interpreter-owned sys namespace; public import replacement/deletion cannot revoke its lifetime; NULL-not-exception and exact incoming error preservation are maintained | c-api/sys.html `PySys_GetObject` [A11] |
 
 ---
@@ -560,15 +481,19 @@ differential gate row (G8).
 
 ## 8. Performance
 
-### 8.1 Hot cached import (function-scope `import x` re-executed, attr-heavy code)
+### 8.1 Current warm-import cost boundary
 
-Today: alloc name string → mutex lock → HashMap hash+probe → sys.modules dict
-hash+probe → refcount traffic on keys → possible second/third lock.
-Bedrock: `states[ID]` byte load + `slots[ID]` u64 load + inc_ref. **Zero
-allocations, zero hashing, zero locks** (slot reads are GIL-protected atomics;
-lock is touched only in `Initializing`). This is strictly better than CPython
-(dict probe + version check) — consistent with the perf-is-correctness
-contract.
+Warm import uses the existing callback-safe Python dictionary hash/probe and
+returns an independently owned result. Compiled initialization then uses its
+existing state/owner admission where necessary. It does not acquire the removed
+Rust module-cache mutex or keep a second completed-slot owner. Python equality
+callbacks, subclass keys and public mutation remain real semantics; an array-only
+or zero-hash cost claim is not applicable to this implementation.
+
+Compare `tests/benchmarks/bench_builtin_import_slice.py` and
+`tests/benchmarks/bench_import_time.py` on identical baseline/candidate
+source/profile/target coordinates. Record execution time, allocation/retention,
+startup and shutdown separately. No new measurement or speedup is implied here.
 
 ### 8.2 Cold init
 
@@ -655,7 +580,7 @@ name literals at call sites, and trace scaffolding all net-delete.
 |---|---|---|
 | 1 | `TypeError: module name must be str` on plain `import guardpkg` | Compiled import sites bind symbolic module slots to final `ModuleId: u32` — there is no string argument to corrupt. The *only* string-accepting surfaces are the CPython-parity API boundaries, which validate with CPython's exact error (§5.9) before converting to id. The `trace_bad_module_name_arg` debug lattice is deleted. |
 | 2 | Static-native init re-ran via alias bypass ("cannot load module more than once") | Aliases have no init of their own — `kind=Alias{target}` resolves inside `ensure`; init-exactly-once is the CAS `Uninit→Initializing` in one function. Per-init preambles no longer exist to be bypassed. Extension re-init is additionally impossible via the `ext_dict_copy` snapshot path (§5.8): PyInit has exactly one call site, guarded by the CAS. |
-| 3 | Two stores + sync/replay/first-init-wins | There is one store. `sys.modules` is a view of it; Python-side mutations are table transitions by construction. `molt_module_cache_set/get`, the replay loop, and first-init-wins are deleted (first-init-wins existed to mask duplicate init emission, which the init table makes unemittable). |
+| 3 | Two stores + sync/replay/first-init-wins | There is one ordinary interpreter dictionary, exposed unchanged as `sys.modules`. The private Rust map, adoption fallback, bootstrap replay and permanent completed-slot owners are removed; semantic module lookup/publication/removal operations remain live. |
 | 4 | `molt_sys_modules()` bootstrap-empty dict | Nothing read the intrinsic, and HF-110 deleted it (2026-10-09). `sys.modules` is the singleton table view, created during sys's own `ensure`, which precedes every other module by a registry dependency edge. An "empty sys.modules while modules exist" state is unrepresentable. |
 | 5 | `manifest wasm_table_base 4135 above binary table base 2475` | The manifest is extracted from the linked binary's layout section — one computation, two projections. Digest-checked at build (G6) and load. |
 | 6 | `missing poll import for io_wait` panic | Import declarations are derived by iterating the same generated slot spec; a slot without an import cannot be expressed. Crate gate G5 instantiates every table spec per build. |
@@ -669,9 +594,11 @@ name literals at call sites, and trace scaffolding all net-delete.
 
 ## 11. Recursive adversarial review
 
-Round 1 attacked the initial draft with the corpus (§10). Round 2, below,
-attacks the *bedrock* design with new failure modes; each answer is a design
-amendment already folded into §3–§7.
+Historical design review (July 2026): Round 1 attacked the initial draft with
+the corpus (§10), and Round 2 below records the original design responses.
+Current dictionary, execution-lock and initializer ownership in §4 and the
+canonical cutover contract supersede older per-slot owner/parking proposals.
+These retained questions explain the constraints, not current source layout.
 
 **R2.1 — Threads: two threads import the same module concurrently.**
 Attack: both CAS `Uninit→Initializing`? No — CAS admits one; the loser parks
@@ -771,9 +698,10 @@ is the structural signature this design was chosen for.
   encodes module identity/layout is a generated projection of the
   `ModuleRegistry` (wasm ABI surfaces additionally of `wasm_abi_manifest.toml`)
   and embeds the authority digest.
-- **I3 (One store):** `ModuleTable` (+ overflow lane) is the only module
-  store; `sys.modules` is its dict-backed view; no other map, cache, or
-  mirror of module objects may exist (`PySys`/hooks read the same table).
+- **I3 (One store):** `ModuleTable` owns one ordinary interpreter dictionary,
+  exposed unchanged as `sys.modules`. No map, adoption cache or completed slot
+  retains a second module-object store. Typed initializer owners and interpreter
+  sys/builtins semantic roles have separate explicit lifetimes.
 - **I4 (One transaction):** all state transitions occur in
   `molt_module_ensure` + the two view-mutation entry points, under the
   per-slot CAS/lock discipline of §4.3/R2.4.
@@ -848,17 +776,15 @@ is the structural signature this design was chosen for.
 
 ## 13. Senior-engineer verdict
 
-**Provably closed** (by construction + gate): incidents 1–11; the R2 attack
-set; store coherence (I3 makes desync unrepresentable); init multiplicity
-(I5); manifest/binary drift (I10); generated staleness (I2/G7).
+The original incident and adversarial sets define proof obligations. Source
+implementation, structural gates and retained historical evidence do not close
+all native/WASM/extension/concurrency cells. The current storage contract names
+the changed ownership controls; full qualification remains separately recorded.
 
 **Residual risk, named honestly:**
-1. *Dict-view completeness.* `sys.modules` view must cover the full dict
-   protocol surface molt dicts expose (views, `|=`, copy, pickle-adjacent
-   paths). Mitigation: the backing tag funnels through the small in_place
-   primitive set; G8 includes a dict-protocol row. Risk: a future dict
-   fast-path bypassing the funnel — protect with a structural gate on the
-   dict primitive set (add to G2).
+1. *Dictionary ownership and callback lifetime.* Reuse the maintained ordinary
+   dict protocol and prove owned lookup, replacement/deletion, callback reentry,
+   semantic role retention and ordered shutdown. No custom backing tag remains.
 2. *Thread/init interleaving.* R2.1's lock discipline is specified but
    concurrency bugs are found by stress, not review — G10 must be a real
    proof-queue lane before freeze is declared.
@@ -871,16 +797,16 @@ set; store coherence (I3 makes desync unrepresentable); init multiplicity
 
 **Migration sequencing (each PR is a complete end-state subsystem cut):**
 - **PR1 — Registry + ensure + init table (native).** Generator, runtime
-  `module_table.rs`, `molt_module_ensure`, `MODULE_INIT_TABLE`; lower literal
-  import sites and delete per-init preambles, the isolate string_eq chain
+  `module_table.rs`, `molt_module_ensure`, `MODULE_INIT_TABLE`; bind explicit
+  internal initializer sites and delete per-init preambles, the isolate string_eq chain
   generator, and `molt_isolate_import(name)` in favor of
   `molt_isolate_ensure(id)`. Gates G1, G3, G4, G7. (Runtime + backend_ir.py
   + frontend lowering in one arc; no old lane left.)
-- **PR2 — One store.** `ModuleTable` becomes the store; dict backing tag;
-  `sys.modules` view; delete `module_cache` HashMap, `molt_module_cache_set/
-  get/del` replay+first-init-wins, `molt_sys_modules` empty-dict; move
-  `PySys_GetObject`/hooks onto the table; miss-policy kernel unification.
-  Gates G2, G8 (+§5 differentials). 
+- **PR2 — One store.** `ModuleTable` owns the interpreter dictionary, exposed
+  as `sys.modules`; delete the private module map, adoption, replay and permanent
+  completed-slot owners. Preserve live semantic module operations and explicit
+  sys/builtins roles. The current cutover contract defines ownership and gates;
+  native/WASM execution and measured costs remain release obligations.
 - **PR3 — WASM projection unification.** Registry-driven callable/poll/
   dispatch slots, layout custom section, extract-derived manifest, digest
   handshake, build-time parity gate. Gates G5, G6, G11. Coordinate with the

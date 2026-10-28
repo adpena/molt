@@ -687,8 +687,6 @@ def test_fetch_reads_a_pinned_tag_without_blobs(
 
 def _version_data(modules, packages, py_modules, py_packages) -> gen.VersionData:
     return gen.VersionData(
-        tag="v3.12.1",
-        revision="a" * 40,
         modules=modules,
         packages=packages,
         py_modules=py_modules,
@@ -736,11 +734,46 @@ def test_render_outputs_split_version_data_and_preserve_facade(tmp_path: Path) -
     version_module = (tmp_path / "stdlib_module_union_3_12.py").read_text(
         encoding="utf-8"
     )
-    assert f"CPython source: v3.12.1 ({'a' * 40})" in version_module
+    assert "Source receipts: config/cpython_stdlib_snapshot.json" in version_module
     assert (tmp_path / "stdlib_module_union_3_13.py").exists()
     facade = output.read_text(encoding="utf-8")
     assert "_load_version_data" in facade
     assert "STDLIB_MODULES = (" not in facade
+
+
+def test_projection_tracks_membership_without_repeating_source_provenance(
+    fixture_authority: Path, monkeypatch
+) -> None:
+    def no_network(*_args, **_kwargs):
+        pytest.fail("semantic projection must use the admitted source receipt")
+
+    monkeypatch.setattr(gen, "_git", no_network)
+    before = gen.generated_outputs()
+    advanced = _snapshot(tag="v3.12.2", revision="c" * 40)
+    _write_pins(gen.PINS_PATH, {"3.12": (advanced.tag, advanced.revision)})
+    gen.SNAPSHOT_PATH.write_text(
+        gen.render_snapshot({"3.12": advanced}), encoding="utf-8"
+    )
+    assert gen.pinned_snapshots(("3.12",))["3.12"] == advanced
+    assert gen.generated_outputs() == before
+
+    changed = replace(
+        advanced,
+        lib_entries=tuple(sorted((*advanced.lib_entries, "email/added.py"))),
+        lib_object="d" * 40,
+    )
+    gen.SNAPSHOT_PATH.write_text(
+        gen.render_snapshot({"3.12": changed}), encoding="utf-8"
+    )
+    assert gen.pinned_snapshots(("3.12",))["3.12"] == changed
+    rendered = gen.generated_outputs()
+    assert rendered != before
+    for path, text in rendered.items():
+        path.write_text(text, encoding="utf-8")
+    namespace = runpy.run_path(str(gen.OUT_PATH))
+    assert namespace["STDLIB_PY_MODULE_UNION"] == tuple(
+        sorted((*EXPECTED_PY_MODULES, "email.added"))
+    )
 
 
 def test_generated_outputs_derive_every_supported_version(

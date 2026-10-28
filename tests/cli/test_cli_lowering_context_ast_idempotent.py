@@ -296,7 +296,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
             "func_defaults": defaults,
             "func_kinds": kinds,
         }
-        generator = SimpleTIRGenerator()
+        generator = SimpleTIRGenerator(module_source_role="user")
         generator.visit(tree)
         ir = generator.to_json()
         result = _module_frontend_payload(
@@ -361,7 +361,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         )
         assert _digest(result) != _digest(changed)
         for original, reordered in ((ordered, reversed_order), (named, reversed_named)):
-            other = SimpleTIRGenerator()
+            other = SimpleTIRGenerator(module_source_role="user")
             other.visit(ast.parse(text.replace(original, reordered)))
             other_ir = other.to_json()
             assert other_ir["functions"] != result["functions"]

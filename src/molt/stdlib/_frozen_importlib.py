@@ -7,6 +7,7 @@ import sys
 _MOLT_IMPORTLIB_FROZEN_PAYLOAD = _require_intrinsic("molt_importlib_frozen_payload")
 _MOLT_IMPORTLIB_MODULE_FROM_SPEC = _require_intrinsic("molt_importlib_module_from_spec")
 _MOLT_IMPORTLIB_SPEC_FROM_LOADER = _require_intrinsic("molt_importlib_spec_from_loader")
+_MOLT_IMPORTLIB_FIND_SPEC = _require_intrinsic("molt_importlib_find_spec")
 
 
 def _load_payload() -> dict[str, object]:
@@ -26,8 +27,13 @@ _PAYLOAD = _load_payload()
 BuiltinImporter = _payload_get(_PAYLOAD, "BuiltinImporter")
 FrozenImporter = _payload_get(_PAYLOAD, "FrozenImporter")
 ModuleSpec = _payload_get(_PAYLOAD, "ModuleSpec")
+_DeadlockError = _payload_get(_PAYLOAD, "_DeadlockError")
 module_from_spec = _MOLT_IMPORTLIB_MODULE_FROM_SPEC
 spec_from_loader = _MOLT_IMPORTLIB_SPEC_FROM_LOADER
+
+def _find_spec(name, path, target=None):
+    return _MOLT_IMPORTLIB_FIND_SPEC(name, path, target)
+
 
 __all__ = [
     "BuiltinImporter",
