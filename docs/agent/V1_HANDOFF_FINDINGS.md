@@ -450,9 +450,12 @@ its backend reports 21.9 ms planning, 1.155 seconds transfer and 41.5 ms user co
 generation. A fresh instrumented content-seed control completes in 21.374 seconds,
 retains the same original generation and produces 45. It attributes 6.355 seconds
 to backend preparation, 3.582 to daemon compilation and 4.012 to linking, with
-substantial compiler-side guard settlement cost. The full IR-image scan runs only
-with diagnostics and is excluded from ordinary-build optimization priorities.
-The slow outlier and an earlier
+substantial instrumented compiler-side guard settlement cost. A subsequent fresh
+uninstrumented control at the joined source completes in 23.160 seconds with the
+same compiler/runtime products, original stdlib provenance and expected output.
+The full IR-image scan runs only with diagnostics. Independent unprofiled host
+censuses take 7.2–11.5 ms, so neither that diagnostic scan nor cProfile's enlarged
+census costs justify an ordinary-build optimization. The slow outlier and an earlier
 first-execution timeout remain unexplained; a successful replay does not erase
 them. These controls establish native transport and original provenance, not a
 latency improvement, accepted startup cost or installed release qualification.
@@ -464,9 +467,18 @@ publication stripe is independently held during the copy and free afterward.
 Linux/Windows installed execution, complete eviction contention, LLVM/WASM cells
 and authenticated installed admission remain open under V1-02/V1-07/V1-12.
 
-Next reduce measured first-compile and edit costs through their existing owners:
-backend preparation, process custody, module discovery and linking. Keep stdlib content
-reuse qualified separately from complete user-visible latency. Do not add a second
+Integration also exposes and repairs a remaining HF-521 consumer assertion: the
+backend daemon's absent, empty and whitespace Cargo-target cases must select the
+external checkout target before addressing build control. The test retains its
+independent literal target layout; production selection is unchanged. The first
+integration's Clippy command is cancelled after that assertion fails and grants
+no passing Clippy evidence.
+
+Next attribute ordinary first-compile and edit costs through the existing phase
+and guarded-command telemetry before changing backend preparation, process
+custody, module discovery or linking. Instrumented cumulative costs overlap;
+do not sum them or select a rewrite from them alone. Keep stdlib content reuse
+qualified separately from complete user-visible latency. Do not add a second
 cache or tune frontend worker counts from warm-hit samples.
 For first compilation, the existing lowering records and
 native closed stdlib object jobs already own reusable work, but the installed
