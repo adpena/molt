@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn cached_dotted_leaf_does_not_observe_missing_or_none_parent() {
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let parent_key = alloc_str_bits(py, "cached_leaf_parent").unwrap();
+        let leaf_key = alloc_str_bits(py, "cached_leaf_parent.child").unwrap();
+        let leaf = crate::object::builders::alloc_module_obj(py, leaf_key);
+        assert!(!leaf.is_null());
+        let leaf_bits = MoltObject::from_ptr(leaf).bits();
+        let cache = alloc_dict_with_pairs(py, &[leaf_key, leaf_bits]);
+        assert!(!cache.is_null());
+        for blocked_parent in [true, false] {
+            if blocked_parent {
+                assert!(unsafe {
+                    dict_set_in_place(py, cache, parent_key, MoltObject::none().bits())
+                });
+            } else {
+                unsafe { dict_del_in_place(py, cache, parent_key).unwrap() };
+            }
+            let result = importlib_import_resolved_transaction(
+                py,
+                "cached_leaf_parent.child",
+                cache,
+                ImportlibTransactionReturn::Leaf,
+            );
+            let failure = if exception_pending(py) {
+                let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+                let message = crate::format_obj_str(py, obj_from_bits(error.bits()));
+                clear_exception(py);
+                Some(message)
+            } else {
+                None
+            };
+            assert!(
+                result.is_ok() && failure.is_none(),
+                "cached leaf must bypass parent import: {failure:?}"
+            );
+            assert_eq!(result.unwrap(), leaf_bits);
+            dec_ref_bits(py, leaf_bits);
+        }
+        dec_ref_bits(py, MoltObject::from_ptr(cache).bits());
+        dec_ref_bits(py, leaf_bits);
+        dec_ref_bits(py, leaf_key);
+        dec_ref_bits(py, parent_key);
+    });
+}
+
+#[test]
 fn false_fromlist_selects_request_component_and_balances_alias_owners() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {

@@ -658,3 +658,140 @@ try:
 finally:
     sys.modules = _real_modules
     sys.meta_path = _previous
+
+
+import weakref as _cold_weakref
+from _frozen_importlib import ModuleSpec as _ColdModuleSpec
+
+
+_cache_root = "_molt_cached_leaf_parent"
+_cache_name = _cache_root + ".child"
+_cache_leaf = types.ModuleType(_cache_name)
+sys.modules[_cache_name] = _cache_leaf
+try:
+    for _cache_state in ("absent", "none"):
+        sys.modules.pop(_cache_root, None)
+        if _cache_state == "none":
+            sys.modules[_cache_root] = None
+        assert importlib.import_module(_cache_name) is _cache_leaf
+        assert __import__(_cache_name, fromlist=("value",)) is _cache_leaf
+        print("cached-leaf-parent", _cache_state, True)
+    sys.modules[_cache_name] = None
+    try:
+        importlib.import_module(_cache_name)
+    except ModuleNotFoundError as _cache_error:
+        assert _cache_error.name == _cache_name
+        print("cached-leaf-none", True)
+    else:
+        raise AssertionError("a preexisting None leaf must halt import")
+finally:
+    sys.modules.pop(_cache_name, None)
+    sys.modules.pop(_cache_root, None)
+
+
+class _ColdParent(types.ModuleType):
+    def __del__(self):
+        _cold_events.append("old-parent-retired")
+        if _cold_mode == "rebind-finalizer":
+            sys.modules[_cold_root] = _cold_other
+
+
+class _ColdReplacement(types.ModuleType):
+    def __setattr__(self, name, value):
+        if name == "child":
+            _cold_events.append("fresh-parent-bind")
+        super().__setattr__(name, value)
+
+
+class _ColdLoader:
+    def create_module(self, spec):
+        global _cold_old_ref
+        if spec.name == _cold_root and _cold_mode in ("replace", "rebind-finalizer"):
+            parent = _ColdParent(spec.name)
+            _cold_old_ref = _cold_weakref.ref(parent)
+            return parent
+        return None
+
+    def exec_module(self, module):
+        if module.__name__ == _cold_root:
+            if _cold_mode in ("publish-value", "publish-none"):
+                sys.modules[_cold_name] = 42 if _cold_mode == "publish-value" else None
+                del module.__path__
+            return
+        if _cold_mode in ("replace", "rebind-finalizer"):
+            sys.modules[_cold_root] = _cold_replacement
+            assert _cold_old_ref() is not None
+            _cold_events.append("child-executed")
+        elif _cold_mode == "remove-parent":
+            del sys.modules[_cold_root]
+        elif _cold_mode == "child-none":
+            sys.modules[_cold_name] = None
+
+
+class _ColdFinder:
+    def find_spec(self, name, path=None, target=None):
+        if name == _cold_root:
+            _cold_finds.append("parent")
+            return _ColdModuleSpec(name, _ColdLoader(), is_package=True)
+        if name == _cold_name:
+            _cold_finds.append("child")
+            return _ColdModuleSpec(name, _ColdLoader())
+        return None
+
+
+_cold_saved_meta_path = sys.meta_path
+sys.meta_path = [_ColdFinder()]
+try:
+    for _cold_mode in (
+        "publish-value",
+        "publish-none",
+        "replace",
+        "rebind-finalizer",
+        "remove-parent",
+        "child-none",
+        "empty-child",
+    ):
+        _cold_root = "_molt_cold_parent_" + _cold_mode.replace("-", "_")
+        _cold_child = "" if _cold_mode == "empty-child" else "child"
+        _cold_name = _cold_root + "." + _cold_child
+        _cold_replacement = _ColdReplacement(_cold_root)
+        _cold_replacement.__path__ = []
+        _cold_other = types.ModuleType(_cold_root)
+        _cold_other.__path__ = []
+        _cold_events = []
+        _cold_finds = []
+        try:
+            try:
+                _cold_result = importlib.import_module(_cold_name)
+            except KeyError as _cold_error:
+                assert _cold_mode == "remove-parent"
+                assert _cold_error.args == (_cold_root,)
+                assert _cold_name in sys.modules
+                assert importlib.import_module(_cold_name) is sys.modules[_cold_name]
+            else:
+                assert _cold_mode != "remove-parent"
+                if _cold_mode in ("publish-value", "publish-none"):
+                    assert _cold_result == (42 if _cold_mode == "publish-value" else None)
+                    assert _cold_finds == ["parent"]
+                elif _cold_mode in ("replace", "rebind-finalizer"):
+                    assert _cold_events == [
+                        "child-executed",
+                        "old-parent-retired",
+                        "fresh-parent-bind",
+                    ]
+                    assert _cold_replacement.child is _cold_result
+                    if _cold_mode == "rebind-finalizer":
+                        assert sys.modules[_cold_root] is _cold_other
+                        assert not hasattr(_cold_other, "child")
+                    else:
+                        assert sys.modules[_cold_root] is _cold_replacement
+                else:
+                    assert getattr(sys.modules[_cold_root], _cold_child) is _cold_result
+                    if _cold_mode == "child-none":
+                        assert _cold_result is None
+            print("cold-parent-protocol", _cold_mode, True)
+        finally:
+            sys.modules.pop(_cold_name, None)
+            sys.modules.pop(_cold_root, None)
+finally:
+    sys.meta_path = _cold_saved_meta_path
