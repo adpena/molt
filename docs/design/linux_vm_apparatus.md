@@ -27,6 +27,45 @@ construction; `push` sends commits over Lima's SSH. For a VM that still
 mounts host paths (one not yet applied, or one made by hand), `release` frees
 its pins with the one guest action that works, and lane retirement runs it.
 
+## Storage placement and capacity
+
+A guest's free-space observation covers its virtual filesystem. It does not
+establish free space on the host filesystem holding its growing raw disk.
+Likewise, moving host Cargo/cache/scratch output through DX does not move a
+Lima disk. Preflight both filesystems before large guest builds; allocated
+host bytes and the virtual disk's logical limit are distinct facts.
+
+Lima owns placement through explicit
+[`LIMA_HOME`](https://lima-vm.io/docs/config/environment-variables/).
+Its [instance directory](https://lima-vm.io/docs/dev/internals/) contains the
+disk, configuration and identity. Select a local filesystem with sufficient
+capacity and a path short enough for Lima's Unix sockets. Keep this selection
+consistent across terminal, automation and agent entry points. A missing
+selected volume is a readiness failure, not permission to create a fresh
+instance on the internal filesystem.
+
+Before taking guests offline, check the destination's negotiated link speed
+and representative sustained I/O; an SSD connected at USB 2.0 speed cannot
+provide USB 3.x throughput. Budget copying and verification together. If the
+selected hardware is unavailable or too slow, retain the original home and
+report that placement remains unresolved; repeated copy attempts do not fix
+the link. Reconnection requires closing active volume users first.
+
+Relocation preserves the entire home, including guest source and identity.
+Use the existing executable-based idle-work check before graceful Lima stop;
+never copy a live writable disk. Copy sparse files with metadata preserved,
+verify persistent entries and disk bytes, then select the new home and use
+the existing service-start owner. Check guest machine identity, source HEAD
+and dirty-state preservation before retiring verified originals. Select a
+copy implementation that preserves the source metadata's precision as well
+as sparse allocation. Keep a recoverable operation record and original
+configuration until adoption succeeds. After a cancelled copy, restore the
+original guests through the same service-start owner and retire only the
+unadopted partial destination once its writers have exited.
+
+The host capacity authority and cache collectors remain separate from this
+VM lifetime owner; see [disk pressure operations](../OPERATIONS.md#disk-pressure-and-storage-placement).
+
 ## Mechanism
 
 Measured on 2026-10-22: macOS 26.4 (Darwin 25.4.0), Lima 2.2.1. `molt-linux`
