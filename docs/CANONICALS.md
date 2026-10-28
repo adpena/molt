@@ -23,6 +23,8 @@ of truth when a claim drifts.
 
 ## Scope And Contracts
 
+- [spec/areas/compat/contracts/verified_subset_contract.md](spec/areas/compat/contracts/verified_subset_contract.md)
+- [spec/areas/compat/contracts/dynamic_execution_policy_contract.md](spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
 - [spec/areas/core/0000-vision.md](spec/areas/core/0000-vision.md)
 - [spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md)
 - [spec/areas/compat/README.md](spec/areas/compat/README.md)

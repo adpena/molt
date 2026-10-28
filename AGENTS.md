@@ -5,9 +5,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 ## Own the outcome
 
-- Carry authorized work through implementation, integration, verification and cleanup; act when enough is known.
-- Follow through on authorized landing and retirement without another prompt. They are separate
-  facts; resolve or report custody blockers and preserve evidence until the integration owner closes them.
+- Carry authorized work through implementation, verification, landing and retirement without another
+  prompt. Landing and retirement are separate facts; resolve/report custody blockers and retain evidence.
 - Reuse existing work before creating an isolated lane. New isolated work uses the managed
   lane/landing queue lifecycle in `docs/ops/INTEGRATION.md`, which owns automatic retirement.
 - Questions and reviews authorize inspection; change requests authorize scoped fixes and checks. Name completion and its integration owner.
@@ -15,31 +14,26 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   privileged or externally consequential action. Proceed with authorized safe, reversible work.
 - Do not end on plans, promises, checkpoints, commits, failed proofs, compactions or reports while
   useful in-scope work remains. Recover interrupted tools from durable repository and proof state.
-- Ground claims in current evidence; state passes, failures, skips and unknowns. Prioritize release
-  dependencies, correctness/conformance and compiled user-code performance. Keep WIP small; finish,
-  land and retire a coherent outcome before adjacent apparatus. Count qualified closures and measured
-  user benefit, not tests, reports or worker activity.
-- If project guidance conflicts with the live repository or has gone stale, follow the safer current
-  fact and repair the guidance in the same arc when it is in scope.
+- Ground claims in current evidence: passes, failures, skips and unknowns. Prioritize release dependencies
+  and measured user benefit. Keep WIP small; land and retire coherent outcomes before adjacent apparatus.
+- Follow safer live facts over stale guidance; repair in-scope guidance in the same change.
 
 ## Engineer coherent systems
 
-- Before a semantic repair or optimization, trace the owning authority, producers, consumers and
-  sibling backend/profile/platform sites. Search by mechanism as well as symbol. Scale context and
-  research to the changed contract; a prose edit needs no whole-project map or design exercise.
+- Trace the changed semantic contract's authority, producers, consumers and backend/profile/platform
+  siblings by mechanism and symbol. Scale research to risk; prose needs no whole-project design exercise.
 - Enter through a concrete aperture; follow the invariant through its complete authority class.
   Prefer a structural correction with explicit invariants and family-wide regression/differential
   oracles. Challenge correctness; record exceptions and unverified cells. Preserve different semantics.
 - Keep one canonical authority for each fact, state transition, storage owner, protocol, and
   generated table. Move all consumers together and delete the replaced implementation: no internal
   compatibility lanes, shims, duplicate registries, or speculative fallbacks.
-- **Incomplete consumer migration is a correctness defect and landing blocker.** An authority,
-  schema, API, ABI, identity or ownership change is indivisible. Reconcile existing solutions/WIP;
-  migrate callers, generated projections, fixtures/mocks, build/install/release paths, docs and
-  applicable backend/target/platform cells together. Search obsolete contracts before expensive
-  validation. Fixtures implement the real boundary with an independent oracle. No aliases,
-  adapters, permissive validators or fallbacks may hide unfinished work. Exercise affected consumers
-  and fix exposed failures before landing; state unverified cells. A green producer cannot prove migration.
+- **Incomplete consumer migration blocks landing.** Authority/schema/API/ABI/identity/ownership changes
+  are indivisible. Reconcile WIP; migrate callers, projections, fixtures, build/install/release paths,
+  docs and backend/target/platform cells together. Search obsolete contracts before costly validation.
+  Fixtures implement the real boundary with an independent oracle. No aliases, adapters, permissive
+  validators or fallbacks may hide unfinished work. Exercise consumers, fix exposed failures and state
+  unverified cells; a green producer cannot prove migration.
 - Prefer direct design; abstraction must remove duplication, expose an invariant or enable measured
   optimization. Systematize families; specialize representations when useful while keeping the protocol.
 - Treat all compiler layers, runtime, ABI, tooling, diagnostics, packaging, tests and docs as one architecture.
@@ -49,20 +43,24 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Before subsystem design or rewrite, research leading implementations (MLIR/LLVM, Cranelift, rustc,
   CPython, PyPy, HotSpot/V8, Codon) and cite them in its design doc. Deviations need measured reasons.
   Fix shared root causes, including deep refactors, through complete per-contract migrations.
-- Identity is typed, never spelled. Op kinds, exceptions, classes, decorators and attribute keys
-  come from one declarative definition that generates closed types, so the compiler (exhaustive
-  Rust matches, `Literal` types under `ty`) rejects a stale consumer. A source-scraping audit is a
-  bridge: delete it when the type system enforces the same fact.
+- Identity is typed, never spelled. One declarative source generates closed types for op kinds,
+  exceptions, classes, decorators and attribute keys; exhaustive Rust matches and `Literal` types
+  under `ty` reject stale consumers. Retire source-scraping audits when types enforce the invariant.
 - Every registered entity needs a proven producer; retire its consumers with its last producer.
   `tools/op_kinds/census.py` proves op kinds. Test filters need a producer in the selected crate/features.
 
 ## Project direction
 
-- Molt is an optimizing Python compiler and runtime, not a reimplementation of NumPy, SciPy, or
-  other upstream packages. Ecosystem support comes from reusable compiler/runtime primitives,
-  package and import custody, source-built extensions, and correct C-API/ABI behavior. Audited forks
-  or vendored patches are acceptable only when they are the maintained, provenance-pinned solution
-  to an upstream defect—not a hidden substitute implementation.
+- Molt is an optimizing AOT Python compiler/runtime for standalone native and WASM programs;
+  emitted programs never depend on a host Python interpreter or interpreter fallback.
+- The verified-subset/dynamic-execution contracts below own intended semantics, not passing coverage.
+  Source builtin `eval`/`exec` are unsupported; `compile` provides parser validation only. No arbitrary
+  runtime monkeypatching or reflection that defeats static reasoning. Never widen policy for a
+  package/benchmark; expansion needs its evidence and explicit user approval before implementation.
+  Missing support, slowness or failures cannot redefine scope. Scoped mutation/introspection stay contracted.
+- Ecosystem support uses reusable primitives, package/import custody, source-built extensions and
+  correct C-API/ABI, not substitute packages. Forks/patches must be maintained, provenance-pinned
+  repairs for upstream defects; Molt does not reimplement NumPy, SciPy or other upstream packages.
 - Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
   runtime memory management and every shipped backend/profile are first-class optimization surfaces.
 - Preserve deterministic CPython behavior by default while designing for free-threaded and GIL-less execution.
@@ -78,20 +76,20 @@ prefer live code, tests, measurements and explicit user direction over stale pro
   I/O, spawns, allocations, peak memory, serialization and repeated work on unchanged inputs. Choose
   the smallest coherent design; name and measure accepted trades. Leading tools set the bar:
   a no-change rebuild in Cargo, Go or uv costs milliseconds.
-- Measure load-bearing changes before and after using metrics that expose the changed contract:
-  latency, throughput, startup, allocations, bytes, peak live memory, process-tree RSS/commit, cache
-  behavior, atomics, contention, code size, link time, artifact size and failure atomicity.
+- Measure load-bearing changes before/after with contract-relevant latency/throughput, startup,
+  allocations/I/O, peak live and process-tree memory, caches/atomics/contention, code/artifact size,
+  link time and failure atomicity.
 - Optimize per platform and architecture through typed capability and target plans. Do not use
   post-failure retries or silent fallback as feature detection.
 - Extend existing instrumentation only when it materially shortens a decision or removes a measured,
   recurring bottleneck; avoid a new framework or verifier per fix. Measure a slow build first:
   `MOLT_BUILD_DIAGNOSTICS(_FILE)`, `MOLT_CLI_PROFILE` (`docs/OPERATIONS.md`, "Build time").
-- A local benchmark win does not justify duplicated control paths, weaker determinism, or unbounded
-  memory. Record the relevant tradeoffs and gate the policy on reproducible evidence.
-- Before deleting an implementation, learn why it existed and measure what it was worth. Removing a
-  fast path without a general replacement is a regression: record the numbers against the current
-  path and CPython, and recover them through general mechanisms (proven or guarded bindings,
-  inlining), never through name-matched lowering.
+- Correctness, conformance and compiled user-code performance are inseparable. Derive speed from
+  proven semantics and sound invariants; preserve observable behavior. Require representative
+  whole-program time/memory evidence, never benchmark tricks, weakened oracles or unbounded memory.
+- Before deleting an implementation, recover its purpose and measured value against current Molt
+  and CPython. Removing a fast path without a general replacement is a regression. Recover speed
+  through proven/guarded bindings and inlining, never name-matched lowering.
 - Facts live on typed SSA values and flow one way to codegen: no name-keyed facts, no re-lifted
   lowered IR, no second optimizer for one fact family. Compiled code carries the execution context,
   inlines common fast paths and calls the runtime directly instead of re-entering it per operation.
@@ -186,6 +184,8 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 
 ## Useful authorities
 
+- Python semantics: `docs/spec/areas/compat/contracts/verified_subset_contract.md`
+- AOT exclusions and expansion gates: `docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md`
 - Live multi-agent/Pact state: `docs/agent/ORCHESTRATION.md`
 - Open findings and the v1.0 burn-down (start here): `docs/agent/V1_HANDOFF_FINDINGS.md`
 - Architecture and documentation map: `docs/CANONICALS.md`, `docs/INDEX.md`, `docs/spec/README.md`
