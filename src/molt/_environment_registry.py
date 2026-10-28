@@ -857,6 +857,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
+      "default": "3",
+      "kind": "float",
+      "name": "MOLT_AGENT_EVIDENCE_IDLE_DAYS",
+      "output_neutral": false,
+      "owner": "src/molt/checkout_state.py",
+      "summary": "Days a terminal coordination task must remain unused before the daily disk guard harvests its payload through soft retirement. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window.",
+      "values": []
+    },
+    {
+      "audience": "developer",
       "default": "",
       "kind": "string",
       "name": "MOLT_AGENT_ID",

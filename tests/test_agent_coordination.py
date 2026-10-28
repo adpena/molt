@@ -1835,3 +1835,302 @@ def test_optional_discovery_reports_unavailable_without_implicit_path(tmp_path):
         assert snapshot[name] is None
         assert snapshot[name + "_usable"] is False
     assert snapshot["recommended_python_command"] == sys.executable
+
+
+def _evidence_harvest_fixture(repo: Path):
+    _identity_fixture_git(repo, "init", "-q")
+    source = repo / "tracked-report.md"
+    source.write_bytes(b"this report is already a repository blob\n")
+    _identity_fixture_git(repo, "add", "tracked-report.md")
+    now = 1_800_000_000.0
+    bases = {}
+    for name, status in {
+        "idle": "done",
+        "second": "completed",
+        "running": "running",
+        "paused": "paused",
+        "blocked": "blocked",
+        "referenced": "done",
+        "recent": "done",
+        "missing": None,
+        "invalid": "invalid",
+    }.items():
+        base = repo / "logs/agents" / name
+        (base / "artifacts").mkdir(parents=True)
+        payload = {"task": name, "status": status}
+        if name == "running":
+            payload["retained_proof"] = {
+                "path": str(repo / "logs/agents/referenced/artifacts/proof.bin")
+            }
+        if name != "missing":
+            (base / "coordination.json").write_text(
+                "[]" if name == "invalid" else json.dumps(payload), encoding="utf-8"
+            )
+        (base / "progress.log").write_bytes(b"a unique progress record\n")
+        (base / "artifacts/report-unique.md").write_bytes(b"the unique conclusion\n")
+        (base / "artifacts/report-copy.md").write_bytes(source.read_bytes())
+        (base / "artifacts/payload.bin").write_bytes(b"\0raw payload" * 100)
+        bases[name] = base
+        for path in [*base.rglob("*"), base]:
+            os.utime(path, (now - 4 * 86400,) * 2)
+    # Deep activity keeps the task even when its top-level mtime lags.
+    (bases["recent"] / "artifacts/payload.bin").touch()
+    os.utime(bases["recent"] / "artifacts/payload.bin", (now - 60,) * 2)
+    return now, bases
+
+
+def test_daily_harvest_keeps_unique_evidence_and_batches_repository_blob_checks(
+    tmp_path, monkeypatch
+):
+    from collections import Counter
+    from tests.process_guard_common import ModuleView
+    from tools import disk_guard
+
+    now, tasks = _evidence_harvest_fixture(tmp_path)
+    reads, commands = Counter(), []
+    open_path, popen = Path.open, agent_coordination.subprocess.Popen
+
+    def count_read(path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if (
+            "r" in mode
+            and path.is_file()
+            and path.is_relative_to(tmp_path / "logs/agents")
+        ):
+            reads[path] += 1
+        return open_path(path, *args, **kwargs)
+
+    def observe_stream(command, *args, **kwargs):
+        commands.append(command)
+        return popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", count_read)
+    monkeypatch.setattr(
+        agent_coordination,
+        "subprocess",
+        ModuleView(agent_coordination.subprocess, Popen=observe_stream),
+    )
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert not result.errors
+    assert max(reads.values()) == 1
+    assert len(commands) == 1 and commands[0][-2:] == ["cat-file", "--batch-check"]
+    selected = {
+        Path(item["path"]): item
+        for item in result.reclaimed
+        if item["kind"] == "agent-evidence"
+    }
+    assert set(selected) == {tasks["idle"], tasks["second"]}
+    for base in selected:
+        assert (base / "coordination.json").is_file()
+        assert (base / "progress.log").read_bytes() == b"a unique progress record\n"
+        assert (
+            base / "artifacts/report-unique.md"
+        ).read_bytes() == b"the unique conclusion\n"
+        assert not (base / "artifacts/report-copy.md").exists()
+        assert not (base / "artifacts/payload.bin").exists()
+        retired = Path(selected[base]["retired_path"])
+        assert (
+            retired / "artifacts/payload.bin"
+        ).read_bytes() == b"\0raw payload" * 100
+        assert selected[base]["est_bytes"] == len(b"\0raw payload" * 100) + len(
+            b"this report is already a repository blob\n"
+        )
+    for name in {
+        "running",
+        "paused",
+        "blocked",
+        "referenced",
+        "recent",
+        "missing",
+        "invalid",
+    }:
+        assert (tasks[name] / "artifacts/payload.bin").is_file()
+    reasons = {Path(item["path"]).name: item["reason"] for item in result.skipped}
+    assert reasons["missing"] == "missing-coordination-record"
+    assert reasons["invalid"] == "invalid-coordination-record"
+
+
+@pytest.mark.parametrize(
+    "mutation", ["active", "reference", "idle", "blob", "unique-text", "invalid"]
+)
+def test_harvest_rules_have_independent_mutation_oracles(
+    tmp_path, monkeypatch, mutation
+):
+    import re
+    from tools import disk_guard
+
+    now, tasks = _evidence_harvest_fixture(tmp_path)
+    if mutation == "invalid":
+        from dataclasses import replace
+
+        load = agent_coordination.load_records
+
+        def accept_invalid(root):
+            return [
+                replace(record, payload={"task": record.task, "status": "done"})
+                if record.status == "invalid"
+                else record
+                for record in load(root)
+            ]
+
+        monkeypatch.setattr(agent_coordination, "load_records", accept_invalid)
+        expected = tasks["invalid"] / "artifacts/payload.bin"
+    elif mutation == "active":
+        monkeypatch.setattr(agent_coordination, "ACTIVE_STATUSES", frozenset())
+        expected = tasks["paused"] / "artifacts/payload.bin"
+    elif mutation == "reference":
+        monkeypatch.setattr(
+            agent_coordination, "active_task_references", lambda _: set()
+        )
+        expected = tasks["referenced"] / "artifacts/payload.bin"
+    elif mutation == "idle":
+        monkeypatch.setattr(agent_coordination, "agent_evidence_idle_s", lambda _: 0)
+        expected = tasks["recent"] / "artifacts/payload.bin"
+    elif mutation == "blob":
+        monkeypatch.setattr(
+            agent_coordination, "_evidence_blob_id", lambda *_: "0" * 40
+        )
+        expected = tasks["idle"] / "artifacts/report-copy.md"
+    else:
+        monkeypatch.setattr(
+            agent_coordination,
+            "_EVIDENCE_NAMES",
+            re.compile(r"never-match-any-record$"),
+        )
+        expected = tasks["idle"] / "artifacts/report-unique.md"
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert not result.errors
+    with pytest.raises(AssertionError):
+        if mutation == "blob":
+            assert not expected.exists(), "an exact repository blob was preserved"
+        else:
+            assert expected.is_file(), f"{mutation} protection was removed"
+
+
+def test_harvest_dry_run_reports_bytes_and_never_writes(tmp_path):
+    from tools import disk_guard
+
+    now, tasks = _evidence_harvest_fixture(tmp_path)
+    before = {path.relative_to(tmp_path): path.stat() for path in tmp_path.rglob("*")}
+    result = disk_guard.gc(
+        root=tmp_path, env={}, now_fn=lambda: now, apply=False, log=False
+    )
+    assert not result.errors and not result.retirements
+    assert {item["path"] for item in result.reclaimed} == {
+        str(tasks["idle"]),
+        str(tasks["second"]),
+    }
+    assert all(item["est_bytes"] > 0 for item in result.reclaimed)
+    after = {path.relative_to(tmp_path): path.stat() for path in tmp_path.rglob("*")}
+    assert before.keys() == after.keys()
+    assert all(
+        (found.st_ino, found.st_mtime_ns, found.st_size)
+        == (after[path].st_ino, after[path].st_mtime_ns, after[path].st_size)
+        for path, found in before.items()
+    )
+
+
+def test_reactivated_task_cannot_be_harvested_from_a_stale_snapshot(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+    from tools import disk_guard
+
+    now, tasks = _evidence_harvest_fixture(tmp_path)
+    original = agent_coordination.checkout_state_retirement
+    reactivated = False
+
+    @contextmanager
+    def reactivate_before_admission(root, **kwargs):
+        nonlocal reactivated
+        if root == tasks["idle"] and not reactivated:
+            reactivated = True
+            agent_coordination.update_task(
+                tmp_path, "idle", status="running", fields={}
+            )
+        with original(root, **kwargs) as admitted:
+            yield admitted
+
+    monkeypatch.setattr(
+        agent_coordination, "checkout_state_retirement", reactivate_before_admission
+    )
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert reactivated and not result.errors
+    assert (tasks["idle"] / "artifacts/payload.bin").is_file()
+    assert any(
+        item["path"] == str(tasks["idle"]) and item["reason"] == "coordination-changed"
+        for item in result.skipped
+    )
+
+
+def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path):
+    from tools import disk_guard
+    from tests.tools.test_disk_guard import _registered_worktree_scope
+
+    scope, main, linked = _registered_worktree_scope(tmp_path)
+    now, tasks = _evidence_harvest_fixture(linked)
+    active = main / "logs/agents/integrator"
+    active.mkdir(parents=True)
+    (active / "coordination.json").write_text(
+        json.dumps(
+            {
+                "task": "integrator",
+                "status": "running",
+                "donor": str(tasks["idle"] / "artifacts/payload.bin"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = disk_guard.gc(root=scope, env={}, now_fn=lambda: now, log=False)
+    assert not result.errors
+    assert (tasks["idle"] / "artifacts/payload.bin").is_file()
+    assert any(
+        item["path"] == str(tasks["idle"]) and item["reason"] == "active-or-referenced"
+        for item in result.skipped
+    )
+
+
+def test_harvest_text_limit_is_inclusive_and_opaque_files_retire(tmp_path):
+    from tools import disk_guard
+
+    now, tasks = _evidence_harvest_fixture(tmp_path)
+    base = tasks["idle"]
+    samples = {
+        "hf435-handoff.md": b"x" * (1024 * 1024),
+        "report-too-large.md": b"x" * (1024 * 1024 + 1),
+        "report-opaque.log": b"\xff\0an opaque report-shaped payload",
+    }
+    for name, data in samples.items():
+        path = base / "artifacts" / name
+        path.write_bytes(data)
+        os.utime(path, (now - 4 * 86400,) * 2)
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert not result.errors
+    retired = Path(result.retirements[str(base)])
+    assert (base / "artifacts/hf435-handoff.md").read_bytes() == samples[
+        "hf435-handoff.md"
+    ]
+    for name in ("report-too-large.md", "report-opaque.log"):
+        assert not (base / "artifacts" / name).exists()
+        assert (retired / "artifacts" / name).read_bytes() == samples[name]
+
+
+def test_read_observation_does_not_keep_terminal_payloads(tmp_path, monkeypatch):
+    from tools import disk_guard
+
+    now, tasks = _evidence_harvest_fixture(tmp_path)
+    inventory = agent_coordination._evidence_inventory
+
+    def observe_reads(root, deadline):
+        result = inventory(root, deadline)
+        if root == tasks["idle"]:
+            record = root / "coordination.json"
+            found = record.stat()
+            os.utime(record, ns=(found.st_atime_ns + 1_000_000_000, found.st_mtime_ns))
+        return result
+
+    monkeypatch.setattr(agent_coordination, "_evidence_inventory", observe_reads)
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert not result.errors
+    assert not (tasks["idle"] / "artifacts/payload.bin").exists()
+    assert (tasks["idle"] / "coordination.json").is_file()

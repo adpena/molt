@@ -538,7 +538,9 @@ with its path handling, and a pinned session's whole target use 14-15 us
 against 9.5-10 us for a checkout target.
 
 One policy decides retirement (`checkout_state_decision`); `tools/disk_guard.py`
-applies it through `assert_safe_to_delete` and `molt.file_deletion`:
+applies it through `assert_safe_to_delete` and `soft_retire` (section 2.9).
+The daily pass alone finally deletes validated retirements through
+`molt.file_deletion`:
 
 - A root idle past `MOLT_CHECKOUT_STATE_MAX_AGE_DAYS` (default 30, Cargo's
   limit for locally recreatable data) is reclaimed whether its owner exists or
@@ -1257,7 +1259,7 @@ worktrees, which no root retirement reaches. Nothing on current code reads,
 renews or evicts them, so the daily GC (section 2.6) retires them inside the
 roots that stay: `molt.checkout_state.superseded_layout_paths` lists the frozen
 names (two directory levels of a target, never a profile's `deps`; two names
-in a build control), and `tools/disk_guard.py` deletes an entry once it is idle
+in a build control), and `tools/disk_guard.py` soft-retires an entry once it is idle
 past the protection window, no build lock is held below its root, and it holds
 the root's exclusive retirement lock, which every managed build holds shared
 for its whole run. That custody matters because a worktree that has not taken
@@ -1356,15 +1358,40 @@ The design extends `molt.checkout_state`; it adds no second authority.
    or soon after its owner is gone. Entries that predate the constructor age
    out like Cargo's untracked entries.
 2. **Agent evidence** (HF-435). A task's `artifacts/` is a root owned by its
-   coordination record. When the task reaches a terminal state, its harvest
-   keeps the small text records (coordination, handoffs, reports, verdicts,
-   at most 1 MiB each, minus exact repository blobs) beside the record and
-   moves payloads to retirement. A running or recently used task is never
-   touched.
-3. **Soft retirement.** Every retirement first renames the root into
-   `<artifact root>/retired/<date>/` on the same volume (one `rename`), and
-   the daily pass deletes a retired root 7 days later. Recovery inside the
-   window is a rename back; nothing goes through the user's Trash.
+   coordination record. The daily pass harvests a nonactive task once every
+   file and directory, its last-use stamp and its coordination timestamps are
+   older than `MOLT_AGENT_EVIDENCE_IDLE_DAYS` (default 3). It keeps coordination,
+   handoffs, reports, verdicts and progress logs of at most 1 MiB each, excluding
+   exact repository blobs from the retained text; coordination itself always
+   stays as the registration authority. One rename retires the whole task,
+   then same-volume hardlinks restore unique text at its original relative paths.
+   A running, paused, blocked, recently used, protected or actively referenced
+   task is untouched. Invalid records are kept; missing records are reported.
+   Creation and status updates share the task's external state lock with harvest;
+   final reference observation and publication also hold the family registries'
+   external locks, nonblockingly for harvest.
+   Raw writers are checked again for recursive activity before the rename.
+3. **Soft retirement.** `molt.checkout_state.soft_retire` renames a root into
+   `<owning root>/retired/<UTC date>/<encoded coordinate and generation>` with
+   one same-filesystem rename. The owning root is the artifact root for
+   artifact state and the checkout-family custody root for checkout evidence.
+   A small adjacent JSON sidecar records the original path, reason, retirement
+   timestamp and owner once, before the rename. A cross-device move is refused;
+   copying is never a fallback. The existing daily pass deletes a root only
+   seven days after its validated retirement timestamp, retaining locked or
+   protected roots. Payload mtimes cannot shorten this window. Recovery is a
+   rename back after preserving any replacement at the original path; a
+   leftover sidecar cannot delete the restored root. Persistent external lock
+   inodes stay in place. Nothing goes through the user's Trash.
+
+   Checkout state, superseded layouts and explicitly reviewed incremental
+   caches use this same primitive. Pressure retirement therefore moves bytes
+   without freeing volume space; admission must still measure actual headroom.
+   Guard incidents and whole integration receipts (including their gate-output
+   directories) enter retirement after seven idle days. A recent companion
+   receipt or log directory keeps both, and the integration lock keeps receipts.
+   Guard incidents stay while their canonical state has active custody. Explicit
+   operator outputs outside known artifact/custody roots are not swept.
 4. **One cache policy** (HF-434). One host cache root. Each store (module
    caches, the product store, the result cache, the WASM pairs) declares its
    last-use stamp and byte budget in one table. Section 2.8 records today's
@@ -1398,22 +1425,34 @@ The design extends `molt.checkout_state`; it adds no second authority.
    record and the `gate_finished` event name the files. A failed gate shows
    their paths and each stream's bounded end; if the files cannot be
    prepared, its streams print whole. Keeping output never changes a
-   verdict. Named records and gate runs survive at least 7 days. Until
-   item 3's soft retirement covers them (HF-435), two interim rules,
-   `prune_named_records` and `retire_gate_logs`, delete them outright after
-   that window and warn when a deletion fails.
+   verdict. Named records and gate runs survive at least 7 idle days in place,
+   then item 3's retirement window. Publishing a new incident or preparing a
+   landing performs no pruning. The interim producer-side deletion rules and
+   their retention constants are removed; the existing daily disk guard owns
+   both retirement and final deletion.
 
 Cost: a scratch or evidence root writes one owner record once and refreshes
 one stamp at most once an hour (2.6 measured 1-15 us per stamp). Retirement
 is one `rename`; the daily pass already runs. A task harvest reads each
-candidate text file once and checks it against the object store in one
-`git cat-file --batch-check` stream. A failure writes one file instead of
+candidate text file once and checks it against the object store in one lazy
+`git cat-file --batch-check` stream per checkout, after resolving its object
+format once. It retains one at-most-1-MiB text buffer, the family's coordination snapshot and
+one task's file metadata. Restoring kept names uses hardlinks and no byte copies;
+final GC unlinks the retired names while the retained names stay. Raw payload
+bytes are never read. Recursive activity/size inventories share the
+existing 30-second inventory budget; an incomplete walk defers that task and
+reports the budget boundary. Apply rechecks recursive activity under custody.
+Dry-run reports one line and estimated payload bytes per selected task and
+per other retirement class. Renamed bytes and actual free-space deltas remain
+separate observations. A failure writes one file instead of
 printing 34 KB into every caller.
 
 Proof: per kind, a fake-clock test that a used root survives and an idle or
 orphaned root retires; a test that soft retirement restores by rename; a
 harvest test with an independent oracle (a repository blob is skipped, a
-unique record is kept); a test that a failed gate's receipt names a file that
+unique record is kept, payload retires, active/referenced/recent tasks stay);
+cross-device refusal, a used retirement's lock/protection and the seven-day
+retirement clock; a test that a failed gate's receipt names a file that
 holds its stderr; mutation checks for each rule; and the daily pass's wall
 time measured on the real artifact root.
 
