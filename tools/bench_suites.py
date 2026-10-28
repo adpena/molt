@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from tools.benchmark_applications import applications as _applications
+
 BENCHMARKS: tuple[str, ...] = (
     "tests/benchmarks/bench_fib.py",
     "tests/benchmarks/bench_sum.py",
@@ -82,6 +84,10 @@ SMOKE_BENCHMARKS: tuple[str, ...] = (
 )
 
 WS_BENCHMARKS: tuple[str, ...] = ("tests/benchmarks/bench_ws_wait.py",)
+
+# Application recipes, packages, data and oracles have one catalog authority.
+# They are an explicit selection; the diagnostic core remains the default.
+APPLICATION_BENCHMARKS: tuple[str, ...] = tuple(app.driver for app in _applications())
 
 DYNAMIC_BUILTIN_SLICES: tuple[str, ...] = (
     "tests/benchmarks/bench_builtin_locals_slice.py",
@@ -168,6 +174,13 @@ def molt_args_for_benchmark(script: str | Path) -> list[str]:
     if args is not None:
         return list(args)
     return list(_MOLT_ARGS_BY_BASENAME.get(key, ()))
+
+
+def application_run_args(script: str | Path) -> list[str]:
+    from tools.benchmark_applications import application_for_script
+
+    app = application_for_script(Path(script))
+    return [] if app is None else list(app.run_args)
 
 
 def validate_benchmark_selection(scripts: list[Path]) -> None:

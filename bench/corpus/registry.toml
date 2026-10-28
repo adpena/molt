@@ -1711,6 +1711,16 @@ version_gates = ["py>=3.12"]
 parametrized_sizes = ["pyperf"]
 c_accelerated = true                       # optional Rust tokenizer
 
+[benchmark.execution]
+driver = "tests/benchmarks/apps/sqlglot_pipeline.py"
+packages = ["sqlglot"]
+data_archive = "pyperformance"
+data_member = "pyperformance/data-files/benchmarks/bm_sqlglot_v2/run_benchmark.py"
+data_path = "data/tpch.json"
+data_format = "python-literals"
+oracle = "tests/benchmarks/apps/oracles/sqlglot_pipeline.json"
+run_args = ["data/tpch.json", "1"]
+
 [[benchmark]]
 id = "sympy"
 source_suites = ["pyperformance", "pypy"]
@@ -1745,6 +1755,16 @@ semantic_tier = { cpython = "runs_unmodified", pypy = "equivalent", codon = "non
 non_equivalent_reason = "codon: HTML5 tokenizer/tree-builder over Unicode text + dynamic node tree"
 version_gates = []
 parametrized_sizes = ["pyperf"]
+
+[benchmark.execution]
+driver = "tests/benchmarks/apps/html5_document.py"
+packages = ["html5lib", "six", "webencodings"]
+data_archive = "pyperformance"
+data_member = "pyperformance/data-files/benchmarks/bm_html5lib/data/w3_tr_html5.html"
+data_path = "data/html5-spec.html"
+data_format = "bytes"
+oracle = "tests/benchmarks/apps/oracles/html5_document.json"
+run_args = ["data/html5-spec.html", "1"]
 
 [[benchmark]]
 id = "decimal"
@@ -1796,3 +1816,41 @@ parametrized_sizes = ["stress"]
 # =============================================================================
 # END registry.toml
 # =============================================================================
+
+# Immutable application acquisition inputs. These versions are distinct from
+# historical suite variants; SQLGlot uses current30.24.0, not v2 recipe4.6.0.
+
+[artifact.html5lib]
+name = "html5lib"
+version = "1.1"
+url = "https://files.pythonhosted.org/packages/6c/dd/a834df6482147d48e225a49515aabc28974ad5a4ca3215c18a882565b028/html5lib-1.1-py2.py3-none-any.whl"
+size = 112173
+sha256 = "0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d"
+
+[artifact.six]
+name = "six"
+version = "1.17.0"
+url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl"
+size = 11050
+sha256 = "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+
+[artifact.webencodings]
+name = "webencodings"
+version = "0.6.1"
+url = "https://files.pythonhosted.org/packages/77/c6/040cbc72480d789a5f40d63fb484d3106554c4dfa2d2b70ad5022057750f/webencodings-0.6.1-py3-none-any.whl"
+size = 8745
+sha256 = "7fab6269c8bf237c657876b52058ccb182e861518d1c695c1a9aaa8c1c105d5b"
+
+[artifact.sqlglot]
+name = "sqlglot"
+version = "30.24.0"
+url = "https://files.pythonhosted.org/packages/68/5f/d78f74306cc026c5f40f8808a47356dfd37461eb15eb759a20e5e9efe7d7/sqlglot-30.24.0-py3-none-any.whl"
+size = 792162
+sha256 = "9488828cc018453b7a3ba01e65d2749c9a731314c14583695163ca1f358203fe"
+
+[artifact.pyperformance]
+name = "pyperformance"
+version = "1.14.0"
+url = "https://files.pythonhosted.org/packages/39/fc/793a5bf51635d90151c7a4c5ca8aad3fb5eef910321f7bad307314c4a857/pyperformance-1.14.0-py3-none-any.whl"
+size = 9060908
+sha256 = "94068ac2935b6952ccb5e8a302eb9cebc26e82454494bef6e53822738adf0049"

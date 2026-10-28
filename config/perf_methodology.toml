@@ -4,10 +4,10 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-# Closed callable provenance and argument/result contracts change workload
-# admission and the source analyses used by benchmark transformations.
-version = 15
-content_sha256 = "3cf648040d7f54aa06ec3217a3b6e578dcdb13b7f1bd1a34e6f8f437367f404f"
+# Sealed application inputs and complete, byte-preserving observations change
+# workload identity and measurement admission together.
+version = 16
+content_sha256 = "dc84748833c5a0953630c477cb192ab7064d8db387b58c64ef74808c339b6449"
 
 [[methodology]]
 path = "tools/safe_run.py"
@@ -163,10 +163,6 @@ reason = "provenance digest of the compiler bytes"
 [[mechanics]]
 path = "src/molt/dx.py"
 reason = "scratch directory location for safe_run's reports"
-
-[[mechanics]]
-path = "src/molt/llvm_toolchain.py"
-reason = "locates LLVM tools for diagnostic profiles"
 
 [[mechanics]]
 path = "src/molt/python_runtime_identity.py"
@@ -380,3 +376,23 @@ role = "canonical source/import analysis used to admit benchmark workload depend
 [[methodology]]
 path = "src/molt/cli/python_source_closure.toml"
 role = "declares dynamic local-source obligations consumed during workload admission"
+
+[[methodology]]
+path = "tools/benchmark_applications.py"
+role = "prepares exact application package, dataset, invocation and oracle inputs"
+
+[[methodology]]
+path = "src/molt/cli/source_package_seal.py"
+role = "owns sealed application inventory, content identity and mutation refusal"
+
+[[methodology]]
+path = "bench/corpus/registry.toml"
+role = "declares executable application recipes and pinned acquisition inputs"
+
+[[methodology]]
+path = "src/molt/portable_paths.py"
+role = "admits portable sealed input roots and rejects aliasing workload paths"
+
+[[mechanics]]
+path = "src/molt/exact_json.py"
+reason = "canonical JSON encoding for sealed input identity; seal digest is recorded in workload identity"
