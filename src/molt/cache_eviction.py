@@ -22,6 +22,9 @@ from molt.default_paths import (
     SHARED_SOURCE_RECORDS_DIRECTORY,
     WASM_LINK_CACHE_DIRECTORY,
     WASM_LINK_CACHE_FAMILIES,
+    TOOLCHAIN_SYMBOL_FACTS_CACHE_DIRECTORY,
+    RUNTIME_WASM_CACHE_DIRECTORY,
+    RUNTIME_WASM_CACHE_RETIREMENT_SCOPE,
     _default_molt_cache,
     protected_cache_roots,
     shared_cache_lock_path,
@@ -32,6 +35,8 @@ from molt.default_paths import (
     native_stdlib_object_cache_entry,
     resolve_budget,
     shared_stdlib_cache_entry,
+    toolchain_symbol_facts_cache_entry,
+    runtime_wasm_cache_entry,
     wasm_link_cache_paths,
 )
 
@@ -66,6 +71,7 @@ class CacheEntry:
     retirement_scope: str | None = None
     companions: tuple[tuple[Path, os.stat_result], ...] = ()
     absent_peer: Path | None = None
+    minimum_idle_seconds: float = 0.0
 
     @property
     def mtime(self) -> float:
@@ -221,6 +227,7 @@ def _collect_entries(
         retirement_scope: str | None = None,
         companions: tuple[Path, ...] = (),
         absent_peer: Path | None = None,
+        minimum_idle_seconds: float = 0.0,
     ) -> None:
         try:
             metadata = path.lstat()
@@ -245,6 +252,7 @@ def _collect_entries(
                 retirement_scope,
                 tuple(observed_companions),
                 absent_peer,
+                minimum_idle_seconds,
             )
         )
 
@@ -270,6 +278,52 @@ def _collect_entries(
             for leaf in _children(child):
                 if leaf.suffix == ".json" and leaf.is_file() and not leaf.is_symlink():
                     append(leaf)
+            continue
+        if child.name == RUNTIME_WASM_CACHE_DIRECTORY and _is_direct_directory(child):
+            from molt.cli.generation_store import GENERATION_STORE_IDLE_SECONDS
+
+            for family in _children(child):
+                if not _is_direct_directory(family):
+                    continue
+                try:
+                    _root, lock = runtime_wasm_cache_entry(cache_root, family.name)
+                except ValueError:
+                    continue
+                append(
+                    family,
+                    lock,
+                    retirement_scope=RUNTIME_WASM_CACHE_RETIREMENT_SCOPE,
+                    minimum_idle_seconds=GENERATION_STORE_IDLE_SECONDS,
+                )
+            continue
+        if (
+            child.name == TOOLCHAIN_SYMBOL_FACTS_CACHE_DIRECTORY
+            and _is_direct_directory(child)
+        ):
+            # Completed facts are eagerly decoded into reader custody. A miss
+            # recomputes them; stages, future schemas and unknown names have no
+            # eviction authority here.
+            for schema_root in _children(child):
+                if not _is_direct_directory(schema_root):
+                    continue
+                try:
+                    version = int(schema_root.name.removeprefix("v"))
+                    canonical_schema = toolchain_symbol_facts_cache_entry(
+                        cache_root, version, "0" * 64
+                    ).parent
+                except ValueError:
+                    continue
+                if canonical_schema != schema_root:
+                    continue
+                for leaf in _children(schema_root):
+                    try:
+                        expected = toolchain_symbol_facts_cache_entry(
+                            cache_root, version, leaf.stem
+                        )
+                    except ValueError:
+                        continue
+                    if expected == leaf and leaf.is_file() and not leaf.is_symlink():
+                        append(leaf)
             continue
         if child.name in {
             SHARED_STDLIB_CACHE_DIRECTORY,
@@ -534,7 +588,9 @@ def refresh_cache_entry_recency(
             _release_file_lock(handle)
 
 
-def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
+def _remove_entry(
+    entry: CacheEntry, dry_run: bool, *, retirement_prepared: bool = False
+) -> str:
     lock_handle = None
     try:
         if entry.lock_path is not None:
@@ -558,6 +614,14 @@ def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
             # A reader refreshed this entry (or a publisher replaced it) after
             # inventory. The old observation no longer owns its eviction.
             return "busy"
+        if (
+            entry.minimum_idle_seconds > 0
+            and time.time() - current.st_mtime < entry.minimum_idle_seconds
+        ):
+            # A byte budget cannot revoke the generation store's reader grace.
+            # Publication and successful renewal change this directory identity
+            # under the same persistent stripe held by this removal.
+            return "busy"
         if entry.absent_peer is not None and (
             entry.absent_peer.exists() or entry.absent_peer.is_symlink()
         ):
@@ -573,7 +637,11 @@ def _remove_entry(entry: CacheEntry, dry_run: bool) -> str:
             return "removed"
         if entry.retirement_scope is not None:
             try:
-                durable_remove_path(entry.path, retirement_scope=entry.retirement_scope)
+                durable_remove_path(
+                    entry.path,
+                    retirement_scope=entry.retirement_scope,
+                    reclaim_existing=not retirement_prepared,
+                )
             except ValueError:
                 # Malformed/changed retirement residue stays as evidence. It
                 # must fail this entry without abandoning unrelated eviction.
@@ -624,7 +692,19 @@ def _prune_locked(
     store = maintenance = inventory = None
     store_errors: tuple[type[Exception], ...] = ()
     store_busy_errors: tuple[type[Exception], ...] = ()
+    prepared_retirement_scopes: set[str] = set()
     with ExitStack() as stack:
+        wasm_root = cache_root / RUNTIME_WASM_CACHE_DIRECTORY
+        if not dry_run and _is_direct_directory(wasm_root):
+            try:
+                # Only the global prune lock owns this retirement scope;
+                # interrupted payload reclamation is never a live family.
+                reclaim_retired_paths(
+                    wasm_root, retirement_scope=RUNTIME_WASM_CACHE_RETIREMENT_SCOPE
+                )
+                prepared_retirement_scopes.add(RUNTIME_WASM_CACHE_RETIREMENT_SCOPE)
+            except (OSError, ValueError):
+                failures += 1
         record_root = cache_root / SHARED_SOURCE_RECORDS_DIRECTORY
         if _is_direct_directory(record_root):
             # Keep the ordinary file-only pruner lightweight and never create a
@@ -655,6 +735,7 @@ def _prune_locked(
                     reclaim_retired_paths(
                         record_root, retirement_scope=SOURCE_RECORD_RETIREMENT_SCOPE
                     )
+                    prepared_retirement_scopes.add(SOURCE_RECORD_RETIREMENT_SCOPE)
                 except (OSError, ValueError):
                     store_failed = True
                     failures += 1
@@ -769,7 +850,12 @@ def _prune_locked(
                 if not over_budget(total):
                     break
             if is_file:
-                outcome = _remove_entry(entry, dry_run)
+                outcome = _remove_entry(
+                    entry,
+                    dry_run,
+                    retirement_prepared=entry.retirement_scope
+                    in prepared_retirement_scopes,
+                )
                 if outcome == "removed":
                     removed_count += 1
                     removed_bytes += entry.size_bytes
