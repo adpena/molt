@@ -16,7 +16,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
-| Hashed executable authority inputs | 1 | 433 |
+| Hashed executable authority inputs | 1 | 434 |
 | Local path rules | 35 | 103 |
 | Unique local commands | 73 | 80 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -457,7 +457,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `stringprep-leaf` | 2 | 1 |
 | `cpython-abi-authorities` | 2 | 1 |
 | `compression-stream-state` | 1 | 1 |
-| `release-work-state` | 4 | 0 |
+| `release-work-state` | 5 | 0 |
 
 ## Selection contract
 

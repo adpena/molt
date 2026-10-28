@@ -82,13 +82,13 @@ _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
 _DEFAULT_JOBS = int(os.environ.get("MOLT_TV_JOBS", "4"))
 
 
-def _temp_root(env: Mapping[str, str] | None = None) -> Path:
+def _temp_root(env: Mapping[str, str] | None = None, *, create: bool = False) -> Path:
     """Return the canonical temp root for translation validation."""
     env_view = os.environ if env is None else env
     explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
     if explicit:
         return Path(explicit).expanduser()
-    return scratch_root(_REPO_ROOT, env_view)
+    return scratch_root(_REPO_ROOT, env_view, create=create)
 
 
 def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
@@ -282,7 +282,7 @@ def _run_molt(
     """Build and run a Python file through Molt."""
     mode = "molt"
     t0 = time.perf_counter()
-    temp_root = _temp_root()
+    temp_root = _temp_root(create=True)
     temp_root.mkdir(parents=True, exist_ok=True)
     tmp_dir = tempfile.mkdtemp(prefix="molt_tv_", dir=str(temp_root))
     try:

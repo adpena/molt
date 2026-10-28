@@ -11,6 +11,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 from types import SimpleNamespace
 from types import ModuleType
 
@@ -1764,7 +1765,13 @@ def test_diff_root_defaults_to_ext_tmp_diff_when_ext_root_set(
         environment=environment,
     )
 
-    assert layout.diff_root == ext_root.resolve() / "tmp" / "diff"
+    assert (
+        layout.diff_root
+        == scratch_state_root(
+            ext_root.resolve() / "tmp", owner=tmp_path / "repo", create=False
+        )
+        / "diff"
+    )
     assert environment == {"MOLT_EXT_ROOT": str(ext_root)}
 
 
@@ -1780,7 +1787,9 @@ def test_diff_tmp_root_defaults_to_ext_tmp_when_unset(
         environment=environment,
     )
 
-    assert layout.tmp_root == ext_root.resolve() / "tmp"
+    assert layout.tmp_root == scratch_state_root(
+        ext_root.resolve() / "tmp", owner=tmp_path / "repo", create=False
+    )
 
 
 @pytest.fixture

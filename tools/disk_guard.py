@@ -62,6 +62,10 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
     roots that stay, it retires the layout the product store replaced
     (``molt.checkout_state.superseded_layout_paths``, design 56 section 2.8)
     under the same custody.
+    Lane-owned and pre-constructor scratch under ``<root>/tmp`` uses
+    ``MOLT_SCRATCH_IDLE_DAYS`` (default three days), recursive activity and
+    the same soft retirement. Existing control namespaces keep their rules;
+    an open guard marker conservatively keeps scratch.
 
   * ``--retire-cargo-incremental`` is a separate explicit review operation for
     successful pinned-session profile caches. It is never discovered by GC or
@@ -104,8 +108,10 @@ from molt.disk_capacity import (  # noqa: E402
     minimum_headroom_bytes,
 )
 from molt.custody_layout import (  # noqa: E402
+    SCRATCH_DIRNAME,
     _read_git_path,
     custody_root,
+    disk_scratch_roots_of,
     git_directories,
 )
 from molt.dx import (  # noqa: E402
@@ -128,6 +134,7 @@ from molt.checkout_state import (  # noqa: E402
     checkout_state_decision,
     checkout_state_kind_of,
     checkout_state_last_use,
+    checkout_state_lock_paths,
     is_session_target,
     legacy_target_kind_of,
     newest_activity_mtime as _newest_activity_mtime,
@@ -165,7 +172,7 @@ ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
 # `molt.checkout_state` judges the last-use classes by their last use, so
 # pressure reclaim spares them within its protection window.
 CandidateKind = Literal[
-    "checkout-state", "session-target", "lane", "quarantine", "cargo-target"
+    "checkout-state", "session-target", "lane", "quarantine", "cargo-target", "scratch"
 ]
 ReclaimOperation = Literal["gc", "pressure", "checkout-retirement"]
 ReclaimPhase = Literal[
@@ -176,6 +183,7 @@ ReclaimPhase = Literal[
     "superseded-layouts",
     "evidence",
     "retired-roots",
+    "scratch",
 ]
 _LAST_USE_KINDS: frozenset[CandidateKind] = frozenset(
     {"checkout-state", "session-target", "lane", "cargo-target"}
@@ -562,6 +570,8 @@ def _is_reclaimable(
     # retires.
     if is_session_target(rp, root):
         return "session-target"
+    if checkout_state_kind_of(rp, root) == "scratch":
+        return "scratch"
     if checkout_state_kind_of(rp, root) is not None:
         return "checkout-state"
     # cargo-incremental quarantine anywhere under a target tree
@@ -899,14 +909,25 @@ def _iter_dir(path: Path) -> list[Path]:
 
 def _checkout_state_dirs(root: Path) -> list[Path]:
     """Checkout state roots in their managed containers (HF-313)."""
-    return [
-        child
-        for container in checkout_state_containers(root)
-        for child in _iter_dir(container)
-        if child.is_dir()
-        and not child.is_symlink()
-        and checkout_state_kind_of(child, root) is not None
-    ]
+    found = []
+    for container in checkout_state_containers(root):
+        if container == root / SCRATCH_DIRNAME:
+            continue  # The scratch collector owns this inventory, once.
+        try:
+            with os.scandir(container) as entries:
+                children = [
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.is_dir(follow_symlinks=False)
+                ]
+        except OSError:
+            continue
+        found.extend(
+            child
+            for child in sorted(children)
+            if checkout_state_kind_of(child, root) is not None
+        )
+    return found
 
 
 def _iter_quarantine_dirs(root: Path) -> list[Path]:
@@ -1164,8 +1185,8 @@ def gc(
 ) -> ReclaimResult:
     """Retire every root that the retention policy selects (design 56, 2.6).
 
-    `checkout_state_decision` selects checkout state past its max age or with
-    a removed owner, and pinned session targets idle past their limit; a held
+    `checkout_state_decision` selects checkout state and scratch past their
+    idle limits or with a removed owner, and idle pinned session targets; a held
     lock or a protected path keeps a root. A second pass retires the build
     control of the targets this pass reclaimed.
     """
@@ -1192,7 +1213,9 @@ def gc(
     # Reuse the existing inventory budget; evidence adds no unbounded walk.
     inventory_deadline = time.monotonic() + 30.0
     phase_started = time.monotonic()
-    _collect_retired_roots(scope_roots, result, env=env, now=now, apply=apply)
+    _collect_retired_roots(
+        scope_roots, result, env=env, now=now, apply=apply, deadline=inventory_deadline
+    )
     result.phase_elapsed_s["retired-roots"] = _elapsed_since(phase_started)
     protected = _protected_paths(scope_roots, env)
     phase_started = time.monotonic()
@@ -1206,6 +1229,17 @@ def gc(
         protected=protected,
     )
     result.phase_elapsed_s["evidence"] = _elapsed_since(phase_started)
+    phase_started = time.monotonic()
+    _collect_scratch(
+        scope_roots,
+        result,
+        env=env,
+        now_fn=now_fn,
+        limits=limits,
+        apply=apply,
+        deadline=inventory_deadline,
+    )
+    result.phase_elapsed_s["scratch"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
     candidates = [
         cand
@@ -1337,6 +1371,153 @@ def gc(
     return result
 
 
+def _scratch_inventory(path: Path, deadline: float) -> tuple[int, float, bool]:
+    """Complete recursive activity, size and lock observation in one walk.
+
+    Old scratch has no cooperating stamp, so immediate children cannot prove
+    idleness. Never use a partial walk to authorize its retirement. Payload
+    bytes are not read; symlinks are observed but not followed.
+    """
+    from molt.memory_guard_paths import STATE_DIRNAME
+
+    newest = path.lstat().st_mtime
+    size = 0
+    locked = False
+    stack = [path]
+    while stack:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("scratch inventory budget exhausted")
+        directory = stack.pop()
+        if directory.name == "active" and directory.parent.name == STATE_DIRNAME:
+            locked |= has_active_guard_marker(directory)
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("scratch inventory budget exhausted")
+                metadata = entry.stat(follow_symlinks=False)
+                newest = max(newest, metadata.st_mtime)
+                child = Path(entry.path)
+                if stat.S_ISDIR(metadata.st_mode):
+                    stack.append(child)
+                elif stat.S_ISREG(metadata.st_mode):
+                    size += metadata.st_size
+                    if entry.name.endswith(".lock") or entry.name in {
+                        ".cargo-lock",
+                        ".cargo-build-lock",
+                        "lock",
+                    }:
+                        locked |= _region_locked(child)
+                elif not stat.S_ISLNK(metadata.st_mode):
+                    # Sockets/devices have a different lifetime protocol.
+                    locked = True
+    return size, newest, locked
+
+
+def _collect_scratch(
+    scope_roots: Sequence[Path],
+    result: ReclaimResult,
+    *,
+    env: Mapping[str, str],
+    now_fn: Callable[[], float],
+    limits: RetentionLimits,
+    apply: bool,
+    deadline: float,
+) -> None:
+    from molt.checkout_state import OWNER_RECORD, checkout_state_retirement
+    from molt.file_publication import resolve_owned_path
+
+    # A marker without a scratch coordinate cannot prove which legacy entry
+    # its child still uses. Preserve scratch until that custody is resolved.
+    protected = _protected_paths(scope_roots, env)
+    guards = {root: _has_active_guard(root) for root in scope_roots}
+    for root in scope_roots:
+        container = disk_scratch_roots_of(root)[0]
+        if container.is_symlink():
+            continue
+        try:
+            with os.scandir(container) as entries:
+                children = [
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.is_dir(follow_symlinks=False)
+                ]
+        except OSError:
+            continue
+        for path in sorted(children):
+            if (
+                path.name.casefold() in PROTECTED_TARGET_NAMES
+                or checkout_state_kind_of(path, root) != "scratch"
+            ):
+                continue
+
+            def observe(*, recheck: bool = False) -> tuple[int, str | None]:
+                resolve_owned_path(path)
+                owner = read_checkout_owner(path)
+                if os.path.lexists(path / OWNER_RECORD) and owner is None:
+                    return 0, "invalid-owner"
+                if owner is not None and owner.kind != "scratch":
+                    return 0, "other-state-owner"
+                if _is_protected(
+                    path, _protected_paths(scope_roots, env) if recheck else protected
+                ):
+                    return 0, "protected"
+                if guards[root] or (recheck and _has_active_guard(root)):
+                    return 0, "active-guard"
+                if not recheck and any(
+                    _region_locked(lock) for lock in checkout_state_lock_paths(path)
+                ):
+                    return 0, "state-in-use"
+                # A recent top-level stamp avoids an unnecessary recursive
+                # inventory. Old entries still need all descendants observed.
+                if (
+                    checkout_state_decision(path, root, now=now_fn(), limits=limits)
+                    is None
+                ):
+                    return 0, "recent-use"
+                size, newest, locked = _scratch_inventory(path, deadline)
+                if locked or _root_lock_held(path, scope_roots):
+                    return size, "lock-or-guard-held"
+                if (
+                    checkout_state_decision(
+                        path, root, now=now_fn(), limits=limits, last_use=newest
+                    )
+                    is None
+                ):
+                    return size, "recent-use"
+                return size, None
+
+            try:
+                size, kept = observe()
+                if kept is None and apply:
+                    with checkout_state_retirement(path) as exclusive:
+                        if not exclusive:
+                            kept = "state-in-use"
+                        else:
+                            assert_safe_to_delete(path, root, ())
+                            size, kept = observe(recheck=True)
+                            if kept is None:
+                                owner = bound_checkout_owner(path, root)
+                                ok, error = _timed_retire(
+                                    path,
+                                    custody_root(root),
+                                    reason="scratch",
+                                    owner=str(owner.path if owner else root),
+                                    now=now_fn(),
+                                    result=result,
+                                )
+                                if not ok:
+                                    result.errors.append(f"{path}: {error}")
+                                    continue
+                if kept is not None:
+                    result.skipped.append({"path": str(path), "reason": kept})
+                else:
+                    result.reclaimed.append(
+                        {"path": str(path), "kind": "scratch", "est_bytes": size}
+                    )
+            except (OSError, ValueError) as error:
+                result.skipped.append({"path": str(path), "reason": str(error)})
+
+
 def _collect_retired_roots(
     scope_roots: Sequence[Path],
     result: ReclaimResult,
@@ -1344,6 +1525,7 @@ def _collect_retired_roots(
     env: Mapping[str, str],
     now: float,
     apply: bool,
+    deadline: float,
 ) -> None:
     """Only a validated retirement's clock can authorize final deletion."""
     from molt.checkout_state import checkout_state_retirement
@@ -1364,8 +1546,34 @@ def _collect_retired_roots(
                 ):
                     continue
 
-                def kept(*, integration_lock_owned: bool = False) -> bool:
+                def kept(
+                    *,
+                    integration_lock_owned: bool = False,
+                    state_lock_owned: bool = False,
+                ) -> bool:
                     protected = _protected_paths(scope_roots, env)
+                    if retirement.reason == "scratch":
+                        try:
+                            _, newest, locked = _scratch_inventory(
+                                retirement.path, deadline
+                            )
+                        except (OSError, ValueError):
+                            return True
+                        if (
+                            locked
+                            or now - newest < CHECKOUT_STATE_WINDOW_S
+                            or _has_active_guard(owning_root)
+                            or (
+                                not state_lock_owned
+                                and any(
+                                    _region_locked(lock)
+                                    for lock in checkout_state_lock_paths(
+                                        retirement.original
+                                    )
+                                )
+                            )
+                        ):
+                            return True
                     return (
                         _is_protected(retirement.path, protected)
                         or _is_protected(retirement.original, protected)
@@ -1410,7 +1618,8 @@ def _collect_retired_roots(
                             or read_soft_retirement(record, owning_root) != retirement
                             or kept(
                                 integration_lock_owned=retirement.reason
-                                == "integration-receipt"
+                                == "integration-receipt",
+                                state_lock_owned=True,
                             )
                         ):
                             result.skipped.append(
@@ -1434,7 +1643,7 @@ def _collect_retired_roots(
 
 
 def _receipt_inventory(receipt: Path, deadline: float) -> tuple[int, float]:
-    from tools.agent_coordination import _evidence_inventory
+    from tools.coordination_records import _evidence_inventory
 
     size, newest = (
         _evidence_inventory(receipt, deadline)[:2]
@@ -1466,7 +1675,7 @@ def _collect_evidence(
 ) -> None:
     # Git inspection belongs to the coordination owner. The disk guard retains
     # no process-control capability; the helper only queries the object store.
-    from tools.agent_coordination import (
+    from tools.coordination_records import (
         LOG_ROOT,
         active_task_references,
         harvest_agent_evidence,
@@ -2014,7 +2223,18 @@ def _protected_paths(
             for target in session_target_dirs(root)
             if target.name == component
         )
-    for name in ("CARGO_TARGET_DIR", "MOLT_DIFF_CARGO_TARGET_DIR"):
+    for name in (
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "MOLT_PROOF_SCRATCH_ROOT",
+        "MOLT_GUARD_SCRATCH_ROOT",
+        "MOLT_MEMORY_GUARD_STATE_ROOT",
+    ):
         raw = str(env.get(name, "")).strip()
         if raw:
             protected.append(Path(raw).expanduser().resolve(strict=False))
@@ -2561,7 +2781,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="retire checkout state roots by last use "
         "(MOLT_CHECKOUT_STATE_MAX_AGE_DAYS) or a removed owner, and pinned session "
-        "targets by last use (MOLT_SESSION_TARGET_IDLE_HOURS)",
+        "targets by last use (MOLT_SESSION_TARGET_IDLE_HOURS); scratch uses "
+        "MOLT_SCRATCH_IDLE_DAYS and recursive activity",
     )
     ap.add_argument("--dry-run", action="store_true", help="report only; never delete")
     ap.add_argument("--json", action="store_true", help="machine-readable output")

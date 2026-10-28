@@ -10,6 +10,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 import platform
 
 import molt.dx as molt_dx
@@ -287,9 +288,23 @@ def test_canonical_bench_env_preserves_explicit_roots_and_session(
         )
     )
     assert env["MOLT_CACHE"] == str(selected_root / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(selected_root / "tmp" / "diff")
-    assert env["TMPDIR"] == str(selected_root / "tmp")
-    assert env["MOLT_BENCH_TMP_ROOT"] == str(selected_root / "tmp" / "bench")
+    assert env["MOLT_DIFF_ROOT"] == str(
+        scratch_state_root(
+            selected_root / "tmp", owner=bench_tool.REPO_ROOT, create=False
+        )
+        / "diff"
+    )
+    assert env["TMPDIR"] == str(
+        scratch_state_root(
+            selected_root / "tmp", owner=bench_tool.REPO_ROOT, create=False
+        )
+    )
+    assert env["MOLT_BENCH_TMP_ROOT"] == str(
+        scratch_state_root(
+            selected_root / "tmp", owner=bench_tool.REPO_ROOT, create=False
+        )
+        / "bench"
+    )
     assert env["PYTHONPATH"] == str(bench_tool.REPO_ROOT / "src")
     assert env["MOLT_SESSION_ID"] == "bench-review"
 

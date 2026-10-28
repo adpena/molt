@@ -14,6 +14,7 @@ import pytest
 
 import molt.dx as molt_dx
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 from molt.memory_guard_paths import harness_guard_artifact_dir
 from molt.process_environment import NameRule, ProcessEnvironment
 from tools import harness_memory_guard
@@ -848,7 +849,9 @@ def test_canonical_harness_env_installs_checkout_defaults_with_out_of_tree_scrat
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
     # Scratch never lands inside the checkout; a plain clone's goes out of tree.
-    scratch = custody_layout.scratch_root(tmp_path, tmp_path)
+    scratch = scratch_state_root(
+        custody_layout.scratch_root(tmp_path, tmp_path), owner=tmp_path, create=False
+    )
     assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
@@ -904,8 +907,12 @@ def test_canonical_harness_env_admits_guest_output_before_child_defaults(
     assert admitted["MOLT_DIFF_TMPDIR"] == str(output / "guest-tmp")
     assert admitted["CARGO_TARGET_DIR"] == str(output / "cargo-target")
     assert diff_output_layout.IDENTITY_ENV in admitted
-    assert admitted["MOLT_DIFF_ROOT"] == str(canonical / "tmp" / "diff")
-    assert admitted["TMPDIR"] == str(canonical / "tmp")
+    assert admitted["MOLT_DIFF_ROOT"] == str(
+        scratch_state_root(canonical / "tmp", owner=repo, create=False) / "diff"
+    )
+    assert admitted["TMPDIR"] == str(
+        scratch_state_root(canonical / "tmp", owner=repo, create=False)
+    )
     assert (
         harness_memory_guard.canonical_harness_env(admitted, repo_root=repo) == admitted
     )
@@ -945,7 +952,13 @@ def test_execution_context_owns_env_limits_and_batch_kwargs(
     )
 
     assert context.prefix == "MOLT_BENCH"
-    assert context.env["TMPDIR"] == str(custody_layout.scratch_root(tmp_path, tmp_path))
+    assert context.env["TMPDIR"] == str(
+        scratch_state_root(
+            custody_layout.scratch_root(tmp_path, tmp_path),
+            owner=tmp_path,
+            create=False,
+        )
+    )
     assert context.limits.enabled is True
     kwargs = context.process_group_kwargs()
     assert kwargs["start_new_session"] is True

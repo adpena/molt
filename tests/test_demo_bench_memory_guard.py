@@ -12,6 +12,7 @@ from pathlib import Path
 
 import molt.dx as molt_dx
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 import pytest
 
 from tests.process_guard_common import (
@@ -96,7 +97,13 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
     # Scratch is <root>/tmp unless that lies in the source tree (a checkout
     # that is its own custody root), which moves it out of the tree.
     assert call["env"]["TMPDIR"] == str(
-        custody_layout.scratch_root(Path(call["env"]["MOLT_EXT_ROOT"]), demo_bench.ROOT)
+        scratch_state_root(
+            custody_layout.scratch_root(
+                Path(call["env"]["MOLT_EXT_ROOT"]), demo_bench.ROOT
+            ),
+            owner=demo_bench.ROOT,
+            create=False,
+        )
     )
 
 

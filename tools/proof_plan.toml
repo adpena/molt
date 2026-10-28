@@ -59,6 +59,7 @@ authority_inputs = [
   "src/molt/wasi_sysroot.py",
   "tools/compat/diff_output_layout.py",
   "tools/compat/test_policy.py",
+  "tools/coordination_records.py",
   "tools/disk_guard.py",
   "tools/checkout_maintenance.py",
   "tools/controller_source.py",
@@ -7129,7 +7130,7 @@ gates = ["cargo test --locked --profile dev-fast --no-fail-fast -p molt-runtime-
 [[rule]]
 name = "release-work-state"
 description = "Committed release facts and strict, explicitly declared outcome dependencies in canonical agent context."
-globs = ["tools/agent_coordination.py", "tools/release_outcomes.py", "tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py"]
+globs = ["tools/agent_coordination.py", "tools/coordination_records.py", "tools/release_outcomes.py", "tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py"]
 pytest = ["tests/test_agent_coordination.py", "tests/tools/test_release_outcomes.py"]
 gates = []
 toolchains = ["python", "uv"]

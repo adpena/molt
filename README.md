@@ -208,7 +208,9 @@ for explicit target overrides and separate queued release qualification.
 To place transient scratch on a chosen local disk, set
 `MOLT_SCRATCH_STORAGE=disk:/absolute/existing/directory`. This changes data
 scratch placement while control state, build products and caches stay in their
-configured locations. See [scratch storage and budget](docs/OPERATIONS.md#build-throughput-multi-agent)
+configured locations. Default disk scratch belongs to one lane under
+`<artifact root>/tmp/scratch-<checkout path digest>` and retires after three
+idle days into a recoverable seven-day holding area. See [scratch storage and budget](docs/OPERATIONS.md#build-throughput-multi-agent)
 for defaults, memory-backed storage and free-space admission.
 
 Managed compiler/runtime source builds keep Cargo intermediates with the
