@@ -6,6 +6,9 @@ construction, written in the exact text form the tool parses.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 
 from tools import opt_explorer as opt
 
@@ -135,7 +138,7 @@ def test_cost_buckets_put_runtime_entry_before_library_ownership() -> None:
     assert bucket("prog__main") == "compiled code"
     assert bucket("_tlv_get_addr", "libdyld.dylib") == "runtime entry"
     assert bucket(
-        "_RNvMs4_NtNtCs760eLi01iLW_12molt_runtime11concurrency9execution"
+        "molt_runtime::concurrency::execution::RuntimeExecutionGuard::enter"
     ) == ("runtime entry")
     assert bucket("molt_dec_ref_obj") == "reference counting"
     assert bucket("_platform_memmove", "libsystem_platform.dylib") == "system libraries"
@@ -149,5 +152,101 @@ def test_cost_buckets_put_runtime_entry_before_library_ownership() -> None:
         ],
         "prog_molt",
         "prog",
+        {
+            "prog__main": "prog__main",
+            "molt_inc_ref_obj": "molt_inc_ref_obj",
+            "molt_dec_ref_obj": "molt_dec_ref_obj",
+        },
     )
     assert split == [("reference counting", 70, 0.7), ("compiled code", 30, 0.3)]
+
+
+@pytest.mark.parametrize(
+    ("symbol", "expected"),
+    [
+        (
+            "std::thread::local::LocalKey<core::cell::RefCell<alloc::vec::Vec<FrameEntry>>>::with",
+            "runtime entry",
+        ),
+        (
+            "<std::thread::local::LocalKey<alloc::vec::Vec<FrameEntry>>>::with<fn() -> alloc::vec::Vec<u8>>",
+            "runtime entry",
+        ),
+        ("core::ptr::drop_in_place<alloc::vec::Vec<FrameEntry>>", "other runtime"),
+        (
+            "<alloc::vec::Vec<molt_runtime::concurrency::GilGuard>>::len",
+            "other runtime",
+        ),
+        ("alloc::vec::Vec<u8>::push", "other runtime"),
+        (
+            "helper<molt_runtime::attributes::Attr, molt_runtime::call::Call, Exception>::work",
+            "other runtime",
+        ),
+        ("helper(alloc::vec::Vec<FrameEntry>)", "other runtime"),
+        ("molt_runtime::attributes::Attr helper()", "other runtime"),
+        ("helper<fn() -> alloc::vec::Vec<u8>>::work", "other runtime"),
+        (
+            "<fn() -> molt_runtime::attributes::Attr as core::ops::FnOnce>::call_once",
+            "unresolved symbols",
+        ),
+        (
+            "core::ops::function::FnOnce<alloc::vec::Vec<u8>>::call_once",
+            "other runtime",
+        ),
+        ("<alloc::raw_vec::RawVecInner>::try_allocate_in", "allocation"),
+        ("alloc::vec::Vec<u8>::reserve", "allocation"),
+        (
+            "<alloc::alloc::Global as core::alloc::Allocator>::allocate",
+            "allocation",
+        ),
+        ("malloc", "allocation"),
+        ("molt_call_bind", "call dispatch"),
+        ("molt_runtime::call::CallInlineCache::lookup", "call dispatch"),
+        ("helper<alloc::vec::Vec<u8>", "unresolved symbols"),
+        (
+            "_RNvMs4_NtNtCs760eLi01iLW_12molt_runtime11concurrency9execution",
+            "unresolved symbols",
+        ),
+    ],
+)
+def test_cost_buckets_use_callable_work_not_argument_types(
+    symbol: str, expected: str
+) -> None:
+    assert opt.classify_symbol(symbol, "prog_molt", "prog_molt", "prog") == expected
+
+
+def test_profile_demangles_all_sampled_symbols_in_one_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The tree has 6 TLS, 3 allocation and 1 unclassified self samples, even
+    # when only the single hottest symbol is displayed. Its root has no self
+    # samples. The existing report parser reads the real sample line forms.
+    report = """Call graph:
+    10 main  (in prog_molt) + 0
+      6 _RN_local_key_alloc  (in prog_molt) + 0
+      3 _RN_allocate  (in prog_molt) + 0
+      1 _RN_work  (in prog_molt) + 0
+Total number in stack:
+"""
+    symbols = {
+        "_RN_local_key_alloc": "std::thread::local::LocalKey<alloc::vec::Vec<u8>>::with",
+        "_RN_allocate": "<alloc::raw_vec::RawVecInner>::try_allocate_in",
+        "_RN_work": "helper<Exception>::work",
+    }
+    batches = []
+
+    def demangle(names: list[str]) -> dict[str, str]:
+        batches.append(names)
+        return symbols
+
+    monkeypatch.setattr(opt, "demangle", demangle)
+    text, payload = opt.render_profile(Path("prog_molt"), "prog", report, [], 1)
+    assert len(batches) == 1 and set(batches[0]) == set(symbols)
+    assert payload["samples"] == 10
+    assert payload["buckets"] == [
+        {"bucket": "runtime entry", "samples": 6, "share": 0.6},
+        {"bucket": "allocation", "samples": 3, "share": 0.3},
+        {"bucket": "other runtime", "samples": 1, "share": 0.1},
+    ]
+    assert payload["top"][0]["symbol"] == "_RN_local_key_alloc"
+    assert "LocalKey<alloc::vec::Vec<u8>>::with" in text

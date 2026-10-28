@@ -30,7 +30,9 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,11 +56,25 @@ _TARGET_SYMBOL = re.compile(r"<([^>+]+)(?:\+0x[0-9a-fA-F]+)?>")
 _ARM64_BRANCHES = frozenset({"b", "br", "cbz", "cbnz", "tbz", "tbnz"})
 _ARM64_INDIRECT_CALLS = frozenset({"blr", "blraa", "blraaz", "blrab", "blrabz"})
 
-# Ordered: the first bucket whose patterns match a symbol owns its samples.
-# Patterns are identifier fragments, so they match Rust v0-mangled names.
-COST_BUCKETS: tuple[tuple[str, tuple[str, ...]], ...] = (
+
+class CostBucket(StrEnum):
+    COMPILED = "compiled code"
+    ENTRY = "runtime entry"
+    REFCOUNT = "reference counting"
+    ALLOCATION = "allocation"
+    ATTRIBUTE = "attribute access"
+    CALL = "call dispatch"
+    EXCEPTION = "exceptions"
+    SYSTEM = "system libraries"
+    OTHER = "other runtime"
+    UNRESOLVED = "unresolved symbols"
+
+
+# Ordered callable-path hints, after demangling and removing generic arguments.
+# A type argument describes an instantiation, not the work the function does.
+COST_BUCKETS: tuple[tuple[CostBucket, tuple[str, ...]], ...] = (
     (
-        "runtime entry",
+        CostBucket.ENTRY,
         (
             "tlv_get_addr",
             "RuntimeExecutionGuard",
@@ -67,15 +83,17 @@ COST_BUCKETS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "runtime_state_for_gil",
             "touch_tls_guard",
             "concurrency",
+            "thread::local",
+            "state::tls::",
         ),
     ),
-    ("reference counting", ("inc_ref", "dec_ref")),
+    (CostBucket.REFCOUNT, ("inc_ref", "dec_ref")),
     (
-        "allocation",
-        ("alloc", "heap_lifecycle", "take_best_buffer", "malloc", "free", "dealloc"),
+        CostBucket.ALLOCATION,
+        ("heap_lifecycle", "take_best_buffer"),
     ),
     (
-        "attribute access",
+        CostBucket.ATTRIBUTE,
         (
             "attr",
             "field_sites",
@@ -87,8 +105,22 @@ COST_BUCKETS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "class_shape",
         ),
     ),
-    ("call dispatch", ("call", "frame_binding", "trampoline", "invocation")),
-    ("exceptions", ("exception",)),
+    (
+        CostBucket.CALL,
+        (
+            "molt_call",
+            "molt_function",
+            "::call::",
+            "frame_binding",
+            "trampoline",
+            "invocation",
+        ),
+    ),
+    (CostBucket.EXCEPTION, ("exception",)),
+)
+_MANGLED_SYMBOL = re.compile(r"^(?:_+(?:R[0-9]*[CNMXYIB]|Z)|\?)")
+_ALLOCATION_ACTION = re.compile(
+    r"(?:^|_)(?:alloc|allocate|dealloc|deallocate|realloc|malloc|calloc|free)(?:_|$)"
 )
 
 
@@ -355,28 +387,87 @@ def analyze_function(
     return FunctionAnatomy(name, whole, loops)
 
 
-def classify_symbol(symbol: str, lib: str | None, binary: str, module: str) -> str:
-    """The cost bucket of one sampled frame."""
-    if _plain_symbol(symbol).startswith(f"{module}__"):
-        return "compiled code"
+def _callable_path(symbol: str) -> str | None:
+    """A readable callable path without template arguments or signature types.
+
+    Preserve the self type in Rust's `<Self as Trait>::method` spelling, while
+    removing its nested generic arguments. This is a linear, non-recursive
+    projection, not a demangler. Unreadable or unbalanced names stay unresolved.
+    """
+    symbol = symbol.strip()
+    if _MANGLED_SYMBOL.match(symbol):
+        return None
+    path: list[str] = []
+    depth = 0
+    qualified_self = False
+    callable_start = 0
+    for index, char in enumerate(symbol):
+        if char == "<":
+            if index == 0:
+                qualified_self = True
+            depth += 1
+            continue
+        if char == ">" and (index == 0 or symbol[index - 1] != "-"):
+            if depth == 0:
+                return None
+            depth -= 1
+            if depth == 0:
+                qualified_self = False
+            continue
+        if char == "(":
+            if depth == 0:
+                break
+            if qualified_self and depth == 1:
+                # A function/tuple self type does not identify the callable's
+                # implementation by the types in its signature.
+                return None
+        if depth == 0 or (qualified_self and depth == 1):
+            path.append(char)
+            if char.isspace() and depth == 0:
+                # C++ demanglers can print a return type before the callable.
+                # Spaces inside a qualified Rust self type remain its path.
+                callable_start = len(path)
+    if depth:
+        return None
+    return "".join(path[callable_start:]).strip() or None
+
+
+def classify_symbol(
+    symbol: str, lib: str | None, binary: str, module: str
+) -> CostBucket:
+    """A callable-name hint for one frame, never an allocation/entry proof."""
+    path = _callable_path(symbol)
+    if path is None:
+        return CostBucket.UNRESOLVED
+    if _plain_symbol(path).startswith(f"{module}__"):
+        return CostBucket.COMPILED
+    leaf = path.rsplit("::", 1)[-1]
     # Patterns first: `_tlv_get_addr` lives in libdyld but is runtime entry.
     for bucket, patterns in COST_BUCKETS:
-        if any(pattern in symbol for pattern in patterns):
+        if any(pattern in path for pattern in patterns):
+            return bucket
+        if bucket is CostBucket.ALLOCATION and (
+            _ALLOCATION_ACTION.search(leaf)
+            or (
+                path.startswith("alloc::")
+                and leaf.startswith(("grow", "reserve", "try_reserve"))
+            )
+        ):
             return bucket
     if lib is not None and lib != binary:
-        return "system libraries"
-    return "other runtime"
+        return CostBucket.SYSTEM
+    return CostBucket.OTHER
 
 
 def cost_split(
-    leaders: list[dict], binary: str, module: str
-) -> list[tuple[str, int, float]]:
+    leaders: list[dict], binary: str, module: str, names: Mapping[str, str]
+) -> list[tuple[CostBucket, int, float]]:
     """(bucket, samples, share) for every bucket with samples, heaviest first."""
-    totals: Counter[str] = Counter()
+    totals: Counter[CostBucket] = Counter()
     for row in leaders:
-        totals[classify_symbol(row["symbol"], row.get("lib"), binary, module)] += row[
-            "self_samples"
-        ]
+        totals[
+            classify_symbol(names[row["symbol"]], row.get("lib"), binary, module)
+        ] += row["self_samples"]
     grand = sum(totals.values()) or 1
     return [(bucket, n, n / grand) for bucket, n in totals.most_common()]
 
@@ -582,22 +673,22 @@ def render_profile(
 ) -> tuple[str, dict]:
     frames = sample_profile.call_frames(report)
     leaders = sample_profile.self_time_from_frames(frames)
-    split = cost_split(leaders, binary.name, module)
     total = sum(row["self_samples"] for row in leaders)
     caller_counts = {
         target: sample_profile.direct_callers(frames, target) for target in callers
     }
     names = demangle(
-        [row["symbol"] for row in leaders[:top_n]]
+        [row["symbol"] for row in leaders]
         + [name for found in caller_counts.values() for name in found]
     )
+    split = cost_split(leaders, binary.name, module, names)
     lines = [f"{binary.name}: {total} self-time samples"]
     for bucket, samples, share in split:
         lines.append(f"  {share:6.1%} {samples:7} {bucket}")
     lines.append("hottest symbols:")
     for row in leaders[:top_n]:
-        bucket = classify_symbol(row["symbol"], row.get("lib"), binary.name, module)
-        readable = names.get(row["symbol"], row["symbol"])
+        readable = names[row["symbol"]]
+        bucket = classify_symbol(readable, row.get("lib"), binary.name, module)
         lines.append(f"  {row['self_samples']:7} {_short(readable)}  [{bucket}]")
     caller_json = {}
     for target, found in caller_counts.items():
