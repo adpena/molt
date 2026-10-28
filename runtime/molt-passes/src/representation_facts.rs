@@ -505,7 +505,7 @@ fn native_projectable_bool_result(
             Some(Repr::Bool)
         }
         ReprProjectableBoolResultRule::CopySourceBool
-            if crate::tir::passes::value_identity::no_heap_alias_source(op)
+            if crate::tir::passes::value_identity::scalar_value_source(op)
                 .is_some_and(|source| carrier_by_value.get(&source) == Some(&Repr::Bool)) =>
         {
             Some(Repr::Bool)
@@ -547,7 +547,7 @@ fn native_projectable_float_result(
         }
         ReprProjectableFloatResultRule::CopySourceFloat
             if op_original_kind(op) == Some("float_from_obj")
-                || crate::tir::passes::value_identity::no_heap_alias_source(op).is_some_and(
+                || crate::tir::passes::value_identity::scalar_value_source(op).is_some_and(
                     |source| {
                         carrier_by_value
                             .get(&source)
@@ -653,7 +653,7 @@ fn propagate_native_projectable_identity_values(
             all_value_ids.push(arg.id);
         }
         for op in &block.ops {
-            if let Some(source) = crate::tir::passes::value_identity::no_heap_alias_source(op)
+            if let Some(source) = crate::tir::passes::value_identity::scalar_value_source(op)
                 && let Some(&result) = op.results.first()
             {
                 copy_source.insert(result, source);
@@ -845,12 +845,12 @@ fn propagate_raw_i64_identity_values_with_phi_support(
             all_value_ids.push(arg.id);
         }
         for op in &block.ops {
-            // Carrier identity includes effectful runtime guards. The shared
-            // alias-source fact validates shape and selects operand zero; it
-            // does not erase effects or refine the source from an expected tag.
+            // Scalar value forwarding includes effectful guards and frame-home
+            // publication. The shared fact validates the result/operand shape;
+            // it never changes ownership, erases effects or refines from a tag.
             // Opaque Copy operators (arithmetic, conversions, constructors)
             // fail closed rather than borrowing their operand's representation.
-            if let Some(source) = crate::tir::passes::value_identity::no_heap_alias_source(op)
+            if let Some(source) = crate::tir::passes::value_identity::scalar_value_source(op)
                 && let Some(&result) = op.results.first()
             {
                 copy_source.insert(result, source);

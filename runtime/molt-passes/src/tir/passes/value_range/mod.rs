@@ -46,7 +46,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::{IntRange, ScevExpr};
 
 use super::scev::{ScevResult, compute_scev_with_loop_forest};
-use super::value_identity::copy_value_source;
+use super::value_identity::build_scalar_value_map;
 
 pub use crate::tir::value_range::ValueRangeResult;
 use lengths::collect_constants_and_lengths;
@@ -90,22 +90,12 @@ pub(crate) fn compute_value_range_with_loop_forest(
 ) -> ValueRangeResult {
     let mut result = ValueRangeResult::default();
 
-    // ---- transparent-copy map (built first; every fact resolves through it) --
-    // Resolve both *plain* SSA copies AND the frontend's value-identity `Copy`
-    // carriers (its stack-machine `copy` / `copy_var` / `store_var` / `load_var`
-    // moves, which carry `_original_kind`/`_simple_out`/`_col_offset` attrs but
-    // are still pure value moves). The IV reaches a hot-loop field store through
-    // exactly these tagged copies (`store_val = Copy(Copy(Copy(iv)))`); resolving
-    // them is what lets a fact recorded on the canonical IV be found when a
-    // consumer queries the stored value. The shared `copy_value_source` proves
-    // pure value forwarding; the broader `no_heap_alias_source` ownership fact
-    // alone does not erase a runtime guard's validation effect.
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if let Some(src) = copy_value_source(op) {
-                result.record_copy_source(op.results[0], src);
-            }
-        }
+    // This resolves pure transports and proven exact scalar views across
+    // effectful publication. It grants no permission to move or remove a store.
+    // New effectful edges require exact scalar provenance: this resolver also
+    // carries container lengths, which a displaced finalizer may have changed.
+    for (value, source) in build_scalar_value_map(func) {
+        result.record_copy_source(value, source);
     }
 
     // ---- constants + container lengths --------------------------------------

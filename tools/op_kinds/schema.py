@@ -366,6 +366,7 @@ _CLASSIFIER_SETS = (
     "classifier_transparent_alias",
     "classifier_no_heap_move",
     "classifier_binding_view",
+    "classifier_scalar_value_forward",
 )
 _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS = (
     "simpleir_dynamic_add_semantics_kinds",

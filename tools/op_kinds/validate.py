@@ -979,6 +979,7 @@ def load_table(table_path: Path = TABLE) -> dict:
     # structural kill for a typo'd consume override silently doing nothing — the
     # very C6 double-free this column retires).
     _validate_binding_views(data)
+    _validate_scalar_value_forwarding(data)
     _validate_consuming_kinds(data, owner)
     _validate_source_call_kinds(data, owner)
     _validate_absorbing_kinds(data, owner)
@@ -2388,6 +2389,37 @@ def _validate_binding_views(data: dict) -> None:
                     f"classifier_binding_view {view!r} is also in {bucket}: a "
                     "binding view neither mints, moves nor marks a reference"
                 )
+
+
+def _validate_scalar_value_forwarding(data: dict) -> None:
+    """Scalar forwarding is a unary borrowed-result fact, never an alias rule.
+
+    Runtime admission additionally requires exactly one result. The retained
+    Copy carrier has variable result arity, so the registry's operand shape
+    cannot grant a fact to malformed zero/multiple-result operations.
+    """
+    members = data.get("classifier_scalar_value_forward", [])
+    if (
+        not isinstance(members, list)
+        or any(not isinstance(member, str) for member in members)
+        or len(set(members)) != len(members)
+    ):
+        raise OpKindTableError(
+            "classifier_scalar_value_forward requires unique string spellings"
+        )
+    shapes = {row["kind"]: row for row in data.get("simpleir_op_shape", [])}
+    views = set(data.get("classifier_binding_view", []))
+    for member in members:
+        shape = shapes.get(member)
+        if (
+            member not in views
+            or shape is None
+            or type(shape["operands"]) is not int
+            or shape["operands"] != 1
+        ):
+            raise OpKindTableError(
+                f"classifier_scalar_value_forward {member!r} requires a declared unary binding view"
+            )
 
 
 def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> None:

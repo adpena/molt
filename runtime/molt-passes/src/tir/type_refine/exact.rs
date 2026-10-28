@@ -95,13 +95,13 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                     || crate::tir::op_kinds_generated::opcode_effects_table(op.opcode),
                     |facts| facts.effects,
                 );
-                let copied = crate::tir::passes::value_identity::no_heap_alias_source(op);
+                let scalar_source = crate::tir::passes::value_identity::scalar_value_source(op);
                 let transfers_exact =
                     op.opcode != OpCode::Copy && effects.consistent && effects.effect_free;
                 let valid_shape = op.has_valid_shape();
                 let types = if !valid_shape {
                     vec![TirType::DynBox; op.results.len()]
-                } else if let Some(source) = copied {
+                } else if let Some(source) = scalar_source {
                     vec![facts.get(&source).cloned().unwrap_or(TirType::DynBox)]
                 } else if let Some(result_type) = instance.and_then(|facts| facts.result_type) {
                     vec![result_type; op.results.len()]

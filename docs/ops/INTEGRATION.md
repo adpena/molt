@@ -247,6 +247,12 @@ toolchains, gate ordinal, UTC and monotonic timings, and terminal return status.
 The canonical detached runner already captures this stream; callers need no
 private timing/status wrapper or additional state directory.
 
+A live integration emits `integration_lock_acquired` only after holding the OS
+lock, with `acquisition_seconds`. This separates acquisition from subsequent
+source selection. The earlier "waiting" line records an acquisition attempt;
+its presence alone cannot identify a later stall. Dry runs acquire no lock and
+emit no acquisition event.
+
 A missing terminal event leaves the result unknown. A successful gate event
 cannot establish source stability, descendant closure, push confirmation,
 release acceptance or reusable proof. Those remain owned by the integration
@@ -256,8 +262,8 @@ must retain their planning status; they cannot become executed-gate evidence.
 This follows [Cargo's JSON message stream and build-finished event](https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages)
 and [Bazel's build-event approach](https://bazel.build/remote/bep) while keeping
 Molt's existing log and proof authorities. The incremental cost is two bounded
-JSON records and stdout flushes per executed gate, plus candidate and terminal
-records: O(gates + command bytes), with no extra process, source scan, image
+JSON records and stdout flushes per executed gate, plus acquisition, candidate
+and terminal records: O(gates + command bytes), with no extra process, source scan, image
 hash, fsync, environment dump or retained per-gate state. No emitted program
 executes this development telemetry. It establishes cost attribution, not an
 integration speedup.

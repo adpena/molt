@@ -177,8 +177,11 @@ not installed-user compile latency or E2 performance acceptance.
 
 ## Finding the limiter
 
-Development-loop latency is always P0: every faster edit, build, diagnosis and
-proof compounds across subsequent work. Use the existing build phase diagnostics
+Correctness and CPython conformance come first. Among conforming implementations,
+compiled user-program execution performance is the primary optimization objective:
+latency, throughput and the resource costs that determine them. Developer-loop
+latency supports that objective by shortening implementation and diagnosis. Use
+the existing build phase diagnostics
 to attribute the current limiter, and compare the same unchanged
 or edited workload before and after each load-bearing change. Use
 `tools/dx_build_timer.py` for build-loop measurements and

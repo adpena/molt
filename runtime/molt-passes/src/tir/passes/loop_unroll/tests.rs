@@ -262,6 +262,89 @@ fn unrolls_loop_with_explicit_start_and_step() {
 }
 
 #[test]
+fn unrolling_scalar_binding_views_keeps_every_publication_effect() {
+    let TestLoop {
+        mut func,
+        header,
+        body,
+        exit,
+        ..
+    } = build_test_loop(0, 4, 1, 1);
+    func.return_abi = molt_ir::FunctionReturnAbi::Value;
+    func.return_type = TirType::I64;
+    let next = func.blocks[&body].ops.last().unwrap().results[0];
+    let view = func.fresh_value();
+    let mut store = cmp_op(OpCode::Copy, next, next, view);
+    store.operands.truncate(1);
+    store.attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("frame_home_store".into()),
+    );
+    store.attrs.insert("value".into(), AttrValue::Int(0));
+    func.blocks.get_mut(&body).unwrap().ops.push(store);
+    if let Terminator::Branch { args, .. } = &mut func.blocks.get_mut(&body).unwrap().terminator {
+        args[0] = view;
+    }
+    let iv = func.blocks[&header].args[0].id;
+    let guard_view = func.fresh_value();
+    let exit_value = func.fresh_value();
+    let mut guard_store = cmp_op(OpCode::Copy, iv, iv, guard_view);
+    guard_store.operands.truncate(1);
+    guard_store.attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("frame_home_store".into()),
+    );
+    guard_store.attrs.insert("value".into(), AttrValue::Int(1));
+    let header_block = func.blocks.get_mut(&header).unwrap();
+    header_block.ops[0].operands[0] = guard_view;
+    header_block.ops.insert(0, guard_store);
+    if let Terminator::CondBranch { else_args, .. } = &mut header_block.terminator {
+        *else_args = vec![guard_view];
+    }
+    let exit_block = func.blocks.get_mut(&exit).unwrap();
+    exit_block.args = vec![TirValue {
+        id: exit_value,
+        ty: TirType::I64,
+    }];
+    exit_block.terminator = Terminator::Return {
+        values: vec![exit_value],
+    };
+    let stats = run(&mut func, &TargetInfo::native_release_fast());
+    assert!(stats.ops_added > 0);
+    let stores: Vec<_> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| {
+            op.attrs.get("_original_kind") == Some(&AttrValue::Str("frame_home_store".into()))
+        })
+        .collect();
+    assert_eq!(
+        stores.len(),
+        9,
+        "four body and five guard publications must survive, including the failed guard"
+    );
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(&func);
+    assert!(
+        stores
+            .iter()
+            .all(|op| !crate::tir::passes::effects::op_effects_with_types(op, &exact).effect_free)
+    );
+    let landing = func.blocks[&func.entry_block].terminator.successors()[0];
+    let Terminator::Branch { args, .. } = &func.blocks[&landing].terminator else {
+        panic!("unrolled exit")
+    };
+    assert!(
+        stores
+            .iter()
+            .any(|op| op.results == [args[0]] && op.attrs.get("value") == Some(&AttrValue::Int(1))),
+        "the exit must carry the cloned guard view, retaining its representation and borrowing"
+    );
+    crate::tir::verify::verify_function(&func)
+        .expect("unrolled publication effects remain valid SSA");
+}
+
+#[test]
 fn unrolls_loop_with_negative_step() {
     // for i in range(5, 0, -1): body_op(i) -> trip count = 5 (5,4,3,2,1)
     let TestLoop { mut func, .. } = build_test_loop(5, 0, -1, 1);
