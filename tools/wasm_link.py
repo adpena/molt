@@ -324,7 +324,7 @@ def _run_wasm_ld(
             publication_outputs["timings"] = phase_timings_file
         validate_link_output_paths(publication_outputs, inputs=publication_inputs)
         output_paths_admitted = True
-        scratch_root = proof_scratch_root(TOOLS_ROOT.parent)
+        scratch_root = proof_scratch_root(TOOLS_ROOT.parent, create=True)
         scratch_root.mkdir(parents=True, exist_ok=True)
         with OwnedTemporaryDirectory(
             prefix="molt-wasm-link-custody-", dir=scratch_root

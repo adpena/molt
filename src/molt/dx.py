@@ -1369,20 +1369,37 @@ def _scratch_root_for(
         raise DxConfigError(
             f"{SCRATCH_STORAGE_ENV} must be outside the checkout: {storage.root}"
         )
-    return custody_layout.scratch_root(artifact, source_root, storage_root=storage.root)
+    from .checkout_state import scratch_state_root
+
+    container = custody_layout.scratch_root(
+        artifact, source_root, storage_root=storage.root
+    )
+    return scratch_state_root(container, owner=source_root, create=False)
 
 
-def scratch_root(repo_root: Path, env: Mapping[str, str] | None = None) -> Path:
+def scratch_root(
+    repo_root: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    create: bool = False,
+) -> Path:
     """Return the run scratch root for a checkout, never inside it.
 
-    Default disk storage uses ``<artifact root>/tmp``. An explicit disk or
-    memory root holds per-artifact scratch independently of durable state.
+    Default disk storage uses one lane-owned root under ``<artifact root>/tmp``.
+    An explicit disk or memory root holds per-artifact scratch independently of durable state.
     `RunContext.canonical_env` exports the same root as ``TMPDIR``.
+    Selection creates nothing; writers pass ``create`` to bind and stamp the
+    selected lane root before writing beneath it.
     """
 
     source = Path(repo_root).expanduser().resolve()
     view = os.environ if env is None else env
-    return _scratch_root_for(artifact_root(source, view), source, view)
+    root = _scratch_root_for(artifact_root(source, view), source, view)
+    if create:
+        from .checkout_state import scratch_state_root
+
+        return scratch_state_root(root.parent, owner=source)
+    return root
 
 
 def _purpose_parts(purpose: str) -> tuple[str, ...]:
@@ -1398,10 +1415,18 @@ def scratch_dir(
     """Return the scratch directory for one purpose, such as ``"bench"``.
 
     ``purpose`` is a relative POSIX path of plain names. The directory follows
-    the selected scratch storage and is not created.
+    the selected scratch storage. Its lane-owned root is created, bound and
+    stamped; the purpose directory itself is not created. Existing control
+    namespaces retain their own placement and retirement protocols.
     """
 
-    return scratch_root(repo_root, env).joinpath(*_purpose_parts(purpose))
+    from .checkout_state import scratch_control_names, scratch_state_root
+
+    parts = _purpose_parts(purpose)
+    root = scratch_root(repo_root, env)
+    if parts[0] in scratch_control_names():
+        return root.parent.joinpath(*parts)
+    return scratch_state_root(root.parent, owner=repo_root).joinpath(*parts)
 
 
 def backend_ir_lease_dir(repo_root: Path, env: Mapping[str, str] | None = None) -> Path:
@@ -1798,6 +1823,16 @@ class RunContext:
                 )
 
         if create_dirs:
+            # A selected scratch namespace is materialized only by its owner
+            # constructor, before any purpose directory or child TMPDIR use.
+            if any(
+                run_scratch == Path(value) or run_scratch in Path(value).parents
+                for key in root_keys
+                if (value := env.get(key))
+            ):
+                from molt.checkout_state import scratch_state_root
+
+                scratch_state_root(run_scratch.parent, owner=self.root)
             for key in root_keys:
                 if key == "UV_PROJECT_ENVIRONMENT" or (
                     key == "PYTHONPYCACHEPREFIX" and managed_python
@@ -2176,16 +2211,23 @@ class DxProject:
         raise DxConfigError(f"Missing [tool.molt.dx.commands].{name}")
 
 
-def proof_scratch_root(repo_root: Path, env: Mapping[str, str] | None = None) -> Path:
+def proof_scratch_root(
+    repo_root: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    create: bool = False,
+) -> Path:
     """Where a tool run from ``repo_root`` may write its outputs.
 
     The proof queue gives every guarded run one fresh scratch root in
     ``MOLT_PROOF_SCRATCH_ROOT``; a direct run uses `scratch_root`. Neither is
     under the source checkout, so a tool's outputs never register as
     mutations of the inputs it is proven from.
+    Writers materialize the default with ``create``; queue-issued scratch
+    retains its receipt-owned creation and retirement protocol.
     """
     source = os.environ if env is None else env
     scratch = str(source.get(PROOF_SCRATCH_ROOT_ENV, "")).strip()
     if scratch:
         return Path(scratch).expanduser().resolve()
-    return scratch_root(repo_root, source)
+    return scratch_root(repo_root, source, create=create)

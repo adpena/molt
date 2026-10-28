@@ -1848,7 +1848,7 @@ def run_wasm_ld_with_custodied_inputs(
             file=sys.stderr,
         )
         return 1
-    scratch_root = proof_scratch_root(TOOLS_ROOT.parent)
+    scratch_root = proof_scratch_root(TOOLS_ROOT.parent, create=True)
     scratch_root.mkdir(parents=True, exist_ok=True)
     temp_dir = OwnedTemporaryDirectory(prefix="molt-wasm-link-", dir=scratch_root)
     staged_outputs: list[Path] = []

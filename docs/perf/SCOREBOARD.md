@@ -526,7 +526,7 @@ sampled from `representation_facts.rs`, plus a Rust-owned
 --pass-delta-jsonl` consumes that verdict as the R3a proof-order gate so
 surviving `ValueId`s cannot silently lose raw-carrier proof or drift across
 scalar families. By default the diagnostic feed is written under
-`tmp/molt-backend/tir/pass_delta.jsonl`; set `MOLT_PASS_DELTA_PATH` to direct it
+`<lane scratch>/molt-backend/tir/pass_delta.jsonl` (`molt.dx.scratch_root`); set `MOLT_PASS_DELTA_PATH` to direct it
 to a specific artifact path.
 
 The unified CI driver includes this as the required Tier 1
