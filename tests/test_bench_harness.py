@@ -32,8 +32,14 @@ def test_bench_harness_run_cmd_uses_memory_guard(
             0,
             "ok\n",
             "",
-            elapsed_s=0.02,
+            elapsed_s=9.0,
+            child_elapsed_s=0.02,
+            child_returncode=0,
             child_stderr="",
+            descendants_closed=True,
+            peak=bench_harness.harness_memory_guard.memory_guard.RssViolation(
+                pid=1, rss_kb=1024, command="fixture", scope="process"
+            ),
         )
 
     monkeypatch.setattr(
@@ -53,19 +59,27 @@ def test_bench_harness_run_cmd_uses_memory_guard(
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())
 
-    stdout, stderr, returncode, elapsed = bench_harness.run_cmd(
+    outcome = bench_harness.run_cmd(
         ["python3", "--version"],
         9.0,
         cwd=tmp_path,
     )
 
-    assert (stdout, stderr, returncode, elapsed) == ("ok\n", "", 0, 0.02)
+    assert outcome.ok
+    assert (outcome.stdout, outcome.stderr, outcome.exit_code, outcome.elapsed_s) == (
+        "ok\n",
+        "",
+        0,
+        0.02,
+    )
     call = calls[0]
     assert call["cmd"] == ["python3", "--version"]
     assert call["prefix"] == bench_harness.BENCH_MEMORY_PREFIX
     assert call["cwd"] == tmp_path
     assert call["capture_output"] is True
-    assert call["text"] is True
+    assert call["text"] is False
+    assert call["encoding"] == "utf-8"
+    assert call["errors"] == "surrogateescape"
     assert call["timeout"] == 9.0
     artifact_root = molt_dx.checkout_custody(bench_harness.REPO_ROOT).custody_root
     assert call["env"]["MOLT_EXT_ROOT"] == str(artifact_root)
@@ -105,7 +119,9 @@ def test_bench_harness_supports_explicit_molt_profile(
         return [], bench_harness.SuiteSummary(suite=suite_name)
 
     monkeypatch.setattr(
-        bench_harness, "collect_bench_scripts", lambda filter_pat=None: []
+        bench_harness,
+        "collect_bench_scripts",
+        lambda filter_pat=None, applications=False: [],
     )
     monkeypatch.setattr(bench_harness, "run_suite", fake_run_suite)
     monkeypatch.setattr(bench_harness, "detect_regressions", lambda *args, **kwargs: [])
@@ -263,9 +279,9 @@ def test_harness_fresh_cpython_comparison_retains_actual_source_identity(
     source.write_text("print(1)\n", encoding="utf-8")
     commands = []
 
-    def run(command, timeout):
+    def run(command, timeout, **kwargs):
         commands.append(command)
-        return "1\n", "", 0, 0.02
+        return bench_harness.RunOutcome(True, 0.02, 1.0, "ok", 0, "1\n", "")
 
     monkeypatch.setattr(bench_harness, "run_cmd", run)
     with ExitStack() as custody:
@@ -301,11 +317,6 @@ def test_harness_fresh_cpython_comparison_retains_actual_source_identity(
     "run_args,molt_args,diagnostic",
     [
         (
-            ["different"],
-            ["run", "--profile", "dev"],
-            "does not support guest run arguments",
-        ),
-        (
             [],
             ["run", "--profile", "release"],
             "command differs from admitted Molt arguments",
@@ -336,3 +347,259 @@ def test_harness_refuses_admitted_arguments_it_will_not_execute(
                 1.0,
                 workload=admitted,
             )
+
+
+def test_harness_executes_admitted_guest_arguments(tmp_path, monkeypatch):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "program.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    calls = []
+
+    def run(command, timeout, **kwargs):
+        calls.append((command, kwargs))
+        return bench_harness.RunOutcome(True, 0.1, 1.0, "ok", 0, "1\n", "")
+
+    monkeypatch.setattr(bench_harness, "run_cmd", run)
+    with admit_benchmark_workload(
+        script,
+        project_root=tmp_path,
+        run_args=["--count", "7"],
+        molt_args=["run", "--profile", "dev"],
+    ) as admitted:
+        result = bench_harness.run_single_test(
+            script,
+            "bench",
+            ["molt", "run", "--profile", "dev"],
+            "python",
+            1,
+            workload=admitted,
+        )
+    assert result.status == "pass"
+    assert calls[0][0] == ["python", str(script), "--count", "7"]
+    assert calls[1][0] == [
+        "molt",
+        "run",
+        "--profile",
+        "dev",
+        str(script),
+        "--",
+        "--count",
+        "7",
+    ]
+
+
+def test_harness_sealed_invocations_use_payload_cwd_and_import_roots(
+    tmp_path, monkeypatch
+):
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+
+    calls = []
+
+    def run(command, timeout, **kwargs):
+        calls.append((command, kwargs))
+        return bench_harness.RunOutcome(True, 0.1, 1.0, "ok", 0, "sealed:7\n", "")
+
+    monkeypatch.setattr(bench_harness, "run_cmd", run)
+    with sealed_workload(tmp_path, molt_args=["run", "--profile", "dev"]) as workload:
+        result = bench_harness.run_single_test(
+            workload.script,
+            "bench",
+            ["molt", "run", "--profile", "dev"],
+            "python",
+            1,
+            workload=workload,
+        )
+        assert result.status == "pass"
+        assert result.workload["entry"] == str(workload.script)
+        assert calls[0][0] == [
+            "python",
+            "-P",
+            "-S",
+            "-B",
+            str(workload.execution_script),
+            "data/input.txt",
+            "7",
+        ]
+        assert calls[1][0] == [
+            "molt",
+            "run",
+            "--profile",
+            "dev",
+            str(workload.execution_script),
+            "--",
+            "data/input.txt",
+            "7",
+        ]
+        assert all(kwargs["cwd"] == workload.execution_root for _, kwargs in calls)
+        assert calls[0][1]["env"]["PYTHONPATH"] == str(
+            workload.execution_root / "packages"
+        )
+        assert calls[1][1]["env"]["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
+        assert calls[1][1]["env"]["MOLT_MODULE_ROOTS"] == str(
+            workload.execution_root / "packages"
+        )
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr,returncode",
+    [("sealed:7", "", 0), ("sealed:7\n", "unexpected\n", 0), ("sealed:7\n", "", 2)],
+)
+def test_benchmark_harness_never_scores_incomplete_output(
+    monkeypatch, tmp_path, stdout, stderr, returncode
+):
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+
+    observations = iter(
+        [
+            bench_harness.RunOutcome(True, 0.2, 1.0, "ok", 0, "sealed:7\n", ""),
+            bench_harness.RunOutcome(
+                returncode == 0,
+                0.1,
+                1.0,
+                "ok" if returncode == 0 else "nonzero",
+                returncode,
+                stdout,
+                stderr,
+            ),
+        ]
+    )
+    monkeypatch.setattr(bench_harness, "run_cmd", lambda *a, **kw: next(observations))
+    with sealed_workload(tmp_path, molt_args=["run"]) as workload:
+        result = bench_harness.run_single_test(
+            workload.script,
+            "bench",
+            ["molt", "run"],
+            "python",
+            1,
+            workload=workload,
+        )
+    assert not result.output_match
+    assert result.status in {"fail", "error"}
+    assert result.molt_speedup is None
+    assert result.molt_stderr == stderr
+
+
+@pytest.mark.parametrize("descriptor", [1, 2])
+def test_benchmark_harness_actual_guard_refuses_distinct_invalid_output_bytes(
+    tmp_path, monkeypatch, descriptor
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
+    script = tmp_path / "raw_output.py"
+    script.write_text(
+        f"import os; os.write({descriptor}, b'raw\\xff\\r\\nno-final-newline')\n",
+        encoding="utf-8",
+    )
+    # A real child replaces only the compiler in this observation test. Neither
+    # run_cmd nor the shared process guard is mocked.
+    guest_code = f"import os; os.write({descriptor}, b'raw\\xfe\\r\\nno-final-newline')"
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=[], molt_args=["-c", guest_code]
+    ) as workload:
+        result = bench_harness.run_single_test(
+            script,
+            "bench",
+            [sys.executable, "-c", guest_code],
+            sys.executable,
+            15,
+            workload=workload,
+        )
+    assert result.cpython_rc == result.molt_rc == 0
+    reference = result.cpython_stdout if descriptor == 1 else result.cpython_stderr
+    guest = result.molt_stdout if descriptor == 1 else result.molt_stderr
+    assert reference.encode("utf-8", "surrogateescape") == (
+        b"raw\xff\r\nno-final-newline"
+    )
+    assert guest.encode("utf-8", "surrogateescape") == (b"raw\xfe\r\nno-final-newline")
+    assert result.status == "fail"
+    assert result.output_match is False
+    assert result.molt_speedup is None
+
+
+@pytest.mark.parametrize("failed_side", ["reference", "guest"])
+@pytest.mark.parametrize("condition", ["unclosed", "clock", "timeout", "nonzero"])
+def test_harness_preserves_failed_observation_without_scoring(
+    tmp_path, monkeypatch, failed_side, condition
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "observation.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    raw_out = b"out\xff\r\n".decode("utf-8", "surrogateescape")
+    raw_err = b"err\xfe\r\n".decode("utf-8", "surrogateescape")
+    calls = 0
+
+    def guarded(command, **kwargs):
+        nonlocal calls
+        calls += 1
+        failed = calls == (1 if failed_side == "reference" else 2)
+        code = (
+            124
+            if failed and condition == "timeout"
+            else 7
+            if failed and condition == "nonzero"
+            else 0
+        )
+        return bench_harness.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            code,
+            raw_out if failed else "ok\n",
+            "guard diagnostics",
+            elapsed_s=9.0,
+            child_elapsed_s=None if failed and condition == "clock" else 0.025,
+            child_returncode=code,
+            child_stderr=raw_err if failed else "",
+            descendants_closed=not (failed and condition == "unclosed"),
+            timed_out=failed and condition == "timeout",
+            peak=bench_harness.harness_memory_guard.memory_guard.RssViolation(
+                pid=1, rss_kb=1024, command="fixture", scope="process"
+            ),
+        )
+
+    monkeypatch.setattr(
+        bench_harness.harness_memory_guard, "guarded_completed_process", guarded
+    )
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=[], molt_args=["run"]
+    ) as workload:
+        result = bench_harness.run_single_test(
+            script, "bench", ["molt", "run"], "python", 1, workload=workload
+        )
+    assert result.status != "pass"
+    assert result.molt_speedup is None
+    prefix = "cpython" if failed_side == "reference" else "molt"
+    serialized = result.to_dict()
+    assert serialized[f"{prefix}_stdout"] == raw_out
+    assert serialized[f"{prefix}_stderr"] == raw_err
+    assert getattr(result, f"{prefix}_time_s") == (
+        None if condition == "clock" else 0.025
+    )
+    assert calls == (1 if failed_side == "reference" else 2)
+
+
+@pytest.mark.parametrize("reference_failure", [False, True])
+def test_harness_preserves_legacy_diff_policy(tmp_path, monkeypatch, reference_failure):
+    script = tmp_path / "diff.py"
+    script.write_text("print('same')\n", encoding="utf-8")
+    observations = iter(
+        [
+            bench_harness.RunOutcome(
+                not reference_failure,
+                0.1,
+                1.0,
+                "nonzero" if reference_failure else "ok",
+                7 if reference_failure else 0,
+                "same\n",
+                "reference stderr",
+            ),
+            bench_harness.RunOutcome(True, 0.1, 1.0, "ok", 0, "same\n", "guest stderr"),
+        ]
+    )
+    monkeypatch.setattr(bench_harness, "run_cmd", lambda *a, **kw: next(observations))
+    result = bench_harness.run_single_test(
+        script, "diff", ["molt", "run"], "python", 1, workload=None
+    )
+    assert result.status == ("skip" if reference_failure else "pass")
+    assert result.molt_speedup is None

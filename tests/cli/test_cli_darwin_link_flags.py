@@ -621,7 +621,7 @@ def test_native_compile_and_link_use_the_explicit_sdk(tmp_path, monkeypatch):
     assert target.native_target is not None
     environment = source_extension_compiler_environment(os.environ)
     command, _, _ = native_link_command._build_native_link_driver_command(
-        output_obj=None, target=target.native_target, sysroot_path=None, profile="dev"
+        target=target.native_target, sysroot_path=None, profile="dev"
     )
     assert command[command.index("-isysroot") + 1] == environment["SDKROOT"] == str(sdk)
     source = tmp_path / "sdk_contract.c"
@@ -717,6 +717,8 @@ def test_cross_darwin_search_paths_share_the_explicit_sysroot(
     driver = tmp_path / "cross-clang"
     driver.write_bytes(b"unexecuted command-plan fixture")
     monkeypatch.setenv("MOLT_CROSS_CC", str(driver))
+    monkeypatch.setenv("MOLT_ARCH", "x86_64")
+    monkeypatch.setenv("CC", str(driver))
     monkeypatch.setenv("SDKROOT", str(tmp_path / "wrong_ambient_sdk"))
     monkeypatch.delenv("DEVELOPER_DIR", raising=False)
     monkeypatch.delenv("MOLT_MACOSX_DEPLOYMENT_TARGET", raising=False)
@@ -726,21 +728,18 @@ def test_cross_darwin_search_paths_share_the_explicit_sysroot(
     )
     monkeypatch.setenv("CC_SHELL_ESCAPED_FLAGS", "1")
     monkeypatch.setattr(
-        native_link_command, "validate_compiler_target", lambda *_: None
-    )
-    monkeypatch.setattr(
         native_link_command, "_resolve_native_linker_hint", lambda **_: None
     )
     command, _, _ = native_link_command._build_native_link_driver_command(
-        output_obj=None,
         target=resolve_native_target_spec(
             "aarch64-apple-darwin", host_platform="linux", host_arch="x86_64"
         ),
         sysroot_path=selected_sdk if selector == "argument" else None,
         profile="dev",
         host_platform="linux",
-        host_arch="x86_64",
     )
+    assert command[command.index("-target") + 1] == "aarch64-apple-darwin"
+    assert "-arch" not in command
     assert command[command.index("-isysroot") + 1] == str(sdk)
     assert command[command.index("-F") + 1] == str(sdk / "System/Library/Frameworks")
     assert command[command.index("-L") + 1] == str(sdk / "usr/lib")

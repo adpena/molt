@@ -24,6 +24,24 @@ from tools import bench as bench_tool
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _guarded_result(args, returncode, stdout, stderr):
+    """A closed typed guard observation for boundary-specific fault injection."""
+    return bench_tool.harness_memory_guard.GuardedCompletedProcess(
+        args,
+        returncode,
+        stdout,
+        stderr,
+        elapsed_s=0.01,
+        child_elapsed_s=0.01,
+        child_returncode=returncode,
+        child_stderr=stderr,
+        descendants_closed=True,
+        peak=bench_tool.memory_guard.RssViolation(
+            pid=123, rss_kb=1024, command="probe", scope="process"
+        ),
+    )
+
+
 @contextlib.contextmanager
 def _admitted_workloads(scripts):
     from tools.bench_evidence import admit_benchmark_workload
@@ -576,9 +594,7 @@ def test_measure_molt_run_classifies_infrastructure_as_non_evidence(
         phase="temporary_artifact_custody",
         details=("scratch receipt retention failed",),
     )
-    completed = subprocess.CompletedProcess(
-        ["molt-bin"], 125, "child ok", "guard failed"
-    )
+    completed = _guarded_result(["molt-bin"], 125, "child ok", "guard failed")
     completed.child_returncode = 0
     completed.infrastructure_failure = infrastructure_failure
     completed.timed_out = False
@@ -635,7 +651,7 @@ def test_measure_molt_run_exception_uses_typed_guard_outcome(
         if has_infrastructure_failure
         else None
     )
-    guarded_result = subprocess.CompletedProcess(
+    guarded_result = _guarded_result(
         [str(binary)],
         returncode,
         "child stdout",
@@ -675,7 +691,7 @@ def test_measure_molt_run_exception_uses_typed_guard_outcome(
 
 
 def test_measure_runtime_uses_guard_child_elapsed(monkeypatch) -> None:
-    completed = subprocess.CompletedProcess(["tool"], 0, "out", "")
+    completed = _guarded_result(["tool"], 0, "out", "")
     completed.elapsed_s = 9.0125
     completed.child_elapsed_s = 0.0125
     limits = bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
@@ -691,7 +707,7 @@ def test_measure_runtime_uses_guard_child_elapsed(monkeypatch) -> None:
 
     sample = bench_tool.measure_runtime(["tool"], label="unit", limits=limits)
 
-    assert sample is not None
+    assert isinstance(sample, bench_tool.RunSample)
     assert sample.elapsed_s == 0.0125
     assert sample.stdout == "out"
     assert calls[0]["limits"] is limits
@@ -700,7 +716,7 @@ def test_measure_runtime_uses_guard_child_elapsed(monkeypatch) -> None:
 def test_measure_molt_run_uses_guard_child_elapsed(monkeypatch, tmp_path: Path) -> None:
     binary = tmp_path / "molt-bin"
     binary.write_text("binary", encoding="utf-8")
-    completed = subprocess.CompletedProcess([str(binary)], 0, "out", "")
+    completed = _guarded_result([str(binary)], 0, "out", "")
     completed.elapsed_s = 9.034
     completed.child_elapsed_s = 0.034
     limits = bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
@@ -716,16 +732,71 @@ def test_measure_molt_run_uses_guard_child_elapsed(monkeypatch, tmp_path: Path) 
 
     sample = bench_tool.measure_molt_run(binary, label="unit", limits=limits)
 
-    assert sample is not None
+    assert isinstance(sample, bench_tool.RunSample)
     assert sample.elapsed_s == 0.034
     assert sample.stdout == "out"
     assert calls[0]["limits"] is limits
 
 
+def test_runtime_observer_keeps_distinct_invalid_output_bytes_distinct() -> None:
+    """Real children write b"\\xff" and b"\\xfe" through the actual guard.
+
+    A replacement decoder maps both to U+FFFD, so parity would report a match;
+    the shared observer must keep each byte and the parity check must refuse.
+    """
+    emit = (
+        "import os, sys\n"
+        "payload = b'raw' + bytes([int(sys.argv[1])]) + b'\\nend'\n"
+        "os.write(1, payload)\n"
+        "os.write(2, b'err:' + payload)\n"
+    )
+    limits = bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
+    reference = bench_tool.collect_samples(
+        lambda: bench_tool.measure_runtime(
+            [sys.executable, "-I", "-S", "-c", emit, "255"],
+            timeout_s=60.0,
+            label="reference",
+            limits=limits,
+        ),
+        1,
+        warmup=1,
+    )
+    guest = bench_tool.collect_samples(
+        lambda: bench_tool.measure_molt_run(
+            Path(sys.executable),
+            run_args=["-I", "-S", "-c", emit, "254"],
+            timeout_s=60.0,
+            label="guest",
+            limits=limits,
+        ),
+        1,
+        warmup=1,
+    )
+    for batch, byte in ((reference, b"\xff"), (guest, b"\xfe")):
+        assert batch.ok, batch.failure
+        for sample in (*batch.warmup_samples, *batch.samples):
+            payload = b"raw" + byte + b"\nend"
+            assert sample.stdout.encode("utf-8", "surrogateescape") == payload
+            assert sample.stderr.encode("utf-8", "surrogateescape") == b"err:" + payload
+    parity = bench_tool._output_parity_evidence(
+        reference,
+        guest,
+        reference_runtime="cpython",
+        reference_required=True,
+        reference_reason="external_reference",
+    )
+    assert parity["checked"] is True
+    assert parity["ok"] is False
+    assert parity["reason"] == "stdout_mismatch"
+    assert parity["stdout_match"] is False and parity["stderr_match"] is False
+    assert parity["reference_stdout_sha256"] != parity["molt_stdout_sha256"]
+    assert parity["reference_stderr_sha256"] != parity["molt_stderr_sha256"]
+
+
 def test_measure_molt_run_classifies_runtime_fatal(monkeypatch, tmp_path: Path) -> None:
     binary = tmp_path / "molt-bin"
     binary.write_text("binary", encoding="utf-8")
-    completed = subprocess.CompletedProcess(
+    completed = _guarded_result(
         [str(binary)],
         1,
         "",
@@ -751,7 +822,7 @@ def test_measure_molt_run_classifies_runtime_fatal(monkeypatch, tmp_path: Path) 
 def test_measure_molt_run_classifies_signal_exit(monkeypatch, tmp_path: Path) -> None:
     binary = tmp_path / "molt-bin"
     binary.write_text("binary", encoding="utf-8")
-    completed = subprocess.CompletedProcess([str(binary)], -6, "", "")
+    completed = _guarded_result([str(binary)], -6, "", "")
     completed.elapsed_s = 0.1
 
     monkeypatch.setattr(
@@ -773,7 +844,7 @@ def test_measure_molt_run_classifies_rss_guard_failure(
 ) -> None:
     binary = tmp_path / "molt-bin"
     binary.write_text("binary", encoding="utf-8")
-    completed = subprocess.CompletedProcess([str(binary)], 137, "", "")
+    completed = _guarded_result([str(binary)], 137, "", "")
     completed.elapsed_s = 0.2
     completed.violation = bench_tool.memory_guard.RssViolation(
         pid=123,
@@ -1020,6 +1091,39 @@ class _TempDirStub:
         pass
 
 
+def test_classified_retry_restarts_only_failed_project_client(monkeypatch, tmp_path):
+    class Client:
+        def __init__(self, command, *, cwd, **kwargs):
+            self.cwd = cwd
+            self.closed = []
+
+        def close(self, *, force, timeout):
+            self.closed.append((force, timeout))
+
+    monkeypatch.setattr(bench_tool, "BatchCompileServerClient", Client)
+    server = bench_tool._BenchBatchBuildServer({})
+    project = tmp_path / "sealed-project"
+    project.mkdir()
+    repository_client = server.start()
+    failed_client = server.start(project)
+    failure = bench_tool.MoltFailure(
+        "build",
+        "daemon_crash",
+        1,
+        False,
+        0.1,
+        detail="backend_daemon_empty_response",
+    )
+    try:
+        bench_tool._restart_batch_server_for_retry(server, failure, source_cwd=project)
+        assert repository_client.closed == []
+        assert failed_client.closed == [(True, 5.0)]
+        assert server.start() is repository_client
+        assert server.start(project) is not failed_client
+    finally:
+        server.close()
+
+
 class _BatchServerStub:
     closed = False
 
@@ -1087,6 +1191,150 @@ def _bench_results_with_mocked_native_outputs(
         )[str(script)]
 
 
+@pytest.mark.parametrize("wrong_warmup", [("wrong\n", ""), ("ok\n", "unexpected\n")])
+def test_regular_benchmark_rejects_guest_warmup_output(
+    monkeypatch, tmp_path, wrong_warmup
+):
+    result = _bench_results_with_mocked_native_outputs(
+        monkeypatch,
+        tmp_path,
+        cpython_outputs=[("ok\n", ""), ("ok\n", "")],
+        molt_outputs=[wrong_warmup, ("ok\n", "")],
+        samples=1,
+        warmup=1,
+    )
+    assert result["molt_output_parity"]["reason"] == "molt_unstable"
+    assert result["molt_ok"] is False
+    assert result["molt_time_s"] is None
+    assert result["molt_speedup"] is None
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_failed_sealed_reference_prevents_compilation_and_guest_timing(
+    monkeypatch, tmp_path, failure
+):
+    """A real guarded CPython child fails; its typed result stops the cell.
+
+    The reference runs through the actual shared guard. Only the observation
+    is recorded, so rc, streams, timeout, closure and the absence of any later
+    compiler or guest launch come from the real boundary, not a mock.
+    """
+    import os
+
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+
+    program, timeout_s = {
+        "exit": (
+            "import sys\n"
+            "sys.stdout.write('partial reference\\n')\n"
+            "sys.stderr.write('independent reference failed\\n')\n"
+            "raise SystemExit(7)\n",
+            60.0,
+        ),
+        "timeout": ("import time\ntime.sleep(60)\n", 1.0),
+    }[failure]
+    actual_guard = bench_tool.harness_memory_guard.guarded_completed_process
+    observed = []
+
+    def observe(command, **kwargs):
+        result = actual_guard(command, **kwargs)
+        observed.append((list(command), kwargs, result))
+        return result
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard, "guarded_completed_process", observe
+    )
+    monkeypatch.setattr(
+        bench_tool,
+        "prepare_molt_binary",
+        lambda *args, **kwargs: pytest.fail(
+            "compiled without a qualified sealed reference"
+        ),
+    )
+    monkeypatch.setattr(
+        bench_tool,
+        "measure_molt_run",
+        lambda *args, **kwargs: pytest.fail("timed a guest without a reference"),
+    )
+    with sealed_workload(tmp_path) as workload:
+        result = bench_tool._bench_one(
+            str(workload.script),
+            1,
+            1,
+            {"cpython": [sys.executable, "-c", program]},
+            False,
+            False,
+            False,
+            False,
+            timeout_s,
+            "release",
+            workload=workload,
+            tty=False,
+            base_env=dict(os.environ),
+            codon_root=tmp_path,
+            nuitka_root=tmp_path,
+            resolved_nuitka_cmd=None,
+            resolved_pyodide_cmd=None,
+            batch_server=_BatchServerStub({}),
+            limits=bench_tool.harness_memory_guard.limits_from_env("MOLT_BENCH", {}),
+        )[str(workload.script)]
+        source_cwd = workload.source_cwd
+        execution_script = workload.execution_script
+
+    # The failed warmup is the only launch: no retry, build or guest run.
+    ((command, kwargs, guarded),) = observed
+    assert command == [
+        sys.executable,
+        "-c",
+        program,
+        "-P",
+        "-S",
+        "-B",
+        str(execution_script),
+        "data/input.txt",
+        "7",
+    ]
+    assert kwargs["cwd"] == source_cwd
+    assert kwargs["timeout"] == timeout_s
+    assert (kwargs["encoding"], kwargs["errors"]) == ("utf-8", "surrogateescape")
+    assert guarded.descendants_closed is True
+    assert guarded.orphaned_process_groups == ()
+    assert guarded.infrastructure_failure is None
+    assert guarded.violation is None
+    payload = result["molt_failure"]
+    assert result["molt_failure_phase"] == payload["phase"] == "reference"
+    assert result["molt_failure_infrastructure_failure"] is None
+    assert result["molt_failure_guard_violation"] is None
+    assert result["molt_failure_orphaned_process_groups"] == []
+    if failure == "exit":
+        assert guarded.timed_out is False
+        assert result["molt_failure_status"] == "runtime_failed"
+        assert result["molt_failure_returncode"] == 7
+        assert result["molt_failure_child_returncode"] == 7
+        assert result["molt_failure_timed_out"] is False
+        assert payload["stdout_tail"] == "partial reference\n"
+        assert payload["stderr_tail"] == "independent reference failed\n"
+    else:
+        assert guarded.timed_out is True
+        assert result["molt_failure_status"] == "timeout"
+        assert (
+            result["molt_failure_returncode"]
+            == bench_tool.memory_guard.TIMEOUT_RETURN_CODE
+        )
+        assert result["molt_failure_timed_out"] is True
+        # The killed child wrote nothing; guard diagnostics are not guest output.
+        assert payload["stdout_tail"] is None
+        assert payload["stderr_tail"] is None
+    assert result["cpython_time_s"] is None
+    assert result["cpython_samples_s"] == []
+    assert result["cpython_warmup_samples_s"] == []
+    assert result["molt_output_parity"]["reason"] == "reference_unavailable"
+    assert result["molt_ok"] is False
+    assert result["molt_time_s"] is None and result["molt_build_s"] is None
+    assert result["molt_samples_s"] == []
+    assert result["molt_speedup"] is None
+
+
 def test_prepare_molt_binary_uses_batch_build_server(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1096,7 +1344,12 @@ def test_prepare_molt_binary_uses_batch_build_server(
 
     class _FakeBatchServer:
         def request_build(
-            self, params: dict[str, object], *, env_overrides, timeout_s: float
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides,
+            timeout_s: float,
+            source_cwd: Path | None = None,
         ) -> dict[str, object]:
             requests.append((params, env_overrides, timeout_s))
             out_dir = Path(str(params["out_dir"]))
@@ -1151,7 +1404,12 @@ def test_prepare_molt_binary_passes_cache_policy_to_batch_build_server(
 
     class _FakeBatchServer:
         def request_build(
-            self, params: dict[str, object], *, env_overrides, timeout_s: float
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides,
+            timeout_s: float,
+            source_cwd: Path | None = None,
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1190,7 +1448,12 @@ def test_prepare_molt_binary_classifies_batch_build_timeout(
 
     class _TimeoutBatchServer:
         def request_build(
-            self, params: dict[str, object], *, env_overrides, timeout_s: float
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides,
+            timeout_s: float,
+            source_cwd: Path | None = None,
         ) -> dict[str, object]:
             del params, timeout_s
             raise TimeoutError("batch compile server response timed out")
@@ -1230,7 +1493,12 @@ def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
 
     class _DesyncThenSuccessBatchServer:
         def request_build(
-            self, params: dict[str, object], *, env_overrides, timeout_s: float
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides,
+            timeout_s: float,
+            source_cwd: Path | None = None,
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1252,7 +1520,7 @@ def test_prepare_molt_binary_restarts_batch_server_after_protocol_desync(
                 "stderr": "",
             }
 
-        def restart(self) -> None:
+        def restart(self, source_cwd: Path | None = None) -> None:
             restarts.append(True)
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
@@ -1285,14 +1553,23 @@ def test_prepare_molt_binary_logs_and_restarts_after_classified_retry(
     script = tmp_path / "bench_sample.py"
     script.write_text("print(1)\n", encoding="utf-8")
     requests: list[dict[str, object]] = []
-    restarts: list[bool] = []
+    restarts: list[Path | None] = []
+    source_project = tmp_path / "sealed-project"
+    source_project.mkdir()
+    selected_projects: list[Path | None] = []
 
     class _DaemonFailureThenSuccessBatchServer:
         def request_build(
-            self, params: dict[str, object], *, env_overrides, timeout_s: float
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides,
+            timeout_s: float,
+            source_cwd: Path | None = None,
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
+            selected_projects.append(source_cwd)
             if len(requests) == 1:
                 return {
                     "ok": False,
@@ -1313,8 +1590,8 @@ def test_prepare_molt_binary_logs_and_restarts_after_classified_retry(
                 "stderr": "",
             }
 
-        def restart(self) -> None:
-            restarts.append(True)
+        def restart(self, source_cwd: Path | None = None) -> None:
+            restarts.append(source_cwd)
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
     monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
@@ -1330,11 +1607,13 @@ def test_prepare_molt_binary_logs_and_restarts_after_classified_retry(
         str(script),
         env={},
         batch_server=_DaemonFailureThenSuccessBatchServer(),
+        source_cwd=source_project,
     )
 
     assert isinstance(binary, bench_tool.MoltBinary)
     try:
-        assert restarts == [True]
+        assert restarts == [source_project]
+        assert selected_projects == [source_project, source_project]
         assert len(requests) == 2
         captured = capsys.readouterr()
         assert "status=daemon_crash" in captured.err
@@ -1358,7 +1637,12 @@ def test_prepare_molt_binary_classifies_backend_daemon_empty_response(
 
     class _DaemonFailureBatchServer:
         def request_build(
-            self, params: dict[str, object], *, env_overrides, timeout_s: float
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides,
+            timeout_s: float,
+            source_cwd: Path | None = None,
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1408,7 +1692,12 @@ def test_prepare_molt_binary_preserves_native_runtime_failure_without_retry(
 
     class _CargoFailureBatchServer:
         def request_build(
-            self, params: dict[str, object], *, env_overrides, timeout_s: float
+            self,
+            params: dict[str, object],
+            *,
+            env_overrides,
+            timeout_s: float,
+            source_cwd: Path | None = None,
         ) -> dict[str, object]:
             del timeout_s
             requests.append(params)
@@ -1941,8 +2230,9 @@ def test_main_writes_json_then_exits_nonzero_on_output_parity_failure(
 def test_benchmark_run_missing_child_clock_is_not_timing_evidence(
     monkeypatch, tmp_path
 ):
-    completed = subprocess.CompletedProcess(["probe"], 0, "out", "")
+    completed = _guarded_result(["probe"], 0, "out", "")
     completed.elapsed_s = 9.0
+    completed.child_elapsed_s = None
     monkeypatch.setattr(
         bench_tool.harness_memory_guard,
         "guarded_completed_process",
@@ -1965,22 +2255,29 @@ def test_batch_benchmark_build_preserves_explicit_oracle_minor(tmp_path):
 
 
 def test_failed_baseline_diagnostics_precede_missing_clock(monkeypatch, capsys):
-    completed = subprocess.CompletedProcess(["probe"], 124, "", "deadline expired")
+    completed = _guarded_result(["probe"], 124, "", "deadline expired")
     completed.elapsed_s = 12.0
+    completed.child_elapsed_s = None
     monkeypatch.setattr(
         bench_tool.harness_memory_guard,
         "guarded_completed_process",
         lambda *args, **kwargs: completed,
     )
-    assert bench_tool.measure_runtime(["probe"]) is None
+    failure = bench_tool.measure_runtime(["probe"])
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.phase == "run"
+    assert failure.returncode == 124
+    assert failure.stderr == "deadline expired"
+    assert failure.elapsed_s is None
+    assert "execution clock" not in failure.stderr
     diagnostic = capsys.readouterr().err
     assert "deadline expired" in diagnostic
-    assert "timing evidence" not in diagnostic
+    assert "execution clock" not in diagnostic
 
 
 @pytest.mark.parametrize("clock", [True, -0.1, float("nan"), float("inf")])
 def test_successful_benchmark_invalid_clock_is_not_sample(monkeypatch, tmp_path, clock):
-    completed = subprocess.CompletedProcess(["probe"], 0, "out", "")
+    completed = _guarded_result(["probe"], 0, "out", "")
     completed.child_elapsed_s = clock
     completed.elapsed_s = 12.0
     monkeypatch.setattr(
@@ -1988,10 +2285,18 @@ def test_successful_benchmark_invalid_clock_is_not_sample(monkeypatch, tmp_path,
         "guarded_completed_process",
         lambda *args, **kwargs: completed,
     )
-    assert isinstance(
-        bench_tool.measure_molt_run(tmp_path / "probe"), bench_tool.MoltFailure
-    )
-    assert bench_tool.measure_runtime(["probe"]) is None
+    for failure in (
+        bench_tool.measure_molt_run(tmp_path / "probe"),
+        bench_tool.measure_runtime(["probe"]),
+    ):
+        assert isinstance(failure, bench_tool.MoltFailure)
+        assert failure.status == "runtime_failed"
+        assert failure.returncode == 0
+        assert failure.elapsed_s is None
+        assert failure.stdout == "out"
+        assert failure.stderr == ""
+        assert failure.detail == "measurement_evidence_missing"
+        assert "execution clock" in failure.message
 
 
 def test_bench_env_shares_the_warm_target_unless_a_session_is_pinned(
@@ -2649,9 +2954,17 @@ def test_actual_backend_sampler_releases_scratch_on_every_exit(
         assert selected[-1].is_dir()
         if outcome == "exception":
             raise original
-        return (
-            None if outcome == "sample-failure" else bench_tool.RunSample(1.0, "", "")
-        )
+        if outcome == "sample-failure":
+            # The observer's own failure classification, as a nonzero child
+            # exit produces it; samplers never see an untyped result.
+            return bench_tool._classified_molt_failure(
+                phase="run",
+                returncode=1,
+                stderr="independent sampler failure\n",
+                elapsed_s=0.1,
+                default_status="runtime_failed",
+            )
+        return bench_tool.RunSample(1.0, "", "")
 
     monkeypatch.setattr(bench_tool, "_run_cmd", build)
     monkeypatch.setattr(bench_tool, "measure_runtime", sample)
@@ -2951,6 +3264,8 @@ def test_baseline_and_summary_consume_observation_without_profile_inference():
     }
     cell = {
         "workload": {
+            "schema": "molt.benchmark-workload/2",
+            "sealed_inputs": None,
             "entry": "sample.py",
             "entry_source": "sample.py",
             "scope": "local-python-source-closure",

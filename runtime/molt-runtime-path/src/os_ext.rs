@@ -66,6 +66,36 @@ fn str_bits(_py: &CoreGilToken, s: &str) -> u64 {
     }
 }
 
+/// CPython's `int` argument converter (`_PyLong_AsInt` after `__index__`),
+/// shared by every `mode`, `mask`, `fd` and `status` argument here. A failed
+/// conversion leaves its TypeError/OverflowError (or the `__index__` error)
+/// pending and the caller returns; it never substitutes a default value.
+#[inline]
+fn c_int_arg(_py: &CoreGilToken, bits: u64) -> Result<i32, u64> {
+    index_c_int_from_obj(_py, bits).ok_or_else(|| MoltObject::none().bits())
+}
+
+/// CPython's `Py_off_t` argument converter, for `length`/`pos` arguments.
+#[inline]
+fn off_t_arg(_py: &CoreGilToken, bits: u64) -> Result<i64, u64> {
+    index_off_t_from_obj(_py, bits).ok_or_else(|| MoltObject::none().bits())
+}
+
+/// `mkdir(2)` with CPython's `mode` argument; targets without POSIX modes
+/// accept and ignore it, as CPython does on Windows.
+fn mkdir_with_mode(path: &Path, mode: i32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(mode as u32).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        std::fs::create_dir(path)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Directory operations
 // ---------------------------------------------------------------------------
@@ -375,22 +405,13 @@ pub extern "C" fn molt_os_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
             Ok(p) => p,
             Err(bits) => return bits,
         };
-        let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0o777);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            match std::fs::DirBuilder::new().mode(mode as u32).create(&path) {
-                Ok(()) => MoltObject::none().bits(),
-                Err(err) => os_err_bits(_py, err, "mkdir"),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = mode;
-            match std::fs::create_dir(&path) {
-                Ok(()) => MoltObject::none().bits(),
-                Err(err) => os_err_bits(_py, err, "mkdir"),
-            }
+        let mode = match c_int_arg(_py, mode_bits) {
+            Ok(mode) => mode,
+            Err(bits) => return bits,
+        };
+        match mkdir_with_mode(&path, mode) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(err) => os_err_bits(_py, err, "mkdir"),
         }
     })
 }
@@ -478,7 +499,10 @@ pub extern "C" fn molt_os_chmod(path_bits: u64, mode_bits: u64) -> u64 {
             Ok(p) => p,
             Err(bits) => return bits,
         };
-        let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0o644) as u32;
+        let mode = match c_int_arg(_py, mode_bits) {
+            Ok(mode) => mode as u32,
+            Err(bits) => return bits,
+        };
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -603,15 +627,13 @@ pub extern "C" fn molt_os_truncate(path_bits: u64, length_bits: u64) -> u64 {
             Ok(p) => p,
             Err(bits) => return bits,
         };
-        let length = match to_i64(obj_from_bits(length_bits)) {
-            Some(n) if n >= 0 => n as u64,
-            _ => {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "length must be a non-negative integer",
-                );
-            }
+        let length = match off_t_arg(_py, length_bits) {
+            Ok(length) => length,
+            Err(bits) => return bits,
+        };
+        // truncate(2) rejects a negative length with EINVAL before path lookup.
+        let Ok(length) = u64::try_from(length) else {
+            return raise_os_error_errno::<u64>(_py, libc::EINVAL as i64, "truncate");
         };
         match std::fs::OpenOptions::new().write(true).open(&path) {
             Ok(f) => match f.set_len(length) {
@@ -871,7 +893,10 @@ pub extern "C" fn molt_os_cpu_count() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_get_terminal_size(fd_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
-        let fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(1) as libc::c_int;
+        let fd: libc::c_int = match c_int_arg(_py, fd_bits) {
+            Ok(fd) => fd,
+            Err(bits) => return bits,
+        };
         #[cfg(unix)]
         {
             let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -1020,7 +1045,10 @@ pub extern "C" fn molt_os_umask(mask_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "os.umask", AuditArg::None) {
             return error;
         }
-        let mask = to_i64(obj_from_bits(mask_bits)).unwrap_or(0o022) as u32;
+        let mask = match c_int_arg(_py, mask_bits) {
+            Ok(mask) => mask as u32,
+            Err(bits) => return bits,
+        };
         #[cfg(unix)]
         {
             let old = unsafe { libc::umask(mask as libc::mode_t) };
@@ -1524,7 +1552,7 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
         let Some(fd) = index_c_int_from_obj(_py, fd_bits) else {
             return MoltObject::none().bits();
         };
-        let Some(pos) = index_i64_checked_from_obj(_py, pos_bits) else {
+        let Some(pos) = index_off_t_from_obj(_py, pos_bits) else {
             return MoltObject::none().bits();
         };
         #[cfg(unix)]
@@ -1582,29 +1610,26 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
         if let Err(error) = require_operation(_py, "os.ftruncate", AuditArg::None) {
             return error;
         }
-        let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+        let fd = match c_int_arg(_py, fd_bits) {
+            Ok(fd) => fd,
+            Err(bits) => return bits,
         };
-        let Some(length) = to_i64(obj_from_bits(length_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "length must be an integer");
+        let length = match off_t_arg(_py, length_bits) {
+            Ok(length) => length,
+            Err(bits) => return bits,
         };
         if fd < 0 {
             return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "ftruncate");
         }
-        if length < 0 {
-            return raise_exception::<_>(
-                _py,
-                "ValueError",
-                "ftruncate: length must be non-negative",
-            );
-        }
+        // ftruncate(2) owns the negative-length EINVAL.
         #[cfg(target_arch = "wasm32")]
         {
+            let _ = length;
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "ftruncate")
         }
         #[cfg(unix)]
         {
-            let result = unsafe { libc::ftruncate(fd as libc::c_int, length as libc::off_t) };
+            let result = unsafe { libc::ftruncate(fd, length as libc::off_t) };
             if result < 0 {
                 let err = std::io::Error::last_os_error();
                 if let Some(errno) = err.raw_os_error() {
@@ -2758,52 +2783,118 @@ pub extern "C" fn molt_os_sendfile(
 // waitpid status macros — intrinsic-backed
 // ---------------------------------------------------------------------------
 
+/// The target's `<sys/wait.h>` status layout. POSIX targets use the platform
+/// macros (Linux and Darwin differ for WIFSTOPPED); other targets decode the
+/// Linux layout.
+mod wait_status {
+    #[cfg(unix)]
+    pub(super) fn exited(status: i32) -> bool {
+        libc::WIFEXITED(status)
+    }
+    #[cfg(unix)]
+    pub(super) fn exit_status(status: i32) -> i32 {
+        libc::WEXITSTATUS(status)
+    }
+    #[cfg(unix)]
+    pub(super) fn signaled(status: i32) -> bool {
+        libc::WIFSIGNALED(status)
+    }
+    #[cfg(unix)]
+    pub(super) fn term_sig(status: i32) -> i32 {
+        libc::WTERMSIG(status)
+    }
+    #[cfg(unix)]
+    pub(super) fn stopped(status: i32) -> bool {
+        libc::WIFSTOPPED(status)
+    }
+    #[cfg(unix)]
+    pub(super) fn stop_sig(status: i32) -> i32 {
+        libc::WSTOPSIG(status)
+    }
+
+    #[cfg(not(unix))]
+    pub(super) fn exited(status: i32) -> bool {
+        status & 0x7f == 0
+    }
+    #[cfg(not(unix))]
+    pub(super) fn exit_status(status: i32) -> i32 {
+        (status >> 8) & 0xff
+    }
+    #[cfg(not(unix))]
+    pub(super) fn signaled(status: i32) -> bool {
+        // glibc: ((signed char) ((status & 0x7f) + 1) >> 1) > 0
+        ((((status & 0x7f) + 1) as i8) >> 1) > 0
+    }
+    #[cfg(not(unix))]
+    pub(super) fn term_sig(status: i32) -> i32 {
+        status & 0x7f
+    }
+    #[cfg(not(unix))]
+    pub(super) fn stopped(status: i32) -> bool {
+        status & 0xff == 0x7f
+    }
+    #[cfg(not(unix))]
+    pub(super) fn stop_sig(status: i32) -> i32 {
+        (status >> 8) & 0xff
+    }
+}
+
+/// Shared `status: int` conversion for the wait-status macros.
+fn wait_status_macro(status_bits: u64, project: fn(i32) -> MoltObject) -> u64 {
+    molt_runtime_core::with_core_gil!(_py, {
+        match c_int_arg(_py, status_bits) {
+            Ok(status) => project(status).bits(),
+            Err(bits) => bits,
+        }
+    })
+}
+
 /// `os.WIFEXITED(status)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_wifexited(status_bits: u64) -> u64 {
-    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
-    let result = (status & 0x7F) == 0;
-    MoltObject::from_bool(result).bits()
+    wait_status_macro(status_bits, |status| {
+        MoltObject::from_bool(wait_status::exited(status))
+    })
 }
 
 /// `os.WEXITSTATUS(status)` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_wexitstatus(status_bits: u64) -> u64 {
-    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
-    let result = (status >> 8) & 0xFF;
-    MoltObject::from_int(result as i64).bits()
+    wait_status_macro(status_bits, |status| {
+        MoltObject::from_int(i64::from(wait_status::exit_status(status)))
+    })
 }
 
 /// `os.WIFSIGNALED(status)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_wifsignaled(status_bits: u64) -> u64 {
-    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
-    let result = ((status & 0x7F) + 1) >> 1 > 0;
-    MoltObject::from_bool(result).bits()
+    wait_status_macro(status_bits, |status| {
+        MoltObject::from_bool(wait_status::signaled(status))
+    })
 }
 
 /// `os.WTERMSIG(status)` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_wtermsig(status_bits: u64) -> u64 {
-    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
-    let result = status & 0x7F;
-    MoltObject::from_int(result as i64).bits()
+    wait_status_macro(status_bits, |status| {
+        MoltObject::from_int(i64::from(wait_status::term_sig(status)))
+    })
 }
 
 /// `os.WIFSTOPPED(status)` -> bool
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_wifstopped(status_bits: u64) -> u64 {
-    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
-    let result = (status & 0xFF) == 0x7F;
-    MoltObject::from_bool(result).bits()
+    wait_status_macro(status_bits, |status| {
+        MoltObject::from_bool(wait_status::stopped(status))
+    })
 }
 
 /// `os.WSTOPSIG(status)` -> int
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_wstopsig(status_bits: u64) -> u64 {
-    let status = to_i64(obj_from_bits(status_bits)).unwrap_or(0) as i32;
-    let result = (status >> 8) & 0xFF;
-    MoltObject::from_int(result as i64).bits()
+    wait_status_macro(status_bits, |status| {
+        MoltObject::from_int(i64::from(wait_status::stop_sig(status)))
+    })
 }
 
 /// os.fspath shares the canonical runtime protocol and preserves result type.
@@ -2816,9 +2907,96 @@ pub extern "C" fn molt_os_fspath(path_bits: u64) -> u64 {
 // 9. Tier-0 gaps for click / trio / httpx support
 // ---------------------------------------------------------------------------
 
+/// `os.path.split` over a path's encoded bytes: posixpath when `sep` is `/`,
+/// ntpath (either separator, after the drive and root) when it is `\\`.
+/// Both halves end on ASCII separator boundaries of the input.
+fn split_path_bytes(path: &[u8], sep: u8) -> (&[u8], &[u8]) {
+    if sep == b'/' {
+        // posixpath.split keeps a head made only of separators verbatim.
+        let i = path.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1);
+        let (head, tail) = path.split_at(i);
+        if head.iter().all(|&b| b == b'/') {
+            return (head, tail);
+        }
+        let end = head.iter().rposition(|&b| b != b'/').map_or(0, |i| i + 1);
+        return (&head[..end], tail);
+    }
+    use molt_runtime_platform::path_text::{PathCoordinate, path_root_offsets};
+    let is_sep = |b: u8| b == b'\\' || b == b'/';
+    let (_, root_end) = path_root_offsets(path, b'\\', PathCoordinate::PythonCodePoints);
+    let tail_start = path[root_end..]
+        .iter()
+        .rposition(|&b| is_sep(b))
+        .map_or(root_end, |i| root_end + i + 1);
+    let mut head_end = tail_start;
+    while head_end > root_end && is_sep(path[head_end - 1]) {
+        head_end -= 1;
+    }
+    (&path[..head_end], &path[tail_start..])
+}
+
+fn split_path(path: &Path) -> (PathBuf, std::ffi::OsString) {
+    let sep = if cfg!(windows) { b'\\' } else { b'/' };
+    let (head, tail) = split_path_bytes(path.as_os_str().as_encoded_bytes(), sep);
+    // SAFETY: both halves are slices of this OsStr's own encoded bytes split at
+    // ASCII separators, which `from_encoded_bytes_unchecked` permits.
+    unsafe {
+        (
+            PathBuf::from(std::ffi::OsString::from_encoded_bytes_unchecked(
+                head.to_vec(),
+            )),
+            std::ffi::OsString::from_encoded_bytes_unchecked(tail.to_vec()),
+        )
+    }
+}
+
+enum MakedirsFailure {
+    Os(std::io::Error),
+    /// Leaf `mode` conversion raised; the exception is pending.
+    Raised(u64),
+}
+
+/// CPython's `os.makedirs` algorithm (Lib/os.py). Missing ancestors are made
+/// first with the default mode and the same `exist_ok`; an ancestor that a
+/// racing creator made (`FileExistsError`) is accepted; a trailing `curdir`
+/// component ends after its parent. Only the leaf receives `mode`, and the
+/// leaf's `mkdir(name, mode)` converts it, so a bad mode raises after the
+/// ancestors exist, exactly as in CPython. `leaf_mode_bits` is None for
+/// ancestors.
+fn makedirs_tree(
+    _py: &CoreGilToken,
+    name: &Path,
+    leaf_mode_bits: Option<u64>,
+    exist_ok: bool,
+) -> Result<(), MakedirsFailure> {
+    let (mut head, mut tail) = split_path(name);
+    if tail.is_empty() {
+        (head, tail) = split_path(&head);
+    }
+    if !head.as_os_str().is_empty() && !tail.is_empty() && !head.exists() {
+        match makedirs_tree(_py, &head, None, exist_ok) {
+            Ok(()) => {}
+            Err(MakedirsFailure::Os(err)) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(failure) => return Err(failure),
+        }
+        if tail == "." {
+            return Ok(());
+        }
+    }
+    let mode = match leaf_mode_bits {
+        Some(bits) => c_int_arg(_py, bits).map_err(MakedirsFailure::Raised)?,
+        None => 0o777,
+    };
+    match mkdir_with_mode(name, mode) {
+        Ok(()) => Ok(()),
+        // CPython cannot rely on EEXIST (EACCES or EROFS may take priority),
+        // so any failure is accepted when exist_ok and the leaf is a directory.
+        Err(_) if exist_ok && name.is_dir() => Ok(()),
+        Err(err) => Err(MakedirsFailure::Os(err)),
+    }
+}
+
 /// `os.makedirs(name, mode=0o777, exist_ok=False)` → None
-///
-/// Recursive directory creation (like `mkdir -p`).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
@@ -2830,39 +3008,79 @@ pub extern "C" fn molt_os_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bits
             Err(bits) => return bits,
         };
         let exist_ok = is_truthy(_py, obj_from_bits(exist_ok_bits));
-        let _mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(0o777);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            let mut builder = std::fs::DirBuilder::new();
-            builder.recursive(true).mode(_mode as u32);
-            match builder.create(&path) {
-                Ok(()) => MoltObject::none().bits(),
-                Err(err) if exist_ok && err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // exist_ok=True: succeed if the target is a directory
-                    if path.is_dir() {
-                        MoltObject::none().bits()
-                    } else {
-                        os_err_bits(_py, err, "makedirs")
-                    }
-                }
-                Err(err) => os_err_bits(_py, err, "makedirs"),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            match std::fs::create_dir_all(&path) {
-                Ok(()) => MoltObject::none().bits(),
-                Err(err) if exist_ok && err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if path.is_dir() {
-                        MoltObject::none().bits()
-                    } else {
-                        os_err_bits(_py, err, "makedirs")
-                    }
-                }
-                Err(err) => os_err_bits(_py, err, "makedirs"),
-            }
+        match makedirs_tree(_py, &path, Some(mode_bits), exist_ok) {
+            Ok(()) => MoltObject::none().bits(),
+            Err(MakedirsFailure::Os(err)) => os_err_bits(_py, err, "makedirs"),
+            Err(MakedirsFailure::Raised(bits)) => bits,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_path_bytes;
+
+    type SplitCase = (&'static [u8], &'static [u8], &'static [u8]);
+
+    fn assert_split(sep: u8, cases: &[SplitCase]) {
+        for &(path, head, tail) in cases {
+            assert_eq!(
+                split_path_bytes(path, sep),
+                (head, tail),
+                "split of {:?}",
+                String::from_utf8_lossy(path)
+            );
+        }
+    }
+
+    /// Expected halves are CPython `posixpath.split` results.
+    #[test]
+    fn split_path_bytes_matches_posixpath() {
+        assert_split(
+            b'/',
+            &[
+                (b"", b"", b""),
+                (b"a", b"", b"a"),
+                (b"/", b"/", b""),
+                (b"//", b"//", b""),
+                (b"///", b"///", b""),
+                (b"a/", b"a", b""),
+                (b"a//b", b"a", b"b"),
+                (b"/a/", b"/a", b""),
+                (b"//a", b"//", b"a"),
+                (b"///a", b"///", b"a"),
+                (b"a/b/.", b"a/b", b"."),
+                (b"a/b/..", b"a/b", b".."),
+                (b"/a/b/c", b"/a/b", b"c"),
+                (b"x/\xff/y", b"x/\xff", b"y"),
+            ],
+        );
+    }
+
+    /// Expected halves are CPython `ntpath.split` results.
+    #[test]
+    fn split_path_bytes_matches_ntpath() {
+        assert_split(
+            b'\\',
+            &[
+                (b"", b"", b""),
+                (b"a", b"", b"a"),
+                (b"C:", b"C:", b""),
+                (b"C:\\", b"C:\\", b""),
+                (b"C:/", b"C:/", b""),
+                (b"C:a", b"C:", b"a"),
+                (b"C:\\a", b"C:\\", b"a"),
+                (b"C:\\\\a", b"C:\\", b"a"),
+                (b"C:/a/b", b"C:/a", b"b"),
+                (b"a/b\\c", b"a/b", b"c"),
+                (b"\\\\server\\share", b"\\\\server\\share", b""),
+                (b"\\\\server\\share\\", b"\\\\server\\share\\", b""),
+                (b"\\\\server\\share\\a\\b", b"\\\\server\\share\\a", b"b"),
+                (b"\\a", b"\\", b"a"),
+                (b"a\\\\", b"a", b""),
+                (b"\\\\?\\UNC\\srv\\shr\\x", b"\\\\?\\UNC\\srv\\shr\\", b"x"),
+                (b"a\\b\\.", b"a\\b", b"."),
+            ],
+        );
+    }
 }

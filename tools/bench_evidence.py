@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from contextlib import ExitStack, contextmanager
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, TYPE_CHECKING
 from enum import Enum
 
 from molt.compilation_target import TargetKind, admit_target, is_wasm_target
 from molt.native_target import NativeTargetSpec
 from typing import Any
+
+from molt.process_environment import ProcessEnvironment
+
+if TYPE_CHECKING:
+    from molt.cli.source_package_seal import SourcePackageSeal
 
 
 class MetricLane(Enum):
@@ -287,13 +293,21 @@ class BenchmarkSourceRecord(TypedDict):
 
 
 class BenchmarkWorkloadRecord(TypedDict):
+    schema: Literal["molt.benchmark-workload/2"]
     entry: str
     entry_source: str
-    scope: Literal["local-python-source-closure"]
+    scope: Literal["local-python-source-closure", "sealed-project"]
     sources: list[BenchmarkSourceRecord]
     topology_sha256: str
     run_args: list[str]
     molt_args: list[str]
+    sealed_inputs: SealedBenchmarkInputs | None
+
+
+class SealedBenchmarkInputs(TypedDict):
+    seal_sha256: str
+    python_roots: list[str]
+    oracle: str
 
 
 def workload_identity_problems(
@@ -301,6 +315,7 @@ def workload_identity_problems(
 ) -> list[str]:
     """One durable workload contract for every benchmark projection."""
     if not isinstance(value, Mapping) or set(value) != {
+        "schema",
         "entry",
         "entry_source",
         "scope",
@@ -308,15 +323,18 @@ def workload_identity_problems(
         "topology_sha256",
         "run_args",
         "molt_args",
+        "sealed_inputs",
     }:
         return ["workload identity is missing or has invalid fields"]
+    if value["schema"] != "molt.benchmark-workload/2":
+        return ["workload schema is unsupported"]
     if not isinstance(value["entry"], str) or not value["entry"]:
         return ["workload entry is invalid"]
     if expected_entry is not None and value["entry"] != expected_entry:
         return [
             f"benchmark name differs from admitted workload entry: {expected_entry}"
         ]
-    if value["scope"] != "local-python-source-closure":
+    if value["scope"] not in ("local-python-source-closure", "sealed-project"):
         return ["workload source scope is unsupported"]
 
     def digest(v: object, *, empty: bool = False) -> bool:
@@ -327,6 +345,36 @@ def workload_identity_problems(
 
     if not digest(value["topology_sha256"], empty=True):
         return ["workload topology digest is invalid"]
+    sealed = value["sealed_inputs"]
+    if value["scope"] == "sealed-project":
+        from molt.portable_paths import portable_relative_path
+
+        if not isinstance(sealed, Mapping) or set(sealed) != {
+            "seal_sha256",
+            "python_roots",
+            "oracle",
+        }:
+            return ["sealed benchmark inputs are missing or invalid"]
+        if not digest(sealed["seal_sha256"]):
+            return ["sealed benchmark identity is invalid"]
+        roots = sealed["python_roots"]
+        if (
+            not isinstance(roots, list)
+            or not roots
+            or any(type(p) is not str for p in roots)
+        ):
+            return ["sealed benchmark Python roots are invalid"]
+        if len(set(roots)) != len(roots):
+            return ["sealed benchmark Python roots are duplicated"]
+        try:
+            for path in (*roots, sealed["oracle"]):
+                portable_relative_path(path)
+        except (TypeError, ValueError):
+            return ["sealed benchmark paths are not portable relative paths"]
+        if value["topology_sha256"] != sealed["seal_sha256"]:
+            return ["sealed benchmark topology differs from its seal"]
+    elif sealed is not None:
+        return ["local benchmark must not advertise sealed inputs"]
     rows = value["sources"]
     if not isinstance(rows, list) or not rows:
         return ["workload sources are missing"]
@@ -379,12 +427,22 @@ def workloads_comparable(left: object, right: object) -> bool:
 
 
 @dataclass(frozen=True)
+class BenchmarkInvocation:
+    command: tuple[str, ...]
+    environment: ProcessEnvironment
+    cwd: Path | None
+
+
+@dataclass(frozen=True)
 class AdmittedBenchmarkWorkload:
     """A live path generation, not an assertion of loaded-byte attestation."""
 
     script: Path
     _record: BenchmarkWorkloadRecord
     _verify: Callable[[], None]
+    execution_script: Path
+    execution_root: Path
+    _seal: SourcePackageSeal | None = None
 
     @property
     def record(self) -> BenchmarkWorkloadRecord:
@@ -395,6 +453,86 @@ class AdmittedBenchmarkWorkload:
     def verify(self) -> None:
         self._verify()
 
+    @property
+    def source_cwd(self) -> Path | None:
+        return self.execution_root if self._seal is not None else None
+
+    def _python_paths(self) -> str:
+        sealed = self.record["sealed_inputs"]
+        assert sealed is not None
+        return os.pathsep.join(
+            str(self.execution_root / root) for root in sealed["python_roots"]
+        )
+
+    def compiler_environment(
+        self, environment: Mapping[str, str]
+    ) -> ProcessEnvironment:
+        env = ProcessEnvironment(environment)
+        if self._seal is None:
+            return env
+        paths = self._python_paths()
+        return env.updated(
+            {
+                "MOLT_HERMETIC_MODULE_ROOTS": "1",
+                "MOLT_MODULE_ROOTS": paths,
+                "PYTHONPATH": paths,
+            }
+        )
+
+    def reference_invocation(
+        self, command: Sequence[str], environment: Mapping[str, str]
+    ) -> BenchmarkInvocation:
+        env = ProcessEnvironment(environment)
+        flags: tuple[str, ...] = ()
+        if self._seal is not None:
+            # The compiler image remains independent. Application references
+            # load only their declared packages plus the selected stdlib.
+            env = env.without(
+                name for name in env if env.rule.key(name).startswith("PYTHON")
+            )
+            env = env.updated(
+                {
+                    "PYTHONPATH": self._python_paths(),
+                    "PYTHONHASHSEED": "0",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                }
+            )
+            flags = ("-P", "-S", "-B")
+        return BenchmarkInvocation(
+            (*command, *flags, str(self.execution_script), *self.record["run_args"]),
+            env,
+            self.source_cwd,
+        )
+
+    def guest_invocation(
+        self, command: Sequence[str], environment: Mapping[str, str]
+    ) -> BenchmarkInvocation:
+        return BenchmarkInvocation(
+            (*command, *self.record["run_args"]),
+            ProcessEnvironment(environment),
+            self.source_cwd,
+        )
+
+    def verify_reference_output(self, stdout: str, stderr: str) -> None:
+        if self._seal is not None:
+            from tools.compat.comparison import Outputs, compare_outputs
+
+            sealed = self.record["sealed_inputs"]
+            assert sealed is not None
+            oracle = sealed["oracle"]
+            expected = (
+                (self.execution_root / oracle)
+                .read_bytes()
+                .decode("utf-8", "surrogateescape")
+            )
+            verdict = compare_outputs(
+                Outputs(expected, "", 0),
+                Outputs(stdout, stderr, 0),
+                stderr_mode="exact",
+            )
+            if not verdict.equal:
+                raise ValueError("reference output differs from sealed semantic oracle")
+
 
 @contextmanager
 def admit_benchmark_workload(
@@ -403,6 +541,9 @@ def admit_benchmark_workload(
     project_root: Path,
     run_args: Sequence[str],
     molt_args: Sequence[str],
+    sealed_project: SourcePackageSeal | None = None,
+    python_roots: Sequence[str] = (),
+    oracle: str | None = None,
 ) -> Iterator[AdmittedBenchmarkWorkload]:
     """Hold source generations through both runtimes without relocating code.
 
@@ -424,6 +565,110 @@ def admit_benchmark_workload(
 
     script = script.expanduser().absolute()
     project_root = project_root.resolve()
+    if sealed_project is None:
+        from tools.benchmark_applications import prepare_for_script
+
+        prepared = prepare_for_script(script)
+        if prepared is not None:
+            if tuple(run_args) != prepared.run_args:
+                raise ValueError(
+                    "application arguments differ from its declared recipe"
+                )
+            sealed_project = prepared.seal
+            python_roots = prepared.python_roots
+            oracle = prepared.oracle
+    if sealed_project is not None:
+        from molt.cli.source_package_seal import verify_source_package_seal
+        from molt.portable_paths import portable_relative_path
+
+        entry = canonical_benchmark_key(script)
+        logical_root = (
+            project_root if script.is_relative_to(project_root) else script.parent
+        )
+        relative_entry = script.relative_to(logical_root).as_posix()
+        portable_relative_path(relative_entry)
+        seal = verify_source_package_seal(
+            sealed_project.root, expected_sha256=sealed_project.seal_sha256
+        )
+        execution_script = seal.payload_root / relative_entry
+        inventory = {item.relative_path: item for item in seal.files}
+        if (
+            relative_entry not in inventory
+            or inventory[relative_entry].role != "source"
+        ):
+            raise ValueError("sealed benchmark is missing its logical source entry")
+        if not python_roots or oracle is None:
+            raise ValueError(
+                "sealed benchmark requires import roots and semantic oracle"
+            )
+        for root_name in python_roots:
+            portable_relative_path(root_name)
+            if not any(
+                item.relative_path.startswith(root_name + "/") for item in seal.files
+            ):
+                raise ValueError("sealed benchmark Python root is missing")
+        portable_relative_path(oracle)
+        if oracle not in inventory or inventory[oracle].role != "oracle":
+            raise ValueError("sealed benchmark semantic oracle is missing")
+        from molt.toolchain_identity import stable_regular_file_identity
+
+        selected = stable_regular_file_identity(script, label="benchmark driver")
+        if selected.sha256 != inventory[relative_entry].sha256:
+            raise ValueError("sealed benchmark driver differs from selected source")
+        record: BenchmarkWorkloadRecord = {
+            "schema": "molt.benchmark-workload/2",
+            "entry": entry,
+            "entry_source": relative_entry,
+            "scope": "sealed-project",
+            "sources": [
+                {"path": item.relative_path, "size": item.size, "sha256": item.sha256}
+                for item in seal.files
+                if item.relative_path.endswith(".py")
+            ],
+            "topology_sha256": seal.seal_sha256,
+            "run_args": list(run_args),
+            "molt_args": list(molt_args),
+            "sealed_inputs": {
+                "seal_sha256": seal.seal_sha256,
+                "python_roots": list(python_roots),
+                "oracle": oracle,
+            },
+        }
+        problems = workload_identity_problems(record)
+        if problems:
+            raise ValueError("; ".join(problems))
+        from molt.toolchain_identity import stable_regular_file_version
+
+        generations = tuple(
+            stable_regular_file_version(
+                seal.payload_root / item.relative_path, label="sealed benchmark input"
+            )
+            for item in seal.files
+        )
+
+        def verify_seal() -> None:
+            verify_source_package_seal(seal.root, expected_sha256=seal.seal_sha256)
+            for generation in generations:
+                verify_stable_regular_file_identity(
+                    generation, label="sealed benchmark input", hash_content=False
+                )
+
+        admitted = AdmittedBenchmarkWorkload(
+            script, record, verify_seal, execution_script, seal.payload_root, seal
+        )
+        try:
+            yield admitted
+        except BaseException as primary:
+            try:
+                admitted.verify()
+            except BaseException as invalidation:
+                primary.add_note(f"workload invalidated during failure: {invalidation}")
+            raise
+        else:
+            admitted.verify()
+        return
+    if python_roots or oracle is not None:
+        raise ValueError("declared package roots/oracle require a sealed project")
     root = project_root if script.is_relative_to(project_root) else script.parent
     search_roots = tuple(
         dict.fromkeys(p for p in (script.parent, root / "src", root) if p.is_dir())
@@ -450,6 +695,7 @@ def admit_benchmark_workload(
                 raise ValueError(f"benchmark source changed during admission: {path}")
             identities.append(identity)
         record: BenchmarkWorkloadRecord = {
+            "schema": "molt.benchmark-workload/2",
             "entry": canonical_benchmark_key(script),
             "entry_source": script.relative_to(root).as_posix(),
             "scope": "local-python-source-closure",
@@ -467,6 +713,7 @@ def admit_benchmark_workload(
             "topology_sha256": closure.topology_digest,
             "run_args": list(run_args),
             "molt_args": list(molt_args),
+            "sealed_inputs": None,
         }
         problems = workload_identity_problems(record)
         if problems:
@@ -485,7 +732,7 @@ def admit_benchmark_workload(
             ):
                 raise ValueError(f"benchmark source closure changed: {script}")
 
-        workload = AdmittedBenchmarkWorkload(script, record, verify)
+        workload = AdmittedBenchmarkWorkload(script, record, verify, script, root)
         workload.verify()
         try:
             yield workload

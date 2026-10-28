@@ -288,23 +288,6 @@ def _run_bolt_post_link(
             discard_staged_output(stage)
 
 
-def _detect_macos_arch(obj_path: Path) -> str | None:
-    try:
-        result = _run_completed_command(
-            ["lipo", "-archs", str(obj_path)],
-            capture_output=True,
-            env=None,
-            cwd=obj_path.parent,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    archs = result.stdout.strip().split()
-    return archs[0] if archs else None
-
-
 def _append_darwin_runtime_frameworks(
     args: list[str],
     *,

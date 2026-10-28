@@ -103,6 +103,32 @@ def test_safe_run_refuses_incomplete_custody_and_does_not_guess_exit_codes(
     assert outcome.stderr == forged
 
 
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_observer_refuses_missing_captured_output(stream):
+    completed = _completed()
+    if stream == "stdout":
+        completed.stdout = None
+    outcome = safe_run.observed_run_outcome(
+        completed,
+        captured_stderr=None if stream == "stderr" else completed.child_stderr,
+    )
+    assert not outcome.ok
+    assert outcome.status == "error"
+    # The missing stream remains missing, rather than becoming empty output.
+    assert getattr(outcome, stream) is None
+
+
+def test_observer_preserves_child_failure_before_missing_measurements():
+    completed = _completed(
+        returncode=7, child_returncode=7, child_elapsed_s=None, peak=None
+    )
+    outcome = safe_run.observed_run_outcome(completed, captured_stderr="failed\n")
+    assert not outcome.ok and outcome.status == "nonzero"
+    assert outcome.exit_code == 7
+    assert outcome.elapsed_s is None and outcome.peak_rss_mib is None
+    assert outcome.stdout == "child output" and outcome.stderr == "failed\n"
+
+
 def test_safe_run_preserves_guard_infrastructure_outcome(monkeypatch, capsys):
     from tools import memory_guard
 

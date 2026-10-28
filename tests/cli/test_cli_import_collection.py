@@ -13242,7 +13242,6 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
             ),
         ),
         host_platform="linux",
-        host_arch="x86_64",
     )
 
     start = link_plan.command.index("-Wl,--start-group")
@@ -13322,7 +13321,6 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         stdlib_obj_path=None,
         external_link_requirements=external_link_requirements,
         host_platform="darwin",
-        host_arch="arm64",
     )
 
     force_load_arguments = tuple(
@@ -13471,7 +13469,6 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
             ),
         ),
         host_platform="win32",
-        host_arch="x86_64",
     )
 
     assert f"/WHOLEARCHIVE:{extension_archive.resolve()}" in link_plan.command
