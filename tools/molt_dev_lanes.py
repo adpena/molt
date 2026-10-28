@@ -188,7 +188,7 @@ def _default_root(main: Path) -> Path:
 
 
 def _record_path(main: Path, slug: str) -> Path:
-    from tools.agent_coordination import task_dir
+    from tools.coordination_records import task_dir
 
     return task_dir(main, lane_task(slug)) / "coordination.json"
 
@@ -744,7 +744,7 @@ def _undo_lane_start(
 
 
 def cmd_lane_start(args: argparse.Namespace) -> int:
-    from tools import agent_coordination
+    from tools import agent_coordination, coordination_records
 
     driver = _driver()
     # A pinned claim must name the controller this process runs from; the
@@ -764,7 +764,7 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
     with _lane_slug_lock(repo, slug), _lane_slots_lock(repo):
         if _ref_sha(git, f"refs/heads/{branch}") is not None:
             status = _record_status(main, slug)
-            if status in agent_coordination.ACTIVE_STATUSES:
+            if status in coordination_records.ACTIVE_STATUSES:
                 raise DriverError(
                     f"{branch} already exists; retire it (lane retire {slug}) or "
                     "choose another slug"
@@ -780,7 +780,7 @@ def cmd_lane_start(args: argparse.Namespace) -> int:
                 f"{branch} exists with {found}; {_hand_removal(git, branch)}, or "
                 "choose another slug"
             )
-        if _record_status(main, slug) in agent_coordination.ACTIVE_STATUSES:
+        if _record_status(main, slug) in coordination_records.ACTIVE_STATUSES:
             raise DriverError(
                 f"{_record_path(main, slug)} is an active record without its branch; "
                 "close it before reusing the slug"

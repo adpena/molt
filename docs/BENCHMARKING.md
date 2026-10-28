@@ -123,7 +123,7 @@ warm developer path; pass `--isolate-daemon` only when explicitly measuring
 cold daemon startup or investigating daemon crash isolation. Isolated cleanup is
 scoped to the current `MOLT_SESSION_ID` or explicit backend socket, preserves
 foreign-session daemons, and records daemon custody events in
-`tmp/bench/daemon_custody.jsonl`.
+`<lane scratch>/bench/daemon_custody.jsonl` (`molt.dx.scratch_root`).
 `tools/bench.py` and `tools/bench_wasm.py` also prune backend daemons only
 through `src/molt/backend_daemon_custody.py` after canonicalizing their session
 environment, so concurrent benchmark agents keep their own warm daemon/cache

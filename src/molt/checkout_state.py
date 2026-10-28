@@ -60,6 +60,8 @@ SESSION_IDLE_ENV = "MOLT_SESSION_TARGET_IDLE_HOURS"
 DEFAULT_SESSION_IDLE_HOURS = 6.0
 AGENT_EVIDENCE_IDLE_ENV = "MOLT_AGENT_EVIDENCE_IDLE_DAYS"
 DEFAULT_AGENT_EVIDENCE_IDLE_DAYS = 3
+SCRATCH_IDLE_ENV = "MOLT_SCRATCH_IDLE_DAYS"
+DEFAULT_SCRATCH_IDLE_DAYS = 3
 RETIRED_DIR = "retired"
 RETIREMENT_RECORD_SUFFIX = ".retirement.json"
 RETIREMENT_WINDOW_S = 7 * 86400.0
@@ -72,6 +74,7 @@ _GC_LOCK = ("target", ".disk_guard", "checkout-state-gc.lock")
 _COMPONENT = re.compile(r"[A-Za-z0-9_.-]{1,24}-[0-9a-f]{12}")
 # `molt.build_state_layout.build_state_address`: a SHA-256 digest.
 _ADDRESS = re.compile(r"[0-9a-f]{64}")
+_SCRATCH_ROOT = re.compile(r"scratch-[0-9a-f]{12}")
 # `molt.dx.session_artifact_component`: 1 to 32 letters, digits, `-` or `_`,
 # in the `molt.dx.session_targets_dir` of a target.
 _SESSION = re.compile(r"[A-Za-z0-9_-]{1,32}")
@@ -112,6 +115,7 @@ CheckoutStateKind = Literal[
     "pytest-cache",
     "hypothesis-home",
     "build-control",
+    "scratch",
 ]
 _KINDS: frozenset[str] = frozenset(get_args(CheckoutStateKind))
 
@@ -129,6 +133,7 @@ CHECKOUT_STATE_CONTAINERS: Mapping[CheckoutStateKind, tuple[str, ...]] = (
             "pytest-cache": (SCRATCH_DIRNAME, "pytest-cache"),
             "hypothesis-home": (SCRATCH_DIRNAME, "hypothesis"),
             "build-control": (SCRATCH_DIRNAME, "build-control"),
+            "scratch": (SCRATCH_DIRNAME,),
         }
     )
 )
@@ -153,6 +158,8 @@ class CheckoutStateRoot:
 def _name_key(kind: CheckoutStateKind, name: str) -> str | None:
     """The owner key a root's name carries, or None for a foreign name."""
     name = os.path.normcase(name)
+    if kind == "scratch":
+        return name if name not in scratch_control_names() else None
     if kind == "build-control":
         return name if _ADDRESS.fullmatch(name) else None
     if kind == "uv-environment":
@@ -170,7 +177,10 @@ def _owner_key(kind: CheckoutStateKind, owner: Path) -> str:
         return build_state_address(owner)
     from .dx import checkout_component
 
-    return os.path.normcase(checkout_component(owner))
+    component = os.path.normcase(checkout_component(owner))
+    # Reuse the checkout's identity, without its human prefix, to preserve
+    # the Unix temporary-socket and Windows compiler path budgets.
+    return "scratch-" + component[-12:] if kind == "scratch" else component
 
 
 def _root_key(kind: CheckoutStateKind, root: Path) -> str | None:
@@ -256,6 +266,7 @@ def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
         *(
             (*container, "*") if kind == "python-environment" else container
             for kind, container in CHECKOUT_STATE_CONTAINERS.items()
+            if kind != "scratch" or _SCRATCH_ROOT.fullmatch(os.path.normcase(root.name))
         ),
         ("target", "checkouts", "*", "sessions"),
         ("target", "sessions"),
@@ -287,6 +298,13 @@ def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
             continue
         artifact = root.parents[depth]
         if checkout_state_kind_of(root, artifact) == kind:
+            if kind == "scratch" and not _SCRATCH_ROOT.fullmatch(
+                os.path.normcase(root.name)
+            ):
+                # Untracked scratch has no cooperating use protocol. In
+                # particular, ordinary host /tmp children must never acquire
+                # artifact locks under the filesystem root.
+                continue
             return _ManagedStateRoot(root, artifact, kind)
     artifact = target_use_artifact_root(root)
     if artifact is not None:
@@ -404,6 +422,12 @@ def _publish_checkout_use(
                 root.mkdir(parents=True, exist_ok=True)
         _record_checkout_owner(root, owner=owner.path, kind=owner.kind)
     _record_checkout_state_use(root)
+
+
+def checkout_state_lock_paths(root: Path) -> tuple[Path, ...]:
+    """The existing external lifetime locks; observing them creates nothing."""
+    _, locks = _state_lock_plan(((root, None),))
+    return tuple(locks.values())
 
 
 @contextmanager
@@ -606,6 +630,25 @@ def checkout_state_environment_roots(
         if not virtual.is_absolute():
             virtual = working / virtual
         _retain_python_resources(roots, (NativeLaunchResource(virtual, "directory"),))
+    for key in (
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "MOLT_PROOF_SCRATCH_ROOT",
+        "MOLT_GUARD_SCRATCH_ROOT",
+    ):
+        if raw := environment.get(key, "").strip():
+            selected = Path(raw).expanduser()
+            selected = (working / selected).absolute()
+            for candidate in (selected, *selected.parents):
+                if not _SCRATCH_ROOT.fullmatch(os.path.normcase(candidate.name)):
+                    continue
+                coordinate = _managed_coordinate(candidate)
+                if coordinate is not None and coordinate.kind == "scratch":
+                    roots.setdefault(coordinate.root, None)
+                    break
     return tuple(roots.items())
 
 
@@ -739,6 +782,55 @@ def checkout_scratch_state_dir(
     return scratch_dir(source_root, purpose, environment)
 
 
+def scratch_control_names() -> frozenset[str]:
+    """Existing control namespaces, whose own protocols alone retire them.
+
+    Guard scratch (gs and pt-* allocations) requires terminal custody, not
+    age. IR leases, daemon sockets and build admission also outlive a resolver.
+    Keep those protocols outside the agent-scratch collector.
+    """
+    from .memory_guard_paths import STATE_DIRNAME
+
+    return frozenset(
+        {
+            *(
+                container[1]
+                for container in CHECKOUT_STATE_CONTAINERS.values()
+                if len(container) == 2 and container[0] == SCRATCH_DIRNAME
+            ),
+            STATE_DIRNAME,
+            "pytest-memory-guard",
+            "harness_memory_guard",
+            "gs",
+            "backend-ir-leases",
+            "molt-build-slots",
+        }
+    )
+
+
+def scratch_state_root(container: Path, *, owner: Path, create: bool = True) -> Path:
+    """Select one lane's scratch; materialize, bind and stamp it before use.
+
+    The owner is the lane's checkout, just like other checkout state. Purpose
+    directories share this root, never the root of another lane. Selection
+    alone is read-only; DX's materializing path stamps existing roots too.
+    """
+    from .file_publication import resolve_owned_path
+
+    owner = resolve_owned_path(owner.expanduser().absolute())
+    root = resolve_owned_path(container / _owner_key("scratch", owner))
+    if create:
+        with checkout_state_use(((root, None),), publish=False):
+            root.mkdir(parents=True, exist_ok=True)
+            resolve_owned_path(root / OWNER_RECORD)
+            _record_checkout_owner(root, owner=owner, kind="scratch")
+            if read_checkout_owner(root) != CheckoutOwner(owner, "scratch"):
+                raise ValueError(f"scratch owner does not bind: {root}")
+            resolve_owned_path(root / LAST_USE_STAMP)
+            _record_checkout_state_use(root, required=True)
+    return root
+
+
 def checkout_state_kind_at(parts: tuple[str, ...]) -> CheckoutStateKind | None:
     """The kind of checkout state root at ``parts`` below an artifact root."""
     parts = tuple(os.path.normcase(part) for part in parts)
@@ -753,6 +845,11 @@ def checkout_state_kind_at(parts: tuple[str, ...]) -> CheckoutStateKind | None:
         return "cargo-target"
     for kind, container in CHECKOUT_STATE_CONTAINERS.items():
         if len(parts) == len(container) + 1 and parts[:-1] == container:
+            if kind == "scratch" and (
+                parts[-1] in scratch_control_names()
+                or parts[-1].startswith(("pt-", "molt-backend-"))
+            ):
+                return None
             return kind
     return None
 
@@ -975,7 +1072,9 @@ def record_checkout_state_use(root: Path, *, now: float | None = None) -> None:
         _record_checkout_state_use(root, now=now)
 
 
-def _record_checkout_state_use(root: Path, *, now: float | None = None) -> None:
+def _record_checkout_state_use(
+    root: Path, *, now: float | None = None, required: bool = False
+) -> None:
     """Mark ``root`` used now; a stamp newer than the resolution stays as is.
 
     The common case is one ``stat``. A missing root stays missing.
@@ -988,17 +1087,25 @@ def _record_checkout_state_use(root: Path, *, now: float | None = None) -> None:
             return
     except FileNotFoundError:
         if not root.is_dir():
+            if required:
+                raise FileNotFoundError(root)
             return
         try:
             metadata.mkdir(parents=True, exist_ok=True)
             stamp.touch()
         except OSError:
+            if required:
+                raise
             return
     except OSError:
+        if required:
+            raise
         return
     try:
         os.utime(stamp, (moment, moment))
     except OSError:
+        if required:
+            raise
         return
 
 
@@ -1220,6 +1327,7 @@ class RetentionLimits:
 
     max_age_s: float
     session_idle_s: float
+    scratch_idle_s: float = DEFAULT_SCRATCH_IDLE_DAYS * 86400.0
 
 
 def retention_limits(environment: Mapping[str, str]) -> RetentionLimits:
@@ -1230,6 +1338,9 @@ def retention_limits(environment: Mapping[str, str]) -> RetentionLimits:
         ),
         session_idle_s=_idle_limit_s(
             environment, SESSION_IDLE_ENV, DEFAULT_SESSION_IDLE_HOURS, 3600.0, "hours"
+        ),
+        scratch_idle_s=_idle_limit_s(
+            environment, SCRATCH_IDLE_ENV, DEFAULT_SCRATCH_IDLE_DAYS, 86400.0, "days"
         ),
     )
 
@@ -1413,7 +1524,12 @@ RetentionReason = Literal["owner-gone", "max-age", "session-idle"]
 
 
 def checkout_state_decision(
-    root: Path, artifact_root: Path, *, now: float, limits: RetentionLimits
+    root: Path,
+    artifact_root: Path,
+    *,
+    now: float,
+    limits: RetentionLimits,
+    last_use: float | None = None,
 ) -> RetentionReason | None:
     """Why the GC may retire ``root`` now, or None to keep it.
 
@@ -1427,15 +1543,13 @@ def checkout_state_decision(
     if is_session_target(root, artifact_root):
         idle = now - checkout_state_last_use(root)
         return "session-idle" if idle >= limits.session_idle_s else None
-    if (
-        checkout_state_kind_of(root, artifact_root) is None
-        and target_use_artifact_root(root) != artifact_root
-    ):
+    kind = checkout_state_kind_of(root, artifact_root)
+    if kind is None and target_use_artifact_root(root) != artifact_root:
         return None
-    idle = now - checkout_state_last_use(root)
+    idle = now - (checkout_state_last_use(root) if last_use is None else last_use)
     if idle < PROTECTION_WINDOW_S:
         return None
-    if idle >= limits.max_age_s:
+    if idle >= (limits.scratch_idle_s if kind == "scratch" else limits.max_age_s):
         return "max-age"
     if idle >= PROTECTION_WINDOW_S and orphaned_checkout_state(root, artifact_root):
         return "owner-gone"
@@ -1561,7 +1675,7 @@ def read_checkout_owner(root: Path) -> CheckoutOwner | None:
             max_bytes=_MAX_RECORD_BYTES,
             label="checkout state owner",
         )
-    except (OSError, ExactJsonError, ValueError):
+    except (OSError, ExactJsonError, ValueError, RecursionError):
         return None
     if not isinstance(value, dict) or set(value) != {"schema", "owner", "kind"}:
         return None
@@ -1569,6 +1683,7 @@ def read_checkout_owner(root: Path) -> CheckoutOwner | None:
     if (
         value["schema"] != SCHEMA
         or not isinstance(owner, str)
+        or not isinstance(kind, str)
         or kind not in _KINDS
         or not Path(owner).is_absolute()
     ):

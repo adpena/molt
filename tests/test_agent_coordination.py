@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from tools import agent_coordination
+from tools import agent_coordination, coordination_records
 import time
 from tests.process_guard_common import install_module_view
 
@@ -371,7 +371,7 @@ def test_load_records_tolerates_utf16_and_bom_records(tmp_path: Path) -> None:
         )
     )
 
-    records = agent_coordination.load_records(tmp_path)  # must not raise
+    records = coordination_records.load_records(tmp_path)  # must not raise
     by_task = {record.task: record.payload for record in records}
 
     assert by_task["utf8-lane"]["status"] == "running"
@@ -482,7 +482,7 @@ def _write_record(
     root: Path,
     task: str,
     *,
-    role: str = agent_coordination.BROAD_ROLE,
+    role: str = coordination_records.BROAD_ROLE,
     status: str = "running",
     lane: str = "tests/differential/basic",
     target: str = "target",
@@ -1888,7 +1888,7 @@ def test_daily_harvest_keeps_unique_evidence_and_batches_repository_blob_checks(
 
     now, tasks = _evidence_harvest_fixture(tmp_path)
     reads, commands = Counter(), []
-    open_path, popen = Path.open, agent_coordination.subprocess.Popen
+    open_path, popen = Path.open, coordination_records.subprocess.Popen
 
     def count_read(path, *args, **kwargs):
         mode = args[0] if args else kwargs.get("mode", "r")
@@ -1906,9 +1906,9 @@ def test_daily_harvest_keeps_unique_evidence_and_batches_repository_blob_checks(
 
     monkeypatch.setattr(Path, "open", count_read)
     monkeypatch.setattr(
-        agent_coordination,
+        coordination_records,
         "subprocess",
-        ModuleView(agent_coordination.subprocess, Popen=observe_stream),
+        ModuleView(coordination_records.subprocess, Popen=observe_stream),
     )
     result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert not result.errors
@@ -1963,7 +1963,7 @@ def test_harvest_rules_have_independent_mutation_oracles(
     if mutation == "invalid":
         from dataclasses import replace
 
-        load = agent_coordination.load_records
+        load = coordination_records.load_records
 
         def accept_invalid(root):
             return [
@@ -1973,27 +1973,27 @@ def test_harvest_rules_have_independent_mutation_oracles(
                 for record in load(root)
             ]
 
-        monkeypatch.setattr(agent_coordination, "load_records", accept_invalid)
+        monkeypatch.setattr(coordination_records, "load_records", accept_invalid)
         expected = tasks["invalid"] / "artifacts/payload.bin"
     elif mutation == "active":
-        monkeypatch.setattr(agent_coordination, "ACTIVE_STATUSES", frozenset())
+        monkeypatch.setattr(coordination_records, "ACTIVE_STATUSES", frozenset())
         expected = tasks["paused"] / "artifacts/payload.bin"
     elif mutation == "reference":
         monkeypatch.setattr(
-            agent_coordination, "active_task_references", lambda _: set()
+            coordination_records, "active_task_references", lambda _: set()
         )
         expected = tasks["referenced"] / "artifacts/payload.bin"
     elif mutation == "idle":
-        monkeypatch.setattr(agent_coordination, "agent_evidence_idle_s", lambda _: 0)
+        monkeypatch.setattr(coordination_records, "agent_evidence_idle_s", lambda _: 0)
         expected = tasks["recent"] / "artifacts/payload.bin"
     elif mutation == "blob":
         monkeypatch.setattr(
-            agent_coordination, "_evidence_blob_id", lambda *_: "0" * 40
+            coordination_records, "_evidence_blob_id", lambda *_: "0" * 40
         )
         expected = tasks["idle"] / "artifacts/report-copy.md"
     else:
         monkeypatch.setattr(
-            agent_coordination,
+            coordination_records,
             "_EVIDENCE_NAMES",
             re.compile(r"never-match-any-record$"),
         )
@@ -2037,7 +2037,7 @@ def test_reactivated_task_cannot_be_harvested_from_a_stale_snapshot(
     from tools import disk_guard
 
     now, tasks = _evidence_harvest_fixture(tmp_path)
-    original = agent_coordination.checkout_state_retirement
+    original = coordination_records.checkout_state_retirement
     reactivated = False
 
     @contextmanager
@@ -2052,7 +2052,7 @@ def test_reactivated_task_cannot_be_harvested_from_a_stale_snapshot(
             yield admitted
 
     monkeypatch.setattr(
-        agent_coordination, "checkout_state_retirement", reactivate_before_admission
+        coordination_records, "checkout_state_retirement", reactivate_before_admission
     )
     result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert reactivated and not result.errors
@@ -2119,7 +2119,7 @@ def test_read_observation_does_not_keep_terminal_payloads(tmp_path, monkeypatch)
     from tools import disk_guard
 
     now, tasks = _evidence_harvest_fixture(tmp_path)
-    inventory = agent_coordination._evidence_inventory
+    inventory = coordination_records._evidence_inventory
 
     def observe_reads(root, deadline):
         result = inventory(root, deadline)
@@ -2129,7 +2129,7 @@ def test_read_observation_does_not_keep_terminal_payloads(tmp_path, monkeypatch)
             os.utime(record, ns=(found.st_atime_ns + 1_000_000_000, found.st_mtime_ns))
         return result
 
-    monkeypatch.setattr(agent_coordination, "_evidence_inventory", observe_reads)
+    monkeypatch.setattr(coordination_records, "_evidence_inventory", observe_reads)
     result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert not result.errors
     assert not (tasks["idle"] / "artifacts/payload.bin").exists()

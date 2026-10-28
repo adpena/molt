@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 
 from molt.frontend import tv_hooks
 
@@ -30,7 +31,9 @@ def test_temp_root_prefers_explicit_overrides(tmp_path: Path) -> None:
     assert tv_hooks._temp_root(env) == ambient_tmp
 
     env.pop("TMPDIR")
-    assert tv_hooks._temp_root(env) == ext_root.resolve() / "tmp"
+    assert tv_hooks._temp_root(env) == scratch_state_root(
+        ext_root.resolve() / "tmp", owner=tv_hooks._REPO_ROOT, create=False
+    )
 
 
 def test_tv_dump_dir_explicit_override_wins(tmp_path: Path, monkeypatch) -> None:

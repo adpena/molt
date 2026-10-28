@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 from molt import dx as molt_dx
 from tools import dev
 from tests.python_environment_test_support import materialize_development_environment
@@ -671,7 +672,11 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> No
     assert len(calls) == 2, "an external request must not silently use ambient PATH"
     # Scratch is <artifact root>/tmp unless that sits inside the checkout, as
     # it does here; the custody layout then places it out of tree.
-    scratch = custody_layout.scratch_root(module.ROOT, module.ROOT)
+    scratch = scratch_state_root(
+        custody_layout.scratch_root(module.ROOT, module.ROOT),
+        owner=module.ROOT,
+        create=False,
+    )
     assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")

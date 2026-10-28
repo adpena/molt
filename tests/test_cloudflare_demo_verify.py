@@ -4,6 +4,7 @@ import datetime as _datetime
 import json
 import subprocess
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 
 import pytest
 
@@ -361,7 +362,14 @@ def test_run_wrangler_dry_run_uses_no_bundle_and_outdir(
         "--dry-run",
         "--no-bundle",
         "--outdir",
-        str(artifacts.resolve() / "tmp" / "cloudflare-demo" / "session" / "dry-run"),
+        str(
+            scratch_state_root(
+                artifacts.resolve() / "tmp", owner=tmp_path / "project", create=False
+            )
+            / "cloudflare-demo"
+            / "session"
+            / "dry-run"
+        ),
         "--config",
         str(wrangler_config),
     ]

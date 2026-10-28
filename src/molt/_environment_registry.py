@@ -1369,7 +1369,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_BENCH_TMP_ROOT",
       "output_neutral": false,
       "owner": "tools/bench.py",
-      "summary": "Scratch directory for bench temporaries; unset uses <MOLT_DIFF_TMPDIR or TMPDIR>/bench, else <bench artifact root>/tmp/bench, and tools/bench.py records the resolved value in its canonical environment.",
+      "summary": "Scratch directory for bench temporaries; unset uses <MOLT_DIFF_TMPDIR or TMPDIR>/bench, else <lane scratch>/bench from molt.dx.scratch_dir, and tools/bench.py records the resolved value in its canonical environment.",
       "values": []
     },
     {
@@ -1840,7 +1840,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_COMPAT_SCRATCH_ROOT",
       "output_neutral": false,
       "owner": "tools/compat/backends.py",
-      "summary": "Scratch directory for cross-backend compat builds, consulted only when no differential output root is selected (the layout then sets it to <root>/compat-scratch for children); ~ expands, and unset means <MOLT_EXT_ROOT or repo>/tmp/compat_backends. Admitted Python Cargo proofs bind it to their canonical proof scratch root.",
+      "summary": "Scratch directory for cross-backend compat builds, consulted only when no differential output root is selected (the layout then sets it to <root>/compat-scratch for children); ~ expands, and unset means <lane scratch>/compat_backends from molt.dx.scratch_dir. Admitted Python Cargo proofs bind it to their canonical proof scratch root.",
       "values": []
     },
     {
@@ -3501,7 +3501,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_DIFF_TMPDIR",
       "output_neutral": false,
       "owner": "src/molt/frontend/tv_hooks.py",
-      "summary": "Temporary-file root for harness runs; src/molt/frontend/tv_hooks.py uses it for TV snapshots (then TMPDIR, then MOLT_EXT_ROOT/tmp, then <repo>/tmp), tests/molt_diff.py uses it as the diff tmp root with default <MOLT_EXT_ROOT or repo>/tmp, and src/molt/dx.py installs the scratch root as its default. Admitted Python Cargo proofs bind it to their canonical proof scratch root; receipt custody remains separate.",
+      "summary": "Temporary-file root for harness runs; src/molt/frontend/tv_hooks.py uses it for TV snapshots (then TMPDIR, then molt.dx.scratch_root), tests/molt_diff.py uses it as the diff tmp root, and src/molt/dx.py installs the lane-owned scratch root as its default. Admitted Python Cargo proofs bind it to their canonical proof scratch root; receipt custody remains separate.",
       "values": []
     },
     {
@@ -5810,6 +5810,16 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "developer",
+      "default": "3",
+      "kind": "float",
+      "name": "MOLT_SCRATCH_IDLE_DAYS",
+      "output_neutral": false,
+      "owner": "src/molt/checkout_state.py",
+      "summary": "Days lane-owned or untracked artifact-root scratch may remain unused before daily soft retirement. A removed lane owner permits retirement after two hours. Recursive activity, locks, open guard markers and protected paths keep scratch; incomplete inventories defer collection. Must cover the two-hour protection window.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "disk",
       "kind": "string",
@@ -7440,7 +7450,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_TV_DIR",
       "output_neutral": false,
       "owner": "src/molt/frontend/tv_hooks.py",
-      "summary": "Directory where the translation-validation hooks write per-pass before/after IR snapshots when MOLT_TV_EMIT=1; it is created if missing; unset means a fresh molt_tv_ directory under MOLT_DIFF_TMPDIR, TMPDIR, MOLT_EXT_ROOT/tmp or the repo-local tmp directory, printed to stderr on first use.",
+      "summary": "Directory where the translation-validation hooks write per-pass before/after IR snapshots when MOLT_TV_EMIT=1; it is created if missing; unset means a fresh molt_tv_ directory under MOLT_DIFF_TMPDIR, TMPDIR or the lane-owned molt.dx.scratch_root, printed to stderr on first use.",
       "values": []
     },
     {
