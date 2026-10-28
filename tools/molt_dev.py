@@ -284,6 +284,21 @@ class Git:
 
     # -- identity / state ---------------------------------------------------
 
+    def worktree_paths(self) -> tuple[Path, ...]:
+        """Registered checkout addresses, with byte-exact Git path decoding."""
+        proc = _run_fast_captured_bytes(
+            ["git", "-C", str(self.repo), "worktree", "list", "--porcelain", "-z"],
+            cwd=self.repo,
+            env=ProcessEnvironment(immutable_git_environment(os.environ)),
+        )
+        if proc.returncode != 0 or not proc.stdout.endswith(b"\0"):
+            raise DriverError("cannot read NUL-terminated Git worktree paths")
+        return tuple(
+            Path(os.fsdecode(field[len(b"worktree ") :]))
+            for field in proc.stdout.split(b"\0")
+            if field.startswith(b"worktree ")
+        )
+
     def rev_parse(self, ref: str) -> str:
         return self._run(["rev-parse", "--verify", ref]).stdout.strip()
 
@@ -1657,16 +1672,14 @@ def cmd_python_oracle(args: argparse.Namespace) -> int:
 
 
 def _main_worktree(git: Git) -> Path | None:
-    """The main (non-linked) worktree path, from `git worktree list --porcelain`.
+    """Git's primary worktree address, preserving its opaque path bytes.
 
-    The first `worktree <path>` line in the porcelain list is the main worktree.
-    Parsed from the stable --porcelain form (not the human list), per hazard 5.
+    The first NUL-delimited field names the main repository (also for a bare
+    main repository with linked worktrees). Do not strip whitespace or decode
+    the quoted display format: source paths can contain spaces and newlines.
     """
-    out = git._run(["worktree", "list", "--porcelain"]).stdout
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            return Path(line[len("worktree ") :].strip())
-    return None
+    paths = git.worktree_paths()
+    return paths[0] if paths else None
 
 
 def _difftest_toolchain_env(

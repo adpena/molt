@@ -220,6 +220,74 @@ def test_bare_repository_is_not_a_source_checkout_boundary(tmp_path: Path) -> No
     assert custody_layout.custody_root(bare) == bare
 
 
+@pytest.mark.parametrize("name", ["molt-src", "plain-clone"])
+def test_landing_source_is_external_and_repository_scoped(
+    tmp_path: Path, name: str
+) -> None:
+    from tests.test_dx_run_context import _git
+
+    primary = tmp_path / "Molt" / name
+    primary.mkdir(parents=True)
+    _git(primary, "init", "-q")
+    common = primary / ".git"
+    selected = custody_layout.landing_sandbox_path(primary, common)
+    assert not selected.is_relative_to(primary)
+    assert custody_layout.enclosing_checkouts(selected) == ()
+    assert selected == custody_layout.landing_sandbox_path(primary, common)
+
+    other = tmp_path / "other.git"
+    other.mkdir()
+    _git(other, "init", "-q", "--bare")
+    assert selected != custody_layout.landing_sandbox_path(primary, other)
+
+
+def test_landing_source_escapes_an_enclosing_checkout(git_checkout: Path) -> None:
+    from tests.test_dx_run_context import _git
+
+    nested = git_checkout / "nested" / "molt-src"
+    nested.mkdir(parents=True)
+    _git(nested, "init", "-q")
+    selected = custody_layout.landing_sandbox_path(nested, nested / ".git")
+    assert not selected.is_relative_to(git_checkout)
+    assert custody_layout.enclosing_checkouts(selected) == ()
+
+
+@pytest.mark.parametrize("alias", ["source", "parent", "exact-checkout"])
+def test_landing_source_refuses_aliases_into_another_source(
+    git_checkout: Path, alias: str
+) -> None:
+    selected = custody_layout.landing_sandbox_path(git_checkout, git_checkout / ".git")
+    if alias == "source":
+        selected.parent.mkdir(parents=True)
+        link, target = selected, git_checkout
+    elif alias == "parent":
+        target = git_checkout / "output"
+        target.mkdir()
+        link = selected.parent
+    else:
+        from tests.test_dx_run_context import _git
+
+        target = git_checkout.parent / "other-worktrees"
+        target.mkdir()
+        # Registration alone must not authorize a queue alias to another
+        # source checkout, even when its basename and repository match.
+        _git(
+            git_checkout,
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            str(target / selected.name),
+        )
+        link = selected.parent
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"host cannot create directory symlinks: {exc}")
+    with pytest.raises(ValueError, match="symlink|inside another source checkout"):
+        custody_layout.landing_sandbox_path(git_checkout, git_checkout / ".git")
+
+
 @pytest.mark.parametrize(
     "name",
     [

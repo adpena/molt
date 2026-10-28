@@ -60,7 +60,24 @@ def test_digest_points_at_the_authorities(tmp_path, monkeypatch, capsys):
 def test_digest_reports_the_landing_queue(tmp_path, monkeypatch, capsys):
     from tools import molt_dev_queue as queue
 
-    assert dh._COMMANDS.run(["git", "init", "-q"], cwd=str(tmp_path)).returncode == 0
+    for argv in (
+        ["git", "init", "-q"],
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    ):
+        assert dh._COMMANDS.run(argv, cwd=str(tmp_path)).returncode == 0
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     _quiet_queue_probes(monkeypatch)
     paths = queue.queue_paths(tmp_path)
