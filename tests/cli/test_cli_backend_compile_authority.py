@@ -143,7 +143,7 @@ def test_backend_dispatch_binds_scratch_before_any_backend_writer(
     binding = transport_codegen_binding(tmp_path / "runtime")
     if blocked:
         artifacts.mkdir()
-        (artifacts / "tmp").write_text("not a scratch directory")
+        (artifacts / "tmp").write_text("not a scratch directory", encoding="utf-8")
     else:
         assert not artifacts.exists()
     starts = []
@@ -190,7 +190,9 @@ def test_backend_dispatch_binds_scratch_before_any_backend_writer(
     if blocked:
         assert dispatch is None and error is not None
         assert not starts
-        assert (artifacts / "tmp").read_text() == "not a scratch directory"
+        assert (artifacts / "tmp").read_text(
+            encoding="utf-8"
+        ) == "not a scratch directory"
     else:
         assert error is None and dispatch is not None
         assert read_checkout_owner(owned) == CheckoutOwner(
