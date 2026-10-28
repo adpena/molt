@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from tests.process_guard_common import (
+    install_module_view,
     GuardedProcessRole,
     resolve_test_process_timeout,
     run_guarded_test_process,
@@ -1376,10 +1377,13 @@ def test_bound_root_failure_never_selects_a_fallback(
             artifacts.write_bytes(b"not a directory")
     elif state == "unwritable":
         original_access = os.access
-        monkeypatch.setattr(
-            dx.os,
-            "access",
-            lambda path, mode: (
+        # A private os view keeps the fake out of every other module.
+        install_module_view(
+            monkeypatch,
+            "os",
+            os,
+            dx,
+            access=lambda path, mode: (
                 False if path == artifacts else original_access(path, mode)
             ),
         )
