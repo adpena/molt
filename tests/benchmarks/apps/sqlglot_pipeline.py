@@ -9,7 +9,7 @@ from sqlglot.optimizer import optimize
 
 
 def main():
-    fixture = json.loads(Path(sys.argv[1]).read_text())
+    fixture = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     repetitions = int(sys.argv[2])
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
