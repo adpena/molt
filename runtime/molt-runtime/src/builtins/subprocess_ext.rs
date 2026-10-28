@@ -97,12 +97,31 @@ fn argv_from_obj(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<std::ffi::OsSt
     }
     let mut out: Vec<std::ffi::OsString> = Vec::with_capacity(elems.len());
     for &bits in elems.iter() {
-        match string_obj_to_owned(obj_from_bits(bits)) {
-            Some(s) => out.push(s.into()),
-            None => return Err("all args elements must be str".to_string()),
+        if let Some(s) = string_obj_to_owned(obj_from_bits(bits)) {
+            out.push(s.into());
+            continue;
         }
+        // POSIX argv entries are filesystem bytes; callers that apply
+        // os.fsencode (os.system's FSConverter) pass them through unchanged.
+        #[cfg(unix)]
+        if let Some(arg) = argv_bytes(bits) {
+            out.push(arg);
+            continue;
+        }
+        return Err("all args elements must be str".to_string());
     }
     Ok(out)
+}
+
+#[cfg(unix)]
+fn argv_bytes(bits: u64) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    if unsafe { object_type_id(ptr) } != TYPE_ID_BYTES {
+        return None;
+    }
+    let data = unsafe { std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)) };
+    Some(std::ffi::OsString::from_vec(data.to_vec()))
 }
 
 /// Build a `std::process::Command` from the common run/call arguments.
@@ -307,10 +326,24 @@ fn run_blocking(
     capture: bool,
 ) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
     let output = child.wait_with_output()?;
-    let rc = output.status.code().unwrap_or(-1);
+    let rc = returncode(output.status);
     let stdout = if capture { output.stdout } else { Vec::new() };
     let stderr = if capture { output.stderr } else { Vec::new() };
     Ok((rc, stdout, stderr))
+}
+
+/// `subprocess` returncode: the exit code, or `-N` when signal N ended the
+/// child (os.system turns `-N` back into the raw wait status N).
+#[cfg(not(target_arch = "wasm32"))]
+fn returncode(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return -signal;
+        }
+    }
+    status.code().unwrap_or(-1)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

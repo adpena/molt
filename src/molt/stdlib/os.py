@@ -52,7 +52,6 @@ _MOLT_PATH_SPLITEXT = _require_intrinsic("molt_path_splitext")
 _MOLT_PATH_NORMPATH = _require_intrinsic("molt_path_normpath")
 _MOLT_PATH_ABSPATH = _require_intrinsic("molt_path_abspath")
 _MOLT_PATH_RELPATH = _require_intrinsic("molt_path_relpath")
-_MOLT_PATH_MAKEDIRS = _require_intrinsic("molt_path_makedirs")
 _MOLT_PATH_ISDIR = _require_intrinsic("molt_path_isdir")
 _MOLT_PATH_ISFILE = _require_intrinsic("molt_path_isfile")
 _MOLT_PATH_ISLINK = _require_intrinsic("molt_path_islink")
@@ -1193,7 +1192,8 @@ def getpid() -> int:
 
 
 def urandom(n: Any) -> bytes:
-    _require_cap("rand")
+    # The intrinsic converts `size` (Py_ssize_t), then enforces the canonical
+    # `random.entropy` operation, so os.urandom needs the `random` grant only.
     intrinsic = _require_callable_intrinsic(_MOLT_OS_URANDOM, "molt_os_urandom")
     return intrinsic(n)
 
@@ -1260,12 +1260,7 @@ def chmod(path: Any, mode: int) -> None:
 
 
 def makedirs(name: Any, mode: int = 0o777, exist_ok: bool = False) -> None:
-    path = fspath(name)
-    if callable(_MOLT_OS_MAKEDIRS):
-        _MOLT_OS_MAKEDIRS(path, mode, bool(exist_ok))
-        return
-    intrinsic = _require_callable_intrinsic(_MOLT_PATH_MAKEDIRS, "molt_path_makedirs")
-    intrinsic(path, mode, bool(exist_ok))
+    _MOLT_OS_MAKEDIRS(fspath(name), mode, bool(exist_ok))
 
 
 def open(path: Any, flags: int, mode: int = 0o777) -> int:
@@ -1322,7 +1317,7 @@ def lseek(fd: int, pos: int, how: int) -> int:
 
 
 def ftruncate(fd: int, length: int) -> None:
-    _MOLT_OS_FTRUNCATE(int(fd), int(length))
+    _MOLT_OS_FTRUNCATE(fd, length)
 
 
 def isatty(fd: int) -> bool:
@@ -1483,7 +1478,7 @@ def _system_status_from_returncode(returncode: int) -> int:
     return code << 8
 
 
-def _system_shell_argv(command: str) -> list[str]:
+def _system_shell_argv(command: str | bytes) -> list[str | bytes]:
     if name == "nt":
         return ["cmd.exe", "/c", command]
     return ["/bin/sh", "-c", command]
@@ -1496,10 +1491,22 @@ def _system_type_name(value: Any) -> str:
 
 
 def system(command: Any) -> int:
-    if not isinstance(command, str):
-        raise TypeError(
-            f"system() argument 'command' must be str, not {_system_type_name(command)}"
-        )
+    # CPython's argument clinic declares `command: Py_UNICODE` on Windows and
+    # `command: FSConverter` everywhere else (Modules/posixmodule.c).
+    if name == "nt":
+        if not isinstance(command, str):
+            raise TypeError(
+                "system() argument 'command' must be str, "
+                f"not {_system_type_name(command)}"
+            )
+        if "\x00" in command:
+            raise ValueError("embedded null character")
+    else:
+        # PyUnicode_FSConverter: os.PathLike protocol, filesystem encoding,
+        # then the embedded-NUL check on the encoded bytes.
+        command = fsencode(command)
+        if b"\x00" in command:
+            raise ValueError("embedded null byte")
     raw = _MOLT_SUBPROCESS_RUN(
         _system_shell_argv(command),
         False,
@@ -1694,14 +1701,13 @@ def scandir(path: Any = ".") -> list[DirEntry]:
 
 # ---------------------------------------------------------------------------
 # Capability-introspection sets. Membership mirrors CPython exactly for the
-# functions molt implements: each set holds the *function objects* that honor
-# the named keyword argument. Note that `os.replace` is intentionally absent
-# from `supports_dir_fd` even though it accepts `src_dir_fd`/`dst_dir_fd` — it
-# shares `rename`'s C implementation and CPython registers only `rename`.
+# functions molt implements: each set holds the *function objects* CPython's
+# Lib/os.py registers by C-level capability name (`HAVE_FSTATAT` -> stat,
+# `HAVE_RENAMEAT` -> rename, ...). `os.lstat` and `os.replace` accept dir_fd
+# keywords but are never registered: CPython names only `stat` and `rename`.
 # ---------------------------------------------------------------------------
 supports_dir_fd = {
     stat,
-    lstat,
     rename,
     link,
     symlink,
