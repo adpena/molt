@@ -30,6 +30,9 @@ from molt.compiler_analysis.python_binding_flow import (
     python_dynamic_import_facts_required,
 )
 
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    IMPORT_CALLABLES_BY_TARGET,
+)
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,
@@ -558,7 +561,12 @@ def _dynamic_import_projection(
     if kind not in {"import_module", "dunder_import"}:
         return (), (), ()
     try:
-        arguments = bind_static_import_call_arguments(call, kind)
+        arguments = bind_static_import_call_arguments(
+            call,
+            IMPORT_CALLABLES_BY_TARGET[
+                "importlib.import_module" if is_import_module else "__import__"
+            ],
+        )
     except ValueError as exc:
         raise ValueError(f"{exc} in {path}") from exc
     if arguments is None:

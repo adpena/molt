@@ -702,6 +702,13 @@ def _discover_module_graph_from_paths(
                 if prior is None or prior.body_selection.kind == "native_support":
                     queue_entry(resolved, candidate, source_context.dependency)
 
+    def require_runtime_import_protocol(module_name: str) -> None:
+        authority = scan_sources[module_name]
+        if not authority.uses_runtime_import_protocol:
+            scan_sources[module_name] = replace(
+                authority, uses_runtime_import_protocol=True
+            )
+
     demands = state.demands
     if demands is None:
         demands = state.demands = PythonSourceDemands(
@@ -709,6 +716,7 @@ def _discover_module_graph_from_paths(
                 names, state.contexts[module]
             ),
             queue_body=queue_scan,
+            require_runtime_import_protocol=require_runtime_import_protocol,
         )
     else:
         # The solver is retained; only its fully drained graph-owner callbacks
@@ -717,6 +725,7 @@ def _discover_module_graph_from_paths(
             names, state.contexts[module]
         )
         demands.queue_body = queue_scan
+        demands.require_runtime_import_protocol = require_runtime_import_protocol
 
     def activate_namespace_writes(module_name, source_owner):
         state.active_owners.setdefault(module_name, set()).add(source_owner)

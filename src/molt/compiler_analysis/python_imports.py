@@ -14,6 +14,8 @@ if TYPE_CHECKING:
         PythonStatementFact,
         PythonFunctionResult,
         PythonSourceElement,
+        PythonSourceCall,
+        PythonSourceParameters,
     )
     from molt.compiler_analysis.python_namespace_writes import PythonNamespaceSummary
 
@@ -23,9 +25,14 @@ from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, assert_never
 
 from molt.compiler_analysis.python_syntax import require_python_syntax_target
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    PythonImportArgumentRole,
+    PythonImportBehavior,
+    PythonImportCallable,
+)
 from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_effects import (
     expression_evaluation_children,
@@ -190,12 +197,15 @@ class StaticImportCallArguments:
     locals: ast.expr | None = None
     fromlist: ast.expr | None = None
     level: ast.expr | None = None
+    fallback: ast.expr | None = None
+    path: ast.expr | None = None
+    target: ast.expr | None = None
     requires_runtime_binding: bool = False
 
 
 def bind_static_import_call_arguments(
     call: ast.Call,
-    kind: ImportOperationKind,
+    callable: PythonImportCallable,
 ) -> StaticImportCallArguments | None:
     """Bind a static request, or return None when Python binding must fail.
 
@@ -207,13 +217,11 @@ def bind_static_import_call_arguments(
     binding; an expansion cannot replace one without a duplicate error.
     """
 
-    parameter_names = (
-        ("name", "package")
-        if kind == "import_module"
-        else ("name", "globals", "locals", "fromlist", "level")
-    )
-    if kind == "statement":
-        raise ValueError("import statements do not have call arguments")
+    parameter_names = callable.parameter_names
+    if callable.positional_only and any(
+        keyword.arg is not None for keyword in call.keywords
+    ):
+        return None
     positional_minimum = sum(
         not isinstance(argument, ast.Starred) for argument in call.args
     )
@@ -237,18 +245,38 @@ def bind_static_import_call_arguments(
         ):
             return None
         bound[keyword.arg] = keyword.value
-    name = bound.get("name")
-    if name is None and not requires_runtime_binding:
+    if not requires_runtime_binding and any(
+        name not in bound for name in parameter_names[: callable.minimum_arguments]
+    ):
         return None
+    by_role = {
+        role: bound[name]
+        for name, role in zip(parameter_names, callable.argument_roles, strict=True)
+        if name in bound
+    }
     return StaticImportCallArguments(
-        name=name,
-        package=bound.get("package"),
-        globals=bound.get("globals"),
-        locals=bound.get("locals"),
-        fromlist=bound.get("fromlist"),
-        level=bound.get("level"),
+        name=by_role.get(PythonImportArgumentRole.NAME),
+        package=by_role.get(PythonImportArgumentRole.PACKAGE),
+        globals=by_role.get(PythonImportArgumentRole.GLOBALS),
+        locals=by_role.get(PythonImportArgumentRole.LOCALS),
+        fromlist=by_role.get(PythonImportArgumentRole.FROMLIST),
+        level=by_role.get(PythonImportArgumentRole.LEVEL),
+        fallback=by_role.get(PythonImportArgumentRole.FALLBACK),
+        path=by_role.get(PythonImportArgumentRole.PATH),
+        target=by_role.get(PythonImportArgumentRole.TARGET),
         requires_runtime_binding=requires_runtime_binding,
     )
+
+
+def import_call_fallback_operand(
+    node: ast.Call,
+    callable: PythonImportCallable | None,
+) -> ast.expr | None:
+    """A proven fallback importer retains this operand without invoking it."""
+    if callable is None or callable.behavior is not PythonImportBehavior.FALLBACK:
+        return None
+    arguments = bind_static_import_call_arguments(node, callable)
+    return None if arguments is None else arguments.fallback
 
 
 @dataclass(frozen=True, slots=True)
@@ -2430,6 +2458,51 @@ class SourceImportSite:
         )
 
 
+class SourceImportCall(NamedTuple):
+    """A conditional dependency plan and its separate returned-value provenance."""
+
+    identities: int
+    site: SourceImportSite
+    returned_modules: tuple[str, ...]
+    returned_sources: frozenset[PythonSourceKey]
+    returned_exposed: frozenset[PythonSourceKey]
+
+
+def static_import_call_result_modules(
+    behavior: PythonImportBehavior,
+    request: StaticImportRequest,
+    owner_plan: StaticImportPlan,
+    fromlist_truth: bool | None,
+) -> tuple[str, ...]:
+    """Project values, never confuse imported children with the returned base."""
+    match behavior:
+        case PythonImportBehavior.FINDER:
+            return ()
+        case PythonImportBehavior.LEAF | PythonImportBehavior.FALLBACK:
+            return owner_plan.modules
+        case PythonImportBehavior.DUNDER:
+            pass
+        case _ as impossible:
+            assert_never(impossible)
+    # Absolute __import__ returns the root without a fromlist. Relative calls
+    # retain their resolved package prefix and the first requested component;
+    # an empty or undotted relative name therefore returns the resolved base.
+    requested_suffix_components = request.name.count(".")
+    without_fromlist = tuple(
+        dict.fromkeys(
+            module.rsplit(".", requested_suffix_components)[0]
+            if request.level > 0
+            else module.partition(".")[0]
+            for module in owner_plan.modules
+        )
+    )
+    if fromlist_truth is False:
+        return without_fromlist
+    if fromlist_truth is True:
+        return owner_plan.modules
+    return tuple(dict.fromkeys((*without_fromlist, *owner_plan.modules)))
+
+
 SourceExportStatus = Literal["absent", "known", "unknown", "incomplete"]
 
 
@@ -2455,6 +2528,7 @@ class SourceAllExports:
 class _SourceValueDemand(NamedTuple):
     source: PythonSourceKey
     phase: SourceDemandPhase
+    argument_count: int | None
 
 
 class _SourceImportBinding(NamedTuple):
@@ -2492,13 +2566,14 @@ class _SourceValueSummary(NamedTuple):
     ] = ()
     attributes: tuple[tuple[PythonSourceKey, str, frozenset[PythonSourceKey]], ...] = ()
     elements: tuple[PythonSourceElement, ...] = ()
-    calls: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()
-    parameters: tuple[
-        tuple[PythonSourceKey, tuple[PythonSourceKey, ...], PythonSourceKey | None], ...
-    ] = ()
+    calls: tuple[PythonSourceCall, ...] = ()
+    parameters: tuple[PythonSourceParameters, ...] = ()
     functions: tuple[PythonFunctionResult, ...] = ()
     bases: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()
     completions: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...] = ()
+    callables: tuple[tuple[PythonSourceKey, int], ...] = ()
+    # Candidate identity selects these plans only when this call executes.
+    call_imports: tuple[SourceImportCall, ...] = ()
 
 
 class _ImportScanRequests(NamedTuple):

@@ -130,7 +130,9 @@ def test_invalid_public_intrinsic_name_declarations_fail_closed(
 @pytest.mark.parametrize("name", [True, 12, {}, "", "has space", "é"])
 def test_public_intrinsic_name_facts_validate_type_and_grammar(name: object) -> None:
     with pytest.raises(ValueError):
-        IntrinsicEntry("molt_test", "molt_test", 0, python_name=name)
+        IntrinsicEntry(
+            "molt_test", "molt_test", 0, python_name=name, parameter_names=()
+        )
 
 
 @pytest.mark.parametrize(

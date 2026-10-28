@@ -18,6 +18,7 @@ from molt.compiler_analysis.python_binding_flow import (
 from molt.compiler_analysis.python_value_identity import (
     canonical_import_binding_candidates,
     canonical_import_binding_write_mask,
+    possible_runtime_import_call_identities,
 )
 from tools import gen_python_identity_catalog as gen
 
@@ -85,9 +86,15 @@ def test_target_property_callable_catalog_has_exact_manifest_producers() -> None
     )
     assert tuple(row for row in schema.intrinsic_callables if row.target_property) == (
         gen.IntrinsicCallable(
-            "molt_sys_platform", "INTRINSIC_SYS_PLATFORM", "SYS_PLATFORM"
+            "molt_sys_platform",
+            "INTRINSIC_SYS_PLATFORM",
+            0,
+            (),
+            target_property="SYS_PLATFORM",
         ),
-        gen.IntrinsicCallable("molt_os_name", "INTRINSIC_OS_NAME", "OS_NAME"),
+        gen.IntrinsicCallable(
+            "molt_os_name", "INTRINSIC_OS_NAME", 0, (), target_property="OS_NAME"
+        ),
     )
     assert catalog.INTRINSIC_CALLABLE_IDENTITIES["molt_sys_platform"] is (
         catalog.PythonIdentity.INTRINSIC_SYS_PLATFORM
@@ -98,6 +105,45 @@ def test_target_property_callable_catalog_has_exact_manifest_producers() -> None
         ]
         is catalog.PythonTargetProperty.OS_NAME
     )
+
+
+@pytest.mark.parametrize(
+    "identity,minimum",
+    [
+        (catalog.PythonIdentity.INTRINSIC_MODULE_IMPORT, 1),
+        (catalog.PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK, 2),
+        (catalog.PythonIdentity.INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION, 5),
+    ],
+)
+def test_intrinsic_binding_rejects_too_few_arguments_before_import(
+    identity: catalog.PythonIdentity, minimum: int
+) -> None:
+    assert not possible_runtime_import_call_identities(int(identity), minimum - 1)
+    assert possible_runtime_import_call_identities(int(identity), minimum) == int(
+        identity
+    )
+    assert possible_runtime_import_call_identities(int(identity), None) == int(identity)
+
+
+def test_runtime_import_arity_projection_tracks_manifest_defaults(
+    tmp_path: Path,
+) -> None:
+    source = gen.INTRINSIC_MANIFEST.read_text(encoding="utf-8")
+    declaration = "def molt_module_import(name: str) -> Any: ..."
+    assert source.count(declaration) == 1
+    manifest = tmp_path / "manifest.pyi"
+    manifest.write_text(
+        source.replace(
+            declaration, "def molt_module_import(name: str = None) -> Any: ..."
+        ),
+        encoding="utf-8",
+    )
+    projected: dict[str, object] = {}
+    exec(gen.render_python(gen.load_schema(intrinsic_manifest=manifest)), projected)
+    masks = projected["INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS"]
+    assert isinstance(masks, tuple)
+    assert masks[0] == int(catalog.PythonIdentity.INTRINSIC_MODULE_IMPORT)
+    assert catalog.INTRINSIC_RUNTIME_IMPORT_MIN_ARGUMENT_MASKS[0] == 0
 
 
 @pytest.mark.parametrize(
@@ -169,13 +215,13 @@ def test_target_property_catalog_rejects_duplicate_intrinsic_row(
     "before,after,expected",
     [
         (
-            "runtime_import_protocol = true",
-            "runtime_import_protocol = false",
-            "must be true",
+            'import_behavior = "LEAF"',
+            'import_behavior = "MISSING"',
+            "unknown import behavior",
         ),
         (
-            "runtime_import_protocol = true",
-            'runtime_import_protocol = true\ntarget_property = "SYS_PLATFORM"',
+            'import_behavior = "LEAF"',
+            'import_behavior = "LEAF"\ntarget_property = "SYS_PLATFORM"',
             "one explicit semantic facet",
         ),
         (
@@ -246,7 +292,7 @@ def test_existing_identity_and_member_bits_remain_stable() -> None:
     [
         (("BUILTIN_OPEN = 48", "BUILTIN_OPEN = 47"), "duplicate identity bit"),
         (("IMPORTLIB_MODULE = 0", "IMPORTLIB_MODULE = true"), "bit must be"),
-        (("schema_version = 1", "schema_version = 1\nunknown = 1"), "top-level keys"),
+        (("schema_version = 2", "schema_version = 2\nunknown = 1"), "top-level keys"),
         (('guard = "BUILTINS_IMPORT"', 'guard = "MISSING"'), "unknown builtin guard"),
         (
             ('owner = "IMPORTLIB_MODULE"', 'owner = "MISSING"'),

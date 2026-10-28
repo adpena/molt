@@ -4567,7 +4567,9 @@ def test_call_result_source_is_distinct_from_callee_and_tracks_real_returns():
     target, make, assignment, invocation = tree.body
     call_key = python_node_source_key(assignment.value)
     assert index.expression_result(assignment.value).source_origins == {call_key}
-    assert dict(index.source_calls)[call_key] == {python_node_source_key(make)}
+    assert {call.owner: call.callees for call in index.source_calls}[call_key] == {
+        python_node_source_key(make)
+    }
     returns = {
         result.owner: (result.kind, result.returned)
         for result in index.source_function_results
@@ -4624,6 +4626,9 @@ def test_source_demand_activation_joins_each_new_incidence_once(tmp_path, monkey
     [function] = scan.source_values.functions
     owner = function.owner
     authority = PythonSourceDemands(
+        require_runtime_import_protocol=lambda module: pytest.fail(
+            f"unexpected protocol demand from {module}"
+        ),
         admit_imports=lambda _module, _names: None,
         queue_body=lambda _module, _owner, _arguments: None,
     )
@@ -4632,9 +4637,9 @@ def test_source_demand_activation_joins_each_new_incidence_once(tmp_path, monkey
     activate = authority.activate
     visits = Counter()
 
-    def observe(origin, phase, arguments=()):
+    def observe(origin, phase, arguments=(), **invocation):
         visits[(origin, phase, arguments)] += 1
-        activate(origin, phase, arguments)
+        activate(origin, phase, arguments, **invocation)
 
     monkeypatch.setattr(authority, "activate", observe)
     value = ("entry", owner)
@@ -4806,3 +4811,39 @@ def test_direct_ast_lazy_import_admission_precedes_eager_and_dead_code_facts(sou
                     python_binding_flow.analyze_python_bindings(
                         tree, source_digest=digest, policy=policy
                     )
+
+
+@pytest.mark.parametrize(
+    "selector,identity",
+    [
+        ("molt_sys_platform", PythonIdentity.INTRINSIC_SYS_PLATFORM),
+        ("molt_module_import", PythonIdentity.INTRINSIC_MODULE_IMPORT),
+    ],
+)
+def test_mixed_intrinsic_acquisition_preserves_literal_selector_provenance(
+    selector, identity
+):
+    from molt.compiler_analysis.python_identity_catalog_generated import (
+        INTRINSIC_RUNTIME_IMPORT_IDENTITIES,
+    )
+
+    source = (
+        "from _intrinsics import require_intrinsic as take\n"
+        "if flag: take = replacement\n"
+        f"reader = take({selector!r})\nreader()\n"
+    )
+    index = analyze_python_source_bindings(
+        source,
+        policy=PythonBindingPolicy(
+            foreign_namespace_writes=(), callback_member_writes=0
+        ),
+    )
+    invocation = index.call_fact(ast.parse(source).body[-1].value)
+    assert invocation is not None
+    assert invocation.callee_identities == int(identity) | OTHER_IDENTITY
+    assert bool(invocation.callee_identities & INTRINSIC_RUNTIME_IMPORT_IDENTITIES) is (
+        selector == "molt_module_import"
+    )
+    # The same positive provenance is available to return/yield/container
+    # consumers without changing the six-field function-completion protocol.
+    assert any(mask & int(identity) for _, mask in index.source_callables)

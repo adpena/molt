@@ -1460,7 +1460,7 @@ regression coverage, not an installed release receipt or other-platform proof.
 	  instead of falling back to physical-RAM-only budgeting. Import graph
 	  materialization now has one immutable `ImportPlan`: entry planning owns the
 	  runtime-import support closure, while final materialization owns namespace
-		  stubs, generated importer modules, known-module sets, allowlist snapshots,
+		  stubs, known-module sets, allowlist snapshots,
 		  and module graph metadata before frontend analysis or backend lowering can
 		  observe the graph. The final binary-image closure payload is emitted in
 		  build diagnostics and wrapper-cache manifests; static imports are final

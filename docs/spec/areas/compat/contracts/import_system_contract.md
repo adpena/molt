@@ -103,6 +103,18 @@ structure alone is not a performance result. See the current
 and [catalog design](../../../../design/foundation/import_bedrock_frozen_module_layer.md).
 
 
+The public `__import__` transaction preserves the original request when selecting
+its result, following [CPython 3.12.15](https://github.com/python/cpython/blob/v3.12.15/Python/import.c#L2700-L2745).
+A false fromlist selects the first requested component: an absolute dotted
+request returns its root, while a relative dotted request keeps the resolved
+package prefix. An empty or undotted relative request returns the imported leaf.
+Fromlist truth is observed once, after importing the leaf. A callback that mutates
+the selected cache entry retains the same protocol: absolute requests import the
+root again; relative requests read the exact cache entry, return a present `None`,
+and raise `KeyError` for a removed entry. The result owns one reference even when
+multiple cache keys alias the leaf. Result selection uses borrowed name slices;
+it adds no name allocation or dictionary read for empty or undotted requests.
+
 Public argument validation and `importlib.util.resolve_name` precede finder
 discovery and require no host filesystem authority. Following
 [CPython's pinned import_module](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/__init__.py)

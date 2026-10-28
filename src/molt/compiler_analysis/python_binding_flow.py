@@ -30,6 +30,7 @@ from typing import Final, Literal, Sequence, assert_never, cast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
     ALL_INTRINSIC_CALLABLE_IDENTITIES,
+    IMPORT_CALLABLES,
     INTRINSIC_ACQUISITION_IDENTITIES,
     OPTIONAL_INTRINSIC_ACQUISITION_IDENTITIES,
     ALL_INVALID_MEMBERS,
@@ -68,6 +69,8 @@ from molt.compiler_analysis.python_source_keys import (
 
 from molt.compiler_analysis.python_binding_facts import (
     PythonBindingFacts,
+    PythonSourceCall,
+    PythonSourceParameters,
     PythonBindingIndex,
     PythonBindingTelemetry,
     PythonCallSiteFact,
@@ -93,6 +96,7 @@ from molt.compiler_analysis.python_binding_facts import (
     same_python_static_value,
 )
 from molt.compiler_analysis.python_value_identity import (
+    SOURCE_CALLABLE_IDENTITIES,
     exact_identity,
     possible_identity,
 )
@@ -156,6 +160,7 @@ from molt.compiler_analysis.python_effects import (
 )
 from molt.compiler_analysis.python_imports import (
     import_metadata_target_name,
+    import_call_fallback_operand,
     is_compiler_intrinsics_module,
 )
 from molt.compiler_analysis.python_lexical_scope import (
@@ -2530,11 +2535,10 @@ class _Analyzer:
             PythonSourceKey, tuple[str, frozenset[PythonSourceKey]]
         ] = {}
         self.source_elements: dict[PythonSourceKey, PythonSourceElement] = {}
-        self.source_calls: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
+        self.source_calls: dict[PythonSourceKey, PythonSourceCall] = {}
+        self.source_callables: dict[PythonSourceKey, IdentityMask] = {}
         self.source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
-        self.source_parameters: dict[
-            PythonSourceKey, tuple[tuple[PythonSourceKey, ...], PythonSourceKey | None]
-        ] = {}
+        self.source_parameters: dict[PythonSourceKey, PythonSourceParameters] = {}
         self.source_function_results: dict[PythonSourceKey, PythonFunctionResult] = {}
         self.source_namespaces: dict[
             PythonSourceKey, dict[str, frozenset[PythonSourceKey]]
@@ -3369,6 +3373,14 @@ class _Analyzer:
                 origins | (previous[1] if previous else frozenset()),
             )
         result = replace(result, identities=identities)
+        if callable_identities := identities & SOURCE_CALLABLE_IDENTITIES:
+            # Canonical callable producers join the existing source-value graph.
+            # This is positive provenance, never a proof that OTHER is absent.
+            source = python_node_source_key(node)
+            self.source_callables[source] = (
+                self.source_callables.get(source, NO_IDENTITIES) | callable_identities
+            )
+            result = replace(result, source_origins=result.source_origins | {source})
         if identities and not _identity_can_release(identities):
             # Rooted retirement is a result fact, not just a STORE exemption.
             # Transport it through containers and publication without granting
@@ -3792,6 +3804,7 @@ class _Analyzer:
         captured_receiver_owner_token: int,
         argument_owner_token_floor: int,
         prior_effects: EffectMask,
+        intrinsic_result: IdentityMask,
     ) -> _CallSemantics:
         effects = NO_EFFECTS
         result = OTHER_IDENTITY
@@ -3916,11 +3929,9 @@ class _Analyzer:
                 method_shape.retained_argument_indices,
             )
         if callee & INTRINSIC_ACQUISITION_IDENTITIES:
-            result = (
-                _intrinsic_acquisition_identity(node, argument_results)
-                if exact
-                else ALL_INTRINSIC_CALLABLE_IDENTITIES | OTHER_IDENTITY
-            )
+            result = intrinsic_result
+            if not exact:
+                result |= OTHER_IDENTITY
             if callee & OPTIONAL_INTRINSIC_ACQUISITION_IDENTITIES:
                 result |= int(PythonIdentity.INERT_VALUE)
             result_fact = StaticExpressionResult(
@@ -4425,6 +4436,12 @@ class _Analyzer:
                 and not evaluation_effects & _CALLEE_RETENTION_FORBIDDEN_EFFECTS
                 and all(ref.phase == "factory" for ref in callee_result.result.deferred)
             )
+            intrinsic_result = (
+                _intrinsic_acquisition_identity(node, argument_results)
+                if callee_result.result.source_origins
+                or callee_result.identities & INTRINSIC_ACQUISITION_IDENTITIES
+                else OTHER_IDENTITY
+            )
             if deferred_factory_only:
                 call_semantics = _CallSemantics(
                     OTHER_IDENTITY,
@@ -4454,6 +4471,7 @@ class _Analyzer:
                     captured_receiver_owner_token,
                     argument_owner_token_floor,
                     evaluation_effects,
+                    intrinsic_result,
                 )
             identities = call_semantics.result_identities
             invocation_effects = call_semantics.invocation_effects
@@ -4463,9 +4481,52 @@ class _Analyzer:
                 # A call's value is not its callee. Retain the source relation
                 # while deferred jobs publish their actual return origins.
                 call_source = python_node_source_key(node)
-                self.source_calls[call_source] = (
-                    self.source_calls.get(call_source, frozenset())
-                    | callee_result.result.source_origins
+                previous_call = self.source_calls.get(call_source)
+                first_starred = next(
+                    (
+                        index
+                        for index, argument in enumerate(node.args)
+                        if isinstance(argument, ast.Starred)
+                    ),
+                    len(node.args),
+                )
+                source_arguments = tuple(
+                    (
+                        index if index < first_starred else None,
+                        result.source_origins,
+                        result.exposed_source_origins,
+                    )
+                    for index, (argument, result) in enumerate(
+                        zip(node.args, argument_results[: len(node.args)], strict=True)
+                    )
+                ) + tuple(
+                    (keyword.arg, result.source_origins, result.exposed_source_origins)
+                    for keyword, result in zip(
+                        node.keywords, argument_results[len(node.args) :], strict=True
+                    )
+                )
+                if previous_call is not None:
+                    source_arguments = tuple(
+                        (name, origins | previous[1], exposed | previous[2])
+                        for (name, origins, exposed), previous in zip(
+                            source_arguments, previous_call.arguments, strict=True
+                        )
+                    )
+                self.source_calls[call_source] = PythonSourceCall(
+                    call_source,
+                    callee_result.result.source_origins
+                    | (
+                        previous_call.callees
+                        if previous_call is not None
+                        else frozenset()
+                    ),
+                    intrinsic_result
+                    | (
+                        previous_call.intrinsic_result
+                        if previous_call is not None
+                        else NO_IDENTITIES
+                    ),
+                    source_arguments,
                 )
                 result_override = replace(
                     result_override, source_origins=frozenset({call_source})
@@ -4490,7 +4551,30 @@ class _Analyzer:
                 and not invocation_effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
             )
             executes_protocol = bool(invocation_effects & INVOKES_ITERATION_CALLBACK)
-            for argument in () if deferred_factory_only else argument_results:
+            fallback_operand = import_call_fallback_operand(
+                node, IMPORT_CALLABLES.get(callee_result.identities)
+            )
+            fallback_index = (
+                next(
+                    (
+                        index
+                        for index, operand in enumerate(
+                            (*node.args, *(keyword.value for keyword in node.keywords))
+                        )
+                        if operand is fallback_operand
+                    ),
+                    None,
+                )
+                if fallback_operand is not None
+                else None
+            )
+            for argument_index, argument in enumerate(
+                () if deferred_factory_only else argument_results
+            ):
+                if argument_index == fallback_index:
+                    # Evaluation and retirement still run. This API only
+                    # returns its fallback; it does not call or expose it.
+                    continue
                 if builtin:
                     deferred_execution |= _operand_dispatch_deferred(
                         invocation_effects, argument, reaches_contents=True
@@ -7394,13 +7478,21 @@ class _Analyzer:
         arguments = node.args
         parameters = function_parameter_names(arguments)
         parameter_nodes = function_parameter_nodes(arguments)
-        self.source_parameters[python_node_source_key(node)] = (
+        self.source_parameters[python_node_source_key(node)] = PythonSourceParameters(
+            python_node_source_key(node),
             tuple(
                 python_node_source_key(arg)
                 for arg in (*arguments.posonlyargs, *arguments.args)
             ),
             python_node_source_key(arguments.vararg)
             if arguments.vararg is not None
+            else None,
+            tuple(
+                (arg.arg, python_node_source_key(arg))
+                for arg in (*arguments.args, *arguments.kwonlyargs)
+            ),
+            python_node_source_key(arguments.kwarg)
+            if arguments.kwarg is not None
             else None,
         )
         body = (
@@ -7519,7 +7611,9 @@ class _Analyzer:
         # changing value identity must not turn every known call into an opaque
         # metadata mutation. The escaped callee/receiver summary includes all
         # source-owned values it can return or expose.
-        result_sources = dict(self.source_calls)
+        result_sources = {
+            source: call.callees for source, call in self.source_calls.items()
+        }
         result_sources.update(
             (source, element.origins)
             for source, element in self.source_elements.items()
@@ -7872,12 +7966,10 @@ class _Analyzer:
             source_elements=tuple(
                 value for _owner, value in sorted(self.source_elements.items())
             ),
-            source_calls=tuple(sorted(self.source_calls.items())),
+            source_calls=tuple(value for _, value in sorted(self.source_calls.items())),
+            source_callables=tuple(sorted(self.source_callables.items())),
             source_parameters=tuple(
-                (owner, positional, vararg)
-                for owner, (positional, vararg) in sorted(
-                    self.source_parameters.items()
-                )
+                value for _, value in sorted(self.source_parameters.items())
             ),
             source_function_results=tuple(
                 value for _owner, value in sorted(self.source_function_results.items())

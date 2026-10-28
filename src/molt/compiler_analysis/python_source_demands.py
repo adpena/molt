@@ -3,22 +3,33 @@ from __future__ import annotations
 from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.compiler_analysis.python_binding_facts import (
     PythonFunctionResult,
+    PythonSourceCall,
+    PythonSourceParameters,
     PythonSourceElement,
     PythonElementProtocol,
 )
 
 from collections import deque
 from collections.abc import Callable
-from typing import Literal, NamedTuple, assert_never
+from typing import Literal, NamedTuple, assert_never, cast
 
 from molt.compiler_analysis.python_imports import (
     SourceAllExports,
     SourceDemandPhase,
     _ImportScanRequests,
     _SourceImportBinding,
+    SourceImportCall,
     normalize_stdlib_module_name,
 )
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    PythonIdentity,
+    INTRINSIC_ACQUISITION_IDENTITIES,
+)
+from molt.compiler_analysis.python_value_identity import (
+    SOURCE_CALLABLE_IDENTITIES,
+    possible_runtime_import_call_identities,
+)
 from molt.compiler_analysis.static_truth import (
     context_execution_protocol,
 )
@@ -29,6 +40,7 @@ class SourceCandidate(NamedTuple):
     source: PythonSourceKey | None
     kind: Literal["value", "instance", "resumable"] = "value"
     contained: bool = False
+    identity: PythonIdentity | None = None
 
     @property
     def value(self) -> tuple[str, PythonSourceKey | None]:
@@ -61,7 +73,13 @@ SourceValue = tuple[
     | SourceGeneratorCompletion
     | None,
 ]
-SourceDemand = tuple[SourceDemandPhase, tuple[str, ...]]
+
+
+class SourceDemand(NamedTuple):
+    phase: SourceDemandPhase
+    arguments: tuple[str, ...]
+    argument_count: int | None
+    consumer: str
 
 
 class PythonSourceDemands:
@@ -77,9 +95,12 @@ class PythonSourceDemands:
         *,
         admit_imports: Callable[[str, tuple[str, ...]], None],
         queue_body: Callable[[str, PythonSourceKey, tuple[str, ...]], None],
+        require_runtime_import_protocol: Callable[[str], None],
     ) -> None:
         self.admit_imports = admit_imports
         self.queue_body = queue_body
+        self.require_runtime_import_protocol = require_runtime_import_protocol
+        self._consumer: str | None = None
         self.modules: set[str] = set()
         self.full_modules: set[str] = set()
         self.imported_modules: set[str] = set()
@@ -88,11 +109,12 @@ class PythonSourceDemands:
         self.value_phases: dict[SourceValue, set[SourceDemand]] = {}
         self.pending_phases: dict[SourceValue, set[SourceDemand]] = {}
         self.elements: dict[SourceValue, PythonSourceElement] = {}
-        self.calls: dict[SourceValue, frozenset[PythonSourceKey]] = {}
+        self.calls: dict[SourceValue, PythonSourceCall] = {}
+        self.callables: dict[SourceValue, int] = {}
+        self.call_imports: dict[SourceValue, frozenset[SourceImportCall]] = {}
+        self.admitted_call_imports: set[tuple[SourceValue, PythonIdentity, str]] = set()
         self.completions: dict[SourceValue, frozenset[PythonSourceKey]] = {}
-        self.parameters: dict[
-            SourceValue, tuple[tuple[PythonSourceKey, ...], PythonSourceKey | None]
-        ] = {}
+        self.parameters: dict[SourceValue, PythonSourceParameters] = {}
         self.arguments: dict[SourceValue, set[SourceCandidate]] = {}
         self.functions: dict[SourceValue, PythonFunctionResult] = {}
         self.pending_modules: dict[str, set[SourceValue]] = {}
@@ -112,6 +134,8 @@ class PythonSourceDemands:
                 SourceCandidate,
                 SourceDemandPhase,
                 tuple[str, ...],
+                int | None,
+                str,
             ]
         ] = set()
         self.queue: deque[SourceValue] = deque()
@@ -127,9 +151,14 @@ class PythonSourceDemands:
         value: SourceValue,
         phase: SourceDemandPhase,
         arguments: tuple[str, ...] = (),
+        *,
+        argument_count: int | None = None,
+        consumer: str | None = None,
     ) -> None:
         phases = self.value_phases.setdefault(value, set())
-        incidence = (phase, arguments)
+        incidence = SourceDemand(
+            phase, arguments, argument_count, consumer or self._consumer or value[0]
+        )
         if incidence not in phases:
             phases.add(incidence)
             self.pending_phases.setdefault(value, set()).add(incidence)
@@ -180,10 +209,15 @@ class PythonSourceDemands:
             ):
                 old_origins = previous_exposure.union(*previous.values())
                 added = exposure.union(*namespace.values()) - old_origins
-                for phase, arguments in tuple(self.value_phases.get(value, ())):
-                    if phase in {"escape", "expose", "descriptor"}:
+                for incidence in tuple(self.value_phases.get(value, ())):
+                    if incidence.phase in {"escape", "expose", "descriptor"}:
                         for source in added:
-                            self.demand((module_name, source), phase, arguments)
+                            self.demand(
+                                (module_name, source),
+                                incidence.phase,
+                                incidence.arguments,
+                                consumer=incidence.consumer,
+                            )
         for owner, bases in scan.source_values.bases:
             value = (module_name, owner)
             self._publish(self.bases, value, self.bases.get(value, frozenset()) | bases)
@@ -206,11 +240,33 @@ class PythonSourceDemands:
                     raise ValueError("source element changed protocol")
                 element = element._replace(origins=previous.origins | element.origins)
             self._publish(self.elements, value, element)
-        for source, origins in scan.source_values.calls:
+        for transfer in scan.source_values.call_imports:
+            value = (module_name, transfer.site.source)
+            self._publish(
+                self.call_imports,
+                value,
+                self.call_imports.get(value, frozenset()) | {transfer},
+            )
+        for source, identities in scan.source_values.callables:
             value = (module_name, source)
             self._publish(
-                self.calls, value, self.calls.get(value, frozenset()) | origins
+                self.callables, value, self.callables.get(value, 0) | identities
             )
+        for call in scan.source_values.calls:
+            value = (module_name, call.owner)
+            previous = self.calls.get(value)
+            if previous is not None:
+                call = call._replace(
+                    callees=call.callees | previous.callees,
+                    intrinsic_result=call.intrinsic_result | previous.intrinsic_result,
+                    arguments=tuple(
+                        (name, origins | prior[1], exposed | prior[2])
+                        for (name, origins, exposed), prior in zip(
+                            call.arguments, previous.arguments, strict=True
+                        )
+                    ),
+                )
+            self._publish(self.calls, value, call)
         for source, origins in scan.source_values.completions:
             value = (module_name, source)
             self._publish(
@@ -218,8 +274,8 @@ class PythonSourceDemands:
                 value,
                 self.completions.get(value, frozenset()) | origins,
             )
-        for owner, positional, vararg in scan.source_values.parameters:
-            self._publish(self.parameters, (module_name, owner), (positional, vararg))
+        for parameters in scan.source_values.parameters:
+            self._publish(self.parameters, (module_name, parameters.owner), parameters)
         for result in scan.source_values.functions:
             value = (module_name, result.owner)
             previous = self.functions.get(value)
@@ -248,12 +304,14 @@ class PythonSourceDemands:
                     | result.yielded
                     | result.yielded_exposed
                 ) - old
-                if any(
-                    phase in {"escape", "expose"}
-                    for phase, _arguments in self.value_phases.get(value, ())
-                ):
-                    for source in added:
-                        self.demand((module_name, source), "escape")
+                for incidence in tuple(self.value_phases.get(value, ())):
+                    if incidence.phase in {"escape", "expose"}:
+                        for source in added:
+                            self.demand(
+                                (module_name, source),
+                                "escape",
+                                consumer=incidence.consumer,
+                            )
         for binding in scan.source_bindings:
             key = (module_name, binding.source)
             previous = self.import_bindings.get(key)
@@ -265,10 +323,20 @@ class PythonSourceDemands:
                 continue
             if binding.attribute == "*":
                 self.star_aliases.setdefault(module_name, set()).add(binding.source)
-                for phase, arguments in self.escaped_modules.get(module_name, ()):
-                    self.demand(key, phase, arguments)
+                for incidence in self.escaped_modules.get(module_name, ()):
+                    self.demand(
+                        key,
+                        incidence.phase,
+                        incidence.arguments,
+                        consumer=incidence.consumer,
+                    )
         for request in scan.source_demands:
-            self.demand((module_name, request.source), request.phase)
+            self.demand(
+                (module_name, request.source),
+                request.phase,
+                argument_count=request.argument_count,
+                consumer=module_name,
+            )
         for value in self.pending_modules.pop(module_name, ()):
             self.queue_value(value)
 
@@ -287,6 +355,8 @@ class PythonSourceDemands:
         visiting=frozenset(),
         member_visiting=frozenset(),
     ):
+        if owner.identity is not None:
+            return set()
         owner_module, owner_source = owner.value
         result = set()
         if owner.contained or owner in member_visiting:
@@ -359,14 +429,44 @@ class PythonSourceDemands:
         origin: SourceCandidate,
         phase: SourceDemandPhase,
         arguments: tuple[str, ...] = (),
+        *,
+        argument_count: int | None = None,
+        consumer: str | None = None,
     ) -> None:
-        if phase in {"read", "factory"} or (origin, phase, arguments) in self.activated:
+        consumer = consumer or self._consumer or origin.module
+        incidence = (origin, phase, arguments, argument_count, consumer)
+        if phase in {"read", "factory"} or incidence in self.activated:
             return
-        self.activated.add((origin, phase, arguments))
+        self.activated.add(incidence)
+        previous = self._consumer
+        self._consumer = consumer
+        try:
+            self._activate(origin, phase, arguments, argument_count)
+        finally:
+            self._consumer = previous
+
+    def _activate(
+        self,
+        origin: SourceCandidate,
+        phase: SourceDemandPhase,
+        arguments: tuple[str, ...],
+        argument_count: int | None,
+    ) -> None:
         module_name, owner = origin.value
         if origin.contained:
             if phase in {"escape", "release", "expose", "protocol", "descriptor"}:
                 self.activate(origin._replace(contained=False), phase, arguments)
+            return
+        if origin.identity is not None:
+            if phase in {
+                "call",
+                "escape",
+                "expose",
+            } and possible_runtime_import_call_identities(
+                int(origin.identity), argument_count if phase == "call" else None
+            ):
+                assert self._consumer is not None
+                self.require_runtime_import_protocol(self._consumer)
             return
         if phase in {
             "context_enter",
@@ -513,9 +613,11 @@ class PythonSourceDemands:
             if owner is None:
                 # An escaped namespace exposes its star-bound names as well.
                 self.escaped_modules.setdefault(module_name, set()).add(
-                    (
+                    SourceDemand(
                         "escape" if phase in {"escape", "protocol"} else "expose",
                         arguments,
+                        None,
+                        self._consumer or module_name,
                     )
                 )
                 for alias in tuple(self.star_aliases.get(module_name, ())):
@@ -557,7 +659,17 @@ class PythonSourceDemands:
         if module_name not in self.modules:
             self.pending_modules.setdefault(module_name, set()).add(value)
             return
-        candidates = set()
+        candidates = (
+            {
+                SourceCandidate(
+                    module_name, cast(PythonSourceKey, source), identity=identity
+                )
+                for identity in PythonIdentity
+                if self.callables.get(value, 0) & int(identity)
+            }
+            if isinstance(source, tuple)
+            else set()
+        )
         if isinstance(source, SourceReturn):
             for callee in tuple(self.watch(source.callee, value)):
                 candidates.update(self._returned_values(callee, value))
@@ -572,7 +684,9 @@ class PythonSourceDemands:
             if source.owner.kind == "instance":
                 for callee in candidates:
                     self.watch(callee.value, value)
-                    positional, vararg = self.parameters.get(callee.value, ((), None))
+                    parameters = self.parameters.get(callee.value)
+                    positional = parameters.positional if parameters is not None else ()
+                    vararg = parameters.vararg if parameters is not None else None
                     parameter = positional[0] if positional else vararg
                     if parameter is not None:
                         formal = (callee.module, parameter)
@@ -643,10 +757,60 @@ class PythonSourceDemands:
                     self.watch((module_name, operation((module_name, owner))), value)
                 )
         elif value in self.calls and value not in self.import_bindings:
-            for callee in self.calls[value]:
+            call = self.calls[value]
+            for callee in call.callees:
                 for candidate in tuple(self.watch((module_name, callee), value)):
-                    if candidate.source is None or candidate.contained:
+                    if candidate.contained:
                         continue
+                    if candidate.identity is not None:
+                        argument_count = (
+                            None
+                            if any(name is None for name, _, _ in call.arguments)
+                            else len(call.arguments)
+                        )
+                        import_identity = possible_runtime_import_call_identities(
+                            int(candidate.identity), argument_count
+                        )
+                        for transfer in self.call_imports.get(value, ()):
+                            if not import_identity & transfer.identities:
+                                continue
+                            added_imports = tuple(
+                                imported
+                                for imported in transfer.site.plan.modules
+                                if (value, candidate.identity, imported)
+                                not in self.admitted_call_imports
+                            )
+                            if added_imports:
+                                self.admitted_call_imports.update(
+                                    (value, candidate.identity, imported)
+                                    for imported in added_imports
+                                )
+                                self.admit_imports(module_name, added_imports)
+                            for imported in transfer.returned_modules:
+                                candidates.update(self.watch((imported, None), value))
+                            for source in transfer.returned_exposed:
+                                candidates.update(
+                                    result._replace(contained=True)
+                                    if source not in transfer.returned_sources
+                                    else result
+                                    for result in self.watch(
+                                        (module_name, source), value
+                                    )
+                                )
+                        if int(candidate.identity) & INTRINSIC_ACQUISITION_IDENTITIES:
+                            candidates.update(
+                                SourceCandidate(
+                                    module_name, call.owner, identity=identity
+                                )
+                                for identity in PythonIdentity
+                                if int(identity)
+                                & call.intrinsic_result
+                                & SOURCE_CALLABLE_IDENTITIES
+                            )
+                        continue
+                    if candidate.source is None:
+                        continue
+                    self._bind_call_arguments(call, candidate, value)
                     if candidate.source[-1] == "ClassDef":
                         if candidate.kind == "value":
                             candidates.add(
@@ -694,12 +858,91 @@ class PythonSourceDemands:
         new_phases = self.pending_phases.pop(value, set())
         old_phases = (self.value_phases.get(value, set()) - new_phases) if added else ()
         for candidate in added:
-            for phase, arguments in old_phases:
-                self.activate(candidate, phase, arguments)
+            for incidence in old_phases:
+                self.activate(
+                    candidate,
+                    incidence.phase,
+                    incidence.arguments,
+                    argument_count=incidence.argument_count,
+                    consumer=incidence.consumer,
+                )
         if new_phases:
             for candidate in tuple(known):
-                for phase, arguments in new_phases:
-                    self.activate(candidate, phase, arguments)
+                for incidence in new_phases:
+                    self.activate(
+                        candidate,
+                        incidence.phase,
+                        incidence.arguments,
+                        argument_count=incidence.argument_count,
+                        consumer=incidence.consumer,
+                    )
+
+    def _bind_call_arguments(
+        self, call: PythonSourceCall, callee: SourceCandidate, user: SourceValue
+    ) -> None:
+        """Transport argument origins through the existing formal-value worklist."""
+        self.watch(callee.value, user)
+        parameters = self.parameters.get(callee.value)
+        if parameters is None:
+            return
+        keywords = dict(parameters.keywords)
+        for name, origins, exposed in call.arguments:
+            if isinstance(name, int):
+                targets = (
+                    ((parameters.positional[name], False),)
+                    if name < len(parameters.positional)
+                    else (
+                        ((parameters.vararg, True),)
+                        if parameters.vararg is not None
+                        else ()
+                    )
+                )
+            elif isinstance(name, str):
+                target = keywords.get(name)
+                targets = (
+                    ((target, False),)
+                    if target is not None
+                    else (
+                        ((parameters.kwarg, True),)
+                        if parameters.kwarg is not None
+                        else ()
+                    )
+                )
+            else:
+                # Unknown expansions can supply any formal; their contained
+                # candidates become direct parameter values after unpacking.
+                targets = tuple(
+                    (target, target in {parameters.vararg, parameters.kwarg})
+                    for target in dict.fromkeys(
+                        (
+                            *parameters.positional,
+                            *keywords.values(),
+                            *(
+                                (parameters.vararg,)
+                                if parameters.vararg is not None
+                                else ()
+                            ),
+                            *(
+                                (parameters.kwarg,)
+                                if parameters.kwarg is not None
+                                else ()
+                            ),
+                        )
+                    )
+                )
+                origins = exposed
+            for target, contained in targets:
+                formal = (callee.module, target)
+                known = self.arguments.setdefault(formal, set())
+                for source in exposed:
+                    for candidate in tuple(self.watch((user[0], source), user)):
+                        argument = candidate._replace(
+                            contained=contained
+                            or (source not in origins and name is not None)
+                        )
+                        if argument not in known:
+                            known.add(argument)
+                            self.queue_value(formal)
 
     def _function_kind(self, callee: SourceCandidate) -> FunctionKind:
         result = self.functions.get(callee.value)
@@ -708,7 +951,7 @@ class PythonSourceDemands:
     def _returned_values(
         self, callee: SourceCandidate, user: SourceValue
     ) -> set[SourceCandidate]:
-        if callee.kind == "resumable":
+        if callee.identity is not None or callee.kind == "resumable":
             return set()
         self.watch(callee.value, user)
         if self._function_kind(callee) != FunctionKind.SYNC:

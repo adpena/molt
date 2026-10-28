@@ -97,6 +97,26 @@ class PythonFunctionResult(NamedTuple):
     yielded_exposed: frozenset[PythonSourceKey]
 
 
+class PythonSourceCall(NamedTuple):
+    """Source call value transfer, with argument facts already bound by analysis."""
+
+    owner: PythonSourceKey
+    callees: frozenset[PythonSourceKey]
+    intrinsic_result: IdentityMask
+    arguments: tuple[
+        tuple[int | str | None, frozenset[PythonSourceKey], frozenset[PythonSourceKey]],
+        ...,
+    ]
+
+
+class PythonSourceParameters(NamedTuple):
+    owner: PythonSourceKey
+    positional: tuple[PythonSourceKey, ...]
+    vararg: PythonSourceKey | None
+    keywords: tuple[tuple[str, PythonSourceKey], ...]
+    kwarg: PythonSourceKey | None
+
+
 class PythonElementProtocol(StrEnum):
     SUBSCRIPT = "subscript"
     ITERATE = "iterate"
@@ -786,11 +806,10 @@ class PythonBindingFacts:
     # a closed-graph namespace premise bounds the callback domain (HF-226).
     callbacks_rewrite_metadata: bool
     source_elements: tuple[PythonSourceElement, ...]
-    source_calls: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
+    source_calls: tuple[PythonSourceCall, ...]
     source_completions: tuple[tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...]
-    source_parameters: tuple[
-        tuple[PythonSourceKey, tuple[PythonSourceKey, ...], PythonSourceKey | None], ...
-    ]
+    source_parameters: tuple[PythonSourceParameters, ...]
+    source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...]
     source_function_results: tuple[PythonFunctionResult, ...]
     _expression_lookup: Mapping[PythonNodeKey, PythonExpressionFact]
     _statement_lookup: Mapping[PythonNodeKey, PythonStatementFact]
@@ -829,16 +848,12 @@ class PythonBindingFacts:
         ] = (),
         callbacks_rewrite_metadata: bool = True,
         source_elements: tuple[PythonSourceElement, ...] = (),
-        source_calls: tuple[
-            tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
-        ] = (),
+        source_calls: tuple[PythonSourceCall, ...] = (),
+        source_callables: tuple[tuple[PythonSourceKey, IdentityMask], ...] = (),
         source_completions: tuple[
             tuple[PythonSourceKey, frozenset[PythonSourceKey]], ...
         ] = (),
-        source_parameters: tuple[
-            tuple[PythonSourceKey, tuple[PythonSourceKey, ...], PythonSourceKey | None],
-            ...,
-        ] = (),
+        source_parameters: tuple[PythonSourceParameters, ...] = (),
         source_function_results: tuple[PythonFunctionResult, ...] = (),
     ) -> PythonBindingFacts:
         return cls(
@@ -860,6 +875,7 @@ class PythonBindingFacts:
             callbacks_rewrite_metadata=callbacks_rewrite_metadata,
             source_elements=source_elements,
             source_calls=source_calls,
+            source_callables=source_callables,
             source_completions=source_completions,
             source_parameters=source_parameters,
             source_function_results=source_function_results,

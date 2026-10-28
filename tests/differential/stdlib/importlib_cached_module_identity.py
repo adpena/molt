@@ -79,6 +79,96 @@ import sys
 import types
 
 
+def _importer_factory():
+    return importlib.import_module
+
+
+_returned_importers = [_importer_factory()]
+assert "fromlist_protocol_pkg" not in sys.modules
+assert "fromlist_protocol_pkg.child" not in sys.modules
+_returned_child = _returned_importers[0]("fromlist_protocol_pkg.child")
+print(
+    "returned-importer",
+    _returned_child.value,
+    sys.modules["fromlist_protocol_pkg.child"] is _returned_child,
+)
+
+
+_return_root = types.ModuleType("_molt_return_pkg")
+_return_root.__path__ = []
+_return_branch = types.ModuleType("_molt_return_pkg.branch")
+_return_branch.__path__ = []
+_return_leaf = types.ModuleType("_molt_return_pkg.branch.leaf")
+_return_globals = {"__package__": "_molt_return_pkg"}
+for _return_module in (_return_root, _return_branch, _return_leaf):
+    sys.modules[_return_module.__name__] = _return_module
+
+
+class _FalseReturnFromlist:
+    def __init__(self, mode):
+        self.mode = mode
+        self.calls = 0
+
+    def __bool__(self):
+        self.calls += 1
+        if self.mode == "none":
+            sys.modules["_molt_return_pkg.branch"] = None
+        elif self.mode == "missing":
+            del sys.modules["_molt_return_pkg.branch"]
+        elif self.mode == "alias":
+            sys.modules["_molt_return_pkg.branch"] = _return_leaf
+        elif self.mode == "absolute-none":
+            sys.modules["_molt_return_pkg"] = None
+        elif self.mode == "absolute-missing":
+            del sys.modules["_molt_return_pkg"]
+        return False
+
+
+try:
+    assert __import__("_molt_return_pkg.branch.leaf") is _return_root
+    assert __import__("branch.leaf", _return_globals, None, (), 1) is _return_branch
+    assert (
+        __import__("leaf", {"__package__": "_molt_return_pkg.branch"}, None, (), 1)
+        is _return_leaf
+    )
+    assert __import__("", _return_globals, None, (), 1) is _return_root
+    print("relative-return", True)
+    for _mode in ("none", "missing", "alias"):
+        sys.modules["_molt_return_pkg.branch"] = _return_branch
+        _fromlist = _FalseReturnFromlist(_mode)
+        try:
+            _selected = __import__("branch.leaf", _return_globals, None, _fromlist, 1)
+        except KeyError as _error:
+            assert _mode == "missing"
+            assert _error.args == (
+                "'_molt_return_pkg.branch' not in sys.modules as expected",
+            )
+        else:
+            assert _mode != "missing"
+            assert _selected is (None if _mode == "none" else _return_leaf)
+        assert _fromlist.calls == 1
+        print("relative-return-cache", _mode, _fromlist.calls)
+    sys.modules["_molt_return_pkg.branch"] = _return_branch
+    for _mode in ("absolute-none", "absolute-missing"):
+        sys.modules["_molt_return_pkg"] = _return_root
+        _fromlist = _FalseReturnFromlist(_mode)
+        try:
+            __import__("_molt_return_pkg.branch.leaf", None, None, _fromlist)
+        except ModuleNotFoundError as _error:
+            assert _error.name == "_molt_return_pkg"
+        else:
+            raise AssertionError("absolute return selection must import the root again")
+        assert _fromlist.calls == 1
+        print("absolute-return-cache", _mode, _fromlist.calls)
+finally:
+    for _return_name in (
+        "_molt_return_pkg.branch.leaf",
+        "_molt_return_pkg.branch",
+        "_molt_return_pkg",
+    ):
+        sys.modules.pop(_return_name, None)
+
+
 class OpaqueModule(types.ModuleType):
     def __getattribute__(self, name):
         if name in ("__name__", "__file__"):
