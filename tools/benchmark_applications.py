@@ -22,14 +22,15 @@ import zipfile
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parents[1]
-for _root in (ROOT, ROOT / "src"):
-    if str(_root) not in sys.path:
-        sys.path.insert(0, str(_root))
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
+
+ROOT = _REPO_ROOT
 
 from molt.portable_paths import (  # noqa: E402
     portable_path_component,
