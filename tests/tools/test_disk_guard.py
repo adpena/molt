@@ -751,15 +751,20 @@ def test_guard_coordinate_is_rechecked_under_retirement_lock(
             )
 
     if kind == "scratch":
-        inventory = dg._scratch_inventory
+        from contextlib import contextmanager
 
-        def inventory_then_launch(path, deadline):
-            observed = inventory(path, deadline)
-            if path == kept:
-                start_marker()
-            return observed
+        # A stamped root is planned from its stamp without a walk; the guard
+        # starts after planning, once retirement holds the exclusive lock.
+        retirement = cs.checkout_state_retirement
 
-        monkeypatch.setattr(dg, "_scratch_inventory", inventory_then_launch)
+        @contextmanager
+        def lock_then_launch(path, **kwargs):
+            with retirement(path, **kwargs) as exclusive:
+                if path == kept:
+                    start_marker()
+                yield exclusive
+
+        monkeypatch.setattr(cs, "checkout_state_retirement", lock_then_launch)
     else:
         retire = dg._retire_candidate
 
@@ -4222,8 +4227,9 @@ def test_scratch_used_survives_then_idle_or_orphaned_retires_softly(
     _age_scratch_tree(root, now - age)
     dry = dg.gc(root=ext, env=env, now_fn=lambda: now, apply=False, log=False)
     selected = [row for row in dry.reclaimed if row["path"] == str(root)]
-    assert len(selected) == 1 and selected[0]["kind"] == "scratch"
-    assert selected[0]["est_bytes"] == sum(p.stat().st_size for p in root.iterdir())
+    # The stamp decides a constructor root without a walk, so its bytes
+    # are not estimated.
+    assert selected == [{"path": str(root), "kind": "scratch"}]
     assert (
         root.is_dir() and payload.read_bytes() == b"recover this exact scratch payload"
     )
@@ -4310,7 +4316,19 @@ def test_scratch_live_custody_keeps_an_old_root(tmp_path, protection):
     ext, projects, env = _checkout_family(tmp_path)
     owner = projects / "lane"
     owner.mkdir()
-    root = cs.scratch_state_root(ext / "tmp", owner=owner)
+    # Descendant locks and nested markers are walk observations, so they
+    # protect a legacy root. A stamped root's users hold its use lock.
+    walked = protection in {
+        "nested-guard",
+        "cargo-lock",
+        "lease-lock",
+        "guard-scratch-lock",
+    }
+    if walked:
+        root = ext / "tmp" / "pre-constructor"
+        root.mkdir(parents=True)
+    else:
+        root = cs.scratch_state_root(ext / "tmp", owner=owner)
     now = 2_000_000_000.0
     if protection == "path":
         env["MOLT_PROOF_SCRATCH_ROOT"] = str(root / "child")
@@ -4368,6 +4386,334 @@ def test_scratch_inventory_exhaustion_or_error_never_authorizes_retirement(
         "path": str(root),
         "reason": "scratch inventory budget exhausted",
     } in result.skipped
+
+
+class _WalkClock:
+    """Monotonic time that advances one unit per reading on this thread.
+
+    A walk reads the clock once per directory and once per entry, so its
+    cost grows with the tree it walks, as real metadata walks do.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        self.now += 1.0
+        return self.now
+
+
+def _walk_clock(monkeypatch, budget: float) -> _WalkClock:
+    """Install one unit clock in the walk rotation and in every walker."""
+    from molt import checkout_state as cs
+    from tests.process_guard_common import ModuleView, current_thread_only
+    from tools import coordination_records
+
+    clock = _WalkClock()
+    for module in (cs, dg, coordination_records):
+        monkeypatch.setattr(
+            module,
+            "time",
+            ModuleView(
+                module.time,
+                monotonic=current_thread_only(clock, module.time.monotonic),
+            ),
+        )
+    monkeypatch.setattr(cs, "WALK_BUDGET_S", budget)
+    return clock
+
+
+def _legacy_scratch(root: Path, *, moment: float, recent: float | None = None) -> None:
+    """A pre-constructor tree whose root mtime is old; ``recent`` dates one
+    deep file, which only a complete walk can see."""
+    for index in range(12):
+        payload = root / f"part-{index % 3}" / f"file-{index}"
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        payload.write_bytes(b"legacy payload %d" % index)
+    _age_scratch_tree(root, moment)
+    if recent is not None:
+        os.utime(root / "part-0" / "file-0", (recent, recent))
+
+
+def _tree_bytes(root: Path) -> int:
+    return sum(
+        (Path(parent) / name).lstat().st_size
+        for parent, _, names in os.walk(root)
+        for name in names
+    )
+
+
+def _assert_rotation_bound(
+    monkeypatch,
+    *,
+    family: str,
+    gc_root: Path,
+    env: dict[str, str],
+    now: float,
+    roots: dict[str, Path],
+    keys: dict[str, str],
+    walk,
+    make_recent,
+    text_reads=lambda _name: 0,
+    retired=None,
+) -> dict[str, str]:
+    """HF-528: entries a family visits first must not starve the rest.
+
+    ``roots`` are idle entries of ``family`` and ``keys`` their rotation
+    keys. The two entries visited first are made recent (``make_recent``),
+    so every pass walks and keeps them; their walks and the third entry's
+    first walk do not fit one budget. A fixed visiting order (main before
+    HF-528) then never evaluates the idle entries. The persisted rotation
+    retires every idle entry within ``min(L, 1 + 2 * C / budget)`` passes,
+    with ``C`` from the walks' own costs under one unit clock: a kept entry
+    is walked once, a retired one twice plus ``text_reads(name)`` clock
+    reads. ``retired(name)`` observes an entry's retirement on disk (by
+    default, its path is gone). Returns the applied passes' retirements.
+    """
+    from molt import checkout_state as cs
+
+    if retired is None:
+
+        def retired(name: str) -> bool:
+            return not roots[name].exists()
+
+    ordered = sorted(roots, key=keys.__getitem__)
+    active, idle = ordered[:2], ordered[2:]
+    for name in active:
+        make_recent(name)
+    clock = _walk_clock(monkeypatch, budget=float("inf"))
+    walked = {}
+    for name, root in roots.items():
+        started = clock.now
+        walk(root, float("inf"))
+        walked[name] = clock.now - started + 2  # The rotation's own two reads.
+    costs = {
+        name: walked[name]
+        if name in active
+        else 2 * walked[name] + text_reads(name) + 2
+        for name in roots
+    }
+    budget = walked[active[0]] + walked[active[1]] + walked[idle[0]] / 2
+    monkeypatch.setattr(cs, "WALK_BUDGET_S", budget)
+    total = sum(min(cost, budget) for cost in costs.values())
+    bound = min(len(roots), 1 + int(2 * total // budget))
+    retirements: dict[str, str] = {}
+
+    def run_until_idle_gone(passes: int) -> int | None:
+        for completed in range(1, passes + 1):
+            result = dg.gc(
+                root=gc_root, config=_cfg(), env=env, now_fn=lambda: now, log=False
+            )
+            assert not result.errors
+            retirements.update(result.retirements)
+            if all(retired(name) for name in idle):
+                return completed
+        return None
+
+    # Mutation oracle: without the persisted cursor every pass starts over.
+    original_publish = cs.WalkRotation.publish
+    monkeypatch.setattr(cs.WalkRotation, "publish", lambda self: None)
+    assert run_until_idle_gone(3 * bound) is None, "a fixed order starves the rest"
+    assert not any(retired(name) for name in idle)
+    monkeypatch.setattr(cs.WalkRotation, "publish", original_publish)
+    record = gc_root.resolve().joinpath(*cs.WALK_ROTATION_RECORD)
+    assert not record.exists()
+    dry = dg.gc(
+        root=gc_root, config=_cfg(), env=env, now_fn=lambda: now, apply=False, log=False
+    )
+    assert not record.exists(), "a dry run previews; it never moves the cursor"
+    assert dry.walk_rotation[family]["deferred"] > 0
+    passes = run_until_idle_gone(bound)
+    assert passes is not None and passes <= bound
+    assert not any(retired(name) for name in active), "kept entries stay"
+    return retirements
+
+
+@pytest.mark.parametrize(
+    "family", ["scratch", "retired-scratch", "integration-receipts"]
+)
+def test_every_legacy_scratch_walk_is_evaluated_within_the_rotation_bound(
+    tmp_path, monkeypatch, family
+):
+    from molt import checkout_state as cs
+
+    now = 2_000_000_000.0
+    roots: dict[str, Path] = {}
+    keys: dict[str, str] = {}
+    walk = dg._scratch_inventory
+    if family == "integration-receipts":
+        from tests.test_dx_run_context import _git
+
+        main = tmp_path / "molt-src"
+        main.mkdir()
+        _git(main, "init", "-q")
+        gc_root, env = tmp_path, {}
+        walk = dg._receipt_inventory
+    else:
+        gc_root, _, env = _checkout_family(tmp_path)
+    for index in range(8):
+        name = f"entry-{index}"
+        if family == "integration-receipts":
+            root = main / f".git/molt-integrate/receipts/{name}.gates.d"
+            _legacy_scratch(root, moment=now - 20 * DAY)
+        else:
+            root = gc_root / "tmp" / name
+            _legacy_scratch(root, moment=now - (4 if family == "scratch" else 20) * DAY)
+        roots[name], keys[name] = root, str(root)
+        if family == "retired-scratch":
+            retired = cs.soft_retire(
+                root, gc_root, reason="scratch", owner=str(gc_root), now=now - 8 * DAY
+            )
+            _age_scratch_tree(retired.path, now - 20 * DAY)
+            roots[name], keys[name] = retired.path, str(retired.record_path)
+
+    def make_recent(name: str) -> None:
+        os.utime(roots[name] / "part-0" / "file-0", (now - HOUR, now - HOUR))
+
+    retirements = _assert_rotation_bound(
+        monkeypatch,
+        family=family,
+        gc_root=gc_root,
+        env=env,
+        now=now,
+        roots=roots,
+        keys=keys,
+        walk=walk,
+        make_recent=make_recent,
+    )
+    for name, root in roots.items():
+        if root.exists():
+            assert (root / "part-0" / "file-0").read_bytes() == b"legacy payload 0"
+        elif family != "retired-scratch":
+            # Each idle tree was retired softly, whole, after its complete walks.
+            moved = Path(retirements[str(root)])
+            assert (moved / "part-2" / "file-11").read_bytes() == b"legacy payload 11"
+
+
+def test_stamped_scratch_is_decided_by_its_stamp_without_a_walk(tmp_path, monkeypatch):
+    """A constructor root's stamp decides it; nothing below it is listed.
+
+    The idle root holds a deep write newer than its stamp. A walk would keep
+    it as recent; the stamp-only decision selects it. No directory inside
+    either stamped root is ever listed, so the decision is constant work.
+    """
+    from molt import checkout_state as cs
+    from tests.process_guard_common import current_thread_only
+
+    ext, projects, env = _checkout_family(tmp_path)
+    roots = {}
+    for name in ("idle", "used"):
+        owner = projects / name
+        owner.mkdir()
+        roots[name] = root = cs.scratch_state_root(ext / "tmp", owner=owner)
+        _legacy_scratch(root / "purpose", moment=0.0)
+    now = 2_000_000_000.0
+    legacy = ext / "tmp" / "pre-constructor"
+    _legacy_scratch(legacy, moment=now - 4 * DAY)
+    for root in roots.values():
+        _age_scratch_tree(root, now - 4 * DAY)
+    os.utime(roots["idle"] / "purpose/part-0/file-0", (now, now))
+    used_stamp = roots["used"] / cs.LAST_USE_STAMP
+    os.utime(used_stamp, (now - HOUR, now - HOUR))
+    listed: list[Path] = []
+    for name in ("scandir", "listdir"):
+        real = getattr(os, name)
+
+        def observe(path=".", *args, _real=real, **kwargs):
+            if not isinstance(path, int):
+                listed.append(Path(os.fsdecode(path)).absolute())
+            return _real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, current_thread_only(observe, real))
+
+    def inside_stamped() -> list[Path]:
+        return [
+            path
+            for path in listed
+            for root in roots.values()
+            if path == root or root in path.parents
+        ]
+
+    dry = dg.gc(
+        root=ext, config=_cfg(), env=env, now_fn=lambda: now, apply=False, log=False
+    )
+    assert inside_stamped() == []
+    assert {"path": str(roots["idle"]), "kind": "scratch"} in dry.reclaimed
+    assert {
+        "path": str(roots["used"]),
+        "kind": "scratch",
+        "reason": "recent-use",
+    } in dry.skipped
+    # A legacy root still needs its complete walk, which also sizes it.
+    assert {
+        "path": str(legacy),
+        "kind": "scratch",
+        "est_bytes": _tree_bytes(legacy),
+    } in dry.reclaimed
+    assert any(legacy in path.parents for path in listed)
+    assert dry.walk_rotation["scratch"]["walks"] == 1
+    result = _gc(ext, env, now)
+    assert inside_stamped() == []
+    moved = Path(result.retirements[str(roots["idle"])])
+    assert not roots["idle"].exists()
+    assert (moved / "purpose/part-0/file-0").read_bytes() == b"legacy payload 0"
+    assert roots["used"].is_dir() and used_stamp.is_file()
+
+
+@pytest.mark.parametrize("interrupted", ["first", "later", "recheck", "final"])
+def test_an_incomplete_scratch_walk_never_authorizes_retirement(
+    tmp_path, monkeypatch, capsys, interrupted
+):
+    """No partial walk retires: not a deferred walk, not an over-budget first
+    walk, not an interrupted recheck, not a final deletion's walk."""
+    from molt import checkout_state as cs
+
+    ext, _, env = _checkout_family(tmp_path)
+    now = 2_000_000_000.0
+    first, later = ext / "tmp" / "a-first", ext / "tmp" / "b-later"
+    for root in (first,) if interrupted == "final" else (first, later):
+        _legacy_scratch(root, moment=now - 4 * DAY)
+    watched = later if interrupted == "later" else first
+    if interrupted == "final":
+        retired = cs.soft_retire(
+            first, ext, reason="scratch", owner=str(ext), now=now - 8 * DAY
+        )
+        watched = retired.path
+        _age_scratch_tree(watched, now - 20 * DAY)
+    clock = _walk_clock(monkeypatch, budget=float("inf"))
+    started = clock.now
+    dg._scratch_inventory(watched, float("inf"))
+    cost = clock.now - started + 1
+    budget = {
+        "first": cost / 2,  # The whole budget cannot finish the first walk.
+        "later": 2 * cost + cost / 2,  # Both walks of the first, then a part.
+        "recheck": cost + cost / 2,  # The plan walk, then a part of the recheck.
+        "final": cost / 2,
+    }[interrupted]
+    monkeypatch.setattr(cs, "WALK_BUDGET_S", budget)
+    payload = watched / "part-1" / "file-4"
+    result = _gc(ext, env, now)
+    assert str(watched) not in _reclaimed(result)
+    assert str(watched) not in result.retirements
+    assert payload.read_bytes() == b"legacy payload 4"
+    reason = (
+        "inventory-deferred"
+        if interrupted == "later"
+        else "inventory-exceeds-pass-budget"
+    )
+    assert reason in {
+        row["reason"] for row in result.skipped if row["path"] == str(watched)
+    }
+    if interrupted == "later":
+        assert str(first) in result.retirements, "the completed walk retires"
+        cursor = json.loads(ext.joinpath(*cs.WALK_ROTATION_RECORD).read_bytes())
+        assert cursor["cursors"] == {"scratch": str(later)}
+        dg._print_result(result, as_json=False)
+        assert f"1 deferred, 0 over budget; cursor start -> {later}" in (
+            capsys.readouterr().out
+        )
+    if interrupted == "final":
+        assert retired.record_path.is_file(), "the retirement stays recoverable"
 
 
 def test_scratch_activity_is_rechecked_under_exclusive_retirement(

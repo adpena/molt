@@ -2115,6 +2115,111 @@ def test_harvest_text_limit_is_inclusive_and_opaque_files_retire(tmp_path):
         assert (retired / "artifacts" / name).read_bytes() == samples[name]
 
 
+def test_every_terminal_task_is_harvested_within_the_rotation_bound(
+    tmp_path, monkeypatch
+):
+    """HF-528: large tasks first in path order must not starve the rest."""
+    from tests.tools.test_disk_guard import _assert_rotation_bound
+
+    _identity_fixture_git(tmp_path, "init", "-q")
+    now = 1_800_000_000.0
+    tasks: dict[str, Path] = {}
+    for index in range(8):
+        name = f"task-{index}"
+        base = tmp_path / "logs/agents" / name
+        payload = base / "artifacts/payload"
+        for part in range(12):
+            (payload / f"part-{part % 3}").mkdir(parents=True, exist_ok=True)
+            (payload / f"part-{part % 3}/file-{part}.bin").write_bytes(
+                b"\0raw payload %d" % part
+            )
+        (base / "coordination.json").write_text(
+            json.dumps({"task": name, "status": "done"}), encoding="utf-8"
+        )
+        (base / "progress.log").write_bytes(b"unique progress %d\n" % index)
+        (base / "artifacts/report-unique.md").write_bytes(b"conclusion %d\n" % index)
+        for path in [*base.rglob("*"), base]:
+            os.utime(path, (now - 4 * 86400,) * 2)
+        tasks[name] = base
+
+    def make_recent(name: str) -> None:
+        deep = tasks[name] / "artifacts/payload/part-0/file-0.bin"
+        os.utime(deep, (now - 60, now - 60))
+
+    def harvested(name: str) -> bool:
+        return not (tasks[name] / "artifacts/payload").exists()
+
+    retirements = _assert_rotation_bound(
+        monkeypatch,
+        family="agent-evidence",
+        gc_root=tmp_path,
+        env={},
+        now=now,
+        roots=tasks,
+        keys={name: str(base) for name, base in tasks.items()},
+        walk=coordination_records._evidence_inventory,
+        make_recent=make_recent,
+        # One clock reading per small text record that the harvest checks.
+        text_reads=lambda name: (
+            len(coordination_records._evidence_inventory(tasks[name], float("inf"))[2])
+            + 2
+        ),
+        retired=harvested,
+    )
+    for name, base in tasks.items():
+        assert (
+            base / "artifacts/report-unique.md"
+        ).read_bytes() == b"conclusion %d\n" % int(name.rsplit("-", 1)[1])
+        if harvested(name):
+            moved = Path(retirements[str(base)])
+            assert (
+                moved / "artifacts/payload/part-2/file-11.bin"
+            ).read_bytes() == b"\0raw payload 11"
+        else:
+            assert (
+                base / "artifacts/payload/part-2/file-11.bin"
+            ).read_bytes() == b"\0raw payload 11"
+
+
+@pytest.mark.parametrize("interrupted", ["first", "later", "text", "recheck"])
+def test_an_incomplete_evidence_walk_never_harvests(tmp_path, monkeypatch, interrupted):
+    """No partial walk or text check moves a task's payload (HF-528)."""
+    from molt import checkout_state
+    from tools import disk_guard
+    from tests.tools.test_disk_guard import _walk_clock
+
+    now, tasks = _evidence_harvest_fixture(tmp_path)
+    first, later = tasks["idle"], tasks["second"]
+    watched = later if interrupted == "later" else first
+    clock = _walk_clock(monkeypatch, budget=float("inf"))
+    started = clock.now
+    _, _, text = coordination_records._evidence_inventory(watched, float("inf"))
+    walk = clock.now - started + 1
+    budget = {
+        "first": walk / 2,  # The whole budget cannot finish the first walk.
+        "later": 2 * walk + len(text) + 3,  # All of the first task, none after.
+        "text": walk + 1 + len(text) / 2,  # The walk, then part of its text.
+        "recheck": walk + len(text) + 2 + walk / 2,  # All but the recheck walk.
+    }[interrupted]
+    monkeypatch.setattr(checkout_state, "WALK_BUDGET_S", budget)
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    assert not result.errors
+    assert (watched / "artifacts/payload.bin").read_bytes() == b"\0raw payload" * 100
+    assert str(watched) not in result.retirements
+    reason = (
+        "inventory-deferred"
+        if interrupted == "later"
+        else "inventory-exceeds-pass-budget"
+    )
+    assert [
+        row["reason"]
+        for row in result.skipped
+        if row["path"] == str(watched) and row["kind"] == "agent-evidence"
+    ] == [reason]
+    if interrupted == "later":
+        assert str(first) in result.retirements, "the completed task is harvested"
+
+
 def test_read_observation_does_not_keep_terminal_payloads(tmp_path, monkeypatch):
     from tools import disk_guard
 
