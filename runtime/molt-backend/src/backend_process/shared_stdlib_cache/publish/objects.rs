@@ -64,7 +64,7 @@ impl StdlibObjectCache {
             // authority still compile through the same path, without reuse.
             return Ok(None);
         };
-        let _admitted_callables = molt_backend::runtime_callable_symbols_from_env();
+        let _admitted_callables = molt_backend::RuntimeCallableSymbols::capture();
         let mut authority: serde_json::Value = serde_json::from_str(manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let fields = authority

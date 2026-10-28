@@ -16,9 +16,7 @@ mod native_object_execution {
 fn make_constructor_backend(ctx: &Context) -> LlvmBackend<'_> {
     let mut backend = make_backend(ctx);
     // The linked provider below implements this admitted boxed-call symbol.
-    backend
-        .runtime_callable_symbols
-        .insert("molt_slice_new".into());
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert("molt_slice_new".into());
     backend
 }
 
@@ -2219,7 +2217,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         "molt_callargs_push_pos",
         "molt_dict_update_missing",
     ] {
-        backend.runtime_callable_symbols.insert(symbol.into());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
     }
     for name in ["fam_target", "fam_poll"] {
         backend.function_linkage_abis.insert(

@@ -208,7 +208,7 @@ fn first_class_calls_use_only_their_canonical_runtime_row() {
     for (symbol, classified) in [("molt_chan_recv", true), ("molt_unclassified_poll", false)] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend.runtime_callable_symbols.insert(symbol.into());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
         let mut func = TirFunction::new(
             format!("first_class_{symbol}"),
             vec![TirType::DynBox],
@@ -254,8 +254,7 @@ fn first_class_calls_use_only_their_canonical_runtime_row() {
 fn normalized_wait_polls_through_the_canonical_poll_row() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_future_poll".into());
     let wait = normalized_wait("activation_poll", true);
     let llvm_fn = try_lower_tir_to_llvm(&wait.func, &backend)

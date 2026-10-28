@@ -66,6 +66,40 @@ checks if unusable. An explicit directory needs no default path resolution.
   process-level read outside the catalog states its reason with `#[expect(clippy::disallowed_methods)]`;
   test builds may read the process environment.
 
+### Immutable callable inputs
+
+`RuntimeCallableSymbols` owns symbols decoded from the exact buffer admitted
+against the CLI's independent path/SHA256 pair. A request's non-cloneable `BackendEnvironment`
+retains one successful admission in a `OnceLock<Arc<_>>`; modules and carried
+workers share that snapshot. The LLVM module borrows the shared set through
+`Arc`, and the app-callable resolver borrows it while filtering requirements.
+Test fixtures that intentionally change membership use copy-on-write, leaving
+other modules' admitted sets intact.
+
+A fresh request re-admits its selected bytes. Replacement or removal after a
+successful admission does not change that request's snapshot; it fails the
+next admission when the expected digest/path no longer matches. Invalid input
+never becomes an empty set. A loader panic is not cached as success. The
+existing empty required-set carve-out remains confined to `molt-ir` unit tests.
+Unscoped one-shot captures retain fresh reads; this is not a process-global
+cache. Entering a carrier captured without a request clears the current scope
+until its guard restores it, so nested work cannot inherit another request's
+settings or callable snapshot.
+
+For `B` input bytes, `S` callable names and `M` modules in a request, admission
+reads and hashes `B` bytes and constructs one ordered set, rather than repeating
+that work per consumer. Successful later captures allocate no symbol strings
+and perform no input-file IO; LLVM modules clone shared references instead of
+`S` strings. The retained set lives until the request and its workers release
+it, trading that bounded lifetime for avoided repeated allocations. Optional
+standalone LLVM modules still own an empty shared set when no pair is supplied.
+This changes compiler input work, without a claim about guest execution speed.
+
+The lifetime follows [rustc's shared compilation data](https://rustc-dev-guide.rust-lang.org/memory.html):
+allocate stable facts once and release them with their compilation context.
+[OnceLock](https://doc.rust-lang.org/std/sync/struct.OnceLock.html) supplies
+single initialization across worker races without a second input registry.
+
 ### Concurrency
 
 - The accept loop polls the listener and a `UnixStream::pair` wake socket, and serves each connection
