@@ -3256,6 +3256,7 @@ def test_compatibility_source_refresh_preserves_independent_evidence_and_is_atom
     [
         ("RawIoBaseReadinto", "Modules/_io/iobase.c"),
         ("LoggingHandlerEmit", "Lib/logging/__init__.py"),
+        ("ImportlibCacheTagUnavailable", "Lib/importlib/_bootstrap_external.py"),
     ],
 )
 def test_compatibility_outcomes_have_their_own_pinned_target_support(
@@ -3271,7 +3272,11 @@ def test_compatibility_outcomes_have_their_own_pinned_target_support(
         "3.15",
     )
     for outcome, facts in protocol.OUTCOMES.items():
-        if outcome not in {"RawIoBaseReadinto", "LoggingHandlerEmit"}:
+        if outcome not in {
+            "RawIoBaseReadinto",
+            "LoggingHandlerEmit",
+            "ImportlibCacheTagUnavailable",
+        }:
             assert "3.15" not in facts.versions
         path = tmp_path / facts.witness
         path.parent.mkdir(parents=True, exist_ok=True)

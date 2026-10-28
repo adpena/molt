@@ -63,6 +63,13 @@
     },
     {
       "version": "3.12.15",
+      "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/importlib/_bootstrap_external.py",
+      "path": "Lib/importlib/_bootstrap_external.py",
+      "sha256": "e6ad72f3f0f9b65c99ab52598cd02ab748511dcdce1dd51f18dace9be9a680c6",
+      "revision": "e848e4b09ca4bc67c0041c9ce7526dae471d4c36"
+    },
+    {
+      "version": "3.12.15",
       "url": "https://raw.githubusercontent.com/python/cpython/e848e4b09ca4bc67c0041c9ce7526dae471d4c36/Lib/logging/__init__.py",
       "path": "Lib/logging/__init__.py",
       "sha256": "43f86bbc08fdd5c7b6e697abffe1381f534a92bb32e1f1aee8360d6a142592a1",
@@ -153,6 +160,13 @@
       "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Python/fileutils.c",
       "path": "Python/fileutils.c",
       "sha256": "34a371c5d2b84bd74c2499997594ab8b4044427705fa971b7e0b2d9ef646089f"
+    },
+    {
+      "version": "3.13.17",
+      "url": "https://raw.githubusercontent.com/python/cpython/64e080d38154391ff2d2caa1161c298bb7cd8f30/Lib/importlib/_bootstrap_external.py",
+      "path": "Lib/importlib/_bootstrap_external.py",
+      "sha256": "283ca9ae00bd7758aa006df9be93f4b6b8d3228e3509f662cf54b1518797fbde",
+      "revision": "64e080d38154391ff2d2caa1161c298bb7cd8f30"
     },
     {
       "version": "3.13.17",
@@ -249,6 +263,13 @@
     },
     {
       "version": "3.14.9",
+      "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/importlib/_bootstrap_external.py",
+      "path": "Lib/importlib/_bootstrap_external.py",
+      "sha256": "2740a0b98f64ebee8347fb723b3863a7851161e1f136a6e968f010a9321ed90e",
+      "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+    },
+    {
+      "version": "3.14.9",
       "url": "https://raw.githubusercontent.com/python/cpython/ead82c07db1f111d613926ed1b6667411d768125/Lib/logging/__init__.py",
       "path": "Lib/logging/__init__.py",
       "sha256": "4106cc3aa4e722116bbf0a3ffae3a8c7bc4981468ca7998ca35ed201a5605519",
@@ -267,6 +288,13 @@
       "path": "Objects/memoryobject.c",
       "sha256": "d72422b672d25b5decb9ab027e0a9b7d9d56500a372adcd9d401bb582f820301",
       "revision": "ead82c07db1f111d613926ed1b6667411d768125"
+    },
+    {
+      "version": "3.15.1",
+      "url": "https://raw.githubusercontent.com/python/cpython/c37e74cb6bcdadcd5f46f289498f6b3298ddee61/Lib/importlib/_bootstrap_external.py",
+      "path": "Lib/importlib/_bootstrap_external.py",
+      "sha256": "12645e50f67f8743825adc03c129429c9e4ee99e7d679c2410e6d2fc045327ac",
+      "revision": "c37e74cb6bcdadcd5f46f289498f6b3298ddee61"
     },
     {
       "version": "3.15.1",

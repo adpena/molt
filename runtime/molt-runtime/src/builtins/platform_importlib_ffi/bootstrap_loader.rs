@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins::compatibility_error::CompatibilityError;
 use digest::Digest;
 use sha1::Sha1;
 
@@ -1145,11 +1146,7 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if obj_from_bits(tag.bits()).is_none() {
-            return raise_exception::<_>(
-                _py,
-                "NotImplementedError",
-                "sys.implementation.cache_tag is None",
-            );
+            return CompatibilityError::ImportlibCacheTagUnavailable { is_none: true }.raise(_py);
         }
         let tag = match string_arg_from_bits(_py, tag.bits(), "cache_tag") {
             Ok(value) => value,
