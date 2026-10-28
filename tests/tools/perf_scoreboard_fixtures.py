@@ -7,11 +7,14 @@ claimed. Phase and release tests keep their real fail-closed toolchain checks.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 from molt.cli.build_results import _observed_build_toolchain
 from tools.perf_scoreboard_build_profiles import profile_selection_for_backend
+from tools.bench_evidence import AdmittedBenchmarkWorkload
 
 
 def write_synthetic_build_observation(
@@ -33,6 +36,8 @@ def synthetic_workload(
 ) -> dict[str, object]:
     """Literal source identity for synthetic metric cells, never measured code."""
     return {
+        "schema": "molt.benchmark-workload/2",
+        "sealed_inputs": None,
         "entry": entry,
         "entry_source": Path(entry).name if Path(entry).is_absolute() else entry,
         "scope": "local-python-source-closure",
@@ -83,3 +88,57 @@ def profile_admitted_sources(profiling, **kwargs):
             for path in kwargs["scripts"]
         }
         return profiling.run_hot_only_profiles(workloads=workloads, **kwargs)
+
+
+@contextmanager
+def sealed_workload(
+    tmp_path: Path,
+    *,
+    molt_args: Sequence[str] = (),
+    oracle_bytes: bytes = b"sealed:7\n",
+) -> Iterator[AdmittedBenchmarkWorkload]:
+    """Real sealed source/data/oracle custody for benchmark invocation tests."""
+    from molt.cli.source_package_seal import (
+        SourcePackageInput,
+        stage_source_package_seal,
+    )
+    from tools.bench_evidence import admit_benchmark_workload
+
+    original = tmp_path / "original"
+    files = {
+        "drivers/program.py": (
+            "import sys\nfrom pathlib import Path\n"
+            "from fixture_package import label\n"
+            "print(label + Path(sys.argv[1]).read_text().strip() + ':' + sys.argv[2])\n"
+        ),
+        "packages/fixture_package/__init__.py": "label = 'seal'\n",
+        "data/input.txt": "ed\n",
+        "expected.txt": oracle_bytes,
+        "pyproject.toml": '[project]\nname = "sealed-fixture"\nversion = "0.0.0"\n',
+    }
+    inputs = []
+    for relative, content in files.items():
+        source = original / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(
+            content.encode("utf-8") if isinstance(content, str) else content
+        )
+        role = (
+            "oracle"
+            if relative == "expected.txt"
+            else "source"
+            if relative.endswith(".py")
+            else "data"
+        )
+        inputs.append(SourcePackageInput(source, relative, role))
+    seal = stage_source_package_seal(tmp_path / "seals", inputs)
+    with admit_benchmark_workload(
+        original / "drivers/program.py",
+        project_root=original,
+        run_args=["data/input.txt", "7"],
+        molt_args=molt_args,
+        sealed_project=seal,
+        python_roots=["packages"],
+        oracle="expected.txt",
+    ) as workload:
+        yield workload

@@ -79,18 +79,18 @@ over stale prose or precedent.
 
 ## Performance is part of correctness
 
-- Account for relevant hot- and cold-path costs before load-bearing design: syscalls, flushes, locks,
-  I/O, spawns, allocations, peak memory, serialization and repeated work on unchanged inputs. Choose
-  the smallest coherent design; name and measure accepted trades. Leading tools set the bar:
-  a no-change rebuild in Cargo, Go or uv costs milliseconds.
-- Measure load-bearing changes before/after with contract-relevant latency/throughput, startup,
-  allocations/I/O, peak live and process-tree memory, caches/atomics/contention, code/artifact size,
-  link time and failure atomicity.
+- User-code compile/edit/rebuild latency outweighs compiler self-build time. Accept slower compiler
+  builds for measured user-facing gains, preserving correctness, conformance and generated-code speed.
+- Account for hot/cold costs: syscalls, flushes, locks, I/O, spawns, allocations, peak memory,
+  serialization and unchanged-input work. Choose a simple coherent design; measure trades.
+  Cargo, Go and uv set the millisecond no-change rebuild bar.
+- Measure changed contracts before/after: latency/throughput, startup, allocation/I/O, peak live
+  and process-tree memory, caches/atomics/contention, code/artifact size, link time, failure atomicity.
 - Optimize per platform and architecture through typed capability and target plans. Do not use
   post-failure retries or silent fallback as feature detection.
-- Extend existing instrumentation only when it materially shortens a decision or removes a measured,
-  recurring bottleneck; avoid a new framework or verifier per fix. Measure a slow build first:
-  `MOLT_BUILD_DIAGNOSTICS(_FILE)`, `MOLT_CLI_PROFILE` (`docs/OPERATIONS.md`, "Build time").
+- Extend instrumentation only to shorten decisions or remove measured recurring bottlenecks; avoid
+  per-fix machinery. Measure slow builds: `MOLT_BUILD_DIAGNOSTICS(_FILE)`,
+  `MOLT_CLI_PROFILE` (`docs/OPERATIONS.md`, "Build time").
 - Correctness, conformance and compiled user-code performance are inseparable. Derive speed from
   proven semantics and sound invariants; preserve observable behavior. Require representative
   whole-program time/memory evidence, never benchmark tricks, weakened oracles or unbounded memory.

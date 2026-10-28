@@ -23,7 +23,7 @@ from tools.compat.comparison import (
     compare_outputs,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 RED_THRESHOLD = 1.00
 UNSTABLE_CV = 0.20
 

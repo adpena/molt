@@ -51,6 +51,8 @@ from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.build_state_layout import project_build_state_root  # noqa: E402
 from molt.dx import scratch_dir  # noqa: E402
 from tools import perf_authority  # noqa: E402
+from tools.safe_run import RunOutcome, observed_run_outcome  # noqa: E402
+from tools.compat.comparison import Outputs, compare_outputs  # noqa: E402
 
 BENCH_TMP_ROOT = scratch_dir(REPO_ROOT, "bench")
 
@@ -78,42 +80,51 @@ def _guarded_bench_process(
     )
 
 
-class RunSample:
-    __slots__ = ("elapsed_s", "output")
-
-    def __init__(self, elapsed_s: float, output: str) -> None:
-        self.elapsed_s = elapsed_s
-        self.output = output
-
-
 class SampleBatch:
-    __slots__ = ("failed_detail", "failed_phase", "ok", "samples", "warmup_samples")
+    __slots__ = (
+        "failed_detail",
+        "failed_phase",
+        "failed_outcome",
+        "ok",
+        "samples",
+        "warmup_samples",
+    )
 
     def __init__(
         self,
-        samples: list[RunSample] | None = None,
-        warmup_samples: list[RunSample] | None = None,
+        samples: list[RunOutcome] | None = None,
+        warmup_samples: list[RunOutcome] | None = None,
         ok: bool = False,
         failed_phase: str | None = None,
         failed_detail: str = "",
+        failed_outcome: RunOutcome | None = None,
     ) -> None:
         self.samples = samples if samples is not None else []
         self.warmup_samples = warmup_samples if warmup_samples is not None else []
         self.ok = ok
         self.failed_phase = failed_phase
         self.failed_detail = failed_detail
+        self.failed_outcome = failed_outcome
 
     @property
     def times_s(self) -> list[float]:
-        return [sample.elapsed_s for sample in self.samples]
+        times = []
+        for sample in self.samples:
+            assert sample.elapsed_s is not None
+            times.append(sample.elapsed_s)
+        return times
 
     @property
     def warmup_times_s(self) -> list[float]:
-        return [sample.elapsed_s for sample in self.warmup_samples]
+        times = []
+        for sample in self.warmup_samples:
+            assert sample.elapsed_s is not None
+            times.append(sample.elapsed_s)
+        return times
 
     @property
     def first_output(self) -> str:
-        return self.samples[0].output if self.samples else ""
+        return (self.samples[0].stdout or "") if self.samples else ""
 
 
 # ---------------------------------------------------------------------------
@@ -374,13 +385,17 @@ def molt_build(
     timeout_s: float,
     extra_args: list[str] | None = None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+    *,
+    workload: AdmittedBenchmarkWorkload,
 ) -> tuple[Path | None, float, str]:
     """Build a benchmark with Molt.
 
     Returns (binary_path_or_None, build_time_seconds, error_message).
     """
     env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=REPO_ROOT)
-    env = env.updated({"PYTHONPATH": str(REPO_ROOT / "src")})
+    env = workload.compiler_environment(
+        env.updated({"PYTHONPATH": str(REPO_ROOT / "src")})
+    )
 
     args = [
         *_molt_build_cmd(),
@@ -394,13 +409,13 @@ def molt_build(
     ]
     if extra_args:
         args.extend(extra_args)
-    args.append(script)
+    args.append(str(workload.execution_script))
 
     start = time.perf_counter()
     res = harness_memory_guard.guarded_completed_process(
         args,
         prefix="MOLT_BENCH",
-        cwd=REPO_ROOT,
+        cwd=workload.source_cwd or REPO_ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -436,63 +451,63 @@ def run_binary(
     binary: Path,
     timeout_s: float,
     *,
+    workload: AdmittedBenchmarkWorkload,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> tuple[bool, float, str]:
-    """Run a compiled binary.  Returns (ok, elapsed_s, stdout_or_diagnostic)."""
-    start = time.perf_counter()
-    res = harness_memory_guard.guarded_completed_process(
+) -> RunOutcome:
+    """Run a compiled binary and retain its complete observable output."""
+    invocation = workload.guest_invocation(
         [str(binary)],
+        harness_memory_guard.canonical_harness_env(os.environ, repo_root=REPO_ROOT),
+    )
+    res = harness_memory_guard.guarded_completed_process(
+        list(invocation.command),
+        env=invocation.environment,
+        cwd=invocation.cwd,
         prefix="MOLT_BENCH",
         capture_output=True,
-        text=True,
+        text=False,
+        encoding="utf-8",
+        errors="surrogateescape",
         timeout=timeout_s,
         limits=limits,
     )
-    if res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
-        return False, time.perf_counter() - start, f"timed out after {timeout_s}s"
-    elapsed = getattr(res, "elapsed_s", None)
-    if elapsed is None:
-        elapsed = time.perf_counter() - start
-    if res.returncode != 0:
-        return (
-            False,
-            elapsed,
-            _format_run_failure(res.returncode, res.stdout, res.stderr),
-        )
-    return True, elapsed, (res.stdout or "").strip()
+    return observed_run_outcome(res, captured_stderr=res.child_stderr)
 
 
 def run_cpython(
     script: str,
     timeout_s: float,
     *,
+    workload: AdmittedBenchmarkWorkload,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> tuple[bool, float, str]:
-    """Run a script with CPython.  Returns (ok, elapsed_s, stdout_or_diagnostic)."""
-    start = time.perf_counter()
+) -> RunOutcome:
+    """Run CPython and retain its complete oracle-qualified output."""
+    invocation = workload.reference_invocation(
+        [sys.executable],
+        harness_memory_guard.canonical_harness_env(os.environ, repo_root=REPO_ROOT),
+    )
     res = harness_memory_guard.guarded_completed_process(
-        [sys.executable, script],
+        list(invocation.command),
+        env=invocation.environment,
+        cwd=invocation.cwd,
         prefix="MOLT_BENCH",
         capture_output=True,
-        text=True,
+        text=False,
+        encoding="utf-8",
+        errors="surrogateescape",
         timeout=timeout_s,
         limits=limits,
     )
-    if res.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE:
-        return False, time.perf_counter() - start, f"timed out after {timeout_s}s"
-    elapsed = getattr(res, "elapsed_s", None)
-    if elapsed is None:
-        elapsed = time.perf_counter() - start
-    if res.returncode != 0:
-        return (
-            False,
-            elapsed,
-            _format_run_failure(res.returncode, res.stdout, res.stderr),
-        )
-    return True, elapsed, (res.stdout or "").strip()
+    outcome = observed_run_outcome(res, captured_stderr=res.child_stderr)
+    if not outcome.ok:
+        return outcome
+    workload.verify_reference_output(outcome.stdout or "", outcome.stderr or "")
+    return outcome
 
 
-def _format_run_failure(returncode: int, stdout: str | None, stderr: str | None) -> str:
+def _format_run_failure(
+    returncode: int | None, stdout: str | None, stderr: str | None
+) -> str:
     parts = [f"rc={returncode}"]
     if stderr:
         parts.append("stderr:\n" + stderr.strip())
@@ -509,39 +524,45 @@ def collect_samples(
     validate_inputs: Callable[[], None] | None = None,
 ) -> SampleBatch:
     """Collect warmup and measured samples, failing closed on any bad sample."""
-    warmup_samples: list[RunSample] = []
+    warmup_samples: list[RunOutcome] = []
     for idx in range(warmup):
         if validate_inputs is not None:
             validate_inputs()
-        ok, elapsed, output = measure_fn()
+        outcome = measure_fn()
         if validate_inputs is not None:
             validate_inputs()
-        if not ok:
+        if not outcome.ok:
             return SampleBatch(
                 samples=[],
                 warmup_samples=warmup_samples,
                 ok=False,
                 failed_phase=f"warmup {idx + 1}/{warmup}",
-                failed_detail=output,
+                failed_detail=_format_run_failure(
+                    outcome.exit_code, outcome.stdout, outcome.stderr
+                ),
+                failed_outcome=outcome,
             )
-        warmup_samples.append(RunSample(elapsed_s=elapsed, output=output))
+        warmup_samples.append(outcome)
 
-    measured: list[RunSample] = []
+    measured: list[RunOutcome] = []
     for idx in range(samples):
         if validate_inputs is not None:
             validate_inputs()
-        ok, elapsed, output = measure_fn()
+        outcome = measure_fn()
         if validate_inputs is not None:
             validate_inputs()
-        if not ok:
+        if not outcome.ok:
             return SampleBatch(
                 samples=measured,
                 warmup_samples=warmup_samples,
                 ok=False,
                 failed_phase=f"sample {idx + 1}/{samples}",
-                failed_detail=output,
+                failed_detail=_format_run_failure(
+                    outcome.exit_code, outcome.stdout, outcome.stderr
+                ),
+                failed_outcome=outcome,
             )
-        measured.append(RunSample(elapsed_s=elapsed, output=output))
+        measured.append(outcome)
 
     return SampleBatch(
         samples=measured,
@@ -573,10 +594,6 @@ def bench_one(
     if Path(script).expanduser().absolute() != workload.script:
         raise ValueError("benchmark source differs from admitted workload")
     workload.verify()
-    if workload.record["run_args"]:
-        raise ValueError(
-            "individual benchmark execution does not support guest run arguments"
-        )
     extra_args = workload.record["molt_args"]
     reference_contract = benchmark_reference_contract(script)
 
@@ -587,6 +604,8 @@ def bench_one(
         "build_ok": False,
         "build_time_s": None,
         "run_ok": False,
+        "molt_stderr": None,
+        "cpython_stderr": None,
         "molt_time_s": None,
         "cpython_time_s": None,
         "molt_samples_s": [],
@@ -620,6 +639,7 @@ def bench_one(
             timeout_build,
             extra_args=extra_args,
             limits=limits,
+            workload=workload,
         )
         workload.verify()
         result["build_time_s"] = round(build_s, 4)
@@ -629,7 +649,9 @@ def bench_one(
             print(f"  BUILD FAIL: {build_err}", file=sys.stderr)
             if reference_contract.external_baselines:
                 cp_batch = collect_samples(
-                    lambda: run_cpython(script, timeout_run, limits=limits),
+                    lambda: run_cpython(
+                        script, timeout_run, limits=limits, workload=workload
+                    ),
                     samples=samples,
                     warmup=warmup,
                     validate_inputs=workload.verify,
@@ -642,6 +664,9 @@ def bench_one(
                     result["cpython_output"] = cp_batch.first_output
                 else:
                     result["cpython_failure_detail"] = cp_batch.failed_detail or None
+                    if cp_batch.failed_outcome is not None:
+                        result["cpython_output"] = cp_batch.failed_outcome.stdout
+                        result["cpython_stderr"] = cp_batch.failed_outcome.stderr
             return result
 
         result["build_ok"] = True
@@ -649,7 +674,7 @@ def bench_one(
 
         # --- Run Molt (multiple samples, take median) ---
         molt_batch = collect_samples(
-            lambda: run_binary(binary, timeout_run, limits=limits),
+            lambda: run_binary(binary, timeout_run, limits=limits, workload=workload),
             samples=samples,
             warmup=warmup,
             validate_inputs=workload.verify,
@@ -661,11 +686,15 @@ def bench_one(
             result["run_ok"] = True
             result["molt_time_s"] = round(statistics.median(molt_batch.times_s), 6)
             result["molt_output"] = molt_output
+            result["molt_stderr"] = molt_batch.samples[0].stderr
         else:
             result["error"] = f"Molt run failed during {molt_batch.failed_phase}"
             if molt_batch.failed_detail:
                 result["molt_failure_detail"] = molt_batch.failed_detail
                 result["error"] += f": {molt_batch.failed_detail}"
+            if molt_batch.failed_outcome is not None:
+                result["molt_output"] = molt_batch.failed_outcome.stdout
+                result["molt_stderr"] = molt_batch.failed_outcome.stderr
 
         if not reference_contract.external_baselines:
             if molt_batch.ok:
@@ -673,7 +702,9 @@ def bench_one(
         else:
             # --- Run CPython (multiple samples, take median) ---
             cp_batch = collect_samples(
-                lambda: run_cpython(script, timeout_run, limits=limits),
+                lambda: run_cpython(
+                    script, timeout_run, limits=limits, workload=workload
+                ),
                 samples=samples,
                 warmup=warmup,
                 validate_inputs=workload.verify,
@@ -684,8 +715,12 @@ def bench_one(
             if cp_batch.ok:
                 result["cpython_time_s"] = round(statistics.median(cp_batch.times_s), 6)
                 result["cpython_output"] = cpython_output
+                result["cpython_stderr"] = cp_batch.samples[0].stderr
             else:
                 result["cpython_failure_detail"] = cp_batch.failed_detail or None
+                if cp_batch.failed_outcome is not None:
+                    result["cpython_output"] = cp_batch.failed_outcome.stdout
+                    result["cpython_stderr"] = cp_batch.failed_outcome.stderr
                 if result["error"] is None:
                     result["error"] = (
                         f"CPython run failed during {cp_batch.failed_phase}"
@@ -695,7 +730,19 @@ def bench_one(
 
             # --- Output match ---
             if molt_batch.ok and cp_batch.ok:
-                result["output_match"] = molt_output == cpython_output
+                result["output_match"] = all(
+                    compare_outputs(
+                        Outputs(cpython_output, cp_batch.samples[0].stderr or "", 0),
+                        Outputs(sample.stdout, sample.stderr or "", sample.exit_code),
+                        stderr_mode="exact",
+                    ).equal
+                    for sample in (
+                        *molt_batch.warmup_samples,
+                        *molt_batch.samples,
+                        *cp_batch.warmup_samples,
+                        *cp_batch.samples,
+                    )
+                )
                 if result["output_match"]:
                     result["molt_ok"] = True
                 else:
@@ -841,6 +888,11 @@ def parse_args() -> argparse.Namespace:
             "Use only for cold-start/crash-isolation diagnostics."
         ),
     )
+    parser.add_argument(
+        "--applications",
+        action="store_true",
+        help="Run sealed application benchmarks only",
+    )
     return parser.parse_args()
 
 
@@ -860,7 +912,9 @@ def _main(workload_custody: ExitStack) -> None:
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
     # Filter benchmarks
-    benchmarks = list(BENCHMARKS)
+    benchmarks = list(
+        bench_suites.APPLICATION_BENCHMARKS if args.applications else BENCHMARKS
+    )
 
     if args.bench:
         selected = set(args.bench)
@@ -899,7 +953,7 @@ def _main(workload_custody: ExitStack) -> None:
             admit_benchmark_workload(
                 Path(script),
                 project_root=REPO_ROOT,
-                run_args=[],
+                run_args=bench_suites.application_run_args(script),
                 molt_args=molt_args_for_benchmark(script),
             )
         )

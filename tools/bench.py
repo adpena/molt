@@ -3,7 +3,6 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
-import math
 import os
 import platform
 import shlex
@@ -53,6 +52,7 @@ from tools.batch_compile_client import (  # noqa: E402
     BatchCompileServerClient,
 )
 from tools.bench_metadata import benchmark_reference_contract  # noqa: E402
+from tools.safe_run import observed_run_outcome  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools import memory_guard  # noqa: E402
 from tools import bench_suites  # noqa: E402
@@ -509,6 +509,9 @@ def _default_codon_word_file() -> Path:
 
 
 def resolve_benchmark_run_args(script: str) -> list[str]:
+    application_args = bench_suites.application_run_args(script)
+    if application_args:
+        return application_args
     if not _is_codon_bench_script(script):
         return []
     args = CODON_BENCH_RUNTIME_ARGS_BY_NAME.get(Path(script).name, [])
@@ -533,50 +536,14 @@ def measure_runtime(
     timeout_s: float | None = None,
     label: str | None = None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> RunSample | None:
+    cwd: Path | None = None,
+) -> RunSample | MoltFailure:
     full_cmd = cmd_args + ([script] if script else [])
     if run_args:
         full_cmd.extend(run_args)
-    try:
-        res = harness_memory_guard.guarded_completed_process(
-            full_cmd,
-            prefix="MOLT_BENCH",
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout_s,
-            limits=limits,
-        )
-    except subprocess.TimeoutExpired:
-        msg = f" timed out after {timeout_s:.1f}s" if timeout_s is not None else ""
-        bench_label = f" for {label}" if label else ""
-        print(f"Benchmark run{bench_label}{msg}.", file=sys.stderr)
-        return None
-    if (
-        res.returncode != 0
-        or getattr(res, "timed_out", False)
-        or getattr(res, "infrastructure_failure", None) is not None
-        or getattr(res, "violation", None) is not None
-        or getattr(res, "orphaned_process_groups", ())
-    ):
-        print(
-            f"Benchmark execution failed with exit {res.returncode}: {res.stderr or ''}",
-            file=sys.stderr,
-        )
-        return None
-    elapsed_s = getattr(res, "child_elapsed_s", None)
-    if (
-        not isinstance(elapsed_s, (int, float))
-        or isinstance(elapsed_s, bool)
-        or not math.isfinite(elapsed_s)
-        or elapsed_s < 0
-    ):
-        print(
-            "Successful benchmark execution has no valid direct-child timing evidence.",
-            file=sys.stderr,
-        )
-        return None
-    return RunSample(elapsed_s, res.stdout, res.stderr)
+    return _measure_runtime_command(
+        full_cmd, env=env, label=label, timeout_s=timeout_s, limits=limits, cwd=cwd
+    )
 
 
 def _resolve_molt_output(payload: dict) -> Path | None:
@@ -731,23 +698,35 @@ class _BenchBatchBuildServer:
             repo_root=REPO_ROOT,
         )
         self._limits = self._guard_context.limits
-        self._client: BatchCompileServerClient | None = None
+        # One source cwd is one import-resolution domain. Keep a bounded
+        # working set of projects, rather than leaking the controller cwd into
+        # packaged applications or spawning a compiler for every build request.
+        self._clients: dict[Path, BatchCompileServerClient] = {}
 
-    def start(self) -> None:
-        if self._client is not None:
-            return
-        self._client = BatchCompileServerClient(
+    def start(self, source_cwd: Path | None = None) -> BatchCompileServerClient:
+        project = (source_cwd or REPO_ROOT).resolve()
+        if project in self._clients:
+            client = self._clients.pop(project)
+            self._clients[project] = client
+            return client
+        if len(self._clients) == 2:
+            oldest = next(iter(self._clients))
+            self._clients[oldest].close(force=False, timeout=5.0)
+            del self._clients[oldest]
+        client = BatchCompileServerClient(
             [
                 sys.executable,
                 "-m",
                 "molt.cli",
                 "internal-batch-build-server",
             ],
-            cwd=REPO_ROOT,
+            cwd=project,
             env=self._env,
             guard_context=self._guard_context,
             reader_name="molt-bench-batch-server-reader",
         )
+        self._clients[project] = client
+        return client
 
     def request_build(
         self,
@@ -755,23 +734,35 @@ class _BenchBatchBuildServer:
         *,
         env_overrides: Mapping[str, str],
         timeout_s: float,
+        source_cwd: Path | None = None,
     ) -> dict[str, object]:
-        self.start()
-        if self._client is None:
-            raise RuntimeError("batch compile server did not start")
-        return self._client.request(
+        client = self.start(source_cwd)
+        return client.request(
             "build", params=params, env_overrides=env_overrides, timeout=timeout_s
         )
 
     def close(self, *, force: bool = False) -> None:
-        client = self._client
-        self._client = None
-        if client is not None:
-            client.close(force=force, timeout=5.0)
+        primary: Exception | None = None
+        for project, client in tuple(self._clients.items()):
+            try:
+                client.close(force=force, timeout=5.0)
+            except Exception as exc:
+                if primary is None:
+                    primary = exc
+                else:
+                    primary.add_note(f"additional project client cleanup failed: {exc}")
+            else:
+                del self._clients[project]
+        if primary is not None:
+            raise primary
 
-    def restart(self) -> None:
-        self.close(force=True)
-        self.start()
+    def restart(self, source_cwd: Path | None = None) -> None:
+        project = (source_cwd or REPO_ROOT).resolve()
+        client = self._clients.get(project)
+        if client is not None:
+            client.close(force=True, timeout=5.0)
+            del self._clients[project]
+        self.start(project)
 
 
 def _molt_build_params(
@@ -1268,6 +1259,8 @@ def _failure_should_retry_build(failure: MoltFailure) -> bool:
 def _restart_batch_server_for_retry(
     batch_server: _BenchBatchBuildServer | object | None,
     failure: MoltFailure,
+    *,
+    source_cwd: Path | None,
 ) -> None:
     if batch_server is None or not _failure_should_restart_batch_server(failure):
         return
@@ -1275,7 +1268,7 @@ def _restart_batch_server_for_retry(
     if not callable(restart):
         return
     try:
-        restart()
+        restart(source_cwd=source_cwd)
     except Exception as restart_exc:  # noqa: BLE001
         print(
             "warning: failed to restart batch compile server after "
@@ -1295,6 +1288,7 @@ def prepare_molt_binary(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     use_molt_build_cache: bool = True,
     build_target: Literal["native", "wasm"] = "native",
+    source_cwd: Path | None = None,
 ) -> MoltBinary | MoltFailure:
     if build_target not in {"native", "wasm"}:
         raise ValueError(f"unsupported benchmark build target: {build_target}")
@@ -1352,6 +1346,7 @@ def prepare_molt_binary(
                         args,
                         prefix="MOLT_BENCH",
                         env=env,
+                        cwd=source_cwd,
                         capture_output=True,
                         text=True,
                         timeout=build_timeout_s,
@@ -1359,7 +1354,10 @@ def prepare_molt_binary(
                     )
                 else:
                     response = batch_server.request_build(
-                        params, env_overrides=env, timeout_s=build_timeout_s
+                        params,
+                        env_overrides=env,
+                        timeout_s=build_timeout_s,
+                        source_cwd=source_cwd,
                     )
                     res = _batch_response_completed_process(args, response)
             except (
@@ -1371,7 +1369,7 @@ def prepare_molt_binary(
                 primary = exc
                 if batch_server is not None and _batch_server_stream_failure(exc):
                     try:
-                        batch_server.restart()
+                        batch_server.restart(source_cwd=source_cwd)
                     except Exception as restart_exc:
                         print(
                             "warning: failed to restart batch compile server after "
@@ -1506,7 +1504,7 @@ def prepare_molt_binary(
     if not _failure_should_retry_build(result):
         return result
 
-    _restart_batch_server_for_retry(batch_server, result)
+    _restart_batch_server_for_retry(batch_server, result, source_cwd=source_cwd)
     print(
         "Backend build failed "
         f"(status={result.status}"
@@ -1526,18 +1524,37 @@ def measure_molt_run(
     run_args: list[str] | None = None,
     timeout_s: float | None = None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> RunSample | MoltFailure | None:
+    cwd: Path | None = None,
+) -> RunSample | MoltFailure:
     cmd = [str(binary)]
     if run_args:
         cmd.extend(run_args)
+    return _measure_runtime_command(
+        cmd, env=env, label=label, timeout_s=timeout_s, limits=limits, cwd=cwd
+    )
+
+
+def _measure_runtime_command(
+    cmd: list[str],
+    *,
+    env: Mapping[str, str] | None,
+    label: str | None,
+    timeout_s: float | None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None,
+    cwd: Path | None,
+) -> RunSample | MoltFailure:
+    """Preserve complete execution or failure evidence for every runtime."""
     start = time.perf_counter()
     try:
         res = harness_memory_guard.guarded_completed_process(
             cmd,
             prefix="MOLT_BENCH",
             capture_output=True,
-            text=True,
+            text=False,
+            encoding="utf-8",
+            errors="surrogateescape",
             env=env,
+            cwd=cwd,
             timeout=timeout_s,
             limits=limits,
         )
@@ -1549,62 +1566,59 @@ def measure_molt_run(
             default_status="runtime_failed",
         )
         _emit_molt_failure_summary(
-            label or str(binary),
+            label or cmd[0],
             failure,
             prefix=(
-                "Molt run timed out"
+                "Benchmark run timed out"
                 if failure.status == "timeout"
-                else "Molt run failed"
+                else "Benchmark run failed"
             ),
         )
         return failure
-    elapsed_s = getattr(res, "child_elapsed_s", None)
-    orphaned_process_groups = tuple(
-        int(pgid) for pgid in getattr(res, "orphaned_process_groups", ()) or ()
-    )
-    if (
-        res.returncode != 0
-        or orphaned_process_groups
-        or getattr(res, "timed_out", False)
-        or getattr(res, "infrastructure_failure", None) is not None
-        or getattr(res, "violation", None) is not None
-    ):
-        err = (res.stderr or res.stdout).strip()
-        if err:
-            prefix = f"Molt run failed for {label}: " if label else "Molt run failed: "
-            print(f"{prefix}{err}", file=sys.stderr)
-        return _classified_molt_failure(
+    observed = observed_run_outcome(res, captured_stderr=res.child_stderr)
+    if not observed.ok:
+        failure = _classified_molt_failure(
             phase="run",
             returncode=res.returncode,
-            stdout=res.stdout,
-            stderr=res.stderr,
-            timed_out=bool(getattr(res, "timed_out", False)),
-            elapsed_s=getattr(res, "elapsed_s", None),
-            violation=getattr(res, "violation", None),
-            child_returncode=getattr(res, "child_returncode", None),
-            infrastructure_failure=getattr(res, "infrastructure_failure", None),
-            orphaned_process_groups=orphaned_process_groups,
+            stdout=observed.stdout,
+            stderr=observed.stderr,
+            timed_out=res.timed_out,
+            elapsed_s=observed.elapsed_s,
+            violation=res.violation,
+            child_returncode=res.child_returncode,
+            infrastructure_failure=res.infrastructure_failure,
+            orphaned_process_groups=tuple(res.orphaned_process_groups),
             default_status="runtime_failed",
         )
-    if (
-        not isinstance(elapsed_s, (int, float))
-        or isinstance(elapsed_s, bool)
-        or not math.isfinite(elapsed_s)
-        or elapsed_s < 0
-    ):
-        return _classified_molt_failure(
-            phase="run",
-            returncode=res.returncode,
-            stdout=res.stdout,
-            stderr="missing direct-child execution clock; " + (res.stderr or ""),
-            elapsed_s=None,
-            default_status="runtime_failed",
+        if observed.status == "infrastructure_error":
+            failure = replace(
+                failure,
+                phase="run",
+                status="infrastructure_error",
+                signal=None,
+                detail=failure.detail or "guard_execution_incomplete",
+            )
+        elif observed.status == "error":
+            failure = replace(
+                failure,
+                detail="measurement_evidence_missing",
+                message="missing direct-child execution clock, RSS or captured-output evidence",
+            )
+        _emit_molt_failure_summary(
+            label or cmd[0], failure, prefix="Benchmark run failed"
         )
-    return RunSample(elapsed_s, res.stdout, res.stderr)
+        return failure
+    assert observed.elapsed_s is not None
+    assert observed.stdout is not None and observed.stderr is not None
+    return RunSample(observed.elapsed_s, observed.stdout, observed.stderr)
 
 
 def collect_samples(
-    measure_fn, samples, warmup=0, *, validate_inputs: Callable[[], None] | None = None
+    measure_fn: Callable[[], RunSample | MoltFailure],
+    samples: int,
+    warmup: int = 0,
+    *,
+    validate_inputs: Callable[[], None] | None = None,
 ) -> SampleBatch:
     # Warmup runs are discarded. They prime (1) the page cache for the binary
     # and its shared libs, and (2) on macOS the amfid/provenance cache for the
@@ -1620,15 +1634,10 @@ def collect_samples(
         sample = measure_fn()
         if validate_inputs is not None:
             validate_inputs()
-        if sample is None:
-            return SampleBatch(
-                [],
-                False,
-                warmup_samples,
-                MoltFailure("run", "runtime_failed", None, False, None),
-            )
         if isinstance(sample, MoltFailure):
             return SampleBatch([], False, warmup_samples, sample)
+        if not isinstance(sample, RunSample):
+            raise TypeError("runtime measurement requires a typed sample or failure")
         warmup_samples.append(sample)
     measured: list[RunSample] = []
     for _ in range(samples):
@@ -1637,15 +1646,10 @@ def collect_samples(
         sample = measure_fn()
         if validate_inputs is not None:
             validate_inputs()
-        if sample is None:
-            return SampleBatch(
-                measured,
-                False,
-                warmup_samples,
-                MoltFailure("run", "runtime_failed", None, False, None),
-            )
         if isinstance(sample, MoltFailure):
             return SampleBatch(measured, False, warmup_samples, sample)
+        if not isinstance(sample, RunSample):
+            raise TypeError("runtime measurement requires a typed sample or failure")
         measured.append(sample)
     return SampleBatch(measured, bool(measured), warmup_samples)
 
@@ -1676,7 +1680,10 @@ def _stable_output(batch: SampleBatch) -> tuple[str, str] | None:
         return None
     first = batch.samples[0]
     expected = (first.stdout, first.stderr)
-    if all((sample.stdout, sample.stderr) == expected for sample in batch.samples):
+    if all(
+        (sample.stdout, sample.stderr) == expected
+        for sample in (*batch.warmup_samples, *batch.samples)
+    ):
         return expected
     return None
 
@@ -2166,15 +2173,26 @@ def _bench_one(
     name = workload.record["entry"]
     reference_contract = benchmark_reference_contract(script)
     run_args = workload.record["run_args"]
+    sealed = workload.record["sealed_inputs"] is not None
+    if sealed and "cpython" not in runtimes:
+        raise ValueError(
+            "sealed application measurement requires a qualified CPython reference"
+        )
     for rt_name, cmd in runtimes.items():
         if not reference_contract.external_baselines:
             continue
+        if sealed and rt_name != "cpython":
+            print(
+                f"Refusing {rt_name} for {name}: sealed reference protocol is not qualified.",
+                file=sys.stderr,
+            )
+            continue
+        reference = workload.reference_invocation(cmd, base_env)
         batch = collect_samples(
             lambda: measure_runtime(
-                cmd,
-                script,
-                env=base_env,
-                run_args=run_args,
+                list(reference.command),
+                env=reference.environment,
+                cwd=reference.cwd,
                 timeout_s=runtime_timeout_s,
                 label=f"{name} [{rt_name}]",
                 limits=limits,
@@ -2183,6 +2201,9 @@ def _bench_one(
             warmup=warmup,
             validate_inputs=workload.verify,
         )
+        if rt_name == "cpython" and batch.ok:
+            for sample in (*batch.warmup_samples, *batch.samples):
+                workload.verify_reference_output(sample.stdout, sample.stderr)
         runtime_batches[rt_name] = batch
         sample_times = batch.times_s
         results[rt_name] = statistics.mean(sample_times) if batch.ok else None
@@ -2198,7 +2219,7 @@ def _bench_one(
     codon_size: float | None = None
     codon_ok = False
     codon_batch: SampleBatch | None = None
-    if use_codon and reference_contract.external_baselines:
+    if use_codon and reference_contract.external_baselines and not sealed:
         workload.verify()
         runner = _prepare_codon_runner(
             Path(script),
@@ -2248,7 +2269,7 @@ def _bench_one(
     nuitka_size: float | None = None
     nuitka_ok = False
     nuitka_batch: SampleBatch | None = None
-    if use_nuitka and reference_contract.external_baselines:
+    if use_nuitka and reference_contract.external_baselines and not sealed:
         workload.verify()
         runner = _prepare_nuitka_runner(
             Path(script),
@@ -2296,7 +2317,7 @@ def _bench_one(
     pyodide_size: float | None = None
     pyodide_ok = False
     pyodide_batch: SampleBatch | None = None
-    if use_pyodide and reference_contract.external_baselines:
+    if use_pyodide and reference_contract.external_baselines and not sealed:
         workload.verify()
         runner = _prepare_pyodide_runner(
             Path(script), base_env, pyodide_cmd=resolved_pyodide_cmd
@@ -2333,26 +2354,48 @@ def _bench_one(
     molt_failure: MoltFailure | None = None
     build_observation: dict[str, Any] | None = None
     workload.verify()
-    molt_runner_result = prepare_molt_binary(
-        script,
-        molt_args,
-        env=base_env,
-        build_profile=molt_build_profile,
-        batch_server=batch_server,
-        limits=limits,
-        use_molt_build_cache=use_molt_build_cache,
-    )
+    if sealed and not runtime_ok.get("cpython", False):
+        reference_batch = runtime_batches.get("cpython")
+        reference_failure = (
+            reference_batch.failure if reference_batch is not None else None
+        )
+        molt_runner_result = (
+            replace(reference_failure, phase="reference")
+            if reference_failure is not None
+            else MoltFailure(
+                phase="reference",
+                status="reference_unavailable",
+                returncode=None,
+                timed_out=False,
+                elapsed_s=None,
+                detail="sealed_reference_not_qualified",
+                message="Sealed application has no successful oracle-qualified CPython reference",
+            )
+        )
+    else:
+        molt_runner_result = prepare_molt_binary(
+            str(workload.execution_script),
+            molt_args,
+            env=workload.compiler_environment(base_env),
+            build_profile=molt_build_profile,
+            batch_server=batch_server,
+            limits=limits,
+            use_molt_build_cache=use_molt_build_cache,
+            source_cwd=workload.source_cwd,
+        )
     if isinstance(molt_runner_result, MoltBinary):
         molt_runner = molt_runner_result
         build_observation = molt_runner.build_observation
         primary = None
         try:
+            guest = workload.guest_invocation([str(molt_runner.path)], base_env)
             molt_batch = collect_samples(
                 lambda: measure_molt_run(
                     molt_runner.path,
-                    env=base_env,
+                    env=guest.environment,
+                    cwd=guest.cwd,
                     label=name,
-                    run_args=run_args,
+                    run_args=list(guest.command[1:]),
                     timeout_s=runtime_timeout_s,
                     limits=limits,
                 ),
@@ -2602,6 +2645,11 @@ def _main(workload_custody: ExitStack):
     )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
+        "--applications",
+        action="store_true",
+        help="Select sealed real-application workloads only",
+    )
+    parser.add_argument(
         "--no-cpython",
         action="store_true",
         help="Skip CPython timing lane (useful when focusing on Molt vs external lanes).",
@@ -2683,7 +2731,13 @@ def _main(workload_custody: ExitStack):
     if args.dynamic_builtin_only and args.smoke:
         parser.error("--dynamic-builtin-only cannot be combined with --smoke")
 
-    if args.script:
+    if args.applications and (args.smoke or args.script or args.dynamic_builtin_only):
+        parser.error(
+            "--applications cannot be combined with another workload selection"
+        )
+    if args.applications:
+        benchmarks = list(bench_suites.APPLICATION_BENCHMARKS)
+    elif args.script:
         if args.smoke:
             parser.error("--script cannot be combined with --smoke")
         if args.dynamic_builtin_only:

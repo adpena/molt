@@ -24,8 +24,6 @@ from tools.perf_scoreboard_model import (  # noqa: E402
     Cell,
     PhaseStats,
     RunOutcome,
-    _llvm_sys_prefix,
-    _llvm_sys_prefix_env_var,
     _repeat_stability,
     _robust_cell_stable,
     _safe_ratio,
@@ -58,11 +56,8 @@ def _perfscore_build_env(spec: BackendSpec, profile: str) -> ProcessEnvironment:
     base.pop("MOLT_SESSION_ID_GENERATED", None)
     base.pop("MOLT_DIFF_CARGO_TARGET_DIR", None)
     base.pop("CARGO_TARGET_DIR", None)
-    if spec.backend == "llvm":
-        prefix = _llvm_sys_prefix()
-        prefix_env_var = _llvm_sys_prefix_env_var()
-        if prefix and prefix_env_var:
-            base[prefix_env_var] = prefix
+    # The CLI owns LLVM discovery, SDK admission and consumed-byte identity.
+    # Injecting a benchmark-only prefix would override that canonical selection.
     env = bench._canonical_bench_env(base)
     return env
 
@@ -120,7 +115,7 @@ def measure_cell(
     cell.log_artifact = str(log_path.relative_to(REPO_ROOT))
     log_lines: list[str] = [f"# {benchmark} | {spec.backend} | {profile}"]
 
-    build_env = _perfscore_build_env(spec, profile)
+    build_env = workload.compiler_environment(_perfscore_build_env(spec, profile))
     if spec.build_target == "wasm":
         if execution_host is None:
             execution_host = bench.admit_wasm_execution(build_env)
@@ -142,13 +137,14 @@ def measure_cell(
 
     # One build/result owner for native and manifest-bound WASM deployments.
     binary = bench.prepare_molt_binary(
-        str(script_path),
+        str(workload.execution_script),
         extra_args=extra_args,
         env=build_env,
         build_profile=build_flag,
         build_target=spec.build_target,
         batch_server=batch_server,
         build_timeout_s=600.0,
+        source_cwd=workload.source_cwd,
     )
 
     if not isinstance(binary, bench.MoltBinary):
@@ -202,12 +198,15 @@ def measure_cell(
         invocation = bench.molt_binary_invocation(
             binary, build_env, execution_host=execution_host
         )
-        molt_cmd, molt_run_env = invocation.command, invocation.environment
+        guest = workload.guest_invocation(invocation.command, invocation.environment)
+        reference = workload.reference_invocation(cpython_cmd, _cpython_run_env())
 
         def run_reference(*args: Any, **kwargs: Any) -> RunOutcome:
             workload.verify()
             result = _run_measured_command(*args, **kwargs)
             workload.verify()
+            if result.ok:
+                workload.verify_reference_output(result.stdout, result.stderr)
             return result
 
         def run_molt(*args: Any, **kwargs: Any) -> RunOutcome:
@@ -234,8 +233,9 @@ def measure_cell(
 
         # --- COLD samples (first process; retain exact streams for parity) ------
         cold_molt = run_molt(
-            [*molt_cmd, *run_args],
-            env=molt_run_env,
+            list(guest.command),
+            env=guest.environment,
+            cwd=guest.cwd or REPO_ROOT,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
             label=f"molt-cold:{benchmark}",
@@ -243,8 +243,9 @@ def measure_cell(
             guest_stderr_path=invocation.guest_stderr_path,
         )
         cold_cpy = run_reference(
-            [*cpython_cmd, str(script_path), *run_args],
-            env=_cpython_run_env(),
+            list(reference.command),
+            env=reference.environment,
+            cwd=reference.cwd or REPO_ROOT,
             rss_mb=rss_mb,
             timeout_s=timeout_s,
             label=f"cpython-cold:{benchmark}",
@@ -275,8 +276,9 @@ def measure_cell(
         for pass_idx in range(n_passes):
             molt_warmups = [
                 run_molt(
-                    [*molt_cmd, *run_args],
-                    env=molt_run_env,
+                    list(guest.command),
+                    env=guest.environment,
+                    cwd=guest.cwd or REPO_ROOT,
                     rss_mb=rss_mb,
                     timeout_s=timeout_s,
                     label=f"molt-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
@@ -301,8 +303,9 @@ def measure_cell(
             )
             molt_runs = [
                 run_molt(
-                    [*molt_cmd, *run_args],
-                    env=molt_run_env,
+                    list(guest.command),
+                    env=guest.environment,
+                    cwd=guest.cwd or REPO_ROOT,
                     rss_mb=rss_mb,
                     timeout_s=timeout_s,
                     label=f"molt-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
@@ -327,8 +330,9 @@ def measure_cell(
             )
             cpy_warmups = [
                 run_reference(
-                    [*cpython_cmd, str(script_path), *run_args],
-                    env=_cpython_run_env(),
+                    list(reference.command),
+                    env=reference.environment,
+                    cwd=reference.cwd or REPO_ROOT,
                     rss_mb=rss_mb,
                     timeout_s=timeout_s,
                     label=f"cpython-warmup:{benchmark}:p{pass_idx}:s{sample_idx}",
@@ -347,8 +351,9 @@ def measure_cell(
             )
             cpy_runs = [
                 run_reference(
-                    [*cpython_cmd, str(script_path), *run_args],
-                    env=_cpython_run_env(),
+                    list(reference.command),
+                    env=reference.environment,
+                    cwd=reference.cwd or REPO_ROOT,
                     rss_mb=rss_mb,
                     timeout_s=timeout_s,
                     label=f"cpython-warm:{benchmark}:p{pass_idx}:s{sample_idx}",
@@ -422,8 +427,9 @@ def measure_cell(
 
             log_lines.append("capturing CYCLE profile (warm red — Rule 1 attribution)")
             cell.cycle_profile = capture_cycle_profile(
-                [*molt_cmd, *run_args],
-                env=molt_run_env,
+                list(guest.command),
+                env=guest.environment,
+                cwd=guest.cwd or REPO_ROOT,
                 rss_mb=rss_mb,
                 timeout_s=timeout_s,
             )
@@ -522,7 +528,13 @@ def measure_cell(
         # .py). We attach it to every backend cell for the same benchmark so the
         # column is populated, but it is a CPython-style interpreter comparator,
         # not a molt-backend fact.
-        if pypy_bin is not None and cell.warm_molt_s:
+        sealed = workload.source_cwd is not None
+        if sealed and pypy_bin is not None:
+            log_lines.append(
+                "PYPY REFUSED: sealed application Python isolation flags and import "
+                "roots are not qualified for this comparator"
+            )
+        if pypy_bin is not None and cell.warm_molt_s and not sealed:
             workload.verify()
             pypy_warm = _measure_interpreter_warm(
                 pypy_bin,
@@ -543,7 +555,14 @@ def measure_cell(
                 )
 
         # --- Codon comparator lane (AOT north star; equivalence-gated) ----------
-        if codon_runner is not None and cell.warm_molt_s:
+        if sealed and codon_runner is not None:
+            cell.codon_equivalent = False
+            cell.codon_note = (
+                "sealed application source and import-root contract is not "
+                "supported by this comparator"
+            )
+            log_lines.append(f"CODON REFUSED: {cell.codon_note}")
+        if codon_runner is not None and cell.warm_molt_s and not sealed:
             workload.verify()
             codon_runner.measure_into(
                 cell,

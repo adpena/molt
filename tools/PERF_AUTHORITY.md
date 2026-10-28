@@ -14,6 +14,24 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
+Methodology v16 adds complete declared application inputs and invocation through
+the existing benchmark producers. Workload v2 distinguishes a local Python
+source closure from a sealed project: package/resources, data, configuration,
+provenance and full semantic oracle bind to one source-package seal. Logical
+entry identity stays independent of its physical execution root. References
+use declared package roots and cwd, and guest parity includes complete stdout,
+semantic stderr and every existing warmup/sample. Failed sealed references and
+unresolved cleanup cannot produce affirmative performance evidence. Schema-v7
+boards require this contract; earlier boards retain their original comparison
+class and cannot be upgraded by relabelling or regenerating summaries.
+
+`--set applications` is an explicit diagnostic selection, currently HTML5lib
+and a modern SQLGlot/TPC-H variant. Catalog membership and successful CPython
+oracle generation do not establish Molt execution, package conformance or
+performance acceptance. These cells remain unqualified; the release authority
+below remains the core native+LLVM gate. See the [application portfolio](../bench/corpus/README.md)
+and [workload contract](../docs/design/foundation/64_perf_scoreboards_and_harness.md#admitted-benchmark-source-generations).
+
 Methodology v15 includes closed callable provenance and generated import-call
 argument/result contracts in workload admission and transformation analysis.
 These can change qualification and selected compiled source, so earlier boards
@@ -110,7 +128,7 @@ fail closed when that execution identity is absent. Profile declarations and
 source-checkout measurements do not qualify the installed release matrix.
 
 WASM scoreboard execution records one admitted Node plan per invocation in
-schema-v6 board and cell `execution_host` facts. The path names the exact selected
+schema-v7 board and cell `execution_host` facts. The path names the exact selected
 executable; comparability uses engine kind, observed version, byte size and
 SHA-256 rather than its installation path or basename. A different engine image
 or version splits history and refuses merging. Missing historical observations
