@@ -147,6 +147,9 @@ prefer live code, tests, measurements and explicit user direction over stale pro
 - Reuse one compiled producer for compatible profiles/features and affected selectors. Batch useful
   checks without adding unrelated suites to amortize a compile; avoid cold targets and competing
   Cargo writers. Measure the actual critical path before changing concurrency or coverage.
+- Preflight actual output/backing filesystems, including VM disks. Route growth through DX; use
+  `tools/disk_guard.py`, `tools/molt_cache_prune.py` and `tools/linux_vm.py` under
+  `docs/OPERATIONS.md`. Diagnose recurring growth; cleanup alone does not establish a durable fix.
 - Preflight selected toolchain/target/runtime prerequisites with the actual child environment before
   expensive work; parser acceptance is not readiness. Validate mutations at their canonical boundary.
 - Stop dependent command batches at the first failure. Classify product, harness, artifact drift or

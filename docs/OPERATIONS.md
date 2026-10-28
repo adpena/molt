@@ -540,6 +540,42 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
 #    verified-subset policy, so there is no second path registry to update.
 ```
 
+## Disk pressure and storage placement
+
+Observe free space on the filesystems actually receiving output. Use the
+existing DX resolution and `molt.disk_capacity` admission for host builds;
+explicit output and cache overrides retain their own filesystem. For Linux
+VM work, inspect both guest free space and the host filesystem holding the
+instance disk. A roomy guest can still exhaust its host, and external host
+Cargo/cache routing does not relocate a VM disk.
+
+Reclaim through the existing owners:
+
+- `tools/disk_guard.py --root <artifact-root> --ensure-free --dry-run --json`
+  plans eligible build-state reclamation. Review its scope before applying.
+  A successful plan or collector run does not admit the next build: remeasure
+  the actual output filesystem through the capacity authority.
+- `tools/molt_cache_prune.py --cache-dir <cache-root> --max-gb <budget> --dry-run`
+  plans cache retention. Protected legacy publishers, held readers and
+  installation state remain protected; an empty plan is not permission for
+  a broad filesystem deletion. Reconcile and retire obsolete producers with
+  their storage and lifetime consumers; protection is not an indefinite
+  compatibility lane. Keep one current protocol and resolve live ownership.
+- `tools/linux_vm.py` owns VM definitions, idle-work checks, service startup
+  and host-file release. Lima's explicit `LIMA_HOME` owns disk placement.
+  Follow [the storage relocation protocol](design/linux_vm_apparatus.md#storage-placement-and-capacity)
+  to preserve stopped guests and their identities before retiring originals.
+
+Record the measured growth location, its producer and retention owner, and
+the actual free-space change. Recurring pressure requires correcting that
+writer's placement or retention policy. A one-time cleanup, a removed snapshot,
+an external-volume preference or successful dry-run alone proves no durable fix.
+On APFS, inspect snapshots when deleted or discarded blocks do not become free;
+report retained snapshot blocks separately from new file growth. Discarding a
+restore point requires the applicable user authorization.
+Keep private operation evidence outside tracked source. `AGENTS.md` owns this
+standing policy; `CLAUDE.md` imports it.
+
 ## Build Throughput (Multi-Agent)
 - **Concurrent backend daemon**: one daemon serves every build that shares its configuration digest. The digest and the socket path bind only process-scoped facts (project, build-state root, Cargo profile, compiler binary and fingerprint, frontend tooling fingerprint, features, target, suite lease, session), so every program and codegen setting of a build shares one warm daemon. Each connection gets its own thread, at most one compile per core runs, and the rest wait for a slot. Concurrent requests for one artifact compile it once (single flight); in-memory cache and single-flight keys bind the request's configuration namespace, complete typed native/WASM target and admitted semantic settings ([identity and transitions](design/backend_compile_daemon.md#cache-identity-and-job-transitions)). A request's backend settings (the catalog in `src/molt/backend_environment.json`) live in a per-request scope on the compiling thread (`molt_ir::backend_environment`, the `Session` model of rustc and Bazel's multiplex workers); the daemon never writes them into its process environment, worker threads and native batch workers receive the scope explicitly, and a read outside a request scope panics. Compiler crates read the catalog only through that typed accessor; each crate's `clippy.toml` disallows `std::env::var` so a new direct read fails lint. A daemon retires on a `retire` request, or by itself after `MOLT_BACKEND_DAEMON_IDLE_TIMEOUT` seconds (default 1800, the sccache and Gradle model) with no connection: it unlinks its socket, so the next build starts a fresh daemon, then finishes the accepted connections and exits. It unlinks only the socket it bound, so a successor on the same path keeps its own. The daemon alone decides when it retires; the launcher never stops a daemon whose socket is gone, and starts its successor. `tests/molt_diff.py` retires an idle daemon whose RSS exceeds `MOLT_DIFF_DAEMON_MAX_RSS_KB` and never stops a busy or draining one.
 - **Stable backend cache keys**: compiler IR and backend cache payload identities do not depend on the host hash seed. Wrapper build reuse keeps its broader environment contract, which includes `PYTHONHASHSEED` for external build inputs.
