@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-
-def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
-    from _intrinsics import require_intrinsic as _require
-
-    return _require(name, namespace)
+from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 # Loader identity and behavior belong to the runtime, so generated module
