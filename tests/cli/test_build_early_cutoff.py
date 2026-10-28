@@ -696,7 +696,7 @@ def test_json_cutoff_emits_a_current_result_without_running_compiler(
                 False,
                 (),
                 (),
-                "a" * 64,
+                "sha256:" + "a" * 64,
                 None,
                 "release",
                 False,

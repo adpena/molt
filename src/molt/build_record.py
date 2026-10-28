@@ -369,7 +369,10 @@ class NativeBuildFacts:
             ):
                 raise ValueError(f"invalid native build fact: {key}")
             values[key] = tuple(values[key])
-        _record_digest(values["capability_policy_digest"])
+        algorithm, separator, digest = values["capability_policy_digest"].partition(":")
+        if algorithm != "sha256" or separator != ":":
+            raise ValueError("invalid native capability policy digest")
+        _record_digest(digest)
         return cls(**values)
 
 

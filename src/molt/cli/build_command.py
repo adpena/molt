@@ -205,7 +205,11 @@ def _record_build(
         if output is None:
             return "native output selection was not reported"
         if request.json_output and ledger.result is None:
-            return "native JSON result was not reported"
+            return (
+                ledger.refusals[0]
+                if ledger.refusals
+                else "native JSON result was not reported"
+            )
         if output.output != request.output:
             return "native output selection differs from the build request"
         _report_executed_code(ledger)
