@@ -15,10 +15,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_warnings_formatwarning",
             crate::molt_warnings_formatwarning as *const (),
         )),
-        "molt_warnings_showwarning" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_warnings_showwarning",
-            crate::molt_warnings_showwarning as *const (),
-        )),
         "molt_warnings_simplefilter" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_warnings_simplefilter",
             crate::molt_warnings_simplefilter as *const (),
@@ -34,6 +30,14 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_warnings_filters_get" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_warnings_filters_get",
             crate::molt_warnings_filters_get as *const (),
+        )),
+        "molt_warnings_onceregistry_get" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_warnings_onceregistry_get",
+            crate::molt_warnings_onceregistry_get as *const (),
+        )),
+        "molt_warnings_filters_mutated" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_warnings_filters_mutated",
+            crate::molt_warnings_filters_mutated as *const (),
         )),
         _ => None,
     }

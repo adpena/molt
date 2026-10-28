@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Callable, TextIO, cast
-from types import ModuleType
 import types as _types
 
 import io as _io
@@ -1040,19 +1039,6 @@ ShowWarning = Callable[
 _warnings_showwarning: ShowWarning | None = None
 
 
-def _set_warning_capture_streams(warnings_mod: ModuleType, logger: Logger) -> None:
-    streams: list[tuple[Any, str]] = []
-    handlers_list = list(getattr(logger, "handlers", []))
-    if not handlers_list and getattr(logger, "propagate", False):
-        parent = getattr(logger, "parent", None)
-        if parent is not None:
-            handlers_list = list(getattr(parent, "handlers", []))
-    for handler in handlers_list:
-        if isinstance(handler, StreamHandler):
-            streams.append((handler.stream, handler.terminator))
-    setattr(warnings_mod, "_molt_capture_streams", streams)
-
-
 def _showwarning(
     message: Warning | str,
     category: type[Warning],
@@ -1107,19 +1093,10 @@ def captureWarnings(capture: bool) -> None:
         if _warnings_showwarning is None:
             _warnings_showwarning = _warnings.showwarning
             setattr(cast(Any, _warnings), "showwarning", _showwarning)
-        try:
-            _set_warning_capture_streams(_warnings, getLogger("py.warnings"))
-        except Exception:
-            pass
     else:
         if _warnings_showwarning is not None:
             setattr(cast(Any, _warnings), "showwarning", _warnings_showwarning)
             _warnings_showwarning = None
-        try:
-            if hasattr(_warnings, "_molt_capture_streams"):
-                delattr(cast(Any, _warnings), "_molt_capture_streams")
-        except Exception:
-            pass
 
 
 # ── Module-level flags (CPython compat) ──────────────────────────────────────
