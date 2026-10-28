@@ -387,6 +387,17 @@ These local samples establish no end-to-end latency improvement. One probe is
 removed from host application links without an explicit architecture override;
 cross-target, runtime-image and earlier whole-build-cutoff paths already avoid it.
 
+At `80b17db7fa`, backend cache/environment projection creates no scratch state.
+The existing writer boundary binds default scratch before ordinary/one-shot,
+daemon and factgraph dispatch, and before JIT publication. Explicit external
+directories retain their placement; invalid global scratch selection and blocked
+ownership fail through the existing CLI boundary. Ninety-two affected controls
+pass, retaining the independent no-files-created oracle and actual owner-record
+checks. The emitted two-file edited native program produces the expected 45
+with an empty `PATH`, changed artifact bytes, the same compiler/runtime products
+and a closed guard. This proves that consumer, not accepted edit latency or
+full LLVM/WASM/JIT execution qualification.
+
 The next complete latency repair is to extend the existing build-record cutoff
 through the canonical JSON result owner: validate every promised artifact,
 preserve source/toolchain/target/profile and directory/absence invalidation,
