@@ -3926,7 +3926,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_EXTERNAL_ARTIFACT_ROOTS",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "OS path-separator list of candidate artifact roots that src/molt/dx.py checks in order for an external MOLT_EXT_ROOT when MOLT_PREFER_EXTERNAL_ARTIFACTS or MOLT_REQUIRE_EXTERNAL_ARTIFACTS asks for one; the first with enough free space wins, and when unset the checkout family's custody root is the only candidate.",
+      "summary": "OS path-separator list of candidate artifact roots checked only when no explicit MOLT_EXT_ROOT or durable Git-family binding exists and MOLT_PREFER_EXTERNAL_ARTIFACTS or MOLT_REQUIRE_EXTERNAL_ARTIFACTS asks for one; the first healthy candidate wins, and unset uses the checkout custody root as the candidate.",
       "values": []
     },
     {
@@ -3936,7 +3936,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_EXTERNAL_MIN_FREE_GB",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Minimum free space in GB a candidate external artifact root must have before src/molt/dx.py selects it; non-numeric or negative values use 20.",
+      "summary": "Minimum free space in GiB required of candidate external roots and the durable family-bound artifact root, default 20; non-finite, non-numeric, negative or oversized values fail closed, and zero permits any measured free capacity.",
       "values": []
     },
     {
@@ -3956,7 +3956,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_EXT_ROOT",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Artifact root for build state, caches, Cargo targets and scratch directories. src/molt/dx.py is its only reader: configured_artifact_root returns the set value, artifact_root falls back to an external candidate root or the checkout custody root (never a worktree), and RunContext exports the choice to child processes.",
+      "summary": "Explicit artifact root for build state, caches, Cargo targets and scratch; it takes precedence over the durable Git-family binding in <git common dir>/molt/artifact-root.json. configured_artifact_root selects the explicit root or healthy binding; artifact_root otherwise uses requested healthy candidates or checkout custody, and RunContext exports the choice. A missing, replaced, unmounted or unhealthy bound root fails closed; python -m molt.checkout_provisioning artifact-root reports, binds or clears it.",
       "values": []
     },
     {
@@ -5046,7 +5046,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_PREFER_EXTERNAL_ARTIFACTS",
       "output_neutral": false,
       "owner": "src/molt/dx.py",
-      "summary": "Set to 1, true, yes, or on to place Cargo targets, caches, and temp dirs under the first healthy external artifact root; 0, false, no, or off keeps repo-local roots; when unset the pyproject [tool.molt.dx] prefer_external_artifacts setting decides (off by default).",
+      "summary": "With no explicit MOLT_EXT_ROOT or durable family binding, 1, true, yes or on asks for the first healthy external candidate for Cargo targets, caches and temp dirs; 0, false, no or off retains the checkout-custody default. Unset uses pyproject [tool.molt.dx] prefer_external_artifacts (off by default); this preference never disables or bypasses a binding.",
       "values": []
     },
     {
