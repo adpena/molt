@@ -33,6 +33,82 @@ def test_delete_path_removes_nested_readonly_artifacts(tmp_path: Path) -> None:
     assert not tree.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permission seal")
+@pytest.mark.parametrize("skip_unseal", [False, True])
+def test_owned_deletion_unseals_directories_and_negative_control(
+    tmp_path, monkeypatch, skip_unseal
+):
+    tree = tmp_path / "owned-image"
+    nested = tree / "lib" / "site-packages"
+    nested.mkdir(parents=True)
+    payload = nested / "module.py"
+    payload.write_bytes(b"VALUE = 529\n")
+    payload.chmod(0o444)
+    for directory in (nested, nested.parent, tree):
+        directory.chmod(0o555)
+    original = file_deletion._unseal_owned_directories
+    if skip_unseal:
+        monkeypatch.setattr(file_deletion, "_unseal_owned_directories", lambda *_: None)
+    try:
+        ok, error = file_deletion.delete_path(tree, owning_root=tmp_path)
+        if skip_unseal:
+            assert not ok and error
+            assert payload.read_bytes() == b"VALUE = 529\n"
+        else:
+            assert ok, error
+            assert not tree.exists()
+    finally:
+        monkeypatch.setattr(file_deletion, "_unseal_owned_directories", original)
+        assert file_deletion.delete_path(tree, owning_root=tmp_path) == (True, "")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permission seal")
+@pytest.mark.parametrize(
+    "coordinate", ["outside", "owner-itself", "ancestor-link", "parent-leaf"]
+)
+def test_deletion_owner_refuses_unsealing_outside_its_physical_tree(
+    tmp_path, coordinate
+):
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "payload"
+    protected.write_bytes(b"preserve outside custody")
+    outside.chmod(0o555)
+    if coordinate == "outside":
+        target = outside
+    elif coordinate == "owner-itself":
+        target = owner
+    elif coordinate == "parent-leaf":
+        target = owner / ".."
+    else:
+        (owner / "alias").symlink_to(outside, target_is_directory=True)
+        target = owner / "alias" / "payload"
+    try:
+        ok, error = file_deletion.delete_path(target, owning_root=owner)
+        assert not ok and error
+        assert outside.stat().st_mode & 0o222 == 0
+        assert protected.read_bytes() == b"preserve outside custody"
+        assert owner.is_dir()
+    finally:
+        outside.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory permission seal")
+def test_deletion_without_owner_never_acquires_unseal_rights(tmp_path):
+    tree = tmp_path / "sealed"
+    tree.mkdir()
+    (tree / "payload").write_bytes(b"preserved")
+    tree.chmod(0o555)
+    try:
+        ok, error = file_deletion.delete_path(tree)
+        assert not ok and error
+        assert tree.stat().st_mode & 0o222 == 0
+    finally:
+        tree.chmod(0o755)
+
+
 def test_delete_path_removes_readonly_file(tmp_path: Path) -> None:
     readonly = tmp_path / "receipt.json"
     readonly.write_text("{}", encoding="utf-8")

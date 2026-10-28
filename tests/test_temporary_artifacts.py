@@ -173,6 +173,35 @@ def test_guard_reclaims_readonly_hardlink_without_changing_external_source(
     assert source.read_bytes() == b"external source must survive cleanup"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory write bits")
+def test_guard_reclaims_sealed_published_image_without_changing_external_source(
+    tmp_path, readonly_file_source
+):
+    from molt.python_environment_location import seal_environment_installation
+
+    source, attributes = readonly_file_source
+    before = attributes()
+    lease, env = _lease(tmp_path)
+    image = lease.target / "custody" / "environment"
+    site = image / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "module.py").write_text("VALUE = 529\n", encoding="utf-8")
+    (image / "bin").mkdir()
+    (image / "bin" / "borrowed").hardlink_to(source)
+    seal_environment_installation(image)
+    # Independent oracle: an unowned delete cannot unlink inside a sealed tree.
+    with pytest.raises(PermissionError):
+        (site / "module.py").unlink()
+    assert scratch.guard_scratch(env) == lease.target
+    result = _finish(lease)
+    assert result["state"] == "reclaimed", result
+    assert result["retention"]["errors"] == []
+    assert not lease.target.exists()
+    assert not lease.generation.exists()
+    assert attributes() == before
+    assert source.read_bytes() == b"external source must survive cleanup"
+
+
 def test_owned_temporary_directory_reclaims_readonly_hardlink(
     tmp_path, readonly_file_source
 ):
@@ -716,10 +745,10 @@ def test_interrupted_reclamation_repairs_receipt_but_never_retries_payload(
     write_exact(lease.generation / "owner.json", dict(owner, state="reclaiming"))
     delete_path = scratch.delete_path
 
-    def delete_receipts_only(path):
+    def delete_receipts_only(path, *, owning_root=None):
         if path == target:
             pytest.fail("must not retry")
-        return delete_path(path)
+        return delete_path(path, owning_root=owning_root)
 
     monkeypatch.setattr(scratch, "delete_path", delete_receipts_only)
     scratch.reclaim_terminal_scratch(
@@ -736,7 +765,9 @@ def test_interrupted_reclamation_repairs_receipt_but_never_retries_payload(
 def test_delete_failure_is_durable_and_not_silenced(tmp_path, monkeypatch):
     lease, _ = _lease(tmp_path)
     monkeypatch.setattr(
-        scratch, "delete_path", lambda *_: (False, "fixture sharing violation")
+        scratch,
+        "delete_path",
+        lambda path, *, owning_root=None: (False, "fixture sharing violation"),
     )
     result = _finish(lease)
     assert result["state"] == "blocked"

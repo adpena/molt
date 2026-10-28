@@ -75,13 +75,19 @@ def test_oracle_isolates_native_compiler_inputs_without_losing_guard_custody(
             "MOLT_MEMORY_LIMIT_GB": "2",
             "MOLT_SESSION_ID": "owned-oracle",
         }
-        assert argv[:2] == [parity.sys.executable, "-I"]
+        assert argv[:5] == [
+            parity.sys.executable,
+            "-B",
+            "-X",
+            f"pycache_prefix={Path(parity.sys.prefix) / 'bytecode'}",
+            "-I",
+        ]
         return subprocess.CompletedProcess(argv, 0, "oracle-output\n", "")
 
     monkeypatch.setattr(parity, "run_native_test_process", run)
     result = parity._run_cpython_oracle(tmp_path, env)
     assert result == Outputs("oracle-output\n", "", 0)
-    assert calls[0][2] == str(parity.FIXTURE / "build_cpython.py")
+    assert calls[0][5] == str(parity.FIXTURE / "build_cpython.py")
     assert calls[1][-2:] == [str(tmp_path / "cpython" / "lib"), str(parity.PROGRAM)]
     assert env["CC"] == "wasm-cc", "oracle isolation must not mutate Molt's environment"
 

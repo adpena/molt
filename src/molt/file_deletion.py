@@ -6,6 +6,8 @@ tolerate an already-absent path, and delete Windows read-only links without
 changing the underlying file's attributes. Windows requires a filesystem with
 FileDispositionInfoEx POSIX/IGNORE_READONLY support (Windows 10 1809 or newer).
 Unsupported operations fail closed; there is no attribute-changing fallback.
+POSIX directory seals are removed only within an explicit caller-owned root;
+file modes and external link targets are never changed during deletion.
 """
 
 from __future__ import annotations
@@ -170,9 +172,46 @@ def _recursive_deletion_path(path: Path, metadata: os.stat_result) -> Path:
     return verbatim
 
 
-def delete_path(path: Path) -> tuple[bool, str]:
-    """Delete one already-authorized path and report failure without hiding it."""
+def _unseal_owned_directories(path: Path, metadata: os.stat_result) -> None:
+    """Restore only directory owner-write, through non-following descriptors.
+
+    POSIX unlink needs write permission on the containing directory, not the
+    file. Never chmod files: their attributes may be shared by external links.
+    The caller has already checked the explicit owning root.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        if not os.path.samestat(metadata, os.fstat(descriptor)):
+            raise OSError("owned deletion directory changed before unsealing")
+        for _directory, _children, _files, directory_fd in os.fwalk(
+            ".", dir_fd=descriptor, follow_symlinks=False
+        ):
+            current = os.fstat(directory_fd)
+            if not current.st_mode & stat.S_IWUSR:
+                os.fchmod(directory_fd, stat.S_IMODE(current.st_mode) | stat.S_IWUSR)
+    finally:
+        os.close(descriptor)
+
+
+def delete_path(path: Path, *, owning_root: Path | None = None) -> tuple[bool, str]:
+    """Delete an authorized path; unseal directories only with explicit custody.
+
+    Supplying an owner requires a strict physical descendant. Existing callers
+    without that grant retain ordinary deletion and never acquire chmod rights.
+    Eligibility, lifetime locks and identity checks still belong to the caller.
+    """
+    try:
+        if owning_root is not None:
+            from molt.file_publication import resolve_owned_path
+
+            owner = resolve_owned_path(owning_root)
+            if path.name in {"", ".", ".."}:
+                raise ValueError(f"deletion requires an owned leaf: {path}")
+            # A leaf link may be unlinked, but neither it nor any ancestor may
+            # redirect the permission changes into another tree.
+            path = resolve_owned_path(path.parent) / path.name
+            if path == owner or not path.is_relative_to(owner):
+                raise ValueError(f"deletion outside owning root: {path}")
         try:
             metadata = path.lstat()
         except FileNotFoundError:
@@ -180,9 +219,11 @@ def delete_path(path: Path) -> tuple[bool, str]:
         if stat.S_ISDIR(metadata.st_mode) and not (
             getattr(metadata, "st_file_attributes", 0) & 0x400
         ):
+            if owning_root is not None and os.name == "posix":
+                _unseal_owned_directories(path, metadata)
             shutil.rmtree(_recursive_deletion_path(path, metadata), onexc=_rmtree_error)
         else:
             unlink_file(path)
         return True, ""
-    except OSError as error:
+    except (OSError, ValueError) as error:
         return False, str(error)
