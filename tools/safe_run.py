@@ -47,7 +47,11 @@ class RunOutcome:
     stdout_tail: str | None = None
     stderr_tail: str | None = None
     host_stderr: str | None = None
-    guard_result: harness_memory_guard.GuardedCompletedProcess[str] | None = None
+    guard_result: (
+        harness_memory_guard.GuardedCompletedProcess[str]
+        | harness_memory_guard.GuardedCompletedProcess[bytes]
+        | None
+    ) = None
 
 
 def _tail_text(text: str | None, *, max_chars: int = 4096) -> str | None:
@@ -78,6 +82,76 @@ def _require_capture_file(
         raise ValueError("guest stderr capture is not its original regular file")
 
 
+def _output_text(value: str | bytes | None) -> str | None:
+    # Binary capture avoids the text stream's universal-newline translation.
+    return (
+        value.decode("utf-8", "surrogateescape") if isinstance(value, bytes) else value
+    )
+
+
+def observed_run_outcome(
+    proc: harness_memory_guard.GuardedCompletedProcess[str]
+    | harness_memory_guard.GuardedCompletedProcess[bytes],
+    *,
+    captured_stderr: str | bytes | None,
+    capture_output: bool = True,
+    host_stderr: str | bytes | None = None,
+) -> RunOutcome:
+    """Interpret one closed guard observation; never infer timing from its wrapper.
+
+    Native capture supplies the guard's child stderr. Manifest-bound WASM
+    supplies its owned semantic capture after closure, retaining host diagnostics
+    separately. Every benchmark consumer uses this same completion policy.
+    """
+    if not isinstance(proc, harness_memory_guard.GuardedCompletedProcess):
+        raise TypeError("measurement requires the shared guard's typed result")
+    complete = (
+        proc.descendants_closed is True
+        and proc.infrastructure_failure is None
+        and not proc.cancelled
+        and proc.guard_signal is None
+        and not proc.orphaned_process_groups
+    )
+    elapsed = proc.child_elapsed_s
+    if not _finite_nonnegative(elapsed) or elapsed == 0:
+        elapsed = None
+    peaks = [
+        v.rss_kb / 1024.0
+        for v in (proc.peak, proc.peak_total)
+        if v is not None and _finite_nonnegative(v.rss_kb)
+    ]
+    peak = max(peaks) if peaks else None
+    if proc.infrastructure_failure is not None or not complete:
+        status = "infrastructure_error"
+    elif proc.timed_out:
+        status = "timeout"
+    elif proc.violation is not None:
+        status = "oom"
+    elif proc.returncode != 0 or proc.child_returncode != 0:
+        status = "nonzero"
+    elif (
+        elapsed is None
+        or peak is None
+        or (capture_output and (proc.stdout is None or captured_stderr is None))
+    ):
+        status = "error"
+    else:
+        status = "ok"
+    return RunOutcome(
+        ok=status == "ok",
+        elapsed_s=elapsed,
+        peak_rss_mib=peak,
+        status=status,
+        exit_code=proc.returncode,
+        stdout=_output_text(proc.stdout) if capture_output else None,
+        stderr=_output_text(captured_stderr) if capture_output else None,
+        stdout_tail=_tail_text(_output_text(proc.stdout)),
+        stderr_tail=_tail_text(_output_text(proc.stderr)),
+        host_stderr=_output_text(host_stderr),
+        guard_result=proc,
+    )
+
+
 def _run_measured_command(
     cmd: list[str],
     *,
@@ -90,6 +164,7 @@ def _run_measured_command(
     prefix: str = "MOLT_BENCH",
     poll_s: float = 0.01,
     guest_stderr_path: Path | None = None,
+    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
 ) -> RunOutcome:
     """One child launch and typed guard result, without a receipt subprocess.
 
@@ -107,7 +182,11 @@ def _run_measured_command(
         or poll_s <= 0
     ):
         raise ValueError("measurement limits must be positive finite values")
-    base = harness_memory_guard.limits_from_env(prefix, env)
+    base = (
+        limits
+        if limits is not None
+        else harness_memory_guard.limits_from_env(prefix, env)
+    )
     cap = rss_mb / 1024.0
     limits = replace(
         base,
@@ -140,7 +219,7 @@ def _run_measured_command(
             env=env,
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout_s,
             limits=limits,
             operation_role=label,
@@ -160,46 +239,11 @@ def _run_measured_command(
             if closed:
                 stream.seek(0)
                 child_stderr = stream.read().decode("utf-8", "surrogateescape")
-    complete = (
-        closed
-        and proc.infrastructure_failure is None
-        and not proc.cancelled
-        and proc.guard_signal is None
-        and not proc.orphaned_process_groups
-    )
-    elapsed = proc.child_elapsed_s
-    if not _finite_nonnegative(elapsed) or elapsed == 0:
-        elapsed = None
-    peaks = [
-        v.rss_kb / 1024.0
-        for v in (proc.peak, proc.peak_total)
-        if v is not None and _finite_nonnegative(v.rss_kb)
-    ]
-    peak = max(peaks) if peaks else None
-    if proc.infrastructure_failure is not None or not complete:
-        status = "infrastructure_error"
-    elif proc.timed_out:
-        status = "timeout"
-    elif proc.violation is not None:
-        status = "oom"
-    elif elapsed is None or peak is None:
-        status = "error"
-    elif proc.returncode != 0 or proc.child_returncode != 0:
-        status = "nonzero"
-    else:
-        status = "ok"
-    return RunOutcome(
-        ok=status == "ok",
-        elapsed_s=elapsed,
-        peak_rss_mib=peak,
-        status=status,
-        exit_code=proc.returncode,
-        stdout=proc.stdout if capture_output else None,
-        stderr=child_stderr if capture_output else None,
-        stdout_tail=_tail_text(proc.stdout),
-        stderr_tail=_tail_text(proc.stderr),
+    return observed_run_outcome(
+        proc,
+        captured_stderr=child_stderr,
+        capture_output=capture_output,
         host_stderr=host_stderr,
-        guard_result=proc,
     )
 
 

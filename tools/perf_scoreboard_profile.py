@@ -589,6 +589,8 @@ def run_hot_only_profiles(
     results: list[dict] = []
     for script in scripts:
         workload = workloads[script]
+        if script.absolute() != workload.script:
+            raise ValueError("benchmark source differs from admitted workload")
         workload.verify()
         key = bench_suites.canonical_benchmark_key(script)
         log_lines: list[str] = [f"# HOT-ONLY {key} | {spec.backend} | {profile}"]
@@ -597,14 +599,29 @@ def run_hot_only_profiles(
             file=sys.stderr,
             flush=True,
         )
-        binary, build_meta = build_profiling_binary(
-            script,
-            spec=spec,
-            profile=profile,
-            target_python_version=target_python_version,
-            inner_loops=inner_loops,
-            log_lines=log_lines,
-        )
+        if workload.source_cwd is not None:
+            binary = None
+            build_meta = {
+                "inner_loops": inner_loops,
+                "symbolicated": True,
+                "looped": False,
+                "refused": True,
+                "reason": (
+                    "sealed application inner-repeat profiling requires a sealed "
+                    "transformed-source protocol; the admitted driver cannot be rewritten"
+                ),
+                "looped_source_path": None,
+                "target_python": target_python_version,
+            }
+        else:
+            binary, build_meta = build_profiling_binary(
+                workload.execution_script,
+                spec=spec,
+                profile=profile,
+                target_python_version=target_python_version,
+                inner_loops=inner_loops,
+                log_lines=log_lines,
+            )
         workload.verify()
         cell: dict = {
             "workload": workload.record,

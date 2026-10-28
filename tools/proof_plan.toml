@@ -38,6 +38,9 @@ authority_inputs = [
   "tools/bench_dashboard.py",
   "tools/bench_diff.py",
   "tools/bench_evidence.py",
+  "tools/benchmark_applications.py",
+  "bench/corpus/registry.toml",
+  "src/molt/cli/source_package_seal.py",
   "tools/bench_reporting.py",
   "tools/perf_regression.py",
   "src/molt/binaryen_identity.py",
@@ -5924,6 +5927,9 @@ name = "performance-measurement"
 toolchains = ["python", "uv"]
 description = "Typed sample transport, deployment selection and complete benchmark artifact lifetimes."
 globs = [
+  "tools/benchmark_applications.py", "tools/bench_evidence.py", "tools/bench_suites.py",
+  "bench/corpus/registry.toml", "tests/benchmarks/apps/**",
+  "tests/test_bench_evidence.py", "tests/test_bench_suites.py",
   "tools/git_identity.py",
   "tools/bench.py", "tools/bench_audit.py", "tools/bench_reporting.py",
   "tools/safe_run.py", "tools/cold_start_decompose.py", "tools/perf_scoreboard*.py",
@@ -5942,6 +5948,8 @@ gates = [
 ]
 pytest_select = [
   { m = "not slow", targets = [
+    "tests/test_bench_evidence.py",
+    "tests/test_bench_suites.py",
     "tests/test_node_runtime.py",
     "tests/test_bench_tool.py",
     "tests/test_bench_audit.py",

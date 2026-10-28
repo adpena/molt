@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import statistics
 from typing import Any
 from dataclasses import dataclass, field
@@ -39,11 +38,6 @@ TOOLS_ROOT = REPO_ROOT / "tools"
 
 SRC_ROOT = REPO_ROOT / "src"
 
-
-from molt.llvm_toolchain import (  # noqa: E402
-    LlvmToolchainConfigError,
-    required_llvm_backend_pin,
-)
 
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 
@@ -148,32 +142,6 @@ BACKENDS_BY_NAME = {
 from tools.perf_scoreboard_build_profiles import (  # noqa: E402
     profile_build_flags as profile_build_flags,
 )
-
-
-def _llvm_backend_pin():
-    try:
-        return required_llvm_backend_pin(REPO_ROOT)
-    except LlvmToolchainConfigError:
-        return None
-
-
-def _llvm_sys_prefix_env_var() -> str | None:
-    pin = _llvm_backend_pin()
-    return None if pin is None else pin.env_var
-
-
-def _llvm_sys_prefix() -> str | None:
-    """Resolve the LLVM_SYS prefix the manifest-pinned LLVM backend needs."""
-    pin = _llvm_backend_pin()
-    if pin is None:
-        return None
-    explicit = os.environ.get(pin.env_var, "").strip()
-    if explicit:
-        return explicit
-    candidate = Path(f"/opt/homebrew/opt/llvm@{pin.major}")
-    if candidate.exists():
-        return str(candidate)
-    return None
 
 
 from tools.safe_run import (  # noqa: E402

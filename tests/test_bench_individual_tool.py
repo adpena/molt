@@ -4,7 +4,6 @@ import contextlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -50,7 +49,7 @@ def test_bench_individual_reuses_backend_daemon_by_default(
     monkeypatch.setattr(
         bench,
         "molt_build",
-        lambda script, out_dir, timeout_s, extra_args=None, limits=None: (
+        lambda script, out_dir, timeout_s, extra_args=None, limits=None, workload=None: (
             tmp_path / "bench_molt",
             0.01,
             "",
@@ -59,12 +58,16 @@ def test_bench_individual_reuses_backend_daemon_by_default(
     monkeypatch.setattr(
         bench,
         "run_binary",
-        lambda binary, timeout_s, limits=None: (True, 0.02, "1"),
+        lambda binary, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.02, None, "ok", 0, stdout="1", stderr=""
+        ),
     )
     monkeypatch.setattr(
         bench,
         "run_cpython",
-        lambda script, timeout_s, limits=None: (True, 0.04, "1"),
+        lambda script, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.04, None, "ok", 0, stdout="1", stderr=""
+        ),
     )
 
     with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
@@ -107,7 +110,7 @@ def test_bench_individual_can_opt_into_cold_daemon_isolation(
     monkeypatch.setattr(
         bench,
         "molt_build",
-        lambda script, out_dir, timeout_s, extra_args=None, limits=None: (
+        lambda script, out_dir, timeout_s, extra_args=None, limits=None, workload=None: (
             tmp_path / "bench_molt",
             0.01,
             "",
@@ -116,12 +119,16 @@ def test_bench_individual_can_opt_into_cold_daemon_isolation(
     monkeypatch.setattr(
         bench,
         "run_binary",
-        lambda binary, timeout_s, limits=None: (True, 0.02, "1"),
+        lambda binary, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.02, None, "ok", 0, stdout="1", stderr=""
+        ),
     )
     monkeypatch.setattr(
         bench,
         "run_cpython",
-        lambda script, timeout_s, limits=None: (True, 0.04, "1"),
+        lambda script, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.04, None, "ok", 0, stdout="1", stderr=""
+        ),
     )
 
     with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
@@ -313,7 +320,7 @@ def test_bench_individual_rejects_partial_sample_failure(
     monkeypatch.setattr(
         bench,
         "molt_build",
-        lambda script, out_dir, timeout_s, extra_args=None, limits=None: (
+        lambda script, out_dir, timeout_s, extra_args=None, limits=None, workload=None: (
             tmp_path / "bench_molt",
             0.01,
             "",
@@ -321,20 +328,22 @@ def test_bench_individual_rejects_partial_sample_failure(
     )
 
     def fake_run_binary(
-        binary: Path, timeout_s: float, limits=None
-    ) -> tuple[bool, float, str]:
+        binary: Path, timeout_s: float, limits=None, workload=None
+    ) -> bench.RunOutcome:
         del limits
         nonlocal calls
         calls += 1
         if calls == 3:
-            return False, 0.03, ""
-        return True, 0.02, "1"
+            return bench.RunOutcome(False, 0.03, None, "error", 1, stdout="", stderr="")
+        return bench.RunOutcome(True, 0.02, None, "ok", 0, stdout="1", stderr="")
 
     monkeypatch.setattr(bench, "run_binary", fake_run_binary)
     monkeypatch.setattr(
         bench,
         "run_cpython",
-        lambda script, timeout_s, limits=None: (True, 0.04, "1"),
+        lambda script, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.04, None, "ok", 0, stdout="1", stderr=""
+        ),
     )
 
     with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
@@ -351,7 +360,7 @@ def test_bench_individual_rejects_partial_sample_failure(
     assert result["molt_ok"] is False
     assert result["molt_warmup_samples_s"] == [0.02]
     assert result["molt_samples_s"] == [0.02]
-    assert result["error"] == "Molt run failed during sample 2/2"
+    assert result["error"] == "Molt run failed during sample 2/2: rc=1"
 
 
 def test_bench_individual_records_molt_run_failure_detail(
@@ -360,7 +369,7 @@ def test_bench_individual_records_molt_run_failure_detail(
     monkeypatch.setattr(
         bench,
         "molt_build",
-        lambda script, out_dir, timeout_s, extra_args=None, limits=None: (
+        lambda script, out_dir, timeout_s, extra_args=None, limits=None, workload=None: (
             tmp_path / "bench_molt",
             0.01,
             "",
@@ -369,16 +378,16 @@ def test_bench_individual_records_molt_run_failure_detail(
     monkeypatch.setattr(
         bench,
         "run_binary",
-        lambda binary, timeout_s, limits=None: (
-            False,
-            0.02,
-            "rc=7\nstderr:\nruntime intrinsic missing",
+        lambda binary, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            False, 0.02, None, "error", 7, stdout="", stderr="runtime intrinsic missing"
         ),
     )
     monkeypatch.setattr(
         bench,
         "run_cpython",
-        lambda script, timeout_s, limits=None: (True, 0.04, "1"),
+        lambda script, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.04, None, "ok", 0, stdout="1", stderr=""
+        ),
     )
 
     with _admitted_workloads(["tests/benchmarks/bench_bytes_find.py"]) as workloads:
@@ -394,6 +403,10 @@ def test_bench_individual_records_molt_run_failure_detail(
     assert result["run_ok"] is False
     assert result["molt_failure_detail"] == "rc=7\nstderr:\nruntime intrinsic missing"
     assert "runtime intrinsic missing" in result["error"]
+    assert result["molt_output"] == ""
+    assert result["molt_stderr"] == "runtime intrinsic missing"
+    assert result["molt_time_s"] is None
+    assert result["molt_speedup"] is None
 
 
 def test_bench_individual_marks_intrinsic_benchmarks_molt_only(
@@ -402,7 +415,7 @@ def test_bench_individual_marks_intrinsic_benchmarks_molt_only(
     monkeypatch.setattr(
         bench,
         "molt_build",
-        lambda script, out_dir, timeout_s, extra_args=None, limits=None: (
+        lambda script, out_dir, timeout_s, extra_args=None, limits=None, workload=None: (
             tmp_path / "bench_molt",
             0.01,
             "",
@@ -411,12 +424,14 @@ def test_bench_individual_marks_intrinsic_benchmarks_molt_only(
     monkeypatch.setattr(
         bench,
         "run_binary",
-        lambda binary, timeout_s, limits=None: (True, 0.02, "intrinsic-only"),
+        lambda binary, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.02, None, "ok", 0, stdout="intrinsic-only", stderr=""
+        ),
     )
 
     def fail_cpython(
-        script: str, timeout_s: float, limits=None
-    ) -> tuple[bool, float, str]:
+        script: str, timeout_s: float, limits=None, workload=None
+    ) -> bench.RunOutcome:
         del limits
         raise AssertionError("Molt-only intrinsic benchmarks must not run CPython")
 
@@ -452,7 +467,7 @@ def test_bench_individual_custom_same_basename_keeps_cpython_reference(
     monkeypatch.setattr(
         bench,
         "molt_build",
-        lambda script, out_dir, timeout_s, extra_args=None, limits=None: (
+        lambda script, out_dir, timeout_s, extra_args=None, limits=None, workload=None: (
             tmp_path / "bench_molt",
             0.01,
             "",
@@ -461,12 +476,16 @@ def test_bench_individual_custom_same_basename_keeps_cpython_reference(
     monkeypatch.setattr(
         bench,
         "run_binary",
-        lambda binary, timeout_s, limits=None: (True, 0.02, "custom"),
+        lambda binary, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.02, None, "ok", 0, stdout="custom", stderr=""
+        ),
     )
     monkeypatch.setattr(
         bench,
         "run_cpython",
-        lambda script, timeout_s, limits=None: (True, 0.03, "custom"),
+        lambda script, timeout_s, limits=None, workload=None: bench.RunOutcome(
+            True, 0.03, None, "ok", 0, stdout="custom", stderr=""
+        ),
     )
 
     with _admitted_workloads([str(custom)]) as workloads:
@@ -499,11 +518,23 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
         calls.append({"cmd": list(cmd), **kwargs})
         if "build" in cmd:
             payload = {"status": "ok", "data": {"output": str(binary)}}
-            result = subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            stdout = json.dumps(payload)
         else:
-            result = subprocess.CompletedProcess(cmd, 0, "ok\n", "")
-        result.elapsed_s = 0.0125  # type: ignore[attr-defined]
-        return result
+            stdout = "ok\n"
+        return bench.harness_memory_guard.GuardedCompletedProcess(
+            cmd,
+            0,
+            stdout,
+            "",
+            elapsed_s=9.0,
+            child_elapsed_s=0.0125,
+            child_returncode=0,
+            child_stderr="",
+            descendants_closed=True,
+            peak=bench.harness_memory_guard.memory_guard.RssViolation(
+                pid=1, rss_kb=1024, command="fixture", scope="process"
+            ),
+        )
 
     monkeypatch.setattr(
         bench.harness_memory_guard,
@@ -512,20 +543,23 @@ def test_bench_individual_process_helpers_use_molt_bench_guard(
     )
     monkeypatch.setenv("MOLT_SESSION_ID", "caller-session")
 
-    built_binary, build_s, build_err = bench.molt_build(
-        str(script),
-        tmp_path,
-        3.0,
-        limits=limits,
-    )
-    run_ok, run_s, run_out = bench.run_binary(binary, 4.0, limits=limits)
-    cpy_ok, cpy_s, cpy_out = bench.run_cpython(str(script), 5.0, limits=limits)
+    with _admitted_workloads([str(script)]) as workloads:
+        workload = workloads[str(script)]
+        built_binary, build_s, build_err = bench.molt_build(
+            str(script),
+            tmp_path,
+            3.0,
+            limits=limits,
+            workload=workload,
+        )
+        run = bench.run_binary(binary, 4.0, limits=limits, workload=workload)
+        cpy = bench.run_cpython(str(script), 5.0, limits=limits, workload=workload)
 
     assert built_binary == binary
     assert build_err == ""
     assert build_s >= 0
-    assert (run_ok, run_s, run_out) == (True, 0.0125, "ok")
-    assert (cpy_ok, cpy_s, cpy_out) == (True, 0.0125, "ok")
+    assert run.ok and run.elapsed_s == 0.0125 and run.stdout == "ok\n"
+    assert cpy.ok and cpy.elapsed_s == 0.0125 and cpy.stdout == "ok\n"
     assert [call["prefix"] for call in calls] == [
         "MOLT_BENCH",
         "MOLT_BENCH",
@@ -562,6 +596,7 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
             timeout_run=1.0,
             isolate_daemon=False,
             bench=None,
+            applications=False,
             skip=None,
             json_out=str(tmp_path / "result.json"),
         ),
@@ -614,25 +649,248 @@ def test_bench_individual_main_uses_suite_sentinel_and_shared_limits(
     assert bench_calls[0]["warmup"] == 0
 
 
-def test_individual_refuses_unsupported_admitted_guest_args_before_children(
-    tmp_path, monkeypatch
-):
+def test_individual_executes_admitted_guest_arguments(tmp_path, monkeypatch):
     from tools.bench_evidence import admit_benchmark_workload
 
     script = tmp_path / "program.py"
     script.write_text("print(1)\n", encoding="utf-8")
-    monkeypatch.setattr(
-        bench,
-        "molt_build",
-        lambda *a, **k: pytest.fail("unsupported argv reached build"),
-    )
-    monkeypatch.setattr(
-        bench,
-        "run_cpython",
-        lambda *a, **k: pytest.fail("unsupported argv reached CPython"),
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return bench.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            0,
+            "1\n",
+            "",
+            elapsed_s=0.1,
+            child_elapsed_s=0.1,
+            child_returncode=0,
+            child_stderr="",
+            descendants_closed=True,
+            peak=bench.harness_memory_guard.memory_guard.RssViolation(
+                pid=1, rss_kb=1024, command="fixture", scope="process"
+            ),
+        )
+
+    monkeypatch.setattr(bench.harness_memory_guard, "guarded_completed_process", run)
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=["--count", "7"], molt_args=[]
+    ) as admitted:
+        assert bench.run_cpython(str(script), 1, workload=admitted).stdout == "1\n"
+        assert (
+            bench.run_binary(tmp_path / "binary", 1, workload=admitted).stdout == "1\n"
+        )
+    assert calls[0][0] == [sys.executable, str(script), "--count", "7"]
+    assert calls[1][0] == [str(tmp_path / "binary"), "--count", "7"]
+    assert all(options["encoding"] == "utf-8" for _, options in calls)
+    assert all(options["errors"] == "surrogateescape" for _, options in calls)
+
+
+@pytest.mark.parametrize("descriptor", [1, 2])
+def test_individual_actual_guard_preserves_distinct_invalid_output_bytes(
+    tmp_path, daemon_control_environment, descriptor
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "raw_output.py"
+    # The reference receives the admitted argument after its script. Using the
+    # real Python executable as the guest capture fixture consumes that argument
+    # as its script instead; both observations cross the actual guard boundary.
+    script.write_text(
+        "import os, sys\n"
+        "payload = b'raw\\xff\\r\\nno-final-newline' if len(sys.argv) > 1 "
+        "else b'raw\\xfe\\r\\nno-final-newline'\n"
+        f"os.write({descriptor}, payload)\n",
+        encoding="utf-8",
     )
     with admit_benchmark_workload(
-        script, project_root=tmp_path, run_args=["different"], molt_args=[]
-    ) as admitted:
-        with pytest.raises(ValueError, match="does not support guest run arguments"):
-            bench.bench_one(str(script), 1, 0, 1.0, 1.0, workload=admitted)
+        script, project_root=tmp_path, run_args=[str(script)], molt_args=[]
+    ) as workload:
+        reference = bench.run_cpython(str(script), 15, workload=workload)
+        guest = bench.run_binary(Path(sys.executable), 15, workload=workload)
+    assert reference.ok and guest.ok
+    for outcome in (reference, guest):
+        assert outcome.guard_result is not None
+        assert outcome.guard_result.descendants_closed is True
+    reference_text = reference.stdout if descriptor == 1 else reference.stderr
+    guest_text = guest.stdout if descriptor == 1 else guest.stderr
+    assert reference_text is not None and guest_text is not None
+    assert reference_text.encode("utf-8", "surrogateescape") == (
+        b"raw\xff\r\nno-final-newline"
+    )
+    assert guest_text.encode("utf-8", "surrogateescape") == (
+        b"raw\xfe\r\nno-final-newline"
+    )
+    assert not bench.compare_outputs(
+        bench.Outputs(reference.stdout, reference.stderr, reference.exit_code),
+        bench.Outputs(guest.stdout, guest.stderr, guest.exit_code),
+        stderr_mode="exact",
+    ).equal
+
+
+@pytest.mark.parametrize("runner", ["reference", "guest"])
+@pytest.mark.parametrize(
+    "condition", ["ok", "unclosed", "clock", "rss", "timeout", "nonzero"]
+)
+def test_individual_requires_complete_child_observation(
+    tmp_path, monkeypatch, daemon_control_environment, runner, condition
+):
+    from tools.bench_evidence import admit_benchmark_workload
+
+    script = tmp_path / "observation.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    stdout = b"out\xff\r\n".decode("utf-8", "surrogateescape")
+    stderr = b"err\xfe\r\n".decode("utf-8", "surrogateescape")
+    code = 124 if condition == "timeout" else 7 if condition == "nonzero" else 0
+    observed = bench.harness_memory_guard.GuardedCompletedProcess(
+        ["fixture"],
+        code,
+        stdout,
+        "guard diagnostics",
+        elapsed_s=9.0,
+        child_elapsed_s=None if condition == "clock" else 0.025,
+        child_returncode=code,
+        child_stderr=stderr,
+        descendants_closed=condition != "unclosed",
+        timed_out=condition == "timeout",
+        peak=(
+            None
+            if condition == "rss"
+            else bench.harness_memory_guard.memory_guard.RssViolation(
+                pid=1, rss_kb=1024, command="fixture", scope="process"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        bench.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *a, **kw: observed,
+    )
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=[], molt_args=[]
+    ) as workload:
+        outcome = (
+            bench.run_cpython(str(script), 1, workload=workload)
+            if runner == "reference"
+            else bench.run_binary(tmp_path / "binary", 1, workload=workload)
+        )
+    assert outcome.ok is (condition == "ok")
+    assert outcome.elapsed_s == (None if condition == "clock" else 0.025)
+    assert outcome.stdout == stdout and outcome.stderr == stderr
+    assert outcome.guard_result is observed
+    assert (
+        outcome.status
+        == {
+            "ok": "ok",
+            "unclosed": "infrastructure_error",
+            "clock": "error",
+            "rss": "error",
+            "timeout": "timeout",
+            "nonzero": "nonzero",
+        }[condition]
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "reference",
+        "reference_sample",
+        "guest_warmup",
+        "guest_sample",
+        "stderr_warmup",
+        "stderr_sample",
+    ],
+)
+def test_individual_sealed_invocations_and_output_oracle(
+    tmp_path, monkeypatch, daemon_control_environment, failure
+):
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+
+    binary = tmp_path / "binary"
+    binary.write_bytes(b"fixture executable boundary")
+    calls = []
+    guest_count = 0
+    reference_count = 0
+
+    def run(command, **kwargs):
+        nonlocal guest_count, reference_count
+        calls.append((command, kwargs))
+        if "build" in command:
+            stdout = json.dumps({"data": {"output": str(binary)}})
+        elif command[0] == str(binary):
+            guest_count += 1
+            bad = (
+                failure == "guest_warmup"
+                and guest_count == 1
+                or failure == "guest_sample"
+                and guest_count == 3
+            )
+            stdout = "sealed:7" if bad else "sealed:7\n"
+        else:
+            reference_count += 1
+            bad = failure == "reference" or (
+                failure == "reference_sample" and reference_count == 3
+            )
+            stdout = "sealed:7" if bad else "sealed:7\n"
+        stderr = (
+            "unexpected guest diagnostic\n"
+            if (
+                command[0] == str(binary)
+                and (
+                    (failure == "stderr_warmup" and guest_count == 1)
+                    or (failure == "stderr_sample" and guest_count == 3)
+                )
+            )
+            else ""
+        )
+        return bench.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            0,
+            stdout,
+            stderr,
+            elapsed_s=0.1,
+            child_elapsed_s=0.1,
+            child_returncode=0,
+            child_stderr=stderr,
+            descendants_closed=True,
+            peak=bench.harness_memory_guard.memory_guard.RssViolation(
+                pid=1, rss_kb=1024, command="fixture", scope="process"
+            ),
+        )
+
+    monkeypatch.setattr(bench.harness_memory_guard, "guarded_completed_process", run)
+    monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "scratch")
+    with sealed_workload(tmp_path) as workload:
+        if failure in {"reference", "reference_sample"}:
+            with pytest.raises(ValueError, match="semantic oracle"):
+                bench.bench_one(str(workload.script), 2, 1, 1, 1, workload=workload)
+        else:
+            result = bench.bench_one(
+                str(workload.script), 2, 1, 1, 1, workload=workload
+            )
+            assert result["molt_ok"] is (failure is None)
+            assert result["output_match"] is (failure is None)
+            if failure is not None:
+                assert result["molt_speedup"] is None
+            assert result["workload"]["entry"] == str(workload.script)
+        assert calls[0][0][-1] == str(workload.execution_script)
+        assert calls[0][1]["env"]["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
+        assert calls[0][1]["env"]["MOLT_MODULE_ROOTS"] == str(
+            workload.execution_root / "packages"
+        )
+        assert all(kwargs["cwd"] == workload.execution_root for _, kwargs in calls)
+        references = [command for command, _ in calls if "-P" in command]
+        assert references
+        assert references[0] == [
+            sys.executable,
+            "-P",
+            "-S",
+            "-B",
+            str(workload.execution_script),
+            "data/input.txt",
+            "7",
+        ]
+        assert calls[1][0] == [str(binary), "data/input.txt", "7"]

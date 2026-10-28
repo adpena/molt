@@ -418,3 +418,87 @@ def test_absolute_workload_entry_requires_full_captured_path_suffix(entry):
     record["entry_source"] = "other/case.py"
     record["sources"][0]["path"] = "other/case.py"
     assert workload_identity_problems(record)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["data/input.txt", "expected.txt", "packages/fixture_package/__init__.py"],
+)
+def test_sealed_workload_rejects_changed_input_even_when_bytes_are_restored(
+    tmp_path, relative
+):
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+
+    with pytest.raises(ValueError):
+        with sealed_workload(tmp_path) as workload:
+            target = workload.execution_root / relative
+            original = target.read_bytes()
+            target.write_bytes(b"changed")
+            target.write_bytes(original)
+            workload.verify()
+
+
+@pytest.mark.parametrize("extra", ["injected.py", "new_directory"])
+def test_sealed_workload_rejects_additions(tmp_path, extra):
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+
+    with pytest.raises(ValueError):
+        with sealed_workload(tmp_path) as workload:
+            target = workload.execution_root / extra
+            if extra.endswith(".py"):
+                target.write_text("print('injected')\n")
+            else:
+                target.mkdir()
+            workload.verify()
+
+
+def test_sealed_identity_is_independent_of_storage_location_and_rejects_legacy(
+    tmp_path,
+):
+    import shutil
+
+    from molt.cli.source_package_seal import verify_source_package_seal
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+    from tools.bench_evidence import (
+        admit_benchmark_workload,
+        workload_identity_problems,
+    )
+
+    with sealed_workload(tmp_path) as workload:
+        record = workload.record
+        assert not workload_identity_problems(record)
+        assert str(workload._seal.root) not in str(record)
+        assert record["entry"] == str(workload.script)
+        assert workload.execution_script != workload.script
+        relocated = tmp_path / "relocated-seal"
+        shutil.copytree(workload._seal.root, relocated)
+        with admit_benchmark_workload(
+            workload.script,
+            project_root=tmp_path / "original",
+            run_args=record["run_args"],
+            molt_args=record["molt_args"],
+            sealed_project=verify_source_package_seal(relocated),
+            python_roots=record["sealed_inputs"]["python_roots"],
+            oracle=record["sealed_inputs"]["oracle"],
+        ) as moved:
+            assert moved.record == record
+            assert moved.execution_script != workload.execution_script
+        record.pop("sealed_inputs")
+        assert workload_identity_problems(record)
+
+
+@pytest.mark.parametrize(
+    "expected,wrong",
+    [(b"sealed:7\r\n", b"sealed:7\n"), (b"sealed\xff:7", b"sealed\xfe:7")],
+)
+def test_sealed_reference_oracle_preserves_exact_bytes(tmp_path, expected, wrong):
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+
+    with sealed_workload(tmp_path, oracle_bytes=expected) as workload:
+        workload.verify_reference_output(
+            expected.decode("utf-8", "surrogateescape"), ""
+        )
+        with pytest.raises(ValueError, match="differs from sealed semantic oracle"):
+            workload.verify_reference_output(
+                wrong.decode("utf-8", "surrogateescape"), ""
+            )

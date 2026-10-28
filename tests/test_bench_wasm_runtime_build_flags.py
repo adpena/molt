@@ -131,6 +131,7 @@ def test_prepare_wasm_binary_does_not_retry_failed_build(
         log,
         limits,
         use_molt_build_cache,
+        source_cwd,
     ):
         del tty, log, limits, use_molt_build_cache
         assert molt_args == []
@@ -349,23 +350,77 @@ def test_failed_wasm_run_has_null_time_and_samples(monkeypatch, tmp_path: Path) 
     assert entry["molt_wasm_failure_class"] == "runtime_error"
 
 
-def test_measure_wasm_run_uses_guard_child_elapsed(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "ok",
+        "unclosed",
+        "clock",
+        "zero",
+        "rss",
+        "stdout",
+        "stderr",
+        "timeout",
+        "trap",
+        "node_oom",
+        "signal",
+    ],
+)
+def test_measure_wasm_run_requires_complete_guard_child_observation(
+    monkeypatch, condition
+) -> None:
     limits = bench_wasm.harness_memory_guard.limits_from_env("MOLT_BENCH", {})
     calls: list[dict[str, object]] = []
+    stdout = b"out\xff\r\n"
+    stderr = (
+        b"WebAssembly trap\xfe\r\n"
+        if condition == "trap"
+        else b"zone allocation failed\xfe\r\n"
+        if condition == "node_oom"
+        else b"semantic\xfe\r\n"
+    )
+    code = (
+        124
+        if condition == "timeout"
+        else -9
+        if condition == "signal"
+        else (1 if condition in {"trap", "node_oom"} else 0)
+    )
+    observed = bench_wasm.harness_memory_guard.GuardedCompletedProcess(
+        ["node"],
+        code,
+        None if condition == "stdout" else stdout,
+        b"independent guard diagnostics",
+        elapsed_s=99.0,
+        child_elapsed_s=None
+        if condition == "clock"
+        else 0.0
+        if condition == "zero"
+        else 0.045,
+        child_returncode=code,
+        child_stderr=None if condition == "stderr" else stderr,
+        descendants_closed=condition != "unclosed",
+        timed_out=condition == "timeout",
+        peak=None
+        if condition == "rss"
+        else bench_wasm.harness_memory_guard.memory_guard.RssViolation(
+            pid=123, rss_kb=1024, command="fixture", scope="process"
+        ),
+    )
 
-    def fake_run_cmd(*args, **kwargs):
+    def observe(*args, **kwargs):
         calls.append(kwargs)
-        return bench_wasm._RunResult(
-            returncode=0,
-            stdout="",
-            stderr="",
-            elapsed_s=0.045,
-        )
+        return observed
 
     monkeypatch.setattr(
+        bench_wasm.harness_memory_guard, "guarded_completed_process", observe
+    )
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
         bench_wasm,
-        "_run_cmd",
-        fake_run_cmd,
+        perf_counter=lambda: pytest.fail("measurement used an outer clock"),
     )
 
     result = bench_wasm.measure_wasm_run(
@@ -376,9 +431,112 @@ def test_measure_wasm_run_uses_guard_child_elapsed(monkeypatch) -> None:
         limits=limits,
     )
 
-    assert result.elapsed_s == 0.045
-    assert result.error is None
-    assert calls[0]["limits"] is limits
+    assert result.elapsed_s == (0.045 if condition == "ok" else None)
+    assert result.returncode == code
+    assert (
+        result.error_class
+        == {
+            "ok": None,
+            "unclosed": "infrastructure_error",
+            "clock": "error",
+            "zero": "error",
+            "rss": "error",
+            "stdout": "error",
+            "stderr": "error",
+            "timeout": "timeout",
+            "trap": "wasm_trap",
+            "node_oom": "node_v8_zone_oom",
+            "signal": "process_signal",
+        }[condition]
+    )
+    if condition in {"stdout", "stderr"}:
+        assert result.output is None
+    else:
+        assert result.output == bench_wasm.Outputs(
+            stdout.decode("utf-8", "surrogateescape"),
+            stderr.decode("utf-8", "surrogateescape"),
+            code,
+        )
+    assert len(calls) == 1
+    assert calls[0]["text"] is False
+    assert calls[0]["cwd"] == bench_wasm.REPO_ROOT
+    assert calls[0]["limits"].max_total_rss_gb <= limits.max_total_rss_gb
+
+
+@pytest.mark.parametrize("observer", ["command", "reference", "guest", "measurement"])
+def test_wasm_observers_preserve_distinct_invalid_output_bytes(tmp_path, observer):
+    env = dict(bench_wasm.os.environ)
+    env["MOLT_BENCH_TIMEOUT_SEC"] = "15"
+    limits = bench_wasm.harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    capture = tmp_path / "guest-stderr.bin"
+    capture.touch()
+    observations = []
+    newline = b"\n" if observer == "command" else b"\r\n"
+    for byte in (255, 254):
+        # Exercise real child bytes and the guard decoder, rather than supplying
+        # an already-decoded mocked result that could hide replacement decoding.
+        source = (
+            "import os, pathlib, sys\n"
+            f"payload = bytes([int(sys.argv[1])]) + {newline!r}\n"
+            "os.write(1, payload)\n"
+            "stderr = b'semantic:' + payload\n"
+        )
+        if observer == "guest":
+            source += (
+                "pathlib.Path(sys.argv[2]).write_bytes(stderr)\n"
+                "os.write(2, b'independent host diagnostic\\n')\n"
+            )
+        else:
+            source += "os.write(2, stderr)\n"
+        command = [bench_wasm.sys.executable, "-c", source, str(byte), str(capture)]
+        if observer == "command":
+            log = io.StringIO()
+            result = bench_wasm._run_cmd(
+                command,
+                env,
+                capture=True,
+                tty=False,
+                log=log,
+                timeout_s=15,
+                limits=limits,
+                cwd=tmp_path,
+            )
+            assert result.returncode == 0
+            output = bench_wasm.Outputs(result.stdout, result.stderr, result.returncode)
+            assert bytes([byte]) in log.getvalue().encode("utf-8", "surrogateescape")
+        elif observer == "measurement":
+            sample = bench_wasm.measure_wasm_run(
+                env, command, runner_name="node", log=None, limits=limits
+            )
+            assert sample.error_class is None
+            assert sample.elapsed_s is not None
+            assert sample.output is not None
+            output = sample.output
+        else:
+            result = bench_wasm._run_observation(
+                command,
+                env=env,
+                cwd=tmp_path,
+                limits=limits,
+                label=f"wasm-invalid-output-{observer}",
+                guest_stderr_path=capture if observer == "guest" else None,
+            )
+            assert result.ok, result
+            assert result.stdout is not None and result.stderr is not None
+            assert result.exit_code == 0
+            output = bench_wasm.Outputs(result.stdout, result.stderr, result.exit_code)
+            if observer == "guest":
+                assert result.host_stderr == "independent host diagnostic\n"
+        assert (
+            output.stdout.encode("utf-8", "surrogateescape") == bytes([byte]) + newline
+        )
+        assert output.stderr.encode("utf-8", "surrogateescape") == (
+            b"semantic:" + bytes([byte]) + newline
+        )
+        observations.append(output)
+    assert not bench_wasm.compare_outputs(
+        observations[0], observations[1], stderr_mode="exact"
+    ).equal
 
 
 def test_wasm_run_cmd_routes_tty_timeout_through_guard(monkeypatch) -> None:
@@ -555,27 +713,6 @@ def test_wasm_profile_parsers_require_current_schemas_and_preserve_epochs() -> N
     )
 
 
-def test_zero_duration_wasm_run_is_invalid_sample(monkeypatch) -> None:
-    install_module_view(
-        monkeypatch,
-        "time",
-        time,
-        bench_wasm,
-        perf_counter=lambda: 10.0,
-    )
-    monkeypatch.setattr(
-        bench_wasm,
-        "_run_cmd",
-        lambda *args, **kwargs: bench_wasm._RunResult(returncode=0),
-    )
-
-    result = bench_wasm.measure_wasm_run({}, ["node"], runner_name="node", log=None)
-
-    assert result.elapsed_s is None
-    assert result.returncode == 0
-    assert result.error_class == "invalid_timing"
-
-
 def test_runtime_target_is_checkout_scoped_unless_a_session_is_pinned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -722,38 +859,196 @@ def test_wasm_producer_preserves_source_drift_when_scratch_cleanup_fails(
         original_cleanup(owner)
 
 
-def test_wasm_producer_refuses_unsupported_admitted_guest_args_before_build(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "stdout,stderr", [("1\n", ""), ("1", ""), ("wrong\n", ""), ("1\n", "unexpected\n")]
+)
+def test_wasm_admitted_guest_arguments_and_complete_output(
+    tmp_path, monkeypatch, stdout, stderr
 ):
     from tools.bench_evidence import admit_benchmark_workload
+    from tools.safe_run import RunOutcome
 
     script = tmp_path / "program.py"
     script.write_text("print(1)\n", encoding="utf-8")
+    capture = tmp_path / "guest-stderr.txt"
+    capture.touch()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        assert kwargs["guest_stderr_path"] == capture
+        return RunOutcome(
+            True,
+            0.1,
+            1.0,
+            "ok",
+            0,
+            stdout=stdout,
+            stderr=stderr,
+            host_stderr="independent host diagnostic\n",
+        )
+
+    monkeypatch.setattr(bench_wasm, "_run_measured_command", run)
+    manifest = str(tmp_path / "manifest.json")
+    with admit_benchmark_workload(
+        script, project_root=tmp_path, run_args=["--count", "7"], molt_args=[]
+    ) as admitted:
+        result = bench_wasm.measure_wasm_run(
+            {"MOLT_WASM_MANIFEST_PATH": manifest},
+            ["node", "runner.js"],
+            runner_name="node",
+            log=None,
+            workload=admitted,
+            expected_output=bench_wasm.Outputs("1\n", "", 0),
+            guest_stderr_path=capture,
+        )
+    assert calls[0][0] == [
+        "node",
+        "runner.js",
+        "--guest-stderr",
+        str(capture),
+        "--",
+        manifest,
+        "--count",
+        "7",
+    ]
+    matched = stdout == "1\n" and not stderr
+    assert (result.elapsed_s is not None) == matched
+    assert result.error_class == (None if matched else "output_mismatch")
+    assert result.output == bench_wasm.Outputs(stdout, stderr, 0)
+    assert result.host_stderr == "independent host diagnostic\n"
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "reference", "guest", "stderr_warmup", "stderr_late"]
+)
+def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
+    tmp_path, monkeypatch, failure
+):
+    from tests.tools.perf_scoreboard_fixtures import sealed_workload
+    from tests.wasm_execution_manifest import (
+        EMPTY_WASM_MODULE,
+        write_wasm_execution_manifest,
+    )
+
+    calls = []
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
+    monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["selected-python"])
+    monkeypatch.setattr(bench_wasm, "_prune_backend_daemons", lambda _: None)
     monkeypatch.setattr(
         bench_wasm.harness_memory_guard,
         "repo_process_sentinel",
         lambda **_: contextlib.nullcontext(),
     )
-    monkeypatch.setattr(
-        bench_wasm,
-        "prepare_wasm_binary",
-        lambda *a, **k: pytest.fail("unsupported argv reached build"),
-    )
-    with admit_benchmark_workload(
-        script, project_root=tmp_path, run_args=["different"], molt_args=[]
-    ) as admitted:
-        with pytest.raises(ValueError, match="does not support guest run arguments"):
-            bench_wasm.bench_results(
-                [str(script)],
-                1,
+
+    def run(command, env, **kwargs):
+        calls.append((command, dict(env), kwargs))
+        if "build" in command:
+            output = Path(command[command.index("--out-dir") + 1]) / "output.wasm"
+            output.write_bytes(EMPTY_WASM_MODULE)
+            linked = output.with_name("output_linked.wasm")
+            linked.write_bytes(EMPTY_WASM_MODULE)
+            write_wasm_execution_manifest(output.parent, linked=linked)
+            return bench_wasm._RunResult(0)
+        pytest.fail("semantic execution bypassed the measured observation boundary")
+
+    monkeypatch.setattr(bench_wasm, "_run_cmd", run)
+    guest_calls = 0
+
+    def measure(command, **kwargs):
+        nonlocal guest_calls
+        from tools.safe_run import RunOutcome
+
+        calls.append((command, dict(kwargs["env"]), kwargs))
+        if command[0] == "selected-python":
+            assert kwargs["guest_stderr_path"] is None
+            return RunOutcome(
+                True,
+                0.1,
+                1.0,
+                "ok",
                 0,
+                stdout="sealed:7" if failure == "reference" else "sealed:7\n",
+                stderr="",
+            )
+        guest_calls += 1
+        assert kwargs["guest_stderr_path"].is_file()
+        assert kwargs["env"]["MOLT_PROFILE"] == "0"
+        stderr = (
+            "guest-only failure\n"
+            if (
+                failure == "stderr_warmup"
+                and guest_calls == 1
+                or failure == "stderr_late"
+                and guest_calls == 3
+            )
+            else ""
+        )
+        return RunOutcome(
+            True,
+            0.1,
+            1.0,
+            "ok",
+            0,
+            stdout="sealed:7" if failure == "guest" else "sealed:7\n",
+            stderr=stderr,
+            host_stderr="host diagnostics stay separate\n",
+        )
+
+    monkeypatch.setattr(bench_wasm, "_run_measured_command", measure)
+    with sealed_workload(tmp_path, molt_args=["--profile", "dev"]) as workload:
+
+        def execute():
+            return bench_wasm.bench_results(
+                [str(workload.script)],
+                2,
+                1,
                 False,
-                workloads={str(script): admitted},
-                runner_cmd=["node"],
+                workloads={str(workload.script): workload},
+                runner_cmd=["node", str(bench_wasm.REPO_ROOT / "wasm/run_wasm.js")],
                 runner_name="node",
-                control_runner_cmd=None,
-                control_runner_name=None,
+                control_runner_cmd=["wasmtime"],
+                control_runner_name="wasmtime",
                 tty=False,
                 log=None,
                 keep_temp=False,
             )
+
+        if failure == "reference":
+            with pytest.raises(ValueError, match="semantic oracle"):
+                execute()
+            assert len(calls) == 1
+        else:
+            results = execute()
+            cell = results[str(workload.script)]
+            assert cell["molt_wasm_ok"] is (failure is None)
+            assert cell["workload"]["entry"] == str(workload.script)
+            if failure is not None:
+                assert cell["molt_wasm_failure_class"] == "output_mismatch"
+                assert cell["molt_wasm_time_s"] is None
+                assert cell["molt_wasm_control_ok"] is False
+                assert (
+                    cell["molt_wasm_control_failure_class"]
+                    == "unsupported_semantic_stream_capture"
+                )
+            assert calls[1][0][-1] == str(workload.execution_script)
+            assert calls[1][1]["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
+            assert calls[1][1]["MOLT_MODULE_ROOTS"] == str(
+                workload.execution_root / "packages"
+            )
+            for command, env, _ in calls[2:]:
+                assert command[-3:] == [
+                    env["MOLT_WASM_MANIFEST_PATH"],
+                    "data/input.txt",
+                    "7",
+                ]
+        assert calls[0][0] == [
+            "selected-python",
+            "-P",
+            "-S",
+            "-B",
+            str(workload.execution_script),
+            "data/input.txt",
+            "7",
+        ]
+        assert all(kwargs["cwd"] == workload.execution_root for _, _, kwargs in calls)

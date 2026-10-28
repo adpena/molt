@@ -196,6 +196,7 @@ For compatibility and proof detail:
 - Dated benchmark report: [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md)
   (read its source revision, timing mode, and comparator coverage; it does not
   establish current performance or superiority to unmeasured compilers).
+- Application benchmark inputs and qualification limits: [bench/corpus/README.md](bench/corpus/README.md#declared-application-diagnostics).
 - Standalone proof workflow: [docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 
 ## Development

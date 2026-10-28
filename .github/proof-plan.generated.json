@@ -30,6 +30,9 @@
     "tools/bench_dashboard.py",
     "tools/bench_diff.py",
     "tools/bench_evidence.py",
+    "tools/benchmark_applications.py",
+    "bench/corpus/registry.toml",
+    "src/molt/cli/source_package_seal.py",
     "tools/bench_reporting.py",
     "tools/perf_regression.py",
     "src/molt/binaryen_identity.py",
@@ -9812,7 +9815,7 @@
       "local.op-kind-registry.0": "python tools/audit_op_kinds.py --check",
       "local.op-kind-registry.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_frontend_op_kind_registry.py tests/test_gen_op_kinds.py",
       "local.performance-measurement.0": "python tools/perf_methodology.py --check",
-      "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
+      "local.performance-measurement.pytest-select-0": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 -m 'not slow' tests/test_bench_evidence.py tests/test_bench_suites.py tests/test_node_runtime.py tests/test_bench_tool.py tests/test_bench_audit.py tests/test_bench_report.py tests/test_temporary_artifacts.py tests/tools/test_direct_run_process_custody.py tests/tools/test_cold_start_decompose.py tests/tools/test_perf_profile_selection.py tests/tools/test_perf_release_integrity.py tests/tools/test_perf_scoreboard.py tests/tools/test_perf_methodology.py tests/tools/test_perf_schema.py tests/tools/test_perf_history.py tests/tools/test_perf_board.py tests/tools/test_perf_authority.py",
       "local.phase-exit-manifest.0": "python tools/legacy_inventory.py --check",
       "local.phase-exit-manifest.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_phase_exit_manifest.py tests/tools/test_legacy_inventory.py",
       "local.process-environment-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_standalone_benchmark_memory_guard.py",
@@ -12169,6 +12172,13 @@
           "python tools/perf_methodology.py --check"
         ],
         "globs": [
+          "tools/benchmark_applications.py",
+          "tools/bench_evidence.py",
+          "tools/bench_suites.py",
+          "bench/corpus/registry.toml",
+          "tests/benchmarks/apps/**",
+          "tests/test_bench_evidence.py",
+          "tests/test_bench_suites.py",
           "tools/git_identity.py",
           "tools/bench.py",
           "tools/bench_audit.py",
@@ -12204,6 +12214,8 @@
           {
             "m": "not slow",
             "targets": [
+              "tests/test_bench_evidence.py",
+              "tests/test_bench_suites.py",
               "tests/test_node_runtime.py",
               "tests/test_bench_tool.py",
               "tests/test_bench_audit.py",
