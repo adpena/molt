@@ -219,11 +219,14 @@ fn warnings_module_attr<'a, 'py>(
     }
 }
 
+/// One CPython default filter: action, category name and optional module.
+type DefaultFilter = (&'static [u8], &'static str, Option<&'static [u8]>);
+
 /// CPython `init_filters` for a release build: show `DeprecationWarning`
 /// in `__main__`, and ignore it elsewhere along with
 /// `PendingDeprecationWarning`, `ImportWarning` and `ResourceWarning`.
 fn default_filters<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>> {
-    const DEFAULTS: [(&[u8], &str, Option<&[u8]>); 5] = [
+    const DEFAULTS: [DefaultFilter; 5] = [
         (b"default", "DeprecationWarning", Some(b"__main__")),
         (b"ignore", "DeprecationWarning", None),
         (b"ignore", "PendingDeprecationWarning", None),
@@ -559,14 +562,13 @@ fn setup_context_frame<T>(
 
 /// Where a warning is attributed: CPython 3.12 `setup_context`. Every field
 /// is owned. `module` is the frame's `__name__` (`str` or `None`, else
-/// `"<string>"`); `registry` is its `__warningregistry__` and `globals` its
-/// namespace, both `None` when no globals exist.
+/// `"<string>"`); `registry` is its `__warningregistry__`, `None` when no
+/// globals exist.
 struct WarningLocation<'a, 'py> {
     filename: ExceptionValue<'a, 'py>,
     lineno: i64,
     module: ExceptionValue<'a, 'py>,
     registry: ExceptionValue<'a, 'py>,
-    globals: ExceptionValue<'a, 'py>,
 }
 
 fn owned_str<'a, 'py>(py: &'a PyToken<'py>, text: &str) -> Option<ExceptionValue<'a, 'py>> {
@@ -635,7 +637,6 @@ fn warning_location<'a, 'py>(
             lineno,
             module: owned_str(py, "<string>")?,
             registry: none(),
-            globals: none(),
         });
     };
     let name_key = owned_name(py, b"__name__")?;
@@ -670,7 +671,6 @@ fn warning_location<'a, 'py>(
         lineno,
         module,
         registry,
-        globals,
     })
 }
 
@@ -1437,10 +1437,10 @@ mod tests {
 
     /// The filter rows as (action, message, category, module, lineno), each
     /// object field as its text or class name.
-    fn filter_rows(
-        py: &PyToken<'_>,
-        list: u64,
-    ) -> Vec<(String, Option<String>, String, Option<String>, i64)> {
+    /// One filter row: action, message, category, module and lineno.
+    type FilterRow = (String, Option<String>, String, Option<String>, i64);
+
+    fn filter_rows(py: &PyToken<'_>, list: u64) -> Vec<FilterRow> {
         let ptr = obj_from_bits(list).as_ptr().unwrap();
         let rows =
             unsafe { crate::object::seq_access::snapshot(py, ptr, "filter rows test") }.unwrap();
@@ -1663,14 +1663,14 @@ mod tests {
     fn warning_location_reads_the_frame_stack_and_owns_the_registry() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let outer = push_python_frame(py, "/app/outer.py", "outer_mod", 40);
-            let bootstrap = push_python_frame(
+            let _outer = push_python_frame(py, "/app/outer.py", "outer_mod", 40);
+            let _bootstrap = push_python_frame(
                 py,
                 "<frozen importlib._bootstrap>",
                 "importlib._bootstrap",
                 9,
             );
-            let inner = push_python_frame(py, "/app/inner.py", "inner_mod", 12);
+            let _inner = push_python_frame(py, "/app/inner.py", "inner_mod", 12);
             // A runtime namespace context is not a Python frame.
             crate::builtins::frames::frame_stack_push_owned(py, 0, 0, 0, 0);
 
@@ -1684,7 +1684,6 @@ mod tests {
                 string_field(py, &location.module).as_deref(),
                 Some("inner_mod")
             );
-            assert_eq!(location.globals.bits(), inner);
             let registry = location.registry.bits();
             assert!(dict_storage(py, registry).unwrap().is_some());
             drop(location);
@@ -1704,18 +1703,23 @@ mod tests {
                 string_field(py, &location.module).as_deref(),
                 Some("outer_mod")
             );
-            assert_eq!(location.globals.bits(), outer);
             drop(location);
 
             // The warn entry point's own frame is not counted. An internal
             // newest frame is itself the location at stacklevel 1, and the walk
             // from it counts every frame.
             let location = warning_location(py, 1, WARN_ENTRY_FRAMES).expect("location");
-            assert_eq!(location.globals.bits(), bootstrap);
+            assert_eq!(
+                string_field(py, &location.module).as_deref(),
+                Some("importlib._bootstrap")
+            );
             assert_eq!(location.lineno, 9);
             drop(location);
             let location = warning_location(py, 2, WARN_ENTRY_FRAMES).expect("location");
-            assert_eq!(location.globals.bits(), outer);
+            assert_eq!(
+                string_field(py, &location.module).as_deref(),
+                Some("outer_mod")
+            );
             drop(location);
 
             // Off the end of the stack the warning belongs to `sys`, line 1.
