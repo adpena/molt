@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import importlib.metadata as metadata
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
 import sys
 import sysconfig
 from typing import cast
@@ -22,6 +25,206 @@ from molt.python_identity_common import (
 from molt.python_native_locations import loaded_native_module_paths
 from molt.toolchain_identity import stable_executable_probe
 from molt.file_publication import metadata_is_link_like
+
+
+_INSTALLATION_DIRECTORIES = frozenset(("lib", "lib64", "Lib", "bin", "Scripts"))
+_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+
+
+def environment_installation_entry(relative: str) -> bool:
+    """The installed namespace sealed by publication, on every host layout."""
+    return relative.split("/", 1)[0] in _INSTALLATION_DIRECTORIES
+
+
+def installed_access_entry(row: Mapping[str, object]) -> bool:
+    """Return whether ``row`` reports the access of an installed entry."""
+    installed = environment_installation_entry(str(row["path"])) and row["kind"] in {
+        "directory",
+        "file",
+        "hardlink",
+    }
+    # Internal aliases report their target's access, not the symlink mode.
+    return installed or (
+        row.get("target_owner") == "same-root"
+        and environment_installation_entry(str(row.get("target", "")))
+    )
+
+
+def attestation_records_writable_installation(
+    manifest: Mapping[str, object],
+) -> bool:
+    """Return whether a legacy attestation still records writable installed entries.
+
+    Only such an image needs the one-way seal before its capture. A sealed
+    attestation skips the installed-tree walk; admission then refuses any
+    write bit that reappeared, because a sealed entry cannot become writable.
+    """
+    image = manifest.get("realized_image", manifest.get("realized_environment"))
+    if isinstance(image, Mapping) and "image" in image:
+        image = cast(Mapping[str, object], image)["image"]
+    if not isinstance(image, Mapping):
+        return False  # Malformed attestations fail admission without a seal.
+    tree = cast(Mapping[str, object], image).get("tree")
+    rows = (
+        cast(Mapping[str, object], tree).get("entries")
+        if isinstance(tree, Mapping)
+        else None
+    )
+    if not isinstance(rows, list):
+        return False
+    for row in cast(list[object], rows):
+        if not isinstance(row, Mapping):
+            continue
+        entry = cast(Mapping[str, object], row)
+        access = entry.get("access")
+        if (
+            isinstance(entry.get("path"), str)
+            and "kind" in entry
+            and isinstance(access, Mapping)
+            and cast(Mapping[str, object], access).get("writable") is True
+            and installed_access_entry(entry)
+        ):
+            return True
+    return False
+
+
+def _detach_shared_installation_file(root: Path, aliases: list[Path]) -> None:
+    """Keep image-local alias topology without chmod of an external cache inode."""
+    from molt.file_publication import resolve_owned_path, unlink_owned_file
+
+    source = aliases[0]
+    metadata = source.stat()
+    staged = root / (".seal-" + os.urandom(16).hex())
+    staged_identity = None
+    try:
+        with staged.open("xb") as output:
+            staged_identity = os.fstat(output.fileno())
+            with source.open("rb") as input_file:
+                if not os.path.samestat(metadata, os.fstat(input_file.fileno())):
+                    raise OSError(f"installation file changed before sealing: {source}")
+                shutil.copyfileobj(input_file, output)
+        shutil.copystat(source, staged, follow_symlinks=False)
+        for alias in aliases:
+            parent = resolve_owned_path(alias.parent)
+            if not parent.is_relative_to(root) or not os.path.samestat(
+                metadata, alias.lstat()
+            ):
+                raise OSError(f"installation alias changed before sealing: {alias}")
+            mode = stat.S_IMODE(parent.stat().st_mode)
+            replacement = root / (".seal-" + os.urandom(16).hex())
+            replacement_identity = None
+            try:
+                replacement.hardlink_to(staged)
+                replacement_identity = replacement.lstat()
+                # A legacy image may already have sealed lib directories.
+                # Restore that exact mode after the namespace replacement.
+                if not mode & stat.S_IWUSR:
+                    parent.chmod(mode | stat.S_IWUSR)
+                os.replace(replacement, alias)
+            finally:
+                if not mode & stat.S_IWUSR:
+                    parent.chmod(mode)
+                unlink_owned_file(replacement, replacement_identity)
+    finally:
+        unlink_owned_file(staged, staged_identity)
+
+
+def seal_environment_installation(root: Path) -> None:
+    """Remove write bits from installed files/directories, never link targets.
+
+    Publication calls this before capture. Existing-image admission calls it
+    before opening its capture fence; only the exact one-way access transition
+    is admitted against the original attestation. Records, locks and bytecode
+    retain their existing writable namespaces. This is a mode seal, not an ACL
+    or privileged-user sandbox.
+    """
+    from molt.file_publication import resolve_owned_path
+
+    root = resolve_owned_path(root)
+    entries: list[tuple[Path, os.stat_result]] = []
+
+    def scan_error(error: OSError) -> None:
+        raise error
+
+    for name in sorted(_INSTALLATION_DIRECTORIES):
+        directory = root / name
+        try:
+            metadata = directory.lstat()
+        except FileNotFoundError:
+            continue
+        if metadata_is_link_like(metadata):
+            continue  # e.g. lib64 -> lib, or bin/python -> external runtime
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PythonEnvironmentIdentityError(
+                f"installation namespace is not a directory: {directory}"
+            )
+        for current, directories, files in os.walk(
+            directory, followlinks=False, onerror=scan_error
+        ):
+            directories[:] = [
+                child
+                for child in directories
+                if not metadata_is_link_like((Path(current) / child).lstat())
+            ]
+            entries.append((Path(current), Path(current).lstat()))
+            for child in files:
+                path = Path(current) / child
+                info = path.lstat()
+                if not metadata_is_link_like(info):
+                    entries.append((path, info))
+
+    shared = {
+        (metadata.st_dev, metadata.st_ino): metadata
+        for _path, metadata in entries
+        if stat.S_ISREG(metadata.st_mode)
+        and metadata.st_mode & _WRITE_BITS
+        and metadata.st_nlink > 1
+    }
+    if shared:
+        aliases: dict[tuple[int, int], list[Path]] = {key: [] for key in shared}
+        for current, directories, files in os.walk(
+            root, followlinks=False, onerror=scan_error
+        ):
+            directories[:] = [
+                child
+                for child in directories
+                if not metadata_is_link_like((Path(current) / child).lstat())
+            ]
+            for name in files:
+                path = Path(current) / name
+                metadata = path.lstat()
+                key = (metadata.st_dev, metadata.st_ino)
+                if stat.S_ISREG(metadata.st_mode) and key in aliases:
+                    aliases[key].append(path)
+        for key, paths in aliases.items():
+            if len(paths) < shared[key].st_nlink:
+                _detach_shared_installation_file(root, paths)
+
+    # Children before parents keeps a partially sealed publication recoverable.
+    for path, _metadata in reversed(entries):
+        metadata = path.lstat()
+        if metadata_is_link_like(metadata):
+            raise PythonEnvironmentIdentityError(
+                f"installation entry became indirect while sealing: {path}"
+            )
+        if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+            raise PythonEnvironmentIdentityError(
+                f"installation entry is not a file or directory: {path}"
+            )
+        if metadata.st_mode & _WRITE_BITS:
+            mode = stat.S_IMODE(metadata.st_mode) & ~_WRITE_BITS
+            if os.name == "posix":
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    if not os.path.samestat(metadata, os.fstat(descriptor)):
+                        raise OSError(
+                            f"installation entry changed while sealing: {path}"
+                        )
+                    os.fchmod(descriptor, mode)
+                finally:
+                    os.close(descriptor)
+            else:
+                path.chmod(mode)
 
 
 def environment_bytecode_prefix(root: Path) -> Path:

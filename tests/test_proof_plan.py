@@ -4354,16 +4354,20 @@ def test_plan_loading_and_its_gates_import_no_pytest() -> None:
     # CI loads the plan with the pinned bare CPython, which has no pytest
     # (review v3, finding 1). The oracle is that interpreter itself.
     base = sys._base_executable
+    from molt.python_environment_location import environment_bytecode_arguments
+
+    startup = environment_bytecode_arguments(Path(sys.prefix))
     root = str(proof_plan.ROOT)
     probe = run_guarded_test_process(
-        [base, "-I", "-c", "import _pytest"], cwd=root, check=False
+        [base, *startup, "-I", "-c", "import _pytest"], cwd=root, check=False
     )
     assert probe.returncode != 0 and "_pytest" in probe.stderr, probe.stderr
     for command in (
-        [base, "-I", "tools/proof_plan.py", "--check"],
-        [base, "-I", "tools/check_test_ownership.py"],
+        [base, *startup, "-I", "tools/proof_plan.py", "--check"],
+        [base, *startup, "-I", "tools/check_test_ownership.py"],
         [
             base,
+            *startup,
             "-I",
             "-c",
             "import sys; sys.path.insert(0, '.')\n"

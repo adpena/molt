@@ -3032,6 +3032,9 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         foreign_reader = foreign / "src/molt/python_environment_identity.py"
         assert selected_reader.read_bytes() == foreign_reader.read_bytes()
         original_declaration = declaration.read_bytes()
+        # Publication sealed the image; a same-user tamper reopens the bit.
+        declaration_mode = declaration.stat().st_mode
+        declaration.chmod(declaration_mode | 0o200)
         declaration.write_text(str(foreign / "src") + "\n", encoding="utf-8")
         # Ordinary selection does not inspect installed .pth bytes. The real
         # proof consumer must independently refuse their changed source binding.
@@ -3047,6 +3050,7 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
         assert str(source / "src/molt") in refused_home.stderr
         assert str(foreign / "src/molt") in refused_home.stderr
         declaration.write_bytes(original_declaration)
+        declaration.chmod(declaration_mode)
         selected_reader_bytes = selected_reader.read_bytes()
         selected_reader.unlink()
         try:
@@ -3098,6 +3102,8 @@ def test_isolated_queue_admits_published_image_and_refuses_changed_receipt_or_by
             assert exact.returncode != 0 and not exact.stdout
             assert "installed distribution RECORD mismatch" in exact.stderr
         finally:
+            # Admission of a legacy attestation reseals the image in between.
+            unrelated.chmod(stamp.st_mode | 0o200)
             unrelated.write_bytes(original_unrelated)
             os.utime(unrelated, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             unrelated.chmod(stamp.st_mode)

@@ -59,10 +59,10 @@ def test_audit_consumers_close_or_retain_exact_owner(
     )
     real_delete = temporary_artifacts.delete_path
 
-    def delete(path):
+    def delete(path, *, owning_root=None):
         if len(owners) == target_count and path == Path(owners[-1].name):
             return False, "independent audit deletion refusal"
-        return real_delete(path)
+        return real_delete(path, owning_root=owning_root)
 
     unrelated = RuntimeError("unrelated caller exception")
 

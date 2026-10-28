@@ -43,6 +43,9 @@ from molt.python_environment_location import (
     environment_python_path,
     environment_bytecode_prefix,
     environment_provisioning_record_path,
+    attestation_records_writable_installation,
+    installed_access_entry,
+    seal_environment_installation,
 )
 from molt.python_environment_identity import (
     PythonEnvironmentIdentityError,
@@ -354,17 +357,43 @@ def _probe_environment_identity(
     *,
     external_root: Path | None = None,
     source_root: Path | None = None,
+    attestation: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Capture the selected environment through the shared content authority."""
+    """Capture the selected environment through the shared content authority.
 
-    with PythonIdentityVerifier() as verifier:
-        return _probe_source_build_python(
-            python_executable,
-            verifier=verifier,
-            root=root,
-            external_root=external_root,
-            source_root=source_root,
-        )
+    ``attestation`` is the parsed published manifest that the caller admits
+    against this capture; publication passes none.
+    """
+
+    sealed = attestation is not None and attestation_records_writable_installation(
+        attestation
+    )
+    if sealed:
+        # Sealing is an intentional one-way permission transition. Seal before
+        # the capture so the caller's admission compares the sealed live
+        # identity against the original attestation. The child stays a plain
+        # read-only capture and imports nothing from the image.
+        try:
+            seal_environment_installation(root)
+        except (OSError, PythonEnvironmentIdentityError) as exc:
+            raise _contract.SourceBuildEnvironmentError(
+                f"published image could not be sealed before admission: {root}; {exc}"
+            ) from exc
+    try:
+        with PythonIdentityVerifier() as verifier:
+            return _probe_source_build_python(
+                python_executable,
+                verifier=verifier,
+                root=root,
+                external_root=external_root,
+                source_root=source_root,
+            )
+    except _contract.SourceBuildEnvironmentError as exc:
+        if sealed:
+            raise _contract.SourceBuildEnvironmentError(
+                f"published image was sealed before admission: {root}; {exc}"
+            ) from exc
+        raise
 
 
 def _probe_source_build_python(
@@ -524,6 +553,275 @@ def _provisioning_record(custody: Mapping[str, object]) -> dict[str, object]:
     return {"state": "provisioning", "custody": dict(custody)}
 
 
+def _admitted_permission_transition(
+    manifest: Mapping[str, object], captured: Mapping[str, object]
+) -> dict[str, object]:
+    """Project only legacy installed write-bit removals into comparison.
+
+    Neither stored attestations nor live identities change. Read/execute bits,
+    bytes, aliases, membership and every field outside the installed tree stay
+    exact. A previously sealed entry can never become writable on this path.
+    Derived digests are rebuilt only for the permitted permission transition.
+    """
+    field = "realized_image" if "realized_image" in manifest else "realized_environment"
+    if not isinstance(manifest.get(field), Mapping) or not isinstance(
+        captured.get(field), Mapping
+    ):
+        return dict(manifest)
+    previous = cast(Mapping[str, object], manifest[field])
+    current = cast(Mapping[str, object], captured[field])
+    if field == "realized_image" and (
+        not isinstance(previous.get("image"), Mapping)
+        or not isinstance(current.get("image"), Mapping)
+    ):
+        return dict(manifest)
+    image = (
+        cast(Mapping[str, object], previous["image"])
+        if field == "realized_image"
+        else previous
+    )
+    live = (
+        cast(Mapping[str, object], current["image"])
+        if field == "realized_image"
+        else current
+    )
+    if not isinstance(image.get("tree"), Mapping) or not isinstance(
+        live.get("tree"), Mapping
+    ):
+        return dict(manifest)
+    tree = cast(Mapping[str, object], image["tree"])
+    live_tree = cast(Mapping[str, object], live["tree"])
+    if not isinstance(tree.get("entries"), list) or not isinstance(
+        live_tree.get("entries"), list
+    ):
+        return dict(manifest)
+    rows = cast(list[Mapping[str, object]], tree["entries"])
+    if not all(
+        isinstance(row, Mapping)
+        and isinstance(row.get("path"), str)
+        and "kind" in row
+        and isinstance(row.get("access", {}), Mapping)
+        for row in (*rows, *cast(list[Mapping[str, object]], live_tree["entries"]))
+    ):
+        return dict(manifest)
+    if canonical_json_sha256(rows) != tree.get("manifest_sha256"):
+        return dict(manifest)
+    if field == "realized_image":
+        if canonical_json_sha256(image) != previous.get("image_sha256"):
+            return dict(manifest)
+    elif canonical_json_sha256(
+        {
+            key: value
+            for key, value in image.items()
+            if key != "environment_closure_sha256"
+        }
+    ) != image.get("environment_closure_sha256"):
+        return dict(manifest)
+    live_rows = {
+        row["path"]: row
+        for row in cast(list[Mapping[str, object]], live_tree["entries"])
+    }
+    transitioned = []
+    changed = False
+    for row in rows:
+        observed = live_rows.get(row["path"], {})
+        access = cast(Mapping[str, object], row.get("access", {}))
+        observed_access = cast(Mapping[str, object], observed.get("access", {}))
+        if (
+            installed_access_entry(row)
+            and access.get("writable") is True
+            and observed_access.get("writable") is False
+        ):
+            row = {**row, "access": {**access, "writable": False}}
+            changed = True
+        transitioned.append(row)
+    if not changed:
+        return dict(manifest)
+    sealed_image = {
+        **image,
+        "tree": {
+            **tree,
+            "entries": transitioned,
+            "manifest_sha256": canonical_json_sha256(transitioned),
+        },
+    }
+    if field == "realized_image":
+        projection = {
+            "image": sealed_image,
+            "image_sha256": canonical_json_sha256(sealed_image),
+        }
+    else:
+        material = {
+            key: value
+            for key, value in sealed_image.items()
+            if key != "environment_closure_sha256"
+        }
+        projection = {
+            **material,
+            "environment_closure_sha256": canonical_json_sha256(material),
+        }
+    return {**manifest, field: projection}
+
+
+def _attestation_differences(previous: object, current: object) -> str:
+    """Bounded structural diagnostics, keyed by file paths rather than indices."""
+    differences: list[str] = []
+    derived = {
+        "manifest_sha256",
+        "image_sha256",
+        "environment_closure_sha256",
+        "distribution_inventory_sha256",
+    }
+
+    def report(path: str, detail: str) -> None:
+        differences.append(f"{path[:240]}: {detail[:160]}")
+
+    def compare(before: object, after: object, path: str) -> None:
+        if len(differences) >= 6 or before == after:
+            return
+        if isinstance(before, Mapping) and isinstance(after, Mapping):
+            for key in sorted(
+                before.keys() | after.keys(), key=lambda key: (key in derived, str(key))
+            ):
+                name = f"{path}.{key}" if path else str(key)
+                if key not in before:
+                    report(name, "added")
+                elif key not in after:
+                    report(name, "removed")
+                else:
+                    compare(before[key], after[key], name)
+                if len(differences) >= 6:
+                    return
+        elif isinstance(before, list) and isinstance(after, list):
+            identity = next(
+                (
+                    key
+                    for key in ("path", "id", "name")
+                    if all(
+                        isinstance(row, Mapping) and key in row
+                        for row in (*before, *after)
+                    )
+                ),
+                None,
+            )
+            if identity is not None:
+                compare(
+                    {str(row[identity]): row for row in before},
+                    {str(row[identity]): row for row in after},
+                    path,
+                )
+            else:
+                for index in range(max(len(before), len(after))):
+                    if index >= len(before):
+                        report(f"{path}[{index}]", "added")
+                    elif index >= len(after):
+                        report(f"{path}[{index}]", "removed")
+                    else:
+                        compare(before[index], after[index], f"{path}[{index}]")
+                    if len(differences) >= 6:
+                        return
+        else:
+
+            def preview(value: object) -> str:
+                if isinstance(value, (Mapping, list)):
+                    return type(value).__name__
+                return str(value)[:64]
+
+            report(path, f"{preview(before)} -> {preview(after)}")
+
+    # Name content mutations by their installed paths before node-table hashes.
+    for field in ("realized_image", "realized_environment"):
+        if (
+            isinstance(previous, Mapping)
+            and isinstance(current, Mapping)
+            and field in previous
+            and field in current
+        ):
+            if not isinstance(previous[field], Mapping) or not isinstance(
+                current[field], Mapping
+            ):
+                continue
+            before = cast(Mapping[str, object], previous[field])
+            after = cast(Mapping[str, object], current[field])
+            if field == "realized_image":
+                if not isinstance(before.get("image"), Mapping) or not isinstance(
+                    after.get("image"), Mapping
+                ):
+                    continue
+                before = cast(Mapping[str, object], before["image"])
+                after = cast(Mapping[str, object], after["image"])
+            if not isinstance(before.get("tree"), Mapping) or not isinstance(
+                after.get("tree"), Mapping
+            ):
+                continue
+            before_tree = cast(Mapping[str, object], before["tree"])
+            after_tree = cast(Mapping[str, object], after["tree"])
+
+            def content_rows(tree: Mapping[str, object]) -> dict[str, object] | None:
+                if not isinstance(tree.get("file_nodes"), list) or not isinstance(
+                    tree.get("entries"), list
+                ):
+                    return None
+                if not all(
+                    isinstance(row, Mapping) and "id" in row
+                    for row in cast(list[object], tree["file_nodes"])
+                ) or not all(
+                    isinstance(row, Mapping) and "path" in row
+                    for row in cast(list[object], tree["entries"])
+                ):
+                    return None
+                nodes = {
+                    row["id"]: row
+                    for row in cast(list[Mapping[str, object]], tree["file_nodes"])
+                }
+                return {
+                    str(row["path"]): {**row, "content": nodes.get(row.get("node"))}
+                    for row in cast(list[Mapping[str, object]], tree["entries"])
+                }
+
+            old_rows, new_rows = content_rows(before_tree), content_rows(after_tree)
+            if old_rows is not None and new_rows is not None:
+                compare(old_rows, new_rows, "tree")
+    compare(previous, current, "")
+    return "; ".join(differences)[:2048] or "attestation differs"
+
+
+def _admit_attestation(
+    manifest: Mapping[str, object],
+    custody: Mapping[str, object],
+    realized: Mapping[str, object],
+) -> dict[str, object]:
+    try:
+        expected = _attested_environment(custody, realized)
+    except _contract.SourceBuildEnvironmentError as exc:
+        field = (
+            "realized_image"
+            if custody.get("editable_binding") is not None
+            else "realized_environment"
+        )
+        from molt.python_environment_custody import immutable_environment_image
+
+        captured = {
+            **custody,
+            field: immutable_environment_image(realized)
+            if field == "realized_image"
+            else dict(realized),
+        }
+        raise _contract.SourceBuildEnvironmentError(
+            f"{exc}; " + _attestation_differences(manifest, captured)
+        ) from exc
+    if manifest != expected:
+        compared = _admitted_permission_transition(manifest, expected)
+    else:
+        return expected
+    if compared != expected:
+        raise _contract.SourceBuildEnvironmentError(
+            "published environment image differs from captured live bytes: "
+            + _attestation_differences(compared, expected)
+        )
+    return expected
+
+
 def _validated_active_attestation(
     *,
     root: Path,
@@ -542,14 +840,21 @@ def _validated_active_attestation(
             f"active interpreter is not the locked source-build environment {root}"
         )
     manifest = _read_attestation(manifest_path)
-    if realized is None:
-        realized = _probe_environment_identity(Path(sys.executable), root)
-    expected = _attested_environment(custody, realized)
-    if manifest != expected:
+    if manifest is None:
         raise _contract.SourceBuildEnvironmentError(
             f"locked source-build environment attestation is stale or invalid: {manifest_path}"
         )
-    return expected
+    if realized is None:
+        realized = _probe_environment_identity(
+            Path(sys.executable), root, attestation=manifest
+        )
+    try:
+        return _admit_attestation(manifest, custody, realized)
+    except _contract.SourceBuildEnvironmentError as exc:
+        raise _contract.SourceBuildEnvironmentError(
+            "locked source-build environment attestation is stale or invalid: "
+            f"{manifest_path}; {exc}"
+        ) from exc
 
 
 def source_build_environment(
@@ -566,7 +871,9 @@ def source_build_environment(
             raise _contract.SourceBuildEnvironmentError(
                 "locked source-build environment attestation is stale or invalid"
             )
-        realized = _probe_environment_identity(Path(sys.executable), active_root)
+        realized = _probe_environment_identity(
+            Path(sys.executable), active_root, attestation=active_manifest
+        )
         from molt.python_uv_lock_identity import validate_uv_lock_group_closure
 
         active_closure = validate_uv_lock_group_closure(
@@ -603,11 +910,16 @@ def source_build_environment(
             prior_custody.get("environment_id") != active_root.name
             or canonical_json_sha256(prior_address) != active_root.name
             or realized is None
-            or _attested_environment(prior_custody, realized) != active_manifest
         ):
             raise _contract.SourceBuildEnvironmentError(
                 "active source-build environment attestation is stale or invalid"
             )
+        try:
+            _admit_attestation(active_manifest, prior_custody, realized)
+        except _contract.SourceBuildEnvironmentError as exc:
+            raise _contract.SourceBuildEnvironmentError(
+                f"active source-build environment attestation is stale or invalid; {exc}"
+            ) from exc
     if not active and provision:
         return _provision_source_build_environment(repo_root, spec)
     if active:
@@ -702,16 +1014,19 @@ def _provision_source_build_environment(
         else ()
     )
 
-    def capture() -> dict[str, object]:
+    def capture(attestation: Mapping[str, object] | None = None) -> dict[str, object]:
         verify_inputs()
         if external_root is None:
-            realized = _probe_environment_identity(python_executable, root)
+            realized = _probe_environment_identity(
+                python_executable, root, attestation=attestation
+            )
         else:
             realized = _probe_environment_identity(
                 python_executable,
                 root,
                 external_root=external_root,
                 source_root=source_root,
+                attestation=attestation,
             )
         verify_inputs()
         return realized
@@ -794,9 +1109,17 @@ def _provision_source_build_environment(
             expected_core = dict(custody)
             actual_core = {key: existing.get(key) for key in expected_core}
             if actual_core == expected_core:
-                realized = capture()
-                expected_attestation = _attested_environment(custody, realized)
-                if existing == expected_attestation:
+                realized = capture(existing)
+                try:
+                    expected_attestation = _admit_attestation(
+                        existing, custody, realized
+                    )
+                except _contract.SourceBuildEnvironmentError as exc:
+                    raise _contract.SourceBuildEnvironmentError(
+                        "published immutable environment failed admission and cannot be "
+                        f"reprovisioned: {root}; {exc}"
+                    ) from exc
+                else:
                     _validate_recipe_inputs(repo_root, custody)
                     verify_inputs()
                     if provisioning is not None:
@@ -815,7 +1138,8 @@ def _provision_source_build_environment(
                     )
         if manifest_path.exists() or manifest_path.is_symlink():
             raise _contract.SourceBuildEnvironmentError(
-                f"published immutable environment failed admission and cannot be reprovisioned: {root}"
+                "published immutable environment failed admission and cannot be "
+                f"reprovisioned: {root}; " + _attestation_differences(existing, custody)
             )
         if root.exists():
             if provisioning != expected_provisioning:
@@ -823,7 +1147,7 @@ def _provision_source_build_environment(
                     "immutable source-build environment address exists without "
                     f"its exact attestation or sibling provisioning record: {root}"
                 )
-            removed, error = delete_path(root)
+            removed, error = delete_path(root, owning_root=root.parent)
             if not removed:
                 raise _contract.SourceBuildEnvironmentError(
                     f"cannot recover unpublished source-build environment {root}: {error}"
@@ -897,6 +1221,7 @@ def _provision_source_build_environment(
                 root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION,
                 development_selection_record(root, custody),
             )
+        seal_environment_installation(root)
         realized = capture()
         verify_inputs()
         manifest = _attested_environment(custody, realized)
@@ -1006,7 +1331,11 @@ def admit_published_environment(
     *,
     development_admission: _contract.DevelopmentEnvironmentRequest | None = None,
 ) -> Mapping[str, object]:
-    """Use the existing admission capture; never spawn or rescan for this check."""
+    """Compare inside the existing capture fence; never spawn or rescan here.
+
+    The capture caller seals before opening its fence. Legacy attestations stay
+    intact; only installed write-bit removals can differ in that live capture.
+    """
     repo_root: Path | None = None
     if development_admission is not None:
         root, repo_root = development_coordinates(root, development_admission.repo_root)
@@ -1020,11 +1349,7 @@ def admit_published_environment(
             groups=development_admission.groups,
             custody=custody,
         )
-    expected = _attested_environment(custody, realized)
-    if expected != manifest:
-        raise _contract.SourceBuildEnvironmentError(
-            "published environment image differs from captured live bytes"
-        )
+    _admit_attestation(manifest, custody, realized)
     return manifest
 
 

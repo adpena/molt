@@ -2586,12 +2586,12 @@ def test_build_python_verifier_prefix_cleanup_retains_exact_owner_for_retry(
     delete = temporary_artifacts.delete_path
     attempts = []
 
-    def fail_first_deletion(path):
+    def fail_first_deletion(path, *, owning_root=None):
         if path == allocation_path:
             attempts.append(path)
             if len(attempts) == 1:
                 return False, "independent temporary deletion failure"
-        return delete(path)
+        return delete(path, owning_root=owning_root)
 
     monkeypatch.setattr(temporary_artifacts, "delete_path", fail_first_deletion)
     primary = LookupError("primary operation failed")

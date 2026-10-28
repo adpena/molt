@@ -2696,7 +2696,7 @@ def test_scratch_cleanup_retains_original_failure_and_exact_owner(
     owner = bench_tool._new_bench_temp(tmp_path, {})
     original = RuntimeError("original build failure")
 
-    def refuse_cleanup(path):
+    def refuse_cleanup(path, *, owning_root=None):
         assert path == Path(owner.name)
         return False, "independent cleanup failure"
 
@@ -2756,7 +2756,10 @@ def test_native_build_cancellation_retains_or_closes_canonical_owner(
             scoped.setattr(
                 temporary_artifacts,
                 "delete_path",
-                lambda path: (False, "independent deletion failure"),
+                lambda path, *, owning_root=None: (
+                    False,
+                    "independent deletion failure",
+                ),
             )
         with pytest.raises(KeyboardInterrupt) as caught:
             bench_tool.prepare_molt_binary(str(source / "ordinary.py"))
