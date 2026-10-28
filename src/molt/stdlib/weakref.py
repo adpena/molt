@@ -59,6 +59,7 @@ _molt_weakcontainer_clear = _require_callable_intrinsic(
 _molt_weakcontainer_dead = _require_callable_intrinsic(
     _require_intrinsic("molt_weakcontainer_dead"), "molt_weakcontainer_dead"
 )
+del _require_intrinsic
 
 _WEAK_KEY_DICT = 1
 _WEAK_VALUE_DICT = 2
