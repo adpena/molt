@@ -22,7 +22,8 @@ import uuid
 
 from molt.default_paths import (
     validate_required_stdlib_output,
-    shared_stdlib_archive_cache_root,
+    stdlib_archive_cache_root,
+    shared_stdlib_cache_entry,
 )
 from molt.backend_environment import (
     backend_process_environment,
@@ -1024,15 +1025,17 @@ def _backend_daemon_compile_request_bytes(
         )
     if stdlib_object_path is not None:
         try:
-            if (
-                cache_entry is not None
-                and shared_stdlib_archive_cache_root(Path(cache_entry).resolve())
-                is None
-            ):
-                return (
-                    None,
-                    "Shared stdlib cache entry must use the canonical shared-stdlib archive path",
-                )
+            if cache_entry is not None:
+                selected = Path(cache_entry).resolve()
+                root = stdlib_archive_cache_root(selected)
+                if root is None or selected != (
+                    shared_stdlib_cache_entry(root, selected.parent.name)[0]
+                    / "stdlib.a"
+                ):
+                    return (
+                        None,
+                        "Shared stdlib cache entry must use the canonical shared-stdlib archive path",
+                    )
             validate_required_stdlib_output(
                 stdlib_object_path, Path(cache_entry) if cache_entry else None
             )

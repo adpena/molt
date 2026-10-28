@@ -248,6 +248,14 @@ pub(super) fn is_stdlib_archive_cache_entry(path: &Path) -> bool {
     )
 }
 
+/// The input key selected by a canonical content-archive coordinate.
+pub(super) fn native_stdlib_archive_content_key(path: &Path) -> io::Result<Option<&str>> {
+    if CacheEntryFamily::of(path) == Some(CacheEntryFamily::NativeStdlibArchive) {
+        return exact_cache_key(path.parent().expect("content archive entry")).map(Some);
+    }
+    Ok(None)
+}
+
 /// The content-addressed archive generation for `key` under `cache_root`.
 pub(super) fn native_stdlib_archive_entry_path(cache_root: &Path, key: &str) -> PathBuf {
     let family = CacheEntryFamily::NativeStdlibArchive;
