@@ -114,3 +114,46 @@ assert bit_and_mask(-1) == 15
 assert mod_pos(-7) == 1
 assert mod_neg(7) == -1
 assert shr(-7) == -2  # floor(-7 / 4) == -2
+
+
+def scalar_home_recurrences():
+    i = -3
+    total = 0
+    while i < 7:
+        total += i
+        i += 1
+    flag = True
+    real = 0.5
+    j = 4
+    while j > -2:
+        real += 0.25
+        flag = not flag
+        j -= 1
+    return i, total, j, flag, real
+
+
+def scalar_home_boundary():
+    value = (1 << 46) - 2
+    stop = (1 << 46) + 2
+    while value < stop:
+        value += 1
+    large = (1 << 63) - 2
+    large_stop = (1 << 63) + 2
+    while large < large_stop:
+        large += 1
+    return value, large
+
+
+class OverrideInt(int):
+    def __add__(self, other):
+        return "overridden"
+
+
+def annotated_home_is_not_exact(value: int):
+    binding = value
+    return binding + 1
+
+
+print(scalar_home_recurrences())
+print(scalar_home_boundary())
+print(annotated_home_is_not_exact(OverrideInt(3)))

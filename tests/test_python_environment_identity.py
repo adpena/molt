@@ -23,6 +23,7 @@ import pytest
 from tools.command_execution import CommandExecutor
 
 from molt import python_capture as capture
+from molt import python_bytecode as bytecode_protocol
 from molt import python_environment_custody as environment
 from molt import python_environment_identity as identity
 from molt import python_environment_location as location
@@ -2360,6 +2361,92 @@ def test_installed_wheel_projection_uses_record_bound_bytes(tmp_path, mutate):
         assert "site/demo-1.0.dist-info/WHEEL" in owned
 
 
+@pytest.mark.parametrize("optimization", [0, 1, 2])
+def test_checked_hash_bytecode_matches_independent_cpython_producer(
+    tmp_path, optimization
+):
+    source = tmp_path / "source.py"
+    # Encoding, inherited future flags, assertions and docstrings all contribute
+    # to the independent producer's observable compile identity.
+    data = b'# coding: latin-1\n"caf\xe9"\nassert __debug__\nVALUE = 41\n'
+    source.write_bytes(data)
+    oracle = tmp_path / "oracle.pyc"
+    filename = "logical/source.py"
+    py_compile.compile(
+        str(source),
+        cfile=str(oracle),
+        dfile=filename,
+        doraise=True,
+        optimize=optimization,
+        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+    )
+    expected = oracle.read_bytes()
+    actual = bytecode_protocol.compile_checked_hash_bytecode(
+        data, filename, optimize=optimization
+    )
+    assert actual == expected
+    header = bytecode_protocol.parse_bytecode_header(expected)
+    assert (
+        bytecode_protocol.validate_bytecode_source(header, data, source_mtime=None)
+        is bytecode_protocol.BytecodeSourceDisposition.MATCHES
+    )
+    bytecode_protocol.validate_bytecode_derivation(
+        expected, data, filename, optimize=optimization, source_mtime=None
+    )
+
+
+@pytest.mark.parametrize("fault", ["payload", "filename", "optimization"])
+def test_valid_source_hash_does_not_attest_bytecode_payload(tmp_path, fault):
+    source = tmp_path / "source.py"
+    data = b'"module doc"\nassert __debug__\nVALUE = 41\n'
+    source.write_bytes(data)
+    oracle = tmp_path / "oracle.pyc"
+    filename = "logical/source.py"
+    py_compile.compile(
+        str(source),
+        cfile=str(oracle),
+        dfile="forged/source.py" if fault == "filename" else filename,
+        doraise=True,
+        optimize=2 if fault == "optimization" else 0,
+        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+    )
+    content = oracle.read_bytes()
+    if fault == "payload":
+        # Keep the original valid hash while replacing the executable payload
+        # with CPython's independently produced code for another source.
+        source.write_bytes(b"VALUE = 99\n")
+        forged = tmp_path / "forged.pyc"
+        py_compile.compile(
+            str(source),
+            cfile=str(forged),
+            dfile=filename,
+            doraise=True,
+            optimize=0,
+            invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+        )
+        content = content[:16] + forged.read_bytes()[16:]
+    assert (
+        bytecode_protocol.validate_bytecode_source(
+            bytecode_protocol.parse_bytecode_header(content), data, source_mtime=None
+        )
+        is bytecode_protocol.BytecodeSourceDisposition.MATCHES
+    )
+    with pytest.raises(bytecode_protocol.PythonBytecodeError) as caught:
+        bytecode_protocol.validate_bytecode_derivation(
+            content, data, filename, optimize=0, source_mtime=None
+        )
+    assert caught.value.failure is bytecode_protocol.PythonBytecodeFailure.PAYLOAD
+
+
+@pytest.mark.parametrize("optimization", [-1, 3, True])
+def test_bytecode_protocol_rejects_implicit_or_unsupported_optimization(optimization):
+    with pytest.raises(bytecode_protocol.PythonBytecodeError) as caught:
+        bytecode_protocol.compile_checked_hash_bytecode(
+            b"VALUE = 1\n", "source.py", optimize=optimization
+        )
+    assert caught.value.failure is bytecode_protocol.PythonBytecodeFailure.OPTIMIZATION
+
+
 @pytest.mark.parametrize(
     "layout", ["normal", "pytest", "foreign-tag", "adjacent", "source", "unknown"]
 )
@@ -2982,7 +3069,14 @@ def test_probe_reader_selection_uses_explicit_source_without_ambient_fallback(
 
 
 @pytest.mark.parametrize(
-    "name", ["default_paths", "windows_process_api", "flag_strings", "process_launch"]
+    "name",
+    [
+        "default_paths",
+        "windows_process_api",
+        "flag_strings",
+        "process_launch",
+        "python_bytecode",
+    ],
 )
 def test_promoted_leaf_belongs_to_loaded_and_projected_python_custody(
     tmp_path,

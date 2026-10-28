@@ -5738,6 +5738,19 @@ def test_integrate_lock_released_on_every_exclusive_exit(
     _, work = origin_and_clone
     lock_path = work / ".git" / "molt-integrate.lock"
     held_identity = None
+    acquisition_events = []
+    original_emit = drv._IntegrationProgress.emit
+
+    def observe_acquisition(progress, event, **details):
+        if event == "integration_lock_acquired":
+            unexpected = file_locks._try_acquire_file_lock(lock_path, create=False)
+            if unexpected is not None:
+                file_locks._release_file_lock(unexpected)
+                pytest.fail("integration acquisition event preceded its OS lock")
+            acquisition_events.append(details["acquisition_seconds"])
+        return original_emit(progress, event, **details)
+
+    monkeypatch.setattr(drv._IntegrationProgress, "emit", observe_acquisition)
 
     def exclusive(args, *, progress):
         nonlocal held_identity
@@ -5766,6 +5779,8 @@ def test_integrate_lock_released_on_every_exclusive_exit(
             KeyboardInterrupt, match="independent integration interruption"
         ):
             drv.cmd_integrate(args)
+    assert len(acquisition_events) == 1
+    assert acquisition_events[0] >= 0
     # A stable file remains; only the OS handle's lifetime governs ownership.
     stat = lock_path.stat()
     assert (stat.st_dev, stat.st_ino) == held_identity
@@ -5919,6 +5934,7 @@ def test_integration_progress_preserves_gate_outcomes(
     expected_commands = commands if outcome == "success" else commands[:2]
     assert seen == expected_commands
     assert [event["event"] for event in events] == [
+        "integration_lock_acquired",
         "candidate_selected",
         *[
             name
@@ -5930,9 +5946,15 @@ def test_integration_progress_preserves_gate_outcomes(
     assert "must-not-appear-in-events" not in output
     assert all(event["schema"] == "molt.integration-progress.v1" for event in events)
     assert all(event["advisory"] is True for event in events)
-    assert all(event["source_commit"] == tip for event in events)
-    assert all(event["upstream_commit"] == upstream for event in events)
-    assert all(event["gate_total"] == 3 for event in events)
+    acquisition = events[0]
+    assert acquisition["source_commit"] is None
+    assert acquisition["upstream_commit"] is None
+    assert acquisition["gate_total"] == 0
+    assert 0 <= acquisition["acquisition_seconds"] <= acquisition["elapsed_seconds"]
+    selected_events = events[1:]
+    assert all(event["source_commit"] == tip for event in selected_events)
+    assert all(event["upstream_commit"] == upstream for event in selected_events)
+    assert all(event["gate_total"] == 3 for event in selected_events)
     assert all(
         datetime.fromisoformat(event["recorded_at"]).utcoffset().total_seconds() == 0
         for event in events
@@ -5941,7 +5963,7 @@ def test_integration_progress_preserves_gate_outcomes(
     assert clocks == sorted(clocks)
     assert all(event["elapsed_seconds"] >= 0 for event in events)
     for ordinal, command in enumerate(expected_commands, 1):
-        start, finish = events[ordinal * 2 - 1 : ordinal * 2 + 1]
+        start, finish = selected_events[ordinal * 2 - 1 : ordinal * 2 + 1]
         expected = (
             {"kind": "shell", "source": command}
             if isinstance(command, str)

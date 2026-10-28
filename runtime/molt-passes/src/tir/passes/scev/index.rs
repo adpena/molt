@@ -18,13 +18,8 @@ pub(super) struct DefIndex {
     pub(super) const_int: HashMap<ValueId, i64>,
     /// header → its block-argument value ids (in order).
     pub(super) header_args: HashMap<BlockId, Vec<ValueId>>,
-    /// Transparent-copy resolution: value → the canonical source value reached
-    /// by following plain SSA copies (`is_plain_value_copy`). Lowering inserts
-    /// many such copies between the IV phi, the guard comparison and the
-    /// back-edge increment; resolving through them is what lets the recurrence
-    /// recognizer see the canonical induction-variable shape. A plain copy is
-    /// *semantically* the identity, so this resolution introduces no
-    /// imprecision (it only removes copy noise).
+    /// Mathematical scalar resolution, including exact borrowed binding views.
+    /// It describes values, never permission to erase publication or callbacks.
     pub(super) copy_src: HashMap<ValueId, ValueId>,
 }
 
@@ -48,7 +43,7 @@ pub(super) fn build_def_index(func: &TirFunction, loop_headers: &HashSet<BlockId
     let mut def_op = HashMap::new();
     let mut const_int = HashMap::new();
     let mut header_args: HashMap<BlockId, Vec<ValueId>> = HashMap::new();
-    let mut copy_src: HashMap<ValueId, ValueId> = HashMap::new();
+    let copy_src = super::super::value_identity::build_scalar_value_map(func);
 
     for (&bid, block) in &func.blocks {
         for arg in &block.args {
@@ -65,11 +60,6 @@ pub(super) fn build_def_index(func: &TirFunction, loop_headers: &HashSet<BlockId
                 for &r in &op.results {
                     const_int.insert(r, *v);
                 }
-            }
-            // Record a transparent-copy edge result → source for a plain value
-            // copy (single operand, single result, no semantic attrs).
-            if op.is_plain_value_copy() {
-                copy_src.insert(op.results[0], op.operands[0]);
             }
             for &r in &op.results {
                 def_block.insert(r, bid);

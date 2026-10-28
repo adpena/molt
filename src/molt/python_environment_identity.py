@@ -456,6 +456,7 @@ def python_capture_authority_paths(
         "source_build_environment_selection",
         "python_environment_location",
         "python_environment_custody",
+        "python_bytecode",
         "python_external_custody",
         "python_private_names",
         "package_import_custody",

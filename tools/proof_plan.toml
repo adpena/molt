@@ -329,6 +329,7 @@ authority_inputs = [
   "src/molt/python_environment_identity.py",
   "src/molt/python_environment_location.py",
   "src/molt/python_environment_custody.py",
+  "src/molt/python_bytecode.py",
   "src/molt/python_external_custody.py",
   "src/molt/python_runtime_identity.py",
   "src/molt/python_runtime_admission.py",

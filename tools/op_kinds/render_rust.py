@@ -277,6 +277,20 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_matches_arm(binding_view))
     out.append("    )\n}\n\n")
 
+    out.append(
+        "/// Unary borrowed-result spellings forwarding operand zero's mathematical\n"
+        "/// scalar value. Not a heap-alias, ownership, purity or erasure permission.\n"
+        "/// Consumers must require one operand and one result and an existing scalar proof.\n"
+        "#[inline]\n"
+        "pub fn copy_kind_forwards_scalar_value_table(kind: &str) -> bool {\n"
+        "    matches!(\n"
+        "        kind,\n"
+    )
+    out.append(
+        _render_matches_arm(list(data.get("classifier_scalar_value_forward", [])))
+    )
+    out.append("    )\n}\n\n")
+
     out.append(_render_all_opcodes(opcodes))
     out.append("\n")
 

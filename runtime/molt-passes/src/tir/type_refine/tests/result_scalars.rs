@@ -1,5 +1,143 @@
 use super::*;
 
+fn scalar_home_store(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+    let mut attrs = int_attr(0);
+    attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("frame_home_store".into()),
+    );
+    make_op(OpCode::Copy, operands, results, attrs)
+}
+
+#[test]
+fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission() {
+    use crate::tir::op_kinds_generated::{
+        copy_kind_is_binding_view_table, kind_consumed_operand_table, opcode_effects_table,
+    };
+    use crate::tir::passes::value_identity::{
+        build_scalar_value_map, copy_value_source, no_heap_alias_source, scalar_value_source,
+    };
+
+    for (opcode, attrs, expected) in [
+        (OpCode::ConstInt, int_attr(17), TirType::I64),
+        (OpCode::ConstFloat, float_attr(1.25), TirType::F64),
+        (
+            OpCode::ConstBool,
+            {
+                let mut attrs = AttrDict::new();
+                attrs.insert("value".into(), AttrValue::Bool(true));
+                attrs
+            },
+            TirType::Bool,
+        ),
+    ] {
+        let store = scalar_home_store(vec![ValueId(0)], vec![ValueId(1)]);
+        assert_eq!(scalar_value_source(&store), Some(ValueId(0)));
+        assert_eq!(copy_value_source(&store), None);
+        assert_eq!(no_heap_alias_source(&store), None);
+        assert!(!opcode_effects_table(store.opcode).effect_free);
+        assert!(copy_kind_is_binding_view_table("frame_home_store"));
+        assert_eq!(kind_consumed_operand_table("frame_home_store", 1), Some(0));
+        let mut func = single_block_func(
+            vec![
+                make_op(opcode, vec![], vec![ValueId(0)], attrs),
+                store,
+                make_op(
+                    OpCode::Copy,
+                    vec![ValueId(1)],
+                    vec![ValueId(2)],
+                    AttrDict::new(),
+                ),
+                scalar_home_store(vec![ValueId(2)], vec![ValueId(3)]),
+            ],
+            4,
+        );
+        let original_ops = func.blocks[&func.entry_block].ops.clone();
+        for refined in [false, true] {
+            if refined {
+                refine_types(&mut func);
+            }
+            let exact = extract_exact_scalar_map(&func);
+            for value in [ValueId(1), ValueId(2), ValueId(3)] {
+                assert_eq!(exact.get(&value), Some(&expected));
+                assert_eq!(build_scalar_value_map(&func).get(&value), Some(&ValueId(0)));
+            }
+            // Fact extraction/refinement must retain both effectful stores.
+            let current_ops = &func.blocks[&func.entry_block].ops;
+            assert_eq!(current_ops.len(), original_ops.len());
+            for (current, original) in current_ops.iter().zip(&original_ops) {
+                assert_eq!(current.opcode, original.opcode);
+                assert_eq!(current.operands, original.operands);
+                assert_eq!(current.results, original.results);
+                assert_eq!(current.attrs, original.attrs);
+            }
+        }
+    }
+}
+
+#[test]
+fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
+    use crate::tir::passes::value_identity::{build_scalar_value_map, scalar_value_source};
+    let mut load_attrs = int_attr(0);
+    load_attrs.insert(
+        "_original_kind".into(),
+        AttrValue::Str("frame_home_load".into()),
+    );
+    let load = make_op(OpCode::Copy, vec![], vec![ValueId(4)], load_attrs);
+    assert_eq!(scalar_value_source(&load), None);
+    let mut func = single_block_func(
+        vec![
+            scalar_home_store(vec![ValueId(0)], vec![ValueId(1)]),
+            make_op(OpCode::BuildList, vec![], vec![ValueId(2)], AttrDict::new()),
+            scalar_home_store(vec![ValueId(2)], vec![ValueId(3)]),
+            load,
+            // Pure copies keep their existing container identity contract.
+            make_op(
+                OpCode::Copy,
+                vec![ValueId(2)],
+                vec![ValueId(5)],
+                AttrDict::new(),
+            ),
+        ],
+        6,
+    );
+    func.param_types = vec![TirType::I64];
+    func.value_types.insert(ValueId(0), TirType::I64);
+    for refined in [false, true] {
+        if refined {
+            refine_types(&mut func);
+        }
+        let exact = extract_exact_scalar_map(&func);
+        let forwarded = build_scalar_value_map(&func);
+        for value in [ValueId(0), ValueId(1), ValueId(2), ValueId(3), ValueId(4)] {
+            assert!(!exact.contains_key(&value));
+            assert!(!forwarded.contains_key(&value));
+        }
+        assert_eq!(forwarded.get(&ValueId(5)), Some(&ValueId(2)));
+    }
+}
+
+#[test]
+fn home_scalar_forwarding_rejects_malformed_cardinality() {
+    use crate::tir::passes::value_identity::scalar_value_source;
+    for (operands, results) in [(0, 1), (2, 1), (1, 0), (1, 2)] {
+        let result_ids: Vec<_> = (1..=results).map(ValueId).collect();
+        let store = scalar_home_store(vec![ValueId(0); operands], result_ids.clone());
+        assert_eq!(scalar_value_source(&store), None);
+        let func = single_block_func(
+            vec![
+                make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(7)),
+                store,
+            ],
+            3,
+        );
+        let exact = extract_exact_scalar_map(&func);
+        for result in result_ids {
+            assert!(!exact.contains_key(&result));
+        }
+    }
+}
+
 #[test]
 fn operator_scalar_facts_reach_comparisons_without_promoting_parameter_hints() {
     for (left, right, opcode, expected) in [

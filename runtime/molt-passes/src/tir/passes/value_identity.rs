@@ -75,6 +75,9 @@ pub fn no_heap_alias_source(op: &TirOp) -> Option<ValueId> {
 }
 
 /// Build a transitive copy-resolution map over value-forwarding Copy ops.
+///
+/// This map retains the existing identity/alias contract. Numeric-only clients
+/// that need effectful scalar forwarding use `build_scalar_value_map` instead.
 pub(crate) fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
     let mut copy_of: HashMap<ValueId, ValueId> = HashMap::new();
     for block in func.blocks.values() {
@@ -86,6 +89,50 @@ pub(crate) fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
     }
     flatten_copy_map(&mut copy_of);
     copy_of
+}
+
+/// The operand supplying a result's mathematical scalar value, provided that
+/// operand already has a scalar proof. A home publication returns its saved
+/// operand view even if releasing the displaced owner reentrantly writes the
+/// home. It does not prove the home's later contents or a subsequent load.
+///
+/// This is NOT heap identity, ownership, purity, callback freedom or permission
+/// to erase/move the operation. In particular a home store still consumes its
+/// operand, publishes the binding and releases its displaced owner.
+pub fn scalar_value_source(op: &TirOp) -> Option<ValueId> {
+    if let Some(source) = no_heap_alias_source(op) {
+        return Some(source);
+    }
+    if op.opcode != OpCode::Copy || op.results.len() != 1 || op.operands.len() != 1 {
+        return None;
+    }
+    let Some(AttrValue::Str(kind)) = op.attrs.get("_original_kind") else {
+        return None;
+    };
+    crate::tir::op_kinds_generated::copy_kind_forwards_scalar_value_table(kind)
+        .then_some(op.operands[0])
+}
+
+/// Numeric-only fact resolution, including effectful scalar publications.
+/// Never use this map to rewrite SSA uses, classify aliases or elide effects.
+pub fn build_scalar_value_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
+    // Range clients also track mutable container lengths. Only a proven
+    // immutable scalar may cross an effectful publication: its displaced
+    // owner's finalizer could mutate a forwarded container. The exact solver
+    // calls scalar_value_source, not this map, so this query is non-recursive.
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let mut scalar_of = HashMap::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            let source = copy_value_source(op)
+                .or_else(|| scalar_value_source(op).filter(|source| exact.contains_key(source)));
+            if let Some(source) = source {
+                scalar_of.insert(op.results[0], source);
+            }
+        }
+    }
+    flatten_copy_map(&mut scalar_of);
+    scalar_of
 }
 
 fn flatten_copy_map(copy_of: &mut HashMap<ValueId, ValueId>) {
