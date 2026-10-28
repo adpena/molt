@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from tests.process_guard_common import (
@@ -1298,6 +1299,215 @@ def test_configured_artifact_root_is_none_when_unset_or_blank(tmp_path: Path) ->
         dx.configured_artifact_root({"MOLT_EXT_ROOT": "rel"}, relative_to=tmp_path)
         == (tmp_path / "rel").resolve()
     )
+
+
+@pytest.fixture
+def bound_artifact_family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from molt import disk_capacity
+
+    main = tmp_path / "family" / "molt-src"
+    main.mkdir(parents=True)
+    _git(main, "init", "-q", "-b", "main")
+    _git(main, "commit", "-q", "--allow-empty", "-m", "family")
+    # Git common-directory membership, rather than naming convention, binds
+    # this checkout. A linked worktree can live anywhere on every host.
+    lane = tmp_path / "other-parent" / "linked-checkout"
+    _git(main, "worktree", "add", "-q", "--detach", str(lane))
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _: 64 * 1024**3
+    )
+    dx.set_artifact_root_binding(main, artifacts, {})
+    return main.resolve(), lane.resolve(), artifacts.resolve()
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_artifact_binding_is_family_wide_without_shell_environment(
+    bound_artifact_family, name_rule
+):
+    main, lane, artifacts = bound_artifact_family
+    environment = ProcessEnvironment({}, rule=name_rule)
+    assert dx.artifact_root_binding_path(main) == (
+        main / ".git" / "molt" / "artifact-root.json"
+    )
+    assert dx.artifact_root_binding_path(lane) == dx.artifact_root_binding_path(main)
+    for checkout in (main, lane):
+        selection = dx.artifact_root_selection(checkout, environment)
+        assert (selection.root, selection.source) == (artifacts, "family-binding")
+        assert (
+            dx.configured_artifact_root(environment, relative_to=checkout) == artifacts
+        )
+        assert dx.artifact_root(checkout, environment) == artifacts
+        assert dx.project_cargo_target_base(checkout, environment) == artifacts
+        assert dx.project_cargo_target_dir(checkout, environment).parent.parent == (
+            artifacts / "target"
+        )
+        for context in (RunContext(checkout), DxProject(checkout)):
+            selected = context.canonical_env(environment, create_dirs=False)
+            assert selected["MOLT_EXT_ROOT"] == str(artifacts)
+            assert selected["MOLT_CACHE"] == str(artifacts / ".molt_cache")
+        forced = RunContext(checkout).canonical_env(
+            {"MOLT_EXT_ROOT": str(main.parent / "ambient-root")},
+            create_dirs=False,
+            force_default_keys=dx.MOLT_ROOT_ENV_KEYS,
+        )
+        assert forced["MOLT_EXT_ROOT"] == str(artifacts)
+        assert not (checkout / "target").exists()
+
+
+@pytest.mark.parametrize(
+    "state", ["missing", "replaced", "file", "full", "unmeasurable", "unwritable"]
+)
+def test_bound_root_failure_never_selects_a_fallback(
+    bound_artifact_family, monkeypatch, state
+):
+    from molt import disk_capacity
+
+    main, lane, artifacts = bound_artifact_family
+    # Establish the cached record before media changes: live health must
+    # still be checked even though configuration bytes are read just once.
+    assert dx.artifact_root(main, {}) == artifacts
+    if state in {"missing", "replaced", "file"}:
+        artifacts.rename(artifacts.with_name("retained-artifacts"))
+        if state == "replaced":
+            artifacts.mkdir()
+        elif state == "file":
+            artifacts.write_bytes(b"not a directory")
+    elif state == "unwritable":
+        original_access = os.access
+        monkeypatch.setattr(
+            dx.os,
+            "access",
+            lambda path, mode: (
+                False if path == artifacts else original_access(path, mode)
+            ),
+        )
+    else:
+
+        def measure(_):
+            if state == "unmeasurable":
+                raise OSError("fixture measurement refused")
+            return 20 * 1024**3 - 1
+
+        monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+        monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", measure)
+    env = {
+        "MOLT_EXTERNAL_ARTIFACT_ROOTS": str(main.parent),
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS": "1",
+    }
+    for select in (
+        lambda: dx.artifact_root(lane, env),
+        lambda: dx.configured_artifact_root(env, relative_to=lane),
+        lambda: dx.project_cargo_target_base(lane, env),
+        lambda: RunContext(lane).canonical_env(env, create_dirs=False),
+        lambda: DxProject(lane).canonical_env(env, create_dirs=False),
+    ):
+        with pytest.raises(dx.DxConfigError) as refused:
+            select()
+        diagnostic = str(refused.value)
+        assert str(artifacts) in diagnostic
+        assert "artifact-root --bind" in diagnostic and "--clear" in diagnostic
+        if state in {"full", "unmeasurable"}:
+            assert "capacity=" in diagnostic and "required=" in diagnostic
+        elif state == "replaced":
+            assert "identity changed" in diagnostic
+    assert not (lane / "target").exists()
+
+
+@pytest.mark.parametrize("name_rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_explicit_root_precedes_even_a_broken_binding(bound_artifact_family, name_rule):
+    main, lane, artifacts = bound_artifact_family
+    artifacts.rename(artifacts.with_name("offline"))
+    override = main.parent.parent / "override"
+    key = "molt_ext_root" if name_rule == NameRule.WINDOWS else "MOLT_EXT_ROOT"
+    env = ProcessEnvironment({key: str(override)}, rule=name_rule)
+    selection = dx.artifact_root_selection(lane, env)
+    assert (selection.root, selection.source) == (override, "explicit-env")
+    assert dx.configured_artifact_root(env, relative_to=lane) == override
+
+
+def test_plain_clone_default_is_reported_and_creates_no_binding(tmp_path):
+    clone = tmp_path / "plain-clone"
+    clone.mkdir()
+    _git(clone, "init", "-q", "-b", "main")
+    selection = dx.artifact_root_selection(clone, {})
+    assert (selection.root, selection.source) == (
+        clone.resolve(),
+        "plain-clone-default",
+    )
+    assert dx.configured_artifact_root({}, relative_to=clone) is None
+    assert dx.project_cargo_target_base(clone, {}) == clone
+    assert not (clone / ".git" / "molt").exists()
+
+
+def test_family_binding_is_read_once_across_threads_and_checkouts(
+    bound_artifact_family, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from molt import exact_json
+
+    main, lane, artifacts = bound_artifact_family
+    original = exact_json.read_exact
+    reads = []
+
+    def read(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(exact_json, "read_exact", read)
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        selected = list(
+            workers.map(
+                lambda checkout: dx.artifact_root(checkout, {}), [main, lane] * 4
+            )
+        )
+    assert selected == [artifacts] * 8
+    assert reads == [main / ".git" / "molt" / "artifact-root.json"]
+
+
+def test_fresh_process_resolves_the_family_binding_without_root_variables(
+    bound_artifact_family,
+):
+    _, lane, artifacts = bound_artifact_family
+    code = """\
+import json, sys
+from pathlib import Path
+from molt import disk_capacity
+from molt.dx import artifact_root_selection
+disk_capacity._default_measure_free_bytes = lambda _: 64 * 1024**3
+selected = artifact_root_selection(Path(sys.argv[1]), {})
+print(json.dumps([str(selected.root), selected.source]))
+"""
+    completed = run_guarded_test_process(
+        [sys.executable, "-c", code, str(lane)],
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+        },
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [str(artifacts), "family-binding"]
+
+
+@pytest.mark.parametrize(
+    "contents", ["{}", '{"schema":1,"schema":2}', "x" * (16 * 1024 + 1)]
+)
+def test_invalid_binding_refuses_and_can_be_cleared(tmp_path, contents):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    _git(clone, "init", "-q", "-b", "main")
+    record = clone / ".git" / "molt" / "artifact-root.json"
+    record.parent.mkdir()
+    record.write_text(contents, encoding="utf-8")
+    explicit = tmp_path / "operator-override"
+    assert dx.artifact_root(clone, {"MOLT_EXT_ROOT": str(explicit)}) == explicit
+    with pytest.raises(dx.DxConfigError, match="cannot read artifact-root binding"):
+        dx.artifact_root(clone, {})
+    dx.set_artifact_root_binding(clone, None, {})
+    assert not record.exists()
+    assert dx.artifact_root(clone, {}) == clone
 
 
 def test_artifact_root_refuses_the_checkout_when_external_is_required(

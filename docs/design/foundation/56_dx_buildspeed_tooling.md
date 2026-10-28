@@ -115,6 +115,75 @@ below `molt-tir`), (b) convert the advisory/ritual parts of the DX loop into
 and (c) build the observability plane (DX-4) the audit board explicitly lists as
 MISSING. Each is a structural FACT, not a script.
 
+### Durable artifact roots (HF-521)
+
+Artifact placement is a DX selection, independent of source, Git, seals and
+toolchain custody. An operator can persist the selection with
+`python -m molt.checkout_provisioning artifact-root --checkout /checkout --bind /absolute/root`.
+The same entry point without `--bind` reports the selected root, its source and
+the record address; `--clear` deliberately removes the binding. `--json` exposes
+the same facts. Binding requires an existing, writable, identifiable directory
+outside source checkouts with the existing external-root capacity headroom
+(`MOLT_EXTERNAL_MIN_FREE_GB`, default 20 GiB). It never creates the target.
+
+The record is `<git common dir>/molt/artifact-root.json`, alongside the existing
+repository control records. Linked worktrees share it even outside the conventional
+family directory names. Source trees without Git metadata cannot write a family
+binding and retain their existing defaults. Publication uses exact JSON and the
+durable atomic-file owner, serialized by the existing checkout-provisioning lock
+namespace. Clear uses durable retirement under the same lock. This adds no
+parallel family registry or output-selection implementation.
+
+Precedence is explicit `MOLT_EXT_ROOT`, then family binding, then the existing
+requested external-candidate selection and checkout-custody default. The
+unconfigured default is reported as `plain-clone-default`; a plain clone retains
+its in-place Cargo target. `configured_artifact_root` returns either explicit
+configuration source and refuses an unhealthy binding. Default Cargo targets,
+both DX environment builders, scratch and build control consume this authority.
+For supervisor bootstrap, the store is
+`<artifact root>/proof-supervisor/<implementation namespace>`. An immutable
+`--cargo-output-root` declaration remains the proof queue's explicit output
+override. Source, enclosing-checkout and receipt-overlap refusals still apply;
+an unconfigured plain clone must bind/select an external root for supervisor
+bootstrap instead of silently acquiring a sibling output directory.
+
+A binding records the resolved root and its directory device/inode identity.
+Every use checks that directory before probing capacity; absence, replacement,
+an unmounted volume exposing another directory, unwritability or failed/low
+capacity produces one diagnostic naming the root, observation and bind/clear
+remedy. It never probes an ancestor of a missing bound directory or falls back
+to the source/root volume. A remount that changes identity requires an explicit
+rebind after inspection. Selection reserves no space and cannot prevent media
+removal or concurrent disk growth after admission.
+
+Research checked 2026-10-28, using upstream documentation and implementation:
+
+| Prior art | Durable selection and missing-directory behavior | Molt decision |
+| --- | --- | --- |
+| [Cargo configuration](https://doc.rust-lang.org/cargo/reference/config.html#buildtarget-dir) and [Cargo 1.92 layout](https://github.com/rust-lang/cargo/blob/rust-1.92.0/src/cargo/core/compiler/layout.rs) | `build.target-dir` in `.cargo/config.toml` persists placement; configuration-relative paths have a documented base. `Layout::new` creates missing output roots and propagates creation failure. | Reuse explicit durable placement; store an absolute path so worktree location cannot change it. |
+| [Bazel rc files](https://bazel.build/run/bazelrc), [output layout](https://bazel.build/remote/output-directories) and [PrepareDirectories](https://github.com/bazelbuild/bazel/blob/master/src/main/cpp/blaze.cc) | `.bazelrc` can persist `startup --output_user_root=...`; bootstrap creates the user root/output base and refuses creation errors. | Keep one family control record shared by worktrees, with explicit operator precedence. |
+| [Go env](https://go.dev/cmd/go/#hdr-Print_Go_environment_information), [GOENV configuration](https://go.dev/src/cmd/go/internal/cfg/cfg.go) and [cache initialization](https://go.dev/src/cmd/go/internal/cache/default.go) | `go env -w GOCACHE=/path` persists a default in the GOENV file (`go/env` under the user configuration directory); environment values override defaults. Cache initialization calls `MkdirAll` and fails if initialization fails. | Adopt the explicit write/clear/status boundary and process-cached configuration. |
+| [uv configuration](https://docs.astral.sh/uv/configuration/files/), [cache selection](https://docs.astral.sh/uv/concepts/cache/#cache-directory) and [Cache::init](https://github.com/astral-sh/uv/blob/main/crates/uv-cache/src/lib.rs) | `cache-dir` in `uv.toml` persists a selection; CLI/environment override it. Initialization creates the selected root and reports errors there. | Retain overrides, but refuse to recreate missing bound storage. |
+
+The deliberate difference from these tools' directory creation is the mounted
+storage obligation: recreating a missing path can put artifacts on the root
+volume beneath an absent mount. The HF-521 incident measured 16 GiB of cache,
+9.2 GiB of Cargo output and 5.80 GiB in 45 cold supervisor builds on the
+integrator's small root volume; the published V1 ledger owns that incident and
+its qualification status. These are storage observations, not timing evidence.
+
+Resolution adds at most one bounded 16 KiB record read per family per process,
+including absence and malformed-record refusal. The in-memory cache serializes
+first reads; Git/common-directory metadata uses a per-checkout memo. Explicit
+environment roots bypass the binding read. Live health remains the existing
+statvfs-style capacity authority plus directory identity/access checks; no new
+subprocess, directory enumeration or ancestor discovery is added for a bound
+root. Only the operator mutation boundary invalidates its process's record
+snapshot; other running processes keep their selection and fresh health checks.
+The owning regression checks count record reads across worktrees and threads.
+No new wall-clock performance result is claimed before the parent's focused
+qualification; emitted programs carry none of this machinery.
+
 ### 2.1 Live latency evidence: WASM ABI generator and runtime crate proof
 
 The 2026-07-01 Pact recovery exposed two DX facts that should be treated as

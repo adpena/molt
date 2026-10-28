@@ -5,7 +5,6 @@ from contextlib import nullcontext
 import hashlib
 import json
 import os
-from types import SimpleNamespace
 from pathlib import Path
 import subprocess
 import sys
@@ -528,29 +527,29 @@ def test_provision_scope_reuses_one_observer_and_keeps_each_child_guard(
         assert exits == [RuntimeError if fail_setup else None]
 
 
-@pytest.mark.parametrize("custody_kind", ["source", "nested", "external"])
-def test_undeclared_supervisor_store_is_external_by_construction(
-    tmp_path, monkeypatch, custody_kind
+@pytest.mark.parametrize("placement", ["source", "nested", "external"])
+def test_undeclared_supervisor_store_uses_dx_and_refuses_source_overlap(
+    tmp_path, monkeypatch, placement
 ):
     source = tmp_path / "plain-clone"
     source.mkdir()
-    custody = {
+    artifacts = {
         "source": source,
         "nested": source / "tmp",
         "external": tmp_path / "canonical",
-    }[custody_kind]
+    }[placement]
     monkeypatch.setattr(
         cargo_output_layout, "implementation_source_root", lambda: source
     )
-    monkeypatch.setattr(
-        cargo_output_layout,
-        "checkout_custody",
-        lambda root: SimpleNamespace(custody_root=custody),
-    )
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     first = cargo_output_layout.CargoOutputLayout(tmp_path / "result-one")
     second = cargo_output_layout.CargoOutputLayout(tmp_path / "result-two")
-    expected_root = custody if custody_kind == "external" else source.parent
-    assert first.supervisor_store.parent == expected_root / "proof-supervisor"
+    if placement != "external":
+        with pytest.raises(ValueError, match="overlaps source or receipt"):
+            _ = first.supervisor_store
+        assert not (artifacts / "proof-supervisor").exists()
+        return
+    assert first.supervisor_store.parent == artifacts / "proof-supervisor"
     assert first.supervisor_target == second.supervisor_target
     assert not first.supervisor_store.is_relative_to(source)
     assert not first.supervisor_store.exists()

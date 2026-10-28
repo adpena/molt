@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from molt.build_state_layout import build_state_root
+from molt.dx import checkout_component
 import tools.compile_governor as compile_governor
 from tests.process_guard_common import install_module_view
 
@@ -164,7 +165,12 @@ def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
     env.pop("CARGO_TARGET_DIR")
     assert compile_governor._guard_root(env) == (
         build_state_root(
-            project_root=project, cargo_target=project / "target", environment=env
+            project_root=project,
+            cargo_target=ext_root
+            / "target"
+            / "checkouts"
+            / checkout_component(project),
+            environment=env,
         )
         / "compile_guard"
     )
@@ -217,7 +223,14 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
     )
     artifact = tmp_path / "canonical"
     env = {"MOLT_EXT_ROOT": str(artifact), "MOLT_SESSION_ID": "alpha"}
-    target = project / "target" / "sessions" / "alpha"
+    target = (
+        artifact
+        / "target"
+        / "checkouts"
+        / checkout_component(project)
+        / "sessions"
+        / "alpha"
+    )
     expected = build_state_root(
         project_root=project, cargo_target=target, environment=env
     )
@@ -243,7 +256,7 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
     assert (expected / LAST_USE_STAMP).is_file()
     # This is real session-target custody, including its durable lock, but
     # every path belongs to the synthetic checkout rather than the test host.
-    assert any((project / "target/.disk_guard/checkout-state-locks").glob("*.lock"))
+    assert any((artifact / "target/.disk_guard/checkout-state-locks").glob("*.lock"))
 
 
 def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:
