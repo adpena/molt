@@ -3,7 +3,8 @@ use std::path::Path;
 use super::super::files::sha256_file_hex;
 use super::super::paths::stdlib_cache_archive_digest_sidecar_path;
 use super::read::{
-    read_stdlib_cache_key, read_stdlib_cache_manifest, read_stdlib_cache_partition_manifest,
+    read_stdlib_cache_key, read_stdlib_cache_manifest, read_stdlib_cache_origins_unlocked,
+    read_stdlib_cache_partition_manifest,
 };
 
 /// The recorded archive digest of a generation whose identity sidecars match
@@ -67,7 +68,17 @@ pub(in super::super) fn shared_stdlib_cache_matches_unlocked(
         expected_manifest,
         expected_partition_manifest,
     )
-    .is_some_and(|digest| shared_stdlib_archive_payload_matches(stdlib_path, &digest))
+    .is_some_and(|digest| {
+        let Ok(provenance) = read_stdlib_cache_origins_unlocked(stdlib_path, &digest) else {
+            return false;
+        };
+        match super::super::paths::native_stdlib_archive_content_key(stdlib_path) {
+            Err(_) => return false,
+            Ok(Some(_)) if provenance.is_none() => return false,
+            Ok(_) => {}
+        }
+        shared_stdlib_archive_payload_matches(stdlib_path, &digest)
+    })
 }
 
 /// Bind ordered original worker outputs to the actual archive member payloads.

@@ -1625,6 +1625,26 @@ parsing distinguishes BSD extended names from GNU/short names. Only documented
 Darwin Mach-O member-data alignment admits exact newline padding; the full archive
 hash and each original object hash remain mandatory.
 
+`molt.stdlib-archive-origin.v2` additionally carries a required nullable
+`content_key`. The native planner supplies the exact input key of its ordered
+closed constituent jobs; a worker's consumed-byte digest alone is insufficient
+because the cache authority also binds compiler, target and codegen configuration.
+An uncached assembly reports null. Assembly, content hydration, program-cache
+publication and build-owned copies retain this key with the original worker
+observations. Missing fields, old schemas and malformed keys refuse admission.
+A native content-generation coordinate must agree with its recorded key.
+
+Installed compilation-cache export pins that exact native content archive when
+present, alongside the consumed program generation. Both use their existing
+publication and eviction stripes. The export includes their required count,
+input key, compiler manifest, partition, digest and origin sidecars; derived
+symbol facts remain optional. The caller copies only this bounded selection
+while its locks remain held. Content provenance does not promise that a different
+program has the same closed job plan: contextual changes retain their misses.
+Required build output stays outside either evictable archive family or within
+the canonical protected home. First-compilation latency and relocated installed
+execution require actual consumer evidence beyond the codec and custody tests.
+
 `molt.compilation-inputs.v3` binds the compiler and optional shared stdlib origins
 to the actual linker input buffers. Its nullable cache coordinates name the exact
 producer-selected artifact and stdlib generation; they are untrusted selection

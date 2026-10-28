@@ -1103,7 +1103,6 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_importlib_module_from_spec": ("molt_importlib_module_from_spec", 1),
     "molt_importlib_spec_from_loader": ("molt_importlib_spec_from_loader", 5),
     "molt_importlib_spec_from_file_location": ("molt_importlib_spec_from_file_location", 5),
-    "molt_importlib_stabilize_module_state": ("molt_importlib_stabilize_module_state", 6),
     "molt_copyreg_bootstrap": ("molt_copyreg_bootstrap", 0),
     "molt_copyreg_pickle": ("molt_copyreg_pickle", 3),
     "molt_copyreg_newobj": ("molt_copyreg_newobj", 2),

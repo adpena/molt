@@ -1115,6 +1115,35 @@ def test_canonical_home_physical_target_remains_protected_when_selected_home_cha
     assert not owned.exists()
 
 
+@pytest.mark.parametrize(
+    "namespace,lock_stem",
+    [
+        ("shared-stdlib", "shared-stdlib"),
+        ("native-stdlib-archives-v1", "native-stdlib-archive"),
+    ],
+)
+def test_archive_families_share_the_producer_stripe_and_required_output_rule(
+    tmp_path, namespace, lock_stem
+):
+    from molt.default_paths import (
+        stdlib_archive_cache_root,
+        shared_stdlib_publish_lock_path,
+        validate_required_stdlib_output,
+    )
+
+    root = tmp_path / "cache"
+    source = root / namespace / ("a" * 64) / "stdlib.a"
+    assert stdlib_archive_cache_root(source) == root
+    assert (
+        shared_stdlib_publish_lock_path(source)
+        == root / "locks" / f"{lock_stem}.aa.lock"
+    )
+    output = root / namespace / ("b" * 64) / "stdlib.a"
+    with pytest.raises(ValueError, match="Required build-owned stdlib output"):
+        validate_required_stdlib_output(output, source)
+    validate_required_stdlib_output(tmp_path / "build" / "required.a", source)
+
+
 @pytest.mark.parametrize("hit_after_inventory", [False, True])
 def test_real_cache_hit_survives_cold_entry_and_stale_eviction_inventory(
     tmp_path: Path, monkeypatch, hit_after_inventory: bool

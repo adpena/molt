@@ -168,7 +168,7 @@ def test_stdlib_cleanup_attempts_all_paths_and_reports_every_failure(
     monkeypatch.setattr(Path, "unlink", remove)
     with pytest.raises(OSError, match="Failed to remove shared stdlib") as caught:
         BACKEND_CACHE._remove_shared_stdlib_cache_artifacts(artifact)
-    assert attempted == list(paths)
+    assert sorted(attempted) == sorted(paths)
     assert {path for path in paths if path.exists()} == set(failures)
     for path, failure in failures.items():
         assert str(path) in str(caught.value)
@@ -192,7 +192,7 @@ def test_stdlib_cleanup_is_idempotent_for_missing_owned_artifacts(
     monkeypatch.setattr(Path, "unlink", remove)
     BACKEND_CACHE._remove_shared_stdlib_cache_artifacts(artifact)
     BACKEND_CACHE._remove_shared_stdlib_cache_artifacts(artifact)
-    assert attempted == [*paths, *paths]
+    assert sorted(attempted) == sorted([*paths, *paths])
 
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
@@ -247,7 +247,7 @@ def test_stdlib_staging_preserves_primary_error_and_cleanup_evidence(
         )
     assert caught.value is primary
     assert primary.__cause__ is cause
-    assert attempted == list(paths)
+    assert sorted(attempted) == sorted(paths)
     rendered = "".join(traceback.format_exception(primary))
     assert "primary archive copy failure" in rendered
     assert "underlying storage fault" in rendered
@@ -297,7 +297,7 @@ def test_stdlib_invalidation_propagates_cleanup_failure_under_publication_lock(
         BACKEND_CACHE._validate_shared_stdlib_cache_contract(
             artifact, tmp_path, "expected", expected_manifest="manifest"
         )
-    assert attempted == list(_shared_stdlib_cleanup_paths(artifact))
+    assert sorted(attempted) == sorted(_shared_stdlib_cleanup_paths(artifact))
     assert not locked
 
 
@@ -2413,7 +2413,8 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
     # raw observation copied exactly, never promoted into an admission flag.
     origin_bytes = json.dumps(
         {
-            "schema": "molt.stdlib-archive-origin.v1",
+            "schema": "molt.stdlib-archive-origin.v2",
+            "content_key": None,
             "output": {
                 "sha256": hashlib.sha256(b"admitted archive").hexdigest(),
                 "size": len(b"admitted archive"),

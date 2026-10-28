@@ -4,6 +4,7 @@ mod validation;
 mod write;
 
 pub(super) use cleanup::remove_shared_stdlib_cache_artifacts;
+pub(crate) use read::StdlibArchiveProvenance;
 pub(crate) use read::{
     read_stdlib_cache_key, read_stdlib_cache_manifest, read_stdlib_cache_partition_manifest,
 };
