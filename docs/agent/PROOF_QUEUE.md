@@ -18,6 +18,14 @@ relocate queue logs. This explicit output configuration leaves the default SQLit
 history in place. Existing rows retain their absolute artifact paths; notebooks
 follow their existing `--notebooks-root` selection or the logs-parent default.
 
+`custody_cas.put_file` publishes a file by cloning it into a private stage
+(`file_publication.clone_file`). APFS and Linux reflink volumes share the
+source's blocks, so storing one runtime binary in many runs writes no data;
+other volumes copy. The clone is its own inode, so a later rebuild of the
+source cannot change custody, and a source that changes during publication is
+refused. Byte copies made every run's store a full duplicate: on 2026-10-28,
+10.5 of the 14.5 GiB in the integrator Mac's root-volume stores were repeats.
+
 Queued Cargo executable selection is shared by dispatch and tool capture. An
 explicit executable path in a typed direct or delegated Cargo command takes
 precedence over `CARGO`; a bare Cargo role uses `CARGO` before the command's

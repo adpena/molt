@@ -22507,3 +22507,77 @@ def test_metadata_capture_uses_explicit_core_guard_even_for_version_flags(
     )
     assert result.stdout == "identity" and result.descendants_closed is True
     assert len(calls) == 1 and calls[0][0] == command
+
+
+# macOS fcntl(F_LOG2PHYS_EXT): struct log2phys is packed to 4 bytes.
+_F_LOG2PHYS_EXT = 65
+_LOG2PHYS = "<Iqq"
+
+
+def _device_offset(path: Path) -> int:
+    import fcntl
+    import struct
+
+    with path.open("rb") as stream:
+        query = struct.pack(_LOG2PHYS, 0, 4096, 0)
+        _, _, device = struct.unpack(
+            _LOG2PHYS, fcntl.fcntl(stream.fileno(), _F_LOG2PHYS_EXT, query)
+        )
+    return device
+
+
+def _durable_source(path: Path, payload: bytes) -> Path:
+    with path.open("wb") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return path
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="APFS log2phys oracle")
+def test_put_file_clones_source_blocks_into_an_independent_inode(tmp_path):
+    original = os.urandom(1024 * 1024)
+    source = _durable_source(tmp_path / "runtime-gate", original)
+    cas = tmp_path / "custody-cas"
+    reference = custody_cas.put_file(cas, source, executable=True)
+    published = Path(reference.path)
+    try:
+        shared = _device_offset(source) == _device_offset(published)
+    except OSError as exc:
+        pytest.skip(f"volume has no physical mapping: {exc}")
+    assert shared, "publication copied bytes instead of cloning blocks"
+    assert published.stat().st_ino != source.stat().st_ino
+    _durable_source(source, os.urandom(len(original)))
+    custody_cas.verify_file_ref(reference.as_dict(), expected_root=cas)
+    assert published.read_bytes() == original
+    assert reference.sha256 == hashlib.sha256(original).hexdigest()
+    assert not list(cas.rglob(".custody-*"))
+
+
+def test_put_file_refuses_a_source_that_changes_while_published(tmp_path, monkeypatch):
+    source = _durable_source(tmp_path / "evidence", b"stable bytes")
+    cas = tmp_path / "custody-cas"
+    clone_file = custody_cas.file_publication.clone_file
+
+    def clone_then_write(origin: Path, destination: Path) -> None:
+        clone_file(origin, destination)
+        with origin.open("ab") as stream:
+            stream.write(b" and a concurrent append")
+
+    monkeypatch.setattr(custody_cas.file_publication, "clone_file", clone_then_write)
+    with pytest.raises(ValueError, match="source changed while being published"):
+        custody_cas.put_file(cas, source)
+    assert not list(cas.rglob(".custody-*"))
+    assert not (cas / "files" / "sha256").exists()
+
+
+def test_put_file_republishes_identical_bytes_without_leftovers(tmp_path):
+    (tmp_path / "a").mkdir()
+    first = _durable_source(tmp_path / "a" / "evidence", b"same bytes")
+    second = _durable_source(tmp_path / "evidence", b"same bytes")
+    cas = tmp_path / "custody-cas"
+    one = custody_cas.put_file(cas, first)
+    two = custody_cas.put_file(cas, second)
+    assert one == two
+    custody_cas.verify_file_ref(two.as_dict(), expected_root=cas)
+    assert not list(cas.rglob(".custody-*"))
