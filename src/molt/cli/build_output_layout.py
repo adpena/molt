@@ -3,7 +3,10 @@ from __future__ import annotations
 from molt.native_target import NativeTargetSpec
 from molt.compilation_target import target_name, Target, TargetKind, is_wasm_target
 
-from typing import get_args
+from typing import TYPE_CHECKING, assert_never, get_args
+
+if TYPE_CHECKING:
+    from molt.build_record import RecordedBuildClaim
 from molt.cli.build_request import BuildProfile
 
 from contextlib import ExitStack, contextmanager
@@ -198,6 +201,19 @@ def _claim_checkout_state(root: Path, *, cargo_target: Path | None = None) -> No
     # and bound under the use's lock.
     scope.stack.enter_context(checkout_state_use(((root, owner),), create=True))
     scope.state_claimed.add(root)
+    if input_report.result_active():
+        from molt.build_record import BuildClaimKind, RecordedBuildClaim
+
+        try:
+            input_report.report_build_claim(
+                RecordedBuildClaim.capture(
+                    BuildClaimKind.CHECKOUT,
+                    root,
+                    cargo_target=cargo_target,
+                ).payload()
+            )
+        except (OSError, ValueError) as exc:
+            input_report.refuse(f"checkout claim cannot be recorded: {exc}")
 
 
 def _claim_artifacts_root(root: Path) -> None:
@@ -228,6 +244,36 @@ def _claim_artifacts_root(root: Path) -> None:
         )
     scope.claimed.add(root)
     scope.stack.callback(_release_file_lock, handle)
+    if input_report.result_active():
+        from molt.build_record import BuildClaimKind, RecordedBuildClaim
+
+        try:
+            input_report.report_build_claim(
+                RecordedBuildClaim.capture(
+                    BuildClaimKind.ARTIFACTS,
+                    root,
+                ).payload()
+            )
+        except (OSError, ValueError) as exc:
+            input_report.refuse(f"artifacts claim cannot be recorded: {exc}")
+
+
+def _replay_build_claim(claim: "RecordedBuildClaim") -> None:
+    """Reacquire producer-reported selections inside the current build scope."""
+    from molt.build_record import BuildClaimKind
+
+    if claim.kind is BuildClaimKind.ARTIFACTS:
+        _claim_artifacts_root(claim.root)
+    elif claim.kind is BuildClaimKind.CHECKOUT:
+        _claim_checkout_state(claim.root, cargo_target=claim.cargo_target)
+    elif claim.kind is BuildClaimKind.PRODUCT:
+        from molt.cli.product_store import ProductStore
+
+        assert claim.product_identity is not None
+        if not ProductStore(claim.root).record_use(claim.product_identity):
+            raise ValueError(f"recorded product was evicted: {claim.root}")
+    else:
+        assert_never(claim.kind)
 
 
 @functools.lru_cache(maxsize=256)

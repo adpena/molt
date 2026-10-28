@@ -1118,6 +1118,12 @@ def test_a_recording_receives_each_shared_walk_once_with_captured_tokens(
         def build_output(self, selection: object) -> None:
             raise AssertionError("resource capture must not select a build output")
 
+        def build_claim(self, claim: object) -> None:
+            raise AssertionError("resource capture must not claim build outputs")
+
+        def build_result(self, result: object) -> None:
+            raise AssertionError("resource capture must not publish a build result")
+
     def record(sink: Sink) -> None:
         input_report.install_sink(sink, os.fspath(tmp_path / "workers"))
         try:

@@ -93,7 +93,6 @@ def _early_cutoff_request(request: BuildRequest) -> tuple[str, Path] | None:
     if (
         request.target is not TargetKind.NATIVE
         or not request.cache
-        or request.json_output
         or request.emit not in (None, "bin")
         or request.emit_ir is not None
         or request.linked
@@ -205,6 +204,12 @@ def _record_build(
         output = ledger.output_selection
         if output is None:
             return "native output selection was not reported"
+        if request.json_output and ledger.result is None:
+            return (
+                ledger.refusals[0]
+                if ledger.refusals
+                else "native JSON result was not reported"
+            )
         if output.output != request.output:
             return "native output selection differs from the build request"
         _report_executed_code(ledger)
@@ -218,7 +223,16 @@ def _record_build(
             selection = "/var/db/xcode_select_link"
             ledger.probe(selection, _input_report.resolved_probe(selection))
         _build_record.resolve_observed(
-            ledger, _excluded_read_roots(request), published_output=output.path
+            ledger,
+            (
+                *_excluded_read_roots(request),
+                *(
+                    claim.root
+                    for claim in ledger.claims
+                    if claim.kind is _build_record.BuildClaimKind.PRODUCT
+                ),
+            ),
+            published_output=output.path,
         )
         return _build_record.write_record(record, key, ledger, output=output)
     except Exception as error:  # noqa: BLE001 - the build already succeeded
@@ -238,8 +252,20 @@ def _with_early_cutoff(
         if cutoff is None:
             return build_function(request)
         key, record = cutoff
-        change = _build_record.check(record, key)
+        from molt.cli.build_output_layout import _replay_build_claim
+
+        change = _build_record.check(
+            record,
+            key,
+            claim=_replay_build_claim,
+            require_result=request.json_output,
+        )
         if isinstance(change, _build_record.BuildRecordHit):
+            if request.json_output:
+                from molt.cli.build_results import _emit_reused_native_build_result
+
+                assert change.result is not None
+                return _emit_reused_native_build_result(change.result)
             _success(
                 f"Successfully built {change.output} (inputs unchanged)",
                 file=sys.stderr,
@@ -251,7 +277,8 @@ def _with_early_cutoff(
         if not first:
             return build_function(request)
         with _build_record.recording(
-            _build_record.transient_root(_default_molt_cache())
+            _build_record.transient_root(_default_molt_cache()),
+            capture_result=request.json_output,
         ) as ledger:
             result = build_function(request)
         if result == 0:

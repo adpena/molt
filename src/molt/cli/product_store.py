@@ -54,6 +54,7 @@ from molt.cli.generation_store import (
     used_within,
 )
 from molt.dx import product_store_dir
+from molt import input_report
 from molt.file_deletion import delete_path
 
 LAYOUT_VERSION = "v1"
@@ -190,6 +191,22 @@ class ProductStore:
             and not child.is_symlink()
         )
 
+    def _report_build_use(self, identity: str) -> None:
+        if not input_report.result_active():
+            return
+        from molt.build_record import BuildClaimKind, RecordedBuildClaim
+
+        try:
+            input_report.report_build_claim(
+                RecordedBuildClaim.capture(
+                    BuildClaimKind.PRODUCT,
+                    self.root,
+                    product_identity=identity,
+                ).payload()
+            )
+        except (OSError, ValueError) as exc:
+            input_report.refuse(f"product use cannot be recorded: {exc}")
+
     def record_use(self, identity: str) -> bool:
         """Renew ``identity`` before reading it; False when the store lacks it.
 
@@ -202,7 +219,10 @@ class ProductStore:
         """
         entry = self.entry(identity)
         if used_within(self.root, _LEDGER, identity, PRODUCT_STORE_RENEWAL_SECONDS):
-            return entry.is_dir()
+            present = entry.is_dir()
+            if present:
+                self._report_build_use(identity)
+            return present
         if not entry.is_dir():
             return False
         try:
@@ -212,6 +232,7 @@ class ProductStore:
                 ledger.use(identity)
         except RuntimeError as exc:  # the ledger lock timed out
             raise OSError(str(exc)) from exc
+        self._report_build_use(identity)
         return True
 
     def retain(self, identity: str) -> tuple[str, ...]:
@@ -228,6 +249,7 @@ class ProductStore:
                     delete_path(aside)
         except RuntimeError as exc:  # the ledger lock timed out
             raise OSError(str(exc)) from exc
+        self._report_build_use(identity)
         return evicted
 
     @contextmanager
