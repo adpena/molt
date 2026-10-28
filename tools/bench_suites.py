@@ -73,6 +73,7 @@ BENCHMARKS: tuple[str, ...] = (
     "tests/benchmarks/bench_dict_comprehension.py",
     "tests/benchmarks/bench_procedural_gen.py",
     "tests/benchmarks/bench_import_time.py",
+    "tests/benchmarks/bench_import_dotted_time.py",
 )
 
 SMOKE_BENCHMARKS: tuple[str, ...] = (
