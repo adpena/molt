@@ -44,7 +44,10 @@ pub use find_spec::{
     molt_importlib_admit_spec, molt_importlib_filefinder_find_spec,
     molt_importlib_find_in_path_package_context, molt_importlib_find_spec,
 };
-pub(crate) use import_transaction::importlib_import_resolved_attempt;
+pub(crate) use import_transaction::{ImportlibImportMode, importlib_import_resolved_attempt};
+pub(super) use import_transaction::{
+    ImportlibTransactionReturn, importlib_import_resolved_transaction,
+};
 pub use import_transaction::{
     molt_importlib_export_attrs, molt_importlib_import_module, molt_importlib_import_optional,
     molt_importlib_import_or_fallback, molt_importlib_import_required,

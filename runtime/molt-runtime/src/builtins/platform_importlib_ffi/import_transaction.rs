@@ -306,7 +306,7 @@ pub(super) struct ImportlibModuleStateArgs {
     pub(super) module_spec_cls_bits: u64,
 }
 
-enum ImportlibTransactionReturn<'a> {
+pub(in super::super) enum ImportlibTransactionReturn<'a> {
     Leaf,
     Dunder {
         requested_name: &'a str,
@@ -315,23 +315,22 @@ enum ImportlibTransactionReturn<'a> {
     },
 }
 
-fn importlib_import_resolved_transaction(
+pub(in super::super) fn importlib_import_resolved_transaction(
     _py: &PyToken<'_>,
     resolved: &str,
     modules_ptr: *mut u8,
     return_plan: ImportlibTransactionReturn<'_>,
 ) -> Result<u64, u64> {
     let resolved_key_bits = alloc_str_bits(_py, resolved)?;
-    if let Err(err) = importlib_import_parent_chain(_py, resolved, modules_ptr) {
-        dec_ref_bits(_py, resolved_key_bits);
-        return Err(err);
-    }
     let leaf_bits = importlib_import_resolved_module(
         _py,
         resolved,
         resolved_key_bits,
         modules_ptr,
-        matches!(return_plan, ImportlibTransactionReturn::Leaf),
+        match &return_plan {
+            ImportlibTransactionReturn::Leaf => ImportlibImportMode::Python,
+            ImportlibTransactionReturn::Dunder { .. } => ImportlibImportMode::Builtin,
+        },
     );
     dec_ref_bits(_py, resolved_key_bits);
     if exception_pending(_py) {
@@ -677,12 +676,30 @@ pub(super) fn importlib_none_in_modules_error(
     )
 }
 
+/// Only actual importer protocols may reach cold loading. CGetModule remains
+/// a cache-only policy and cannot be supplied to this boundary.
+#[derive(Clone, Copy)]
+pub(crate) enum ImportlibImportMode {
+    Python,
+    Builtin,
+}
+
+impl ImportlibImportMode {
+    fn cache_policy(self) -> crate::builtins::module_table::ModuleImportPolicy {
+        use crate::builtins::module_table::ModuleImportPolicy;
+        match self {
+            Self::Python => ModuleImportPolicy::Python,
+            Self::Builtin => ModuleImportPolicy::CImport,
+        }
+    }
+}
+
 pub(crate) fn importlib_import_resolved_attempt(
     _py: &PyToken<'_>,
     resolved: &str,
     resolved_key_bits: u64,
     modules_ptr: *mut u8,
-    policy: crate::builtins::module_table::ModuleImportPolicy,
+    import_mode: ImportlibImportMode,
 ) -> Result<crate::builtins::modules::ModuleImportOutcome, u64> {
     use crate::builtins::modules::ModuleImportOutcome;
     let cached_bits = importlib_dict_get_raw_key_bits(_py, modules_ptr, resolved_key_bits)?;
@@ -703,7 +720,7 @@ pub(crate) fn importlib_import_resolved_attempt(
             Some(resolved_key_bits),
             MoltObject::from_ptr(modules_ptr).bits(),
             cached_bits,
-            policy,
+            import_mode.cache_policy(),
         ) {
             Ok(crate::builtins::module_table::CachedModuleOutcome::Return(bits)) => {
                 return Ok(ModuleImportOutcome::Imported(bits));
@@ -723,14 +740,14 @@ pub(crate) fn importlib_import_resolved_attempt(
                     resolved,
                     resolved_key_bits,
                     modules_ptr,
-                    policy,
+                    import_mode,
                 );
             }
             Err(error) => return Err(error),
         }
     }
 
-    match importlib_import_via_spec(_py, resolved, resolved_key_bits, modules_ptr)? {
+    match importlib_import_via_spec(_py, resolved, resolved_key_bits, modules_ptr, import_mode)? {
         Some(bits) => Ok(ModuleImportOutcome::Imported(bits)),
         None => Ok(ModuleImportOutcome::Missing {
             diagnostic_name: resolved.to_owned(),
@@ -743,14 +760,9 @@ pub(super) fn importlib_import_resolved_module(
     resolved: &str,
     name: u64,
     modules: *mut u8,
-    strict_spec_probe: bool,
+    import_mode: ImportlibImportMode,
 ) -> u64 {
-    let policy = if strict_spec_probe {
-        crate::builtins::module_table::ModuleImportPolicy::Python
-    } else {
-        crate::builtins::module_table::ModuleImportPolicy::CImport
-    };
-    match importlib_import_resolved_attempt(py, resolved, name, modules, policy) {
+    match importlib_import_resolved_attempt(py, resolved, name, modules, import_mode) {
         Ok(crate::builtins::modules::ModuleImportOutcome::Imported(bits)) => bits,
         Ok(crate::builtins::modules::ModuleImportOutcome::Missing { .. }) => {
             crate::builtins::exceptions::raise_module_not_found(
@@ -761,48 +773,6 @@ pub(super) fn importlib_import_resolved_module(
         }
         Err(error) => error,
     }
-}
-
-pub(super) fn importlib_import_parent_chain(
-    _py: &PyToken<'_>,
-    resolved: &str,
-    modules_ptr: *mut u8,
-) -> Result<(), u64> {
-    let mut search_from = 0usize;
-    while let Some(offset) = resolved[search_from..].find('.') {
-        let dot = search_from + offset;
-        let parent_name = &resolved[..dot];
-        if !parent_name.is_empty() {
-            let parent_key_bits = alloc_str_bits(_py, parent_name)?;
-            let parent_bits = importlib_import_resolved_module(
-                _py,
-                parent_name,
-                parent_key_bits,
-                modules_ptr,
-                false,
-            );
-            if exception_pending(_py) {
-                dec_ref_bits(_py, parent_key_bits);
-                if !obj_from_bits(parent_bits).is_none() {
-                    dec_ref_bits(_py, parent_bits);
-                }
-                return Err(MoltObject::none().bits());
-            }
-            if obj_from_bits(parent_bits).is_none() {
-                let error = crate::builtins::exceptions::raise_module_not_found(
-                    _py,
-                    format!("No module named '{parent_name}'").as_bytes(),
-                    parent_key_bits,
-                );
-                dec_ref_bits(_py, parent_key_bits);
-                return Err(error);
-            }
-            dec_ref_bits(_py, parent_key_bits);
-            dec_ref_bits(_py, parent_bits);
-        }
-        search_from = dot + 1;
-    }
-    Ok(())
 }
 
 pub(super) fn importlib_transaction_package_from_globals(
@@ -1041,8 +1011,13 @@ fn importlib_transaction_no_fromlist_value(
     let out = if level == 0 {
         // A false fromlist may mutate sys.modules. Absolute imports perform
         // the ordinary top-level import again, including finder/error policy.
-        let bits =
-            importlib_import_resolved_module(_py, return_name, return_key_bits, modules_ptr, false);
+        let bits = importlib_import_resolved_module(
+            _py,
+            return_name,
+            return_key_bits,
+            modules_ptr,
+            ImportlibImportMode::Builtin,
+        );
         if exception_pending(_py) {
             if !obj_from_bits(bits).is_none() {
                 dec_ref_bits(_py, bits);

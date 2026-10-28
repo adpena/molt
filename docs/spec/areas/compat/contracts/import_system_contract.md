@@ -115,6 +115,23 @@ and raise `KeyError` for a removed entry. The result owns one reference even whe
 multiple cache keys alias the leaf. Result selection uses borrowed name slices;
 it adds no name allocation or dictionary read for empty or undotted requests.
 
+An initialized cached leaf is observed before parent resolution. A missing or
+`None` parent cannot invalidate that hit. The locked cold owner resolves only
+the immediate parent and rechecks child publication before reading parent
+metadata. Parent imports reuse the caller's Python or builtin transaction;
+cache-only lookup cannot enter this owner. Recursive parent admission uses the
+existing execution-stack limit and adds no charge to a warm hit.
+
+The cold protocol follows the admitted Python target: 3.12 accepts a
+parent-published child value including `None`; 3.13 and 3.14 accept non-`None`
+values, inspect the retained parent spec's initialization state after its path,
+and recheck the child after an initializing-parent import. The observed parent,
+path and spec survive finder and loader callbacks. Fresh child publication
+acquires the current parent before retiring its prior owner; a removed parent
+raises `KeyError`. This preserves callback ordering even when retirement changes
+the public dictionary. Private circular-child tracking and broader concurrency
+qualification remain open; this contract does not qualify the 3.15 source pin.
+
 Public argument validation and `importlib.util.resolve_name` precede finder
 discovery and require no host filesystem authority. Following
 [CPython's pinned import_module](https://github.com/python/cpython/blob/v3.12.13/Lib/importlib/__init__.py)

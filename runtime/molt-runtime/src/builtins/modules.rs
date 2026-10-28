@@ -888,7 +888,7 @@ pub(crate) fn module_import_attempt(name_bits: u64) -> Result<ModuleImportOutcom
             &name,
             name_bits,
             pointer,
-            crate::builtins::module_table::ModuleImportPolicy::CImport,
+            crate::builtins::platform::ImportlibImportMode::Builtin,
         )
     })
 }

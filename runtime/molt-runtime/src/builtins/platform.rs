@@ -1934,11 +1934,18 @@ fn importlib_module_support_bits(
     }
 }
 
+#[derive(Clone, Copy)]
+enum ImportlibColdParentPolicy {
+    Membership,
+    NonNoneAndInitializingParent,
+}
+
 fn importlib_import_via_spec(
     _py: &PyToken<'_>,
     resolved: &str,
     resolved_bits: u64,
     modules_ptr: *mut u8,
+    import_mode: ImportlibImportMode,
 ) -> Result<Option<u64>, u64> {
     let _execution =
         match crate::builtins::module_table::ModuleExecutionGuard::acquire(_py, resolved) {
@@ -1960,15 +1967,60 @@ fn importlib_import_via_spec(
     }
 
     use crate::builtins::exceptions::ExceptionValue;
-    let parent_path = if let Some((parent, _)) = resolved.rsplit_once('.') {
-        let parent_key = ExceptionValue::adopt(_py, alloc_str_bits(_py, parent)?);
+    // The admitted target authority owns version selection. Pinned 3.12 uses
+    // membership; pinned 3.13/3.14 add a parent wait and non-None rechecks.
+    let cold_parent_policy = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
+        ImportlibColdParentPolicy::NonNoneAndInitializingParent
+    } else {
+        ImportlibColdParentPolicy::Membership
+    };
+    let (parent_owner, _parent_spec_owner, parent_path) = if let Some((parent_name, _)) = resolved
+        .rsplit_once('.')
+        .filter(|(parent, _)| !parent.is_empty())
+    {
+        let parent_key = ExceptionValue::adopt(_py, alloc_str_bits(_py, parent_name)?);
+        // Reuse the caller's actual parent-import protocol. _gcd_import returns
+        // the leaf; import.c passes the saved builtin __import__, including its
+        // false-fromlist dotted-root return/reimport before discarding it.
+        let import_parent = || -> Result<(), u64> {
+            // Missing package prefixes recurse through this same cold owner.
+            // Charge the existing execution-stack limit before descending.
+            let Some(_depth) = crate::state::recursion::RecursionGuard::enter(_py) else {
+                return Err(MoltObject::none().bits());
+            };
+            let return_plan = match import_mode {
+                ImportlibImportMode::Python => ImportlibTransactionReturn::Leaf,
+                ImportlibImportMode::Builtin => ImportlibTransactionReturn::Dunder {
+                    requested_name: parent_name,
+                    level: 0,
+                    fromlist_bits: MoltObject::none().bits(),
+                },
+            };
+            let imported = ExceptionValue::adopt(
+                _py,
+                importlib_import_resolved_transaction(_py, parent_name, modules_ptr, return_plan)?,
+            );
+            drop(imported);
+            Ok(())
+        };
+        // Parent admission belongs to this locked cold miss. A cached leaf
+        // never observes its parents, and a present None parent is not absent.
+        if importlib_dict_get_string_key_bits(_py, modules_ptr, parent_key.bits())?.is_none() {
+            import_parent()?;
+        }
+        // Parent execution and return-owner retirement may publish the child.
+        // 3.12 returns even None; 3.13/3.14 continue loading when it is None.
+        if let Some(existing_bits) =
+            importlib_dict_get_string_key_bits(_py, modules_ptr, resolved_bits)?
+            && (matches!(cold_parent_policy, ImportlibColdParentPolicy::Membership)
+                || !obj_from_bits(existing_bits).is_none())
+        {
+            inc_ref_bits(_py, existing_bits);
+            return Ok(Some(existing_bits));
+        }
         let parent = importlib_dict_get_string_key_bits(_py, modules_ptr, parent_key.bits())?
             .ok_or_else(|| {
-                crate::builtins::exceptions::raise_module_not_found(
-                    _py,
-                    format!("No module named {parent:?}").as_bytes(),
-                    parent_key.bits(),
-                )
+                crate::builtins::exceptions::raise_key_error_with_key::<u64>(_py, parent_key.bits())
             })?;
         let parent = ExceptionValue::pin(_py, parent);
         let key = intern_runtime_static_name(_py, b"__path__");
@@ -2029,9 +2081,42 @@ fn importlib_import_via_spec(
                 return Err(MoltObject::none().bits());
             }
         };
-        Some(ExceptionValue::adopt(_py, bits))
+        let path = ExceptionValue::adopt(_py, bits);
+        let spec_key = intern_runtime_static_name(_py, b"__spec__");
+        if spec_key == 0 {
+            return Err(MoltObject::none().bits());
+        }
+        // This is a required read after __path__, not the optional module
+        // cache probe. Retain this exact spec through finder/loader callbacks.
+        let parent_spec = ExceptionValue::adopt(
+            _py,
+            crate::builtins::attributes::get_attr_name(_py, parent.bits(), spec_key)
+                .map_err(|()| MoltObject::none().bits())?,
+        );
+        if matches!(
+            cold_parent_policy,
+            ImportlibColdParentPolicy::NonNoneAndInitializingParent
+        ) {
+            if spec_is_initializing(
+                _py,
+                parent_spec.bits(),
+                crate::builtins::module_table::ModuleImportPolicy::Python,
+            )? {
+                import_parent()?;
+            }
+            // Path/spec/flag callbacks can publish the child even when the
+            // parent is not initializing. This second check is unconditional.
+            if let Some(existing_bits) =
+                importlib_dict_get_string_key_bits(_py, modules_ptr, resolved_bits)?
+                && !obj_from_bits(existing_bits).is_none()
+            {
+                inc_ref_bits(_py, existing_bits);
+                return Ok(Some(existing_bits));
+            }
+        }
+        (Some(parent), Some(parent_spec), Some(path))
     } else {
-        None
+        (None, None, None)
     };
     let spec_bits = importlib_find_spec_impl(
         _py,
@@ -2061,7 +2146,9 @@ fn importlib_import_via_spec(
     let out_bits = result?;
     // This branch executed a fresh spec. Cache hits and explicit loader/reload
     // transactions never reach its parent-publication operation.
-    if let Err(error) = importlib_bind_submodule_on_parent(_py, resolved, out_bits, modules_ptr) {
+    if let Err(error) =
+        importlib_bind_submodule_on_parent(_py, resolved, out_bits, modules_ptr, parent_owner)
+    {
         dec_ref_bits(_py, out_bits);
         return Err(error);
     }
@@ -2544,26 +2631,28 @@ fn importlib_bind_submodule_on_parent(
     resolved: &str,
     module_bits: u64,
     modules_ptr: *mut u8,
+    previous_parent: Option<crate::builtins::exceptions::ExceptionValue<'_, '_>>,
 ) -> Result<(), u64> {
-    if obj_from_bits(module_bits).is_none() {
-        return Ok(());
-    }
     let Some((parent_name, child_name)) = resolved.rsplit_once('.') else {
         return Ok(());
     };
-    if parent_name.is_empty() || child_name.is_empty() {
+    if parent_name.is_empty() {
         return Ok(());
     }
 
-    let parent_key_bits = alloc_str_bits(_py, parent_name)?;
-    let parent = importlib_dict_get_string_key_bits(_py, modules_ptr, parent_key_bits);
-    dec_ref_bits(_py, parent_key_bits);
-    let Some(parent_bits) = parent? else {
-        return Ok(());
-    };
+    use crate::builtins::exceptions::ExceptionValue;
+    let parent_key = ExceptionValue::adopt(_py, alloc_str_bits(_py, parent_name)?);
+    let parent_bits = importlib_dict_get_string_key_bits(_py, modules_ptr, parent_key.bits())?
+        .ok_or_else(|| {
+            crate::builtins::exceptions::raise_key_error_with_key::<u64>(_py, parent_key.bits())
+        })?;
+    let parent_owner = ExceptionValue::pin(_py, parent_bits);
+    // Python's parent_module reassignment acquires the fresh cache owner before
+    // retiring the earlier observation; its finalizer may mutate the cache.
+    drop(previous_parent);
     crate::builtins::modules::publish_import_child(
         _py,
-        parent_bits,
+        parent_owner.bits(),
         parent_name,
         child_name,
         module_bits,
