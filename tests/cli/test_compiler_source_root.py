@@ -532,7 +532,12 @@ def test_source_selection_does_not_redirect_translation_validation_outputs(
 
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path / "read-only-source"))
     output = tmp_path / "artifacts"
-    assert tv_hooks._temp_root({"MOLT_EXT_ROOT": str(output)}) == output / "tmp"
+    selected = tv_hooks._temp_root({"MOLT_EXT_ROOT": str(output)})
+    # The checkout's owned scratch root under the artifact root (HF-435).
+    assert selected.parent == output / "tmp"
+    assert selected.name.startswith("scratch-")
+    monkeypatch.delenv("MOLT_SOURCE_ROOT")
+    assert tv_hooks._temp_root({"MOLT_EXT_ROOT": str(output)}) == selected
     assert tv_hooks._temp_root({"MOLT_DIFF_TMPDIR": str(output)}) == output
 
 

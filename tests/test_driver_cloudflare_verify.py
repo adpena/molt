@@ -131,19 +131,17 @@ def test_thin_adapter_run_wrangler_dry_run_assembles_command(
     )
 
     assert result.returncode == 0
+    outdir = Path(captured["cmd"][4])
+    # The checkout's owned scratch root under the artifact root (HF-435).
+    scratch, *rest = outdir.relative_to(artifacts.resolve() / "tmp").parts
+    assert scratch.startswith("scratch-")
+    assert rest == ["drivers", "cloudflare", "session", "dry-run"]
     assert captured["cmd"] == [
         "wrangler",
         "deploy",
         "--dry-run",
         "--outdir",
-        str(
-            artifacts.resolve()
-            / "tmp"
-            / "drivers"
-            / "cloudflare"
-            / "session"
-            / "dry-run"
-        ),
+        str(outdir),
         "--config",
         str(wrangler_config),
     ]

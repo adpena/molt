@@ -1477,11 +1477,26 @@ The design extends `molt.checkout_state`; it adds no second authority.
    products, while soft retirement adds seven recoverable days. This is a
    retention choice from observed accumulation, not a measured reuse optimum.
 
-   A complete metadata walk observes every descendant's activity, bytes and
-   held lock, including writes that leave all ancestor mtimes unchanged.
-   It never follows links or reads payload bytes. Recent use, a protected
-   path, an external checkout-state use lock, a held descendant lock or an
-   unresolved guard marker whose coordinates cover the root keeps it. The
+   A constructor root, whose owner record binds and whose last-use stamp is
+   a regular file, follows the use protocol of 2.6: every managed use holds
+   the root's external use lock for its lifetime and refreshes the stamp
+   when it starts and ends, at most once an hour. Its last use is the
+   newer of the root's and the stamp's mtimes, and that stamp decides it
+   without a walk (HF-528), as Go and Cargo decide by a recorded last use.
+   The decision never lists the root, so it does not estimate the root's
+   bytes; Cargo also computes disk usage only for size-based cleaning. A
+   lock or guard marker below the root that no managed use declares is
+   outside this protocol, as raw Cargo is outside 2.6's managed custody;
+   soft retirement keeps such a root recoverable, and its final deletion
+   walks it completely.
+
+   A pre-constructor root has no cooperating writer. A complete metadata
+   walk observes every descendant's activity, bytes and held lock,
+   including writes that leave all ancestor mtimes unchanged. It never
+   follows links or reads payload bytes. For either kind, recent use, a
+   protected path, an external checkout-state use lock or an unresolved
+   guard marker whose coordinates cover the root keeps it; for a walked
+   root, so does a held descendant lock or a nested guard marker. The
    version-2 marker's typed `artifact_scope` records its source checkout, cwd,
    selected command resources, scratch declarations and guard output paths
    before launch; its published temporary-artifact target joins that scope.
@@ -1502,9 +1517,105 @@ The design extends `molt.checkout_state`; it adds no second authority.
    attributable owner scope. Malformed-owner and incompletely inventoried
    roots stay. Apply reobserves activity and protection under the existing
    exclusive state lock, then calls `soft_retire`; final deletion also
-   checks recursive activity and custody. Inventories share the daily pass's
-   existing 30-second deadline; a timeout defers the root. Dry-run reports
-   estimated bytes for each selected scratch root without changing it.
+   checks recursive activity and custody. Dry-run reports estimated bytes
+   for each selected walked root, and none for a stamped one, without
+   changing either.
+
+   Complete walks must cover every root within a known number of passes
+   (HF-528). Until then the walks shared the pass's 30-second deadline and
+   visited roots in one fixed order. On 2026-10-28 a dry run on the
+   external root spent the deadline on the first five of 1,006 entries and
+   left 879 unevaluated; the next pass would repeat the same five. Leading
+   tools bound the work of one cleanup and cover the rest in later runs:
+
+   - ccache's automatic cleanup works on one part of the cache at a time,
+     1/256 of it since 4.8 (1/16 before), so the oldest entries are not
+     always removed first, but the overall behavior approximates LRU over
+     time ([manual](https://ccache.dev/manual/latest.html),
+     [4.8 release notes](https://ccache.dev/releasenotes.html)).
+   - Cargo's global cache tracker records each entry's last use in its
+     database, adds untracked entries found by a one-level listing with the
+     time now, and computes sizes with a recursive `du` only when
+     size-based cleaning needs them
+     ([global_cache_tracker.rs](https://doc.rust-lang.org/nightly/nightly-rustc/src/cargo/workspace/global_cache_tracker.rs.html)).
+   - Go's `Trim` runs at most once a day (`trim.txt`), lists each of the
+     256 subdirectories and reads entry mtimes, which a use refreshes at
+     most once an hour; it never reads entry contents
+     ([cache.go](https://go.dev/src/cmd/go/internal/cache/cache.go)).
+   - `git gc --auto` estimates loose objects from one of 256 object
+     directories (`objects/17` against `gc.auto / 256`), and the
+     `loose-objects` maintenance task packs at most 50,000 objects per run
+     ([gc.c](https://github.com/git/git/blob/v2.47.0/builtin/gc.c),
+     [git-maintenance](https://git-scm.com/docs/git-maintenance)).
+
+   Molt takes Cargo's and Go's rule for constructor roots (the stamp
+   decides) and ccache's and git's bounded batch for walked roots.
+   `molt.checkout_state.WalkRotation` is the one scheduler of the daily
+   pass's complete walks. Its closed families are pre-constructor scratch
+   under every scope root's `tmp`, expired scratch retirements, terminal
+   agent evidence under every checkout's `logs/agents` (item 2) and
+   integration receipts. Each family's walks rotate across the whole scope,
+   and each family gets its own 30 seconds of walk time per pass, so one
+   family cannot spend another's budget. Each caller passes its own walk:
+   `disk_guard._scratch_inventory`, `disk_guard._receipt_inventory`, and,
+   for evidence, `coordination_records._evidence_inventory` and the task's
+   text checks (decoding and object-store queries); every bounded step of
+   one entry in one pass, including the applied pass's recheck, spends the
+   same budget. Constant-work decisions between walks do not spend it. A
+   family visits its entries in path order from a cursor and wraps around.
+   Agent evidence keeps one object-store stream per run of consecutive
+   tasks of one checkout, so a rotation that starts inside a checkout opens
+   at most one more stream for that checkout's first tasks. A walk that
+   the budget interrupts is deferred, and the next pass starts there with
+   the whole budget. If a pass's first walk cannot finish in the whole
+   budget, the root is kept and reported (`inventory-exceeds-pass-budget`),
+   and the cursor passes it. No partial walk or text check authorizes a
+   retirement or harvest. Each
+   pass therefore completes at least one entry, and each pass but the last
+   of a cycle spends the budget on completed walks plus at most one
+   interrupted walk, which the next pass completes first. So every entry
+   is evaluated within `min(L, 1 + 2C/B)` passes, where `L` entries need a
+   walk, `B` is the budget and `C` is the sum of their walk times (every
+   bounded step of an entry that an applied pass retires), each capped at
+   `B`. An applied pass publishes the cursors in one small record,
+   `target/.disk_guard/walk-rotation.json`, beside the guard's
+   existing interlocks; it grants no deletion authority, and a missing or
+   malformed record restarts each family at its first entry. A dry run
+   reads the record and never writes it, so it previews the next applied
+   pass. The result's `walk_rotation` reports each family's cursor, walks,
+   deferrals and walk time.
+
+   Measured on the external root on 2026-10-28, with a cold metadata cache:
+   `tmp/` held 1,420 directories, 4.09 million files and 238 GiB. The 14
+   stamped roots (0.41 GiB) need no walk. 882 pre-constructor roots need
+   one: 3.55 million files and 175 GiB, 679 seconds of walking. 832 of them
+   walk in under a second; seven take longer than 30 seconds (37.7 GiB, up
+   to 75 seconds). With `B` = 30 seconds, `C` = 545 seconds and the bound is
+   37 passes; a replay of `WalkRotation` over the measured costs evaluates
+   every root in 24 passes. Consecutive real dry-run passes, carrying the
+   cursor an applied pass would publish, evaluated all 1,009 scratch
+   entries in 27 passes of 31 to 42 seconds each (877 complete walks, eight
+   over budget). Before HF-528 a pass took the same time, and 879 entries
+   were never evaluated. An applied pass retires a walked root only when
+   its plan and recheck walks fit one pass, so the six roots between 15 and
+   30 seconds (10.1 GiB) and the seven over 30 seconds stay kept and
+   reported. A 150-second budget would admit every measured root; the
+   budget stays 30 seconds until the owner accepts that cost.
+
+   Cost: a stamped root's decision costs 100 metadata calls whatever its
+   size (52 `lstat`, 43 `stat`, three bounded record and lock opens and two
+   `flock` probes, measured with 16 and 1,600 files); it lists nothing below
+   the scratch container. A walked root costs one listing per directory and
+   one `lstat` per entry, plus a constant about 150 calls (1,755 calls with
+   1,600 files). Byte estimates of other classes keep one 30-second
+   deadline, and a partial estimate decides nothing. So a pass walks for at
+   most 4 x 30 seconds plus that deadline and constant work per entry,
+   against one shared 30 seconds before: the named price of a progress
+   guarantee for each family. Families with nothing to walk cost nothing;
+   on 2026-10-28 the internal root's 1,125 evidence entries took 6.3
+   seconds of evidence walks and 3.0 seconds of receipt walks in one dry
+   run, with nothing deferred. Reading and publishing the record is one
+   bounded read and, only when a cursor moves, one reconstructible write.
 
    Existing checkout-owned `build-control`, `pytest-cache` and `hypothesis`
    containers, memory-guard control/evidence, guard-scratch `gs`/`pt-*`,
@@ -1600,9 +1711,10 @@ candidate text file once and checks it against the object store in one lazy
 format once. It retains one at-most-1-MiB text buffer, the family's coordination snapshot and
 one task's file metadata. Restoring kept names uses hardlinks and no byte copies;
 final GC unlinks the retired names while the retained names stay. Raw payload
-bytes are never read. Recursive activity/size inventories share the
-existing 30-second inventory budget; an incomplete walk defers that task and
-reports the budget boundary. Apply rechecks recursive activity under custody.
+bytes are never read. A task's walks and text checks spend the
+`agent-evidence` family's walk budget (item 1, HF-528); an incomplete one
+defers that task, the next pass resumes there, and nothing moves. Apply
+rechecks recursive activity under custody.
 Dry-run reports one line and estimated payload bytes per selected task and
 per other retirement class. Renamed bytes and actual free-space deltas remain
 separate observations. A failure writes one file instead of

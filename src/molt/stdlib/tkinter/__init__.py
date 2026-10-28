@@ -116,6 +116,7 @@ _TK_CALL = _require_tk_callable("call")
 # _unwrap_app -> intrinsic chain (4 Python calls) down to a single intrinsic call
 # — the per-call function-invocation overhead is the dominant tkinter tax.
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call")
+del _require_intrinsic
 _TK_BIND_REGISTER = _require_tk_callable("bind_register")
 _TK_BIND_UNREGISTER = _require_tk_callable("bind_unregister")
 _TK_DESTROY_WIDGET = _require_tk_callable("destroy_widget")

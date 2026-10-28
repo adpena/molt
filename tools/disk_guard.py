@@ -64,9 +64,12 @@ DESIGN (deterministic + idempotent reclamation, separate from admission):
     (``molt.checkout_state.superseded_layout_paths``, design 56 section 2.8)
     under the same custody.
     Lane-owned and pre-constructor scratch under ``<root>/tmp`` uses
-    ``MOLT_SCRATCH_IDLE_DAYS`` (default three days), recursive activity and
-    the same soft retirement. Existing control namespaces keep their rules;
-    an open guard marker keeps only its own checkout and resource coordinates.
+    ``MOLT_SCRATCH_IDLE_DAYS`` (default three days) and the same soft
+    retirement. A lane root's last-use stamp decides it without a walk; a
+    pre-constructor root needs a complete walk, and complete walks resume
+    across passes from a persisted cursor (HF-528). Existing control
+    namespaces keep their rules; an open guard marker keeps only its own
+    checkout and resource coordinates.
 
   * ``--retire-cargo-incremental`` is a separate explicit review operation for
     successful pinned-session profile caches. It is never discovered by GC or
@@ -93,6 +96,8 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
+from functools import partial
+from itertools import groupby
 from pathlib import Path
 from typing import Callable, Iterable, Literal, Mapping, Sequence
 
@@ -147,6 +152,8 @@ from molt.checkout_state import (  # noqa: E402
     soft_retire,
     session_target_dirs,
     target_build_control_dirs,
+    WalkIncomplete,
+    WalkRotation,
 )
 from molt.file_deletion import delete_path  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
@@ -1098,6 +1105,8 @@ class ReclaimResult:
     deletion_elapsed_s: dict[str, float] = field(default_factory=dict)
     retirement_elapsed_s: dict[str, float] = field(default_factory=dict)
     retirements: dict[str, str] = field(default_factory=dict)
+    # Per walk family: where its complete walks started and resume.
+    walk_rotation: dict[str, dict] = field(default_factory=dict)
 
     @property
     def reclaimed_bytes(self) -> int:
@@ -1113,6 +1122,7 @@ class ReclaimResult:
             "deletion_elapsed_s": self.deletion_elapsed_s,
             "retirement_elapsed_s": self.retirement_elapsed_s,
             "retirements": self.retirements,
+            "walk_rotation": self.walk_rotation,
             "root": self.root,
             "scope_roots": self.scope_roots,
             "mode": self.mode,
@@ -1344,8 +1354,13 @@ def gc(
     result.phase_elapsed_s["setup"] = _elapsed_since(started)
     guards = _guard_protection(scope_roots)
     result.custody = guards.report()
-    # Reuse the existing inventory budget; evidence adds no unbounded walk.
-    inventory_deadline = time.monotonic() + 30.0
+    # Byte estimates share one 30-second deadline; a partial size decides
+    # nothing.
+    size_deadline = time.monotonic() + 30.0
+    # Each family of complete walks (scratch, retired scratch, agent
+    # evidence, integration receipts) has its own walk budget and resumes
+    # where the last applied pass stopped (HF-528).
+    walks = WalkRotation.load(resolved_root)
     phase_started = time.monotonic()
     _collect_retired_roots(
         scope_roots,
@@ -1353,7 +1368,7 @@ def gc(
         env=env,
         now=now,
         apply=apply,
-        deadline=inventory_deadline,
+        walks=walks,
         guards=guards,
     )
     result.phase_elapsed_s["retired-roots"] = _elapsed_since(phase_started)
@@ -1365,7 +1380,7 @@ def gc(
         env=env,
         now=now,
         apply=apply,
-        deadline=inventory_deadline,
+        walks=walks,
         protected=protected,
     )
     result.phase_elapsed_s["evidence"] = _elapsed_since(phase_started)
@@ -1377,9 +1392,16 @@ def gc(
         now_fn=now_fn,
         limits=limits,
         apply=apply,
-        deadline=inventory_deadline,
+        walks=walks,
         guards=guards,
     )
+    result.walk_rotation = walks.report()
+    if apply:
+        try:
+            walks.publish()
+        except (OSError, ValueError) as error:
+            # The previous cursor stays; the next pass repeats this window.
+            result.errors.append(f"{walks.record}: {error}")
     result.phase_elapsed_s["scratch"] = _elapsed_since(phase_started)
     phase_started = time.monotonic()
     candidates = [
@@ -1407,7 +1429,7 @@ def gc(
 
     def reclaim(planned: list[Candidate]) -> None:
         for cand in planned:
-            size = _dir_size(cand.path, inventory_deadline)
+            size = _dir_size(cand.path, size_deadline)
             if apply:
                 if not cand.path.exists():
                     continue  # A session target went with its checkout target.
@@ -1508,7 +1530,7 @@ def gc(
             apply=apply,
             retired=collected_norms,
             protected=protected,
-            deadline=inventory_deadline,
+            deadline=size_deadline,
             guards=guards,
         )
     result.phase_elapsed_s["superseded-layouts"] = _elapsed_since(phase_started)
@@ -1578,9 +1600,19 @@ def _collect_scratch(
     now_fn: Callable[[], float],
     limits: RetentionLimits,
     apply: bool,
-    deadline: float,
+    walks: WalkRotation,
     guards: _GuardProtection,
 ) -> None:
+    """Retire idle scratch: stamped roots by their stamp, legacy roots by a walk.
+
+    A root whose owner record binds and whose last-use stamp is a regular
+    file follows the HF-435 use protocol: every managed use holds its
+    external use lock for its lifetime and refreshes the stamp when it
+    starts and ends (at most once an hour). Its stamp decides it, as Go and
+    Cargo trust a recorded last use: a fixed number of metadata calls, no
+    walk and no byte estimate. A legacy root has no cooperating writer, so
+    only a complete walk (`molt.checkout_state.WalkRotation`) can prove it idle and size it.
+    """
     from molt.checkout_state import (
         LAST_USE_STAMP,
         OWNER_RECORD,
@@ -1589,110 +1621,127 @@ def _collect_scratch(
     from molt.file_publication import resolve_owned_path
 
     protected = _protected_paths(scope_roots, env)
+    children: dict[str, tuple[Path, Path]] = {}
     for root in scope_roots:
         container = disk_scratch_roots_of(root)[0]
         if container.is_symlink():
             continue
         try:
             with os.scandir(container) as entries:
-                children = [
-                    Path(entry.path)
+                children.update(
+                    (entry.path, (root, Path(entry.path)))
                     for entry in entries
                     if entry.is_dir(follow_symlinks=False)
-                ]
+                )
         except OSError:
             continue
-        for path in sorted(children):
-            if (
-                path.name.casefold() in PROTECTED_TARGET_NAMES
-                or checkout_state_kind_of(path, root) != "scratch"
+    for key in walks.order("scratch", children):
+        root, path = children[key]
+        if (
+            path.name.casefold() in PROTECTED_TARGET_NAMES
+            or checkout_state_kind_of(path, root) != "scratch"
+        ):
+            continue
+
+        def observe(*, recheck: bool = False) -> tuple[int | None, str | None]:
+            resolve_owned_path(path)
+            owner = read_checkout_owner(path)
+            if os.path.lexists(path / OWNER_RECORD) and owner is None:
+                return None, "invalid-owner"
+            if owner is not None and owner.kind != "scratch":
+                return None, "other-state-owner"
+            if _is_protected(
+                path, _protected_paths(scope_roots, env) if recheck else protected
             ):
-                continue
-
-            def observe(*, recheck: bool = False) -> tuple[int, str | None]:
-                resolve_owned_path(path)
-                owner = read_checkout_owner(path)
-                if os.path.lexists(path / OWNER_RECORD) and owner is None:
-                    return 0, "invalid-owner"
-                if owner is not None and owner.kind != "scratch":
-                    return 0, "other-state-owner"
-                if _is_protected(
-                    path, _protected_paths(scope_roots, env) if recheck else protected
-                ):
-                    return 0, "protected"
-                protection = _guard_protection(scope_roots) if recheck else guards
-                if protection.protects(path, root):
-                    if recheck:
-                        result.custody = protection.report()
-                    return 0, "active-guard"
-                if not recheck and any(
-                    _region_locked(lock) for lock in checkout_state_lock_paths(path)
-                ):
-                    return 0, "state-in-use"
-                # Constant-work precheck: even an immediate-child inventory
-                # can be huge. Every descendant walk must share the deadline.
-                newest = path.lstat().st_mtime
-                try:
-                    newest = max(newest, (path / LAST_USE_STAMP).lstat().st_mtime)
-                except FileNotFoundError:
-                    pass
-                if (
-                    checkout_state_decision(
-                        path, root, now=now_fn(), limits=limits, last_use=newest
-                    )
-                    is None
-                ):
-                    return 0, "recent-use"
-                inventory = _scratch_inventory(path, deadline)
-                size, newest = inventory.size, inventory.mtime
-                _include_guard_custody(result, inventory.guards, path)
-                if (
-                    inventory.lock_held
-                    or inventory.guards
-                    or _root_lock_held(path, scope_roots)
-                ):
-                    return size, "lock-or-guard-held"
-                if (
-                    checkout_state_decision(
-                        path, root, now=now_fn(), limits=limits, last_use=newest
-                    )
-                    is None
-                ):
-                    return size, "recent-use"
-                return size, None
-
+                return None, "protected"
+            protection = _guard_protection(scope_roots) if recheck else guards
+            if protection.protects(path, root):
+                if recheck:
+                    result.custody = protection.report()
+                return None, "active-guard"
+            if not recheck and any(
+                _region_locked(lock) for lock in checkout_state_lock_paths(path)
+            ):
+                return None, "state-in-use"
+            # Constant work: even an immediate-child listing can be huge.
+            newest = path.lstat().st_mtime
+            stamped = False
             try:
-                size, kept = observe()
-                if kept is None and apply:
-                    with checkout_state_retirement(path) as exclusive:
-                        if not exclusive:
-                            kept = "state-in-use"
-                        else:
-                            assert_safe_to_delete(path, root, ())
-                            size, kept = observe(recheck=True)
-                            if kept is None:
-                                owner = bound_checkout_owner(path, root)
-                                ok, error = _timed_retire(
-                                    path,
-                                    custody_root(root),
-                                    reason="scratch",
-                                    owner=str(owner.path if owner else root),
-                                    now=now_fn(),
-                                    result=result,
-                                )
-                                if not ok:
-                                    result.errors.append(f"{path}: {error}")
-                                    continue
-                if kept is not None:
-                    result.skipped.append(
-                        {"path": str(path), "kind": "scratch", "reason": kept}
-                    )
-                else:
-                    result.reclaimed.append(
-                        {"path": str(path), "kind": "scratch", "est_bytes": size}
-                    )
-            except (OSError, ValueError) as error:
-                result.skipped.append({"path": str(path), "reason": str(error)})
+                stamp = (path / LAST_USE_STAMP).lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                newest = max(newest, stamp.st_mtime)
+                stamped = (
+                    owner is not None
+                    and stat.S_ISREG(stamp.st_mode)
+                    and bound_checkout_owner(path, root) == owner
+                )
+            if (
+                checkout_state_decision(
+                    path, root, now=now_fn(), limits=limits, last_use=newest
+                )
+                is None
+            ):
+                return None, "recent-use"
+            if stamped:
+                return None, None
+            inventory = walks.spend("scratch", key, partial(_scratch_inventory, path))
+            size, newest = inventory.size, inventory.mtime
+            _include_guard_custody(result, inventory.guards, path)
+            if (
+                inventory.lock_held
+                or inventory.guards
+                or _root_lock_held(path, scope_roots)
+            ):
+                return size, "lock-or-guard-held"
+            if (
+                checkout_state_decision(
+                    path, root, now=now_fn(), limits=limits, last_use=newest
+                )
+                is None
+            ):
+                return size, "recent-use"
+            return size, None
+
+        try:
+            size, kept = observe()
+            if kept is None and apply:
+                with checkout_state_retirement(path) as exclusive:
+                    if not exclusive:
+                        kept = "state-in-use"
+                    else:
+                        assert_safe_to_delete(path, root, ())
+                        size, kept = observe(recheck=True)
+                        if kept is None:
+                            owner = bound_checkout_owner(path, root)
+                            ok, error = _timed_retire(
+                                path,
+                                custody_root(root),
+                                reason="scratch",
+                                owner=str(owner.path if owner else root),
+                                now=now_fn(),
+                                result=result,
+                            )
+                            if not ok:
+                                result.errors.append(f"{path}: {error}")
+                                continue
+        except WalkIncomplete as incomplete:
+            size, kept = None, incomplete.reason
+        except (OSError, ValueError) as error:
+            result.skipped.append({"path": str(path), "reason": str(error)})
+            continue
+        if kept is not None:
+            result.skipped.append(
+                {"path": str(path), "kind": "scratch", "reason": kept}
+            )
+        else:
+            # A stamped root is retired without a walk, so its bytes are
+            # unknown, as for an expired retirement's final deletion.
+            result.reclaimed.append(
+                {"path": str(path), "kind": "scratch"}
+                | ({} if size is None else {"est_bytes": size})
+            )
 
 
 def _collect_retired_roots(
@@ -1702,134 +1751,138 @@ def _collect_retired_roots(
     env: Mapping[str, str],
     now: float,
     apply: bool,
-    deadline: float,
+    walks: WalkRotation,
     guards: _GuardProtection,
 ) -> None:
     """Only a validated retirement's clock can authorize final deletion."""
     from molt.checkout_state import checkout_state_retirement
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
-    for owning_root in sorted({custody_root(root) for root in scope_roots}, key=str):
+    records: dict[str, tuple[Path, Path]] = {}
+    for owning_root in {custody_root(root) for root in scope_roots}:
         retired_dir = owning_root / RETIRED_DIR
         if retired_dir.is_symlink():
             continue
-        for date in _iter_dir(retired_dir):
-            if date.is_symlink() or not date.is_dir():
-                continue
-            for record in sorted(date.glob("*" + RETIREMENT_RECORD_SUFFIX)):
-                retirement = read_soft_retirement(record, owning_root)
+        records.update(
+            (str(record), (owning_root, record))
+            for date in _iter_dir(retired_dir)
+            if not date.is_symlink() and date.is_dir()
+            for record in date.glob("*" + RETIREMENT_RECORD_SUFFIX)
+        )
+    for key in walks.order("retired-scratch", records):
+        owning_root, record = records[key]
+        retirement = read_soft_retirement(record, owning_root)
+        if retirement is None or now - retirement.retired_at < RETIREMENT_WINDOW_S:
+            continue
+
+        def kept(
+            *,
+            integration_lock_owned: bool = False,
+            state_lock_owned: bool = False,
+        ) -> str | None:
+            protected = _protected_paths(scope_roots, env)
+            if retirement.reason == "scratch":
+                try:
+                    inventory = walks.spend(
+                        "retired-scratch",
+                        key,
+                        partial(_scratch_inventory, retirement.path),
+                    )
+                    _include_guard_custody(result, inventory.guards, retirement.path)
+                except WalkIncomplete as incomplete:
+                    return incomplete.reason
+                except (OSError, ValueError):
+                    return "lock-or-protection"
                 if (
-                    retirement is None
-                    or now - retirement.retired_at < RETIREMENT_WINDOW_S
+                    inventory.lock_held
+                    or inventory.guards
+                    or now - inventory.mtime < CHECKOUT_STATE_WINDOW_S
+                    or (
+                        not state_lock_owned
+                        and any(
+                            _region_locked(lock)
+                            for lock in checkout_state_lock_paths(retirement.original)
+                        )
+                    )
                 ):
-                    continue
-
-                def kept(
-                    *,
-                    integration_lock_owned: bool = False,
-                    state_lock_owned: bool = False,
-                ) -> bool:
-                    protected = _protected_paths(scope_roots, env)
-                    if retirement.reason == "scratch":
-                        try:
-                            inventory = _scratch_inventory(retirement.path, deadline)
-                            _include_guard_custody(
-                                result, inventory.guards, retirement.path
-                            )
-                        except (OSError, ValueError):
-                            return True
-                        if (
-                            inventory.lock_held
-                            or inventory.guards
-                            or now - inventory.mtime < CHECKOUT_STATE_WINDOW_S
-                            or (
-                                not state_lock_owned
-                                and any(
-                                    _region_locked(lock)
-                                    for lock in checkout_state_lock_paths(
-                                        retirement.original
-                                    )
-                                )
-                            )
-                        ):
-                            return True
-                    return (
-                        (
-                            guards
-                            if not state_lock_owned
-                            else _guard_protection(scope_roots)
-                        ).protects(
-                            retirement.original,
-                            owning_root,
-                            recorded_owner=Path(retirement.owner),
-                        )
-                        or _is_protected(retirement.path, protected)
-                        or _is_protected(retirement.original, protected)
-                        or _root_lock_held(retirement.path, scope_roots)
-                        or _root_lock_held(retirement.original, scope_roots)
-                        or (
-                            retirement.reason == "integration-receipt"
-                            and not integration_lock_owned
-                            and _region_locked(
-                                Path(retirement.owner) / "molt-integrate.lock"
-                            )
-                        )
-                    )
-
-                if kept():
-                    result.skipped.append(
-                        {"path": str(retirement.path), "reason": "lock-or-protection"}
-                    )
-                    continue
-                if apply:
-                    with (
-                        checkout_state_retirement(
-                            retirement.original, purged_root=retirement.path
-                        ) as exclusive,
-                        ExitStack() as locks,
-                    ):
-                        if retirement.reason == "integration-receipt":
-                            handle = _try_acquire_file_lock(
-                                Path(retirement.owner) / "molt-integrate.lock"
-                            )
-                            if handle is None:
-                                result.skipped.append(
-                                    {
-                                        "path": str(retirement.path),
-                                        "reason": "integration-in-use",
-                                    }
-                                )
-                                continue
-                            locks.callback(_release_file_lock, handle)
-                        if (
-                            not exclusive
-                            or read_soft_retirement(record, owning_root) != retirement
-                            or kept(
-                                integration_lock_owned=retirement.reason
-                                == "integration-receipt",
-                                state_lock_owned=True,
-                            )
-                        ):
-                            result.skipped.append(
-                                {
-                                    "path": str(retirement.path),
-                                    "reason": "retirement-custody-changed",
-                                }
-                            )
-                            continue
-                        ok, error = _timed_delete(
-                            retirement.path, owning_root=owning_root, result=result
-                        )
-                        if not ok:
-                            result.errors.append(f"{retirement.path}: {error}")
-                            continue
-                        try:
-                            record.unlink()
-                        except OSError as exc:
-                            result.errors.append(f"{record}: {exc}")
-                result.reclaimed.append(
-                    {"path": str(retirement.path), "kind": "expired-retirement"}
+                    return "lock-or-protection"
+            held = (
+                (
+                    guards if not state_lock_owned else _guard_protection(scope_roots)
+                ).protects(
+                    retirement.original,
+                    owning_root,
+                    recorded_owner=Path(retirement.owner),
                 )
+                or _is_protected(retirement.path, protected)
+                or _is_protected(retirement.original, protected)
+                or _root_lock_held(retirement.path, scope_roots)
+                or _root_lock_held(retirement.original, scope_roots)
+                or (
+                    retirement.reason == "integration-receipt"
+                    and not integration_lock_owned
+                    and _region_locked(Path(retirement.owner) / "molt-integrate.lock")
+                )
+            )
+            return "lock-or-protection" if held else None
+
+        reason = kept()
+        if reason is not None:
+            result.skipped.append({"path": str(retirement.path), "reason": reason})
+            continue
+        if apply:
+            with (
+                checkout_state_retirement(
+                    retirement.original, purged_root=retirement.path
+                ) as exclusive,
+                ExitStack() as locks,
+            ):
+                if retirement.reason == "integration-receipt":
+                    handle = _try_acquire_file_lock(
+                        Path(retirement.owner) / "molt-integrate.lock"
+                    )
+                    if handle is None:
+                        result.skipped.append(
+                            {
+                                "path": str(retirement.path),
+                                "reason": "integration-in-use",
+                            }
+                        )
+                        continue
+                    locks.callback(_release_file_lock, handle)
+                reason = (
+                    "retirement-custody-changed"
+                    if not exclusive
+                    or read_soft_retirement(record, owning_root) != retirement
+                    else kept(
+                        integration_lock_owned=retirement.reason
+                        == "integration-receipt",
+                        state_lock_owned=True,
+                    )
+                )
+                if reason is not None:
+                    result.skipped.append(
+                        {
+                            "path": str(retirement.path),
+                            "reason": "retirement-custody-changed"
+                            if reason == "lock-or-protection"
+                            else reason,
+                        }
+                    )
+                    continue
+                ok, error = _timed_delete(
+                    retirement.path, owning_root=owning_root, result=result
+                )
+                if not ok:
+                    result.errors.append(f"{retirement.path}: {error}")
+                    continue
+                try:
+                    record.unlink()
+                except OSError as exc:
+                    result.errors.append(f"{record}: {exc}")
+        result.reclaimed.append(
+            {"path": str(retirement.path), "kind": "expired-retirement"}
+        )
 
 
 def _receipt_inventory(receipt: Path, deadline: float) -> tuple[int, float]:
@@ -1860,9 +1913,14 @@ def _collect_evidence(
     env: Mapping[str, str],
     now: float,
     apply: bool,
-    deadline: float,
+    walks: WalkRotation,
     protected: Sequence[Path],
 ) -> None:
+    """Harvest terminal agent evidence and retire idle integration receipts.
+
+    Each family's complete walks rotate across the whole scope, so a large
+    task or receipt early in path order cannot starve the rest (HF-528).
+    """
     # Git inspection belongs to the coordination owner. The disk guard retains
     # no process-control capability; the helper only queries the object store.
     from tools.coordination_records import (
@@ -1893,18 +1951,26 @@ def _collect_evidence(
         for record in records
         if record.signature is not None
     }
-    seen_receipts: set[Path] = set()
-    for root, local_records in checkout_records.items():
+    tasks: dict[str, tuple[Path, Path]] = {}
+    for root in checkout_records:
+        log_root = root / LOG_ROOT
+        if log_root.is_dir() and not log_root.is_symlink():
+            tasks.update((str(task), (root, task)) for task in log_root.iterdir())
+    # One rotation across every checkout: consecutive keys of one checkout
+    # share one harvest and its one repository object stream.
+    ordered = walks.order("agent-evidence", tasks)
+    for root, run in groupby(ordered, key=lambda key: tasks[key][0]):
         for item in harvest_agent_evidence(
             root,
             environment=env,
-            records=local_records,
+            records=checkout_records[root],
             references=references,
             record_stamps=record_stamps,
             registry_stamps=registry_stamps,
             now=now,
             apply=apply,
-            deadline=deadline,
+            tasks=[tasks[key][1] for key in run],
+            walks=walks,
             protected=protected,
         ):
             if item.get("error"):
@@ -1915,64 +1981,93 @@ def _collect_evidence(
                 result.reclaimed.append(item)
                 if "retired_path" in item:
                     result.retirements[item["path"]] = item["retired_path"]
+
+    receipts: dict[str, tuple[Path, Path, Path]] = {}
+    seen_receipts: set[Path] = set()
+    for root in checkout_records:
         directories = git_directories(root)
         assert directories is not None
         common = directories[1]
-        receipts = common / "molt-integrate" / "receipts"
-        if receipts in seen_receipts:
+        container = common / "molt-integrate" / "receipts"
+        if container in seen_receipts:
             continue
-        seen_receipts.add(receipts)
-        if not receipts.is_dir() or _region_locked(common / "molt-integrate.lock"):
+        seen_receipts.add(container)
+        if not container.is_dir() or _region_locked(common / "molt-integrate.lock"):
             continue
-        for receipt in _iter_dir(receipts):
-            if receipt.is_symlink() or not (
-                receipt.suffix == ".json" or receipt.suffix == ".d"
-            ):
+        receipts.update(
+            (str(receipt), (root, common, receipt))
+            for receipt in _iter_dir(container)
+            if not receipt.is_symlink()
+            and (receipt.suffix == ".json" or receipt.suffix == ".d")
+        )
+    for key in walks.order("integration-receipts", receipts):
+        root, common, receipt = receipts[key]
+        try:
+            size, newest = walks.spend(
+                "integration-receipts", key, partial(_receipt_inventory, receipt)
+            )
+        except WalkIncomplete as incomplete:
+            result.skipped.append(
+                {
+                    "path": str(receipt),
+                    "kind": "integration-receipt",
+                    "reason": incomplete.reason,
+                }
+            )
+            continue
+        except (OSError, ValueError) as exc:
+            result.errors.append(f"{receipt}: {exc}")
+            continue
+        if now - newest < RETIREMENT_WINDOW_S or _is_protected(receipt, protected):
+            continue
+        if apply:
+            from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+            handle = _try_acquire_file_lock(common / "molt-integrate.lock")
+            if handle is None:
+                result.skipped.append(
+                    {"path": str(receipt), "reason": "integration-in-use"}
+                )
                 continue
             try:
-                size, newest = _receipt_inventory(receipt, deadline)
+                _, current_use = walks.spend(
+                    "integration-receipts", key, partial(_receipt_inventory, receipt)
+                )
+                if now - current_use < RETIREMENT_WINDOW_S or _is_protected(
+                    receipt, _protected_paths(scope_roots, env)
+                ):
+                    result.skipped.append(
+                        {"path": str(receipt), "reason": "receipt-use-changed"}
+                    )
+                    continue
+                ok, error = _timed_retire(
+                    receipt,
+                    custody_root(root),
+                    reason="integration-receipt",
+                    owner=str(common),
+                    now=now,
+                    result=result,
+                )
+                if not ok:
+                    result.errors.append(f"{receipt}: {error}")
+                    continue
+            except WalkIncomplete as incomplete:
+                result.skipped.append(
+                    {
+                        "path": str(receipt),
+                        "kind": "integration-receipt",
+                        "reason": incomplete.reason,
+                    }
+                )
+                continue
             except (OSError, ValueError) as exc:
                 result.errors.append(f"{receipt}: {exc}")
                 continue
-            if now - newest < RETIREMENT_WINDOW_S or _is_protected(receipt, protected):
-                continue
-            if apply:
-                from molt.file_locks import _try_acquire_file_lock, _release_file_lock
-
-                handle = _try_acquire_file_lock(common / "molt-integrate.lock")
-                if handle is None:
-                    result.skipped.append(
-                        {"path": str(receipt), "reason": "integration-in-use"}
-                    )
-                    continue
-                try:
-                    _, current_use = _receipt_inventory(receipt, deadline)
-                    if now - current_use < RETIREMENT_WINDOW_S or _is_protected(
-                        receipt, _protected_paths(scope_roots, env)
-                    ):
-                        result.skipped.append(
-                            {"path": str(receipt), "reason": "receipt-use-changed"}
-                        )
-                        continue
-                    ok, error = _timed_retire(
-                        receipt,
-                        custody_root(root),
-                        reason="integration-receipt",
-                        owner=str(common),
-                        now=now,
-                        result=result,
-                    )
-                    if not ok:
-                        result.errors.append(f"{receipt}: {error}")
-                        continue
-                except (OSError, ValueError) as exc:
-                    result.errors.append(f"{receipt}: {exc}")
-                    continue
-                finally:
-                    _release_file_lock(handle)
-            result.reclaimed.append(
-                {"path": str(receipt), "kind": "integration-receipt", "est_bytes": size}
-            )
+            finally:
+                _release_file_lock(handle)
+        result.reclaimed.append(
+            {"path": str(receipt), "kind": "integration-receipt", "est_bytes": size}
+        )
 
     # The guard's canonical incident roots are finite, external control state.
     # Explicit outputs elsewhere remain operator-owned, never a generic sweep.
@@ -2636,6 +2731,12 @@ def _print_result(result: ReclaimResult, *, as_json: bool) -> None:
             f"  free {_human(result.free_before)} -> {_human(result.free_after)} "
             f"(+{_human(max(0, result.reclaimed_bytes))})"
         )
+    for family, walks in result.walk_rotation.items():
+        print(
+            f"  {family} walks: {walks['walks']} complete in {walks['walk_s']:.1f}s, "
+            f"{walks['deferred']} deferred, {walks['exceeded']} over budget; "
+            f"cursor {walks['cursor'] or 'start'} -> {walks['next_cursor'] or 'start'}"
+        )
     for skip in result.skipped[:10]:
         print(f"  skip: {skip['path']} ({skip['reason']})")
     for err in result.errors[:10]:
@@ -2986,7 +3087,8 @@ def main(argv: list[str] | None = None) -> int:
         help="retire checkout state roots by last use "
         "(MOLT_CHECKOUT_STATE_MAX_AGE_DAYS) or a removed owner, and pinned session "
         "targets by last use (MOLT_SESSION_TARGET_IDLE_HOURS); scratch uses "
-        "MOLT_SCRATCH_IDLE_DAYS and recursive activity",
+        "MOLT_SCRATCH_IDLE_DAYS, a lane root's stamp and a legacy root's "
+        "complete walk",
     )
     ap.add_argument("--dry-run", action="store_true", help="report only; never delete")
     ap.add_argument("--json", action="store_true", help="machine-readable output")

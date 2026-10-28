@@ -475,14 +475,10 @@ def test_falcon_driver_verify_wrapper_emits_json(
         bundle_root,
     )
     dry_out = Path(commands[1][0][4])
-    assert dry_out == (
-        artifacts_root.resolve()
-        / "tmp"
-        / "drivers"
-        / "cloudflare"
-        / "falcon-portable"
-        / "dry-run"
-    )
+    # The checkout's owned scratch root under the artifact root (HF-435).
+    scratch, *rest = dry_out.relative_to(artifacts_root.resolve() / "tmp").parts
+    assert scratch.startswith("scratch-")
+    assert rest == ["drivers", "cloudflare", "falcon-portable", "dry-run"]
     assert dry_out.is_dir()
     assert commands[1] == (
         [

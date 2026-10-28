@@ -1,5 +1,5 @@
 {
-  "baseline_total": 60,
+  "baseline_total": 62,
   "entries": [
     {
       "id": "runtime/build_support/variadic_exports.rs::allow_dead_code::fn:render_rust_anchors",
@@ -17,7 +17,7 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-backend-native/src/llvm_backend/mod.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "id": "runtime/molt-backend-native/src/llvm_backend/tests.rs::allow_dead_code::mod:cargo_test_artifacts",
       "owner": "runtime-authority-closure",
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     },
@@ -300,6 +300,16 @@
       "id": "runtime/molt-tir/src/passes/constant_fold.rs::allow_dead_code::fn:fold_constants_cross_block",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-wasm-host/tests/host_diagnostics.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-authority-closure",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
+    },
+    {
+      "id": "runtime/molt-wasm-host/tests/wasi_runtime_lifecycle.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-authority-closure",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     }
   ]
 }

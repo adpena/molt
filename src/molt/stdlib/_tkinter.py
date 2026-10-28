@@ -61,6 +61,7 @@ _MOLT_TK_ERRORINFO_APPEND = _require_intrinsic("molt_tk_errorinfo_append")
 _MOLT_TK_BIND_SCRIPT_REMOVE_COMMAND = _require_intrinsic(
     "molt_tk_bind_script_remove_command"
 )
+del _require_intrinsic
 
 # CPython exports these constants from `_tkinter`; Molt currently uses fixed values.
 TK_VERSION = "8.6"

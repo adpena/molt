@@ -72,6 +72,7 @@ _MOLT_GC_UNFREEZE = _require_callable_intrinsic(
 _MOLT_GC_GET_FREEZE_COUNT = _require_callable_intrinsic(
     _require_intrinsic("molt_gc_get_freeze_count"), "molt_gc_get_freeze_count"
 )
+del _require_intrinsic
 
 DEBUG_STATS = 1
 DEBUG_COLLECTABLE = 2
