@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
-import time
 import json
 import os
 from pathlib import Path
@@ -526,61 +525,6 @@ def default_incident_summary_path(state_root: Path) -> Path:
     """Name an incident summary under the guard's state root."""
     stamp = utc_compact_timestamp()
     return state_root / "incidents" / f"{stamp}-pid{os.getpid()}.json"
-
-
-#: A record a stream has named survives at least this long (design 56
-#: section 2.9: the soft-retirement window).
-NAMED_RECORD_MIN_AGE_S = 7 * 24 * 3600
-
-
-def prune_named_records(
-    directory: Path, *, keep: int, now: float | None = None
-) -> None:
-    """Delete a record only when it is beyond the newest ``keep`` and older
-    than ``NAMED_RECORD_MIN_AGE_S``, so no record a stream named disappears
-    within the window, however many incidents follow it. A ``.json.tmp`` that
-    old is a crashed write and goes too. A failure prints one warning."""
-    if keep <= 0:
-        return
-    cutoff = (time.time() if now is None else now) - NAMED_RECORD_MIN_AGE_S
-    failures: list[str] = []
-    try:
-        dated = sorted(
-            (
-                (path.stat().st_mtime, path)
-                for path in directory.glob("*.json")
-                if path.is_file()
-            ),
-            reverse=True,
-        )
-        stale = [
-            path
-            for path in directory.glob("*.json.tmp")
-            if path.stat().st_mtime < cutoff
-        ]
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        dated, stale = [], []
-        failures.append(f"{directory}: {type(exc).__name__}: {exc}")
-    for path in [path for mtime, path in dated[keep:] if mtime < cutoff] + stale:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            failures.append(f"{path}: {type(exc).__name__}: {exc}")
-    if failures:
-        print(
-            f"memory_guard: {len(failures)} named record(s) could not be pruned; "
-            f"first: {failures[0]}",
-            file=sys.stderr,
-            flush=True,
-        )
-
-
-def prune_default_incident_summaries(directory: Path, *, keep: int) -> None:
-    prune_named_records(directory, keep=keep)
 
 
 def _publish_interactive_startup(

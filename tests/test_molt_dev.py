@@ -3490,43 +3490,63 @@ def test_a_gate_writes_its_streams_to_files_while_it_runs(drv, tmp_path):
     assert streams[1].read_text(encoding="utf-8") == "the reason\n"
 
 
-def test_idle_gate_runs_retire_and_recent_ones_stay(tmp_path):
+def test_idle_receipts_and_gate_logs_retire_together_in_daily_gc(tmp_path):
+    from tools import disk_guard
+    from tests.test_dx_run_context import _git
+    from molt.checkout_state import RETIREMENT_WINDOW_S
 
-    now = 10_000_000.0
-    window = molt_dev_gates.NAMED_RECORD_MIN_AGE_S
-    runs = {"old": window + 60, "recent": window - 60}
-    for name, age in runs.items():
-        run = tmp_path / "abc.gates.d" / name
+    main = tmp_path / "molt-src"
+    main.mkdir()
+    _git(main, "init", "-q")
+    receipts = main / ".git/molt-integrate/receipts"
+    receipts.mkdir(parents=True)
+    now = time.time()
+    for name, age in {
+        "old": RETIREMENT_WINDOW_S + 60,
+        "recent": RETIREMENT_WINDOW_S - 60,
+    }.items():
+        receipt = receipts / f"{name}.gates.json"
+        receipt.write_text("{}", encoding="utf-8")
+        run = receipts / f"{name}.gates.d/run"
         run.mkdir(parents=True)
-        (run / "gate-001.stdout.log").write_text("x", encoding="utf-8")
-        os.utime(run, (now - age, now - age))
-    gone = tmp_path / "def.precheck.d" / "old"
-    gone.mkdir(parents=True)
-    os.utime(gone, (now - window - 60, now - window - 60))
-    molt_dev_gates.retire_gate_logs(tmp_path, now=now)
-    assert [p.name for p in (tmp_path / "abc.gates.d").iterdir()] == ["recent"]
-    # A receipt directory its last run leaves empty goes with it.
-    assert not (tmp_path / "def.precheck.d").exists()
+        (run / "gate-001.stderr.log").write_text("a retained reason", encoding="utf-8")
+        for path in [receipt, run.parent, run, run / "gate-001.stderr.log"]:
+            os.utime(path, (now - age,) * 2)
+    result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+    old_receipt, old_logs = receipts / "old.gates.json", receipts / "old.gates.d"
+    assert not old_receipt.exists() and not old_logs.exists()
+    assert (
+        Path(result.retirements[str(old_receipt)]).read_text(encoding="utf-8") == "{}"
+    )
+    assert (
+        Path(result.retirements[str(old_logs)]) / "run/gate-001.stderr.log"
+    ).read_text(encoding="utf-8") == "a retained reason"
+    assert (receipts / "recent.gates.json").is_file()
+    assert (receipts / "recent.gates.d/run/gate-001.stderr.log").is_file()
 
 
-def test_a_gate_log_that_cannot_retire_says_so(tmp_path, monkeypatch, capsys):
+def test_gate_receipts_stay_while_the_integration_lock_is_held(tmp_path):
+    from tools import disk_guard
+    from tests.test_dx_run_context import _git
+    from molt.checkout_state import RETIREMENT_WINDOW_S
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
-    now = 10_000_000.0
-    run = tmp_path / "abc.gates.d" / "old"
-    run.mkdir(parents=True)
-    age = molt_dev_gates.NAMED_RECORD_MIN_AGE_S + 60
-    os.utime(run, (now - age, now - age))
-
-    def refuse(path):
-        raise PermissionError(13, "Permission denied", str(path))
-
-    from tests.process_guard_common import install_module_view
-
-    install_module_view(monkeypatch, "shutil", shutil, molt_dev_gates, rmtree=refuse)
-    molt_dev_gates.retire_gate_logs(tmp_path, now=now)
-    err = capsys.readouterr().err
-    assert "1 idle gate log run(s) could not be retired" in err
-    assert f"{run}: PermissionError" in err
+    main = tmp_path / "molt-src"
+    main.mkdir()
+    _git(main, "init", "-q")
+    receipts = main / ".git/molt-integrate/receipts"
+    receipts.mkdir(parents=True)
+    receipt = receipts / "old.gates.json"
+    receipt.write_text("{}", encoding="utf-8")
+    now = time.time()
+    os.utime(receipt, (now - RETIREMENT_WINDOW_S - 60,) * 2)
+    lock = _try_acquire_file_lock(main / ".git/molt-integrate.lock")
+    assert lock is not None
+    try:
+        result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
+        assert receipt.is_file() and not result.retirements
+    finally:
+        _release_file_lock(lock)
 
 
 def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monkeypatch):

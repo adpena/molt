@@ -28,7 +28,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import threading
 import time
@@ -37,7 +36,6 @@ from typing import TYPE_CHECKING, Any, Protocol
 from tools import harness_memory_guard, proof_executor, proof_receipts
 from tools.driver_errors import DriverError, GateFailure  # noqa: E402
 from tools.molt_dev_common import _say, _warn  # noqa: E402
-from tools.memory_guard_core.reporting import NAMED_RECORD_MIN_AGE_S
 
 if TYPE_CHECKING:
     from molt.disk_capacity import DiskCapacityProbe
@@ -181,26 +179,6 @@ def gate_output_dir(receipt_path: Path) -> Path:
     a run never reuses another's."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     return receipt_path.with_suffix(".d") / f"{stamp}-{os.getpid()}"
-
-
-def retire_gate_logs(receipts: Path, *, now: float) -> None:
-    """Delete gate run directories idle past the named-record window, then
-    the receipt directories they leave empty; a landing calls this once and
-    warns when one cannot go. Retiring whole receipts belongs to HF-435."""
-    failures: list[str] = []
-    for run in receipts.glob("*.d/*"):
-        try:
-            if run.is_dir() and now - run.stat().st_mtime > NAMED_RECORD_MIN_AGE_S:
-                shutil.rmtree(run)
-                if not any(run.parent.iterdir()):
-                    run.parent.rmdir()
-        except OSError as exc:
-            failures.append(f"{run}: {type(exc).__name__}: {exc}")
-    if failures:
-        _warn(
-            f"{len(failures)} idle gate log run(s) could not be retired; "
-            f"first: {failures[0]}"
-        )
 
 
 def prepare_gate_streams(

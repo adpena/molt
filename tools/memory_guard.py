@@ -43,7 +43,6 @@ DEFAULT_TERMINATION_WAIT_SEC = 2.0
 # at host load 120 (2026-10-21), so the enforcer stays idle unless the loop
 # is stalled; the slack bounds the guard's own lateness, not the child.
 ENFORCEMENT_SLACK_SEC = 2.0
-DEFAULT_INCIDENT_SUMMARY_KEEP = 32
 # When one full process-table sample costs more than the configured poll
 # interval (Windows full-table snapshots under build load), polling
 # back-to-back pins a core on guard bookkeeping and steals wall time from the
@@ -3322,14 +3321,6 @@ def _default_incident_summary_path(environ: Mapping[str, str]) -> Path:
     )
 
 
-def _prune_default_incident_summaries(
-    directory: Path,
-    *,
-    keep: int = DEFAULT_INCIDENT_SUMMARY_KEEP,
-) -> None:
-    _reporting.prune_default_incident_summaries(directory, keep=keep)
-
-
 def _write_running_summary_json(
     path: str,
     *,
@@ -3624,7 +3615,6 @@ def main(
                 poll_interval_s=poll_interval,
                 result=result,
             )
-            _prune_default_incident_summaries(incident_summary_path.parent)
             if repro_payload is not None:
                 repro_payload["summary_json"] = str(incident_summary_path)
             repro_record = str(incident_summary_path)

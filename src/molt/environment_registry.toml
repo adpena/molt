@@ -76,6 +76,14 @@ owner = "src/molt_accel/decorator.py"
 summary = "Retries a molt_accel offload call after a worker timeout when the decorator gets no retry_on_timeout argument; 1/true/yes/on enable, 0/false/no/off disable, and other values keep the default of off."
 
 [[variable]]
+name = "MOLT_AGENT_EVIDENCE_IDLE_DAYS"
+audience = "developer"
+kind = "float"
+default = "3"
+owner = "src/molt/checkout_state.py"
+summary = "Days a terminal coordination task must remain unused before the daily disk guard harvests its payload through soft retirement. Active, referenced, malformed and unregistered tasks are kept. Must cover the two-hour protection window."
+
+[[variable]]
 name = "MOLT_AGENT_ID"
 audience = "developer"
 kind = "string"

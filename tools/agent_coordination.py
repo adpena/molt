@@ -5,6 +5,7 @@ import argparse
 from collections import Counter
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ import os
 import platform
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -33,6 +35,14 @@ SRC_ROOT = REPO_ROOT / "src"
 
 
 from molt import process_guard, toolchain_identity  # noqa: E402
+from molt.checkout_state import (  # noqa: E402
+    agent_evidence_idle_s,
+    checkout_state_retirement,
+    checkout_state_use,
+    soft_retire,
+)
+from molt.custody_layout import custody_root  # noqa: E402
+from molt.file_publication import resolve_owned_path  # noqa: E402
 from molt.dx import DX_ENV_KEYS, development_artifact_env, render_env  # noqa: E402
 from molt.process_environment import ProcessEnvironment  # noqa: E402
 from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
@@ -98,6 +108,8 @@ class CoordinationRecord:
     task: str
     path: Path
     payload: dict[str, Any]
+    raw: bytes | None = None
+    signature: tuple[int, int, int, int] | None = None
 
     @property
     def status(self) -> str:
@@ -2550,37 +2562,38 @@ def create_task(
     )
     if extra:
         record.update(extra)
-    artifacts.mkdir(parents=True, exist_ok=True)
-    (base / "progress.log").touch()
-    session_env = dict(os.environ)
-    if not session and not session_env.get("MOLT_SESSION_ID"):
-        # init named this session itself. Only --session pins an isolated
-        # Cargo target; an unpinned task shares the warm persistent one.
-        session_env["MOLT_SESSION_ID"] = record["session_id"]
-        session_env["MOLT_SESSION_ID_GENERATED"] = "1"
-    dx_env = development_artifact_env(
-        source_root,
-        session_env,
-        session_prefix=f"agent-{task}",
-        session_id=session,
-        create_dirs=False,
-    )
-    record["dx_env"] = {key: dx_env[key] for key in DX_ENV_KEYS if key in dx_env}
-    (base / "env.sh").write_text(
-        render_env(dx_env, DX_ENV_KEYS, "posix") + "\n",
-        encoding="utf-8",
-    )
-    (base / "env.ps1").write_text(
-        render_env(dx_env, DX_ENV_KEYS, "powershell") + "\n",
-        encoding="utf-8",
-    )
-    report_path.write_text(render_report(record), encoding="utf-8")
-    write_json(base / "coordination.json", record)
-    with (base / "progress.log").open("a", encoding="utf-8") as progress:
-        progress.write(
-            f"{created_at} initialized task={task} session={record['session_id']}\n"
+    with checkout_state_use(((base.parent, None), (base, None))):
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (base / "progress.log").touch()
+        session_env = dict(os.environ)
+        if not session and not session_env.get("MOLT_SESSION_ID"):
+            # init named this session itself. Only --session pins an isolated
+            # Cargo target; an unpinned task shares the warm persistent one.
+            session_env["MOLT_SESSION_ID"] = record["session_id"]
+            session_env["MOLT_SESSION_ID_GENERATED"] = "1"
+        dx_env = development_artifact_env(
+            source_root,
+            session_env,
+            session_prefix=f"agent-{task}",
+            session_id=session,
+            create_dirs=False,
         )
-    return record
+        record["dx_env"] = {key: dx_env[key] for key in DX_ENV_KEYS if key in dx_env}
+        (base / "env.sh").write_text(
+            render_env(dx_env, DX_ENV_KEYS, "posix") + "\n",
+            encoding="utf-8",
+        )
+        (base / "env.ps1").write_text(
+            render_env(dx_env, DX_ENV_KEYS, "powershell") + "\n",
+            encoding="utf-8",
+        )
+        report_path.write_text(render_report(record), encoding="utf-8")
+        write_json(base / "coordination.json", record)
+        with (base / "progress.log").open("a", encoding="utf-8") as progress:
+            progress.write(
+                f"{created_at} initialized task={task} session={record['session_id']}\n"
+            )
+        return record
 
 
 def update_task(
@@ -2593,22 +2606,23 @@ def update_task(
 ) -> dict[str, Any]:
     """Set an existing record's status and fields, and log the change."""
     base = task_dir(registry_root.resolve(), task)
-    path = base / "coordination.json"
-    payload = json.loads(_decode_record_bytes(path.read_bytes()))
-    if not isinstance(payload, dict) or payload.get("task") != task:
-        raise ValueError(f"coordination record {path} does not name task {task!r}")
-    updated_at = utc_now()
-    payload.update(fields)
-    payload["status"] = status
-    payload["updated_at_utc"] = updated_at
-    write_json(path, payload)
-    with (base / "progress.log").open("a", encoding="utf-8") as progress:
-        progress.write(
-            f"{updated_at} status={status} task={task}"
-            + (f" {note}" if note else "")
-            + "\n"
-        )
-    return payload
+    with checkout_state_use(((base.parent, None), (base, None))):
+        path = base / "coordination.json"
+        payload = json.loads(_decode_record_bytes(path.read_bytes()))
+        if not isinstance(payload, dict) or payload.get("task") != task:
+            raise ValueError(f"coordination record {path} does not name task {task!r}")
+        updated_at = utc_now()
+        payload.update(fields)
+        payload["status"] = status
+        payload["updated_at_utc"] = updated_at
+        write_json(path, payload)
+        with (base / "progress.log").open("a", encoding="utf-8") as progress:
+            progress.write(
+                f"{updated_at} status={status} task={task}"
+                + (f" {note}" if note else "")
+                + "\n"
+            )
+        return payload
 
 
 def _decode_record_bytes(data: bytes) -> str:
@@ -2629,6 +2643,11 @@ def _decode_record_bytes(data: bytes) -> str:
     return data.decode("utf-8")
 
 
+def _record_signature(path: Path) -> tuple[int, int, int, int]:
+    found = path.stat()
+    return found.st_dev, found.st_ino, found.st_mtime_ns, found.st_size
+
+
 def load_records(repo_root: Path) -> list[CoordinationRecord]:
     root = repo_root / LOG_ROOT
     if not root.is_dir():
@@ -2638,8 +2657,19 @@ def load_records(repo_root: Path) -> list[CoordinationRecord]:
     # evidence, never registrations, regardless of their names or claimed state.
     for path in sorted(root.glob(COORDINATION_RECORD_GLOB)):
         task = path.parent.name
+        raw = None
+        signature = None
         try:
-            payload = json.loads(_decode_record_bytes(path.read_bytes()))
+            if path.is_symlink() or path.parent.is_symlink():
+                raise ValueError("coordination record must not traverse a symlink")
+            signature = _record_signature(path)
+            with path.open("rb") as source:
+                raw = source.read(_EVIDENCE_TEXT_LIMIT + 1)
+            if len(raw) > _EVIDENCE_TEXT_LIMIT:
+                raise ValueError("coordination record exceeds 1 MiB")
+            if _record_signature(path) != signature:
+                raise ValueError("coordination record changed while reading")
+            payload = json.loads(_decode_record_bytes(raw))
             if not isinstance(payload, dict):
                 raise ValueError("coordination record must be an object")
             if validate_task_name(task) != task or payload.get("task") != task:
@@ -2647,13 +2677,15 @@ def load_records(repo_root: Path) -> list[CoordinationRecord]:
                     f"coordination task {payload.get('task')!r} does not match "
                     f"canonical task directory {task!r}"
                 )
+            if not isinstance(payload.get("status"), str) or not payload["status"]:
+                raise ValueError("coordination status must be a nonempty string")
             owned_paths = payload.get("owned_paths", [])
             if not isinstance(owned_paths, list) or not all(
                 isinstance(path, str) for path in owned_paths
             ):
                 raise ValueError("owned_paths must be a list of paths")
             _validate_ownership_request(payload.get("ownership_request"))
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RecursionError) as exc:
             payload = {
                 "schema_version": SCHEMA_VERSION,
                 "task": task,
@@ -2665,9 +2697,340 @@ def load_records(repo_root: Path) -> list[CoordinationRecord]:
                 task=task,
                 path=path,
                 payload=payload,
+                raw=raw,
+                signature=signature,
             )
         )
     return records
+
+
+_EVIDENCE_TEXT_LIMIT = 1024 * 1024
+_EVIDENCE_NAMES = re.compile(
+    r"(?:^|[_.-])(?:reports?|handoffs?|verdicts?|progress)(?:[_.-]|$)", re.I
+)
+
+
+def _record_strings(value: object):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _record_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _record_strings(child)
+
+
+def active_task_references(records: Sequence[CoordinationRecord]) -> set[str]:
+    """References are task names or logs/agents coordinates, including nested fields."""
+    tasks = {record.task for record in records}
+    referenced: set[str] = set()
+    for record in records:
+        if not record.active:
+            continue
+        for value in _record_strings(record.payload):
+            if value in tasks:
+                referenced.add(value)
+            referenced.update(
+                match.group(1)
+                for match in re.finditer(r"logs[/\\]agents[/\\]([^/\\\s]+)", value)
+                if match.group(1) in tasks
+            )
+    return referenced
+
+
+def _evidence_inventory(root: Path, deadline: float) -> tuple[int, float, list[Path]]:
+    """One metadata walk, without following links or reading payloads."""
+    newest, size, text = root.stat().st_mtime, 0, []
+    stack = [root]
+    while stack:
+        directory = stack.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("agent evidence harvest budget exhausted")
+                found = entry.stat(follow_symlinks=False)
+                newest = max(newest, found.st_mtime)
+                path = Path(entry.path)
+                if stat.S_ISDIR(found.st_mode):
+                    stack.append(path)
+                    continue
+                size += found.st_size
+                relative = path.relative_to(root)
+                if (
+                    stat.S_ISREG(found.st_mode)
+                    and found.st_size <= _EVIDENCE_TEXT_LIMIT
+                    and (
+                        relative == Path("coordination.json")
+                        or _EVIDENCE_NAMES.search(path.name)
+                        or any(
+                            part in {"reports", "handoffs", "verdicts", "progress"}
+                            for part in relative.parts[:-1]
+                        )
+                    )
+                ):
+                    text.append(path)
+    return size, newest, sorted(text)
+
+
+def _evidence_blob_id(data: bytes, algorithm: str) -> str:
+    digest = hashlib.new(algorithm)
+    digest.update(f"blob {len(data)}\0".encode("ascii"))
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def harvest_agent_evidence(
+    repo_root: Path,
+    *,
+    environment: Mapping[str, str],
+    records: Sequence[CoordinationRecord],
+    references: set[str],
+    record_stamps: dict[Path, tuple[int, int, int, int]],
+    registry_stamps: dict[Path, int | None],
+    now: float,
+    apply: bool,
+    deadline: float,
+    protected: Sequence[Path] = (),
+) -> list[dict[str, Any]]:
+    """Keep terminal tasks' small records and retire each payload with one rename.
+
+    Read candidate text once, hash its Git blob framing, and query one lazy
+    cat-file stream for the whole checkout. Small records are relinked after
+    retirement, so only one text buffer is live. Raw payloads are never read. A
+    failed inventory, malformed registration, changed active reference set or
+    unavailable Git object store cannot authorize a harvest.
+    """
+    idle = agent_evidence_idle_s(environment)
+    log_root = repo_root / LOG_ROOT
+    if not log_root.is_dir() or log_root.is_symlink():
+        return []
+    by_task = {record.task: record for record in records}
+    results: list[dict[str, Any]] = []
+    stream = None
+    algorithm = ""
+    git_failed = False
+    git_environment = {
+        key: value
+        for key, value in environment.items()
+        if key
+        not in {
+            "GIT_DIR",
+            "GIT_COMMON_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        }
+    }
+
+    def references_unchanged() -> bool:
+        return all(
+            (path.stat().st_mtime_ns if path.exists() else None) == stamp
+            for path, stamp in registry_stamps.items()
+        ) and all(
+            _record_signature(path) == stamp for path, stamp in record_stamps.items()
+        )
+
+    def is_blob(data: bytes) -> bool:
+        nonlocal stream, algorithm, git_failed
+        git_failed = True
+        if stream is None:
+            identity = subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "-C",
+                    str(repo_root),
+                    "rev-parse",
+                    "--show-object-format",
+                ],
+                capture_output=True,
+                check=True,
+                timeout=10,
+                env=git_environment,
+            )
+            algorithm = identity.stdout.decode("ascii").strip()
+            if algorithm not in {"sha1", "sha256"}:
+                raise ValueError(f"unsupported repository object format: {algorithm}")
+            stream = subprocess.Popen(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "-C",
+                    str(repo_root),
+                    "cat-file",
+                    "--batch-check",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=git_environment,
+            )
+        oid = _evidence_blob_id(data, algorithm)
+        assert stream.stdin is not None and stream.stdout is not None
+        stream.stdin.write((oid + "\n").encode("ascii"))
+        stream.stdin.flush()
+        answer = stream.stdout.readline().decode("ascii").strip()
+        if answer == f"{oid} missing":
+            git_failed = False
+            return False
+        if answer != f"{oid} blob {len(data)}":
+            raise ValueError(f"invalid repository blob response: {answer!r}")
+        git_failed = False
+        return True
+
+    try:
+        for task in sorted(log_root.iterdir()):
+            item: dict[str, Any] = {"path": str(task), "kind": "agent-evidence"}
+            if task.is_symlink() or not task.is_dir():
+                continue
+            record = by_task.get(task.name)
+            if record is None:
+                results.append({**item, "reason": "missing-coordination-record"})
+                continue
+            if (
+                record.status == "invalid"
+                or record.raw is None
+                or len(record.raw) > _EVIDENCE_TEXT_LIMIT
+            ):
+                results.append({**item, "reason": "invalid-coordination-record"})
+                continue
+            if record.active or task.name in references:
+                results.append({**item, "reason": "active-or-referenced"})
+                continue
+            if any(
+                path == task or task in path.parents or path in task.parents
+                for path in protected
+            ):
+                results.append({**item, "reason": "protected"})
+                continue
+            try:
+                with (
+                    checkout_state_retirement(task)
+                    if apply
+                    else contextlib.nullcontext(True) as exclusive
+                ):
+                    if not exclusive:
+                        results.append({**item, "reason": "state-in-use"})
+                        continue
+                    if _record_signature(record.path) != record.signature:
+                        results.append({**item, "reason": "coordination-changed"})
+                        continue
+                    record_stat = record.path.stat()
+                    newest = max(task.stat().st_mtime, record_stat.st_mtime)
+                    for key in ("updated_at_utc", "created_at_utc"):
+                        if stamp := record.payload.get(key):
+                            newest = max(
+                                newest,
+                                datetime.fromisoformat(
+                                    stamp.replace("Z", "+00:00")
+                                ).timestamp(),
+                            )
+                    if now - newest < idle:
+                        results.append({**item, "reason": "recent-activity"})
+                        continue
+                    size, newest, text = _evidence_inventory(task, deadline)
+                    if now - newest < idle:
+                        results.append({**item, "reason": "recent-activity"})
+                        continue
+                    kept: dict[Path, int] = {}
+                    for path in text:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                "agent evidence harvest budget exhausted"
+                            )
+                        resolve_owned_path(path)
+                        if path == record.path:
+                            data = record.raw
+                        else:
+                            with path.open("rb") as source:
+                                data = source.read(_EVIDENCE_TEXT_LIMIT + 1)
+                        if len(data) > _EVIDENCE_TEXT_LIMIT:
+                            raise ValueError(f"evidence changed during harvest: {path}")
+                        # Only decodable text is evidence; opaque bytes retire.
+                        try:
+                            if "\0" in _decode_record_bytes(data):
+                                continue
+                        except UnicodeError:
+                            continue
+                        if path == record.path or not is_blob(data):
+                            kept[path.relative_to(task)] = len(data)
+                    payload_bytes = size - sum(kept.values())
+                    if payload_bytes <= 0:
+                        continue
+                    if (
+                        not references_unchanged()
+                        or _record_signature(record.path) != record.signature
+                    ):
+                        results.append({**item, "reason": "coordination-changed"})
+                        break
+                    item.update(est_bytes=payload_bytes, kept_files=len(kept))
+                    if apply:
+                        # Raw writers also count: inspect every payload's activity
+                        # again under custody immediately before the atomic move.
+                        _, current_use, _ = _evidence_inventory(task, deadline)
+                        if now - current_use < idle:
+                            results.append({**item, "reason": "recent-activity"})
+                            continue
+                        # Serialize final reference observation with every canonical
+                        # task registration/update, only across publication.
+                        with contextlib.ExitStack() as registry_custody:
+                            exclusive_registries = [
+                                registry_custody.enter_context(
+                                    checkout_state_retirement(registry)
+                                )
+                                for registry in sorted(registry_stamps)
+                            ]
+                            if (
+                                not all(exclusive_registries)
+                                or not references_unchanged()
+                            ):
+                                results.append(
+                                    {**item, "reason": "coordination-changed"}
+                                )
+                                continue
+                            retirement = soft_retire(
+                                task,
+                                custody_root(repo_root),
+                                reason="terminal-agent-evidence",
+                                owner=str(record.path),
+                                now=now,
+                            )
+                            item["retired_path"] = str(retirement.path)
+                            for relative in kept:
+                                destination = task / relative
+                                destination.parent.mkdir(parents=True, exist_ok=True)
+                                # Same-volume hardlinks retain the small evidence
+                                # without a second read, byte copy or unbounded
+                                # text buffer. GC unlinks only its retired name.
+                                os.link(
+                                    retirement.path / relative,
+                                    destination,
+                                    follow_symlinks=False,
+                                )
+                            registry_stamps[log_root] = log_root.stat().st_mtime_ns
+                            record_stamps[record.path] = _record_signature(record.path)
+                    results.append(item)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                results.append({**item, "reason": str(exc), "error": True})
+                if git_failed or isinstance(exc, TimeoutError):
+                    break
+    finally:
+        if stream is not None:
+            assert stream.stdin is not None and stream.stdout is not None
+            stream.stdin.close()
+            stream.stdout.close()
+            if (returncode := stream.wait(timeout=10)) != 0:
+                results.append(
+                    {
+                        "path": str(log_root),
+                        "kind": "agent-evidence",
+                        "reason": f"repository blob check failed (exit {returncode})",
+                        "error": True,
+                    }
+                )
+    return results
 
 
 def broad_lane_collisions(
