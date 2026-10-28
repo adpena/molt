@@ -11,6 +11,7 @@ import argparse
 from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import math
 import os
@@ -35,6 +36,20 @@ EXIT_SPAWN = 125
 ROOT = _REPO_ROOT
 
 
+@dataclass(frozen=True)
+class CapturedStreamIdentity:
+    byte_length: int
+    sha256: str
+
+    @classmethod
+    def from_capture(cls, value: str | bytes | None) -> CapturedStreamIdentity | None:
+        # Text may already have been normalized by a caller. Only original
+        # captured bytes establish an identity; empty bytes remain known.
+        if not isinstance(value, bytes):
+            return None
+        return cls(len(value), hashlib.sha256(value).hexdigest())
+
+
 @dataclass
 class RunOutcome:
     ok: bool
@@ -52,6 +67,8 @@ class RunOutcome:
         | harness_memory_guard.GuardedCompletedProcess[bytes]
         | None
     ) = None
+    stdout_identity: CapturedStreamIdentity | None = None
+    stderr_identity: CapturedStreamIdentity | None = None
 
 
 def _tail_text(text: str | None, *, max_chars: int = 4096) -> str | None:
@@ -137,18 +154,28 @@ def observed_run_outcome(
         status = "error"
     else:
         status = "ok"
+    stdout_identity = (
+        CapturedStreamIdentity.from_capture(proc.stdout) if status != "ok" else None
+    )
+    stderr_identity = (
+        CapturedStreamIdentity.from_capture(captured_stderr) if status != "ok" else None
+    )
+    stdout_text = _output_text(proc.stdout)
+    stderr_text = _output_text(captured_stderr)
     return RunOutcome(
         ok=status == "ok",
         elapsed_s=elapsed,
         peak_rss_mib=peak,
         status=status,
         exit_code=proc.returncode,
-        stdout=_output_text(proc.stdout) if capture_output else None,
-        stderr=_output_text(captured_stderr) if capture_output else None,
-        stdout_tail=_tail_text(_output_text(proc.stdout)),
-        stderr_tail=_tail_text(_output_text(proc.stderr)),
+        stdout=stdout_text if capture_output else None,
+        stderr=stderr_text if capture_output else None,
+        stdout_tail=_tail_text(stdout_text),
+        stderr_tail=_tail_text(stderr_text),
         host_stderr=_output_text(host_stderr),
         guard_result=proc,
+        stdout_identity=stdout_identity,
+        stderr_identity=stderr_identity,
     )
 
 
@@ -238,7 +265,7 @@ def _run_measured_command(
             child_stderr = None
             if closed:
                 stream.seek(0)
-                child_stderr = stream.read().decode("utf-8", "surrogateescape")
+                child_stderr = stream.read()
     return observed_run_outcome(
         proc,
         captured_stderr=child_stderr,
