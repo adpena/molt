@@ -906,7 +906,17 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
             Some("_frozen_importlib")
         );
         let builtins = interpreter_builtins_dictionary(py).unwrap();
-        for internal in ["CancelledError", "UnsupportedOperation", "_DeadlockError"] {
+        for internal in [
+            "CancelledError",
+            "UnsupportedOperation",
+            "_DeadlockError",
+            "PickleError",
+            "PicklingError",
+            "UnpicklingError",
+            "gaierror",
+            "herror",
+            "StatisticsError",
+        ] {
             let name = ExceptionValue::adopt(
                 py,
                 crate::attr_name_bits_from_bytes(py, internal.as_bytes()).unwrap(),

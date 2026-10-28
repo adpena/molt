@@ -762,15 +762,18 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
     exception_spec("BufferError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("EOFError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("PickleError", ExceptionBaseSpec::One("Exception"), None)
-        .with_heap_class("_pickle"),
+        .with_heap_class("_pickle")
+        .without_builtin_binding(),
     exception_spec("PicklingError", ExceptionBaseSpec::One("PickleError"), None)
-        .with_heap_class("_pickle"),
+        .with_heap_class("_pickle")
+        .without_builtin_binding(),
     exception_spec(
         "UnpicklingError",
         ExceptionBaseSpec::One("PickleError"),
         None,
     )
-    .with_heap_class("_pickle"),
+    .with_heap_class("_pickle")
+    .without_builtin_binding(),
     exception_spec(
         "ImportError",
         ExceptionBaseSpec::One("Exception"),
@@ -790,8 +793,12 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         Some(ExceptionLayoutRoot::OSError),
     )
     .with_str_slot(ExceptionStrSlot::OSError),
-    exception_spec("gaierror", ExceptionBaseSpec::One("OSError"), None).with_heap_class("socket"),
-    exception_spec("herror", ExceptionBaseSpec::One("OSError"), None).with_heap_class("socket"),
+    exception_spec("gaierror", ExceptionBaseSpec::One("OSError"), None)
+        .with_heap_class("socket")
+        .without_builtin_binding(),
+    exception_spec("herror", ExceptionBaseSpec::One("OSError"), None)
+        .with_heap_class("socket")
+        .without_builtin_binding(),
     exception_spec("ReferenceError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("RuntimeError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
@@ -825,7 +832,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         ExceptionBaseSpec::One("ValueError"),
         None,
     )
-    .with_heap_class("statistics"),
+    .with_heap_class("statistics")
+    .without_builtin_binding(),
     exception_spec("Warning", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
         "FloatingPointError",
