@@ -357,6 +357,22 @@ no Python fallback was observed in the reviewed launch paths.
 
 ### Development cost and release discipline
 
+User-code compilation is the optimization priority over compiler self-build cost.
+A native arm64/Python 3.12 `release-fast` two-file diagnostic at `24b802cb58`
+reuses existing compiler/runtime products but still takes 4.77 seconds to rebuild
+unchanged source to the same output destination, despite 40/40 frontend cache
+hits. Its recorded build core is 3.23 seconds, including 1.26 seconds of backend
+preparation, 0.66 seconds of linking and 0.65 seconds of module-graph work.
+Separate fresh-output observations take 9.31 seconds with unchanged source and
+14.11 seconds after a one-function edit; both emitted programs produce their
+expected 42/43 output. Fresh destinations and stable destinations are distinct
+workloads. These single instrumented observations provide attribution, not
+accepted latency distributions or an improvement claim. Trace the existing
+compiler-product admission and final-artifact reuse authorities next; frontend
+cache tuning alone cannot remove these measured warm-path costs. More work at
+compiler build time is acceptable when it removes repeated user-build work and
+preserves exact source/toolchain/target/profile and artifact admission.
+
 The runtime's shared path-join builder replaces repeated accumulated-prefix copies
 with linear accumulation and removes the duplicated join intrinsics. A retained
 paired macOS arm64 lexical-core measurement at 16,384 24-byte components records
