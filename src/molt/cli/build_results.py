@@ -16,7 +16,10 @@ import platform
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from molt.build_record import NativeBuildResult, RecordedArtifact
 
 from molt.toolchain_identity import (
     executable_content_identity,
@@ -319,6 +322,204 @@ def _build_native_link_success_data(
     return data
 
 
+def _recorded_toolchain_artifact(
+    artifact: RecordedArtifact, *, executable: bool
+) -> dict[str, object]:
+    def filename(path: Path) -> str:
+        return path.name.casefold() if os.name == "nt" else path.name
+
+    identity: dict[str, str | int] = {
+        "size": artifact.token[3],
+        "sha256": artifact.sha256,
+    }
+    if executable:
+        identity.update(
+            {
+                "entrypoint": filename(artifact.path),
+                "content_filename": filename(artifact.resolved_path),
+            }
+        )
+    else:
+        identity["filename"] = filename(artifact.path)
+    return {"path": str(artifact.path), "identity": identity}
+
+
+def _record_native_build_result(
+    *,
+    data: Mapping[str, Any],
+    result_inputs: tuple[RecordedArtifact, RecordedArtifact, RecordedArtifact] | None,
+    warnings: Sequence[str],
+    diagnostics_error: str | None,
+) -> None:
+    """Retain producer identities after finalization, never recapture link inputs."""
+    from molt import input_report
+
+    if not input_report.result_active():
+        return
+    from dataclasses import fields
+    from molt.build_record import NativeBuildFacts, NativeBuildResult, RecordedArtifact
+    from molt.backend_protocol import BackendEmissionOrigin
+
+    if (
+        warnings
+        or diagnostics_error is not None
+        or any(
+            data.get(key)
+            for key in (
+                "stdout",
+                "stderr",
+                "compile_diagnostics",
+                "pgo_profile",
+                "runtime_feedback",
+                "emit_ir",
+                "external_native_artifacts",
+            )
+        )
+    ):
+        input_report.refuse(
+            "native JSON contains invocation-specific or additional results"
+        )
+        return
+    if result_inputs is None:
+        input_report.refuse("native JSON lacks pre-link artifact identities")
+        return
+    supported_fields = {field.name for field in fields(NativeBuildFacts)} | {
+        "target",
+        "output",
+        "consumer_output",
+        "sysroot",
+        "emit",
+        "cache",
+        "link",
+        "messages",
+        "artifacts",
+        "observed_toolchain",
+    }
+    if set(data) - supported_fields:
+        input_report.refuse("native JSON contains unclassified result fields")
+        return
+    try:
+        archive, stub, runtime = result_inputs
+        for artifact in result_inputs:
+            artifact.verify()
+        observed = data["observed_toolchain"]
+        if (
+            not isinstance(observed, dict)
+            or set(observed)
+            - {
+                "kind",
+                "compiled_with_verified",
+                "compiler",
+                "runtime",
+                "artifact",
+                "selected_profiles",
+                "emission_origin",
+            }
+            or observed.get("kind") != "molt-build-observation-v1"
+            or observed.get("compiled_with_verified") is not False
+        ):
+            raise ValueError("unsupported native toolchain observation")
+        compiler = RecordedArtifact.capture(Path(observed["compiler"]["path"]))
+        binary = RecordedArtifact.capture(Path(data["output"]))
+        for name, artifact in (
+            ("compiler", compiler),
+            ("runtime", runtime),
+            ("artifact", binary),
+        ):
+            if observed[name] != _recorded_toolchain_artifact(
+                artifact, executable=name == "compiler"
+            ):
+                raise ValueError(f"native {name} observation changed before recording")
+        if (
+            data["artifacts"]
+            != {
+                "binary": str(binary.path),
+                "archive": str(archive.path),
+                "stub": str(stub.path),
+                "runtime": str(runtime.path),
+            }
+            or Path(data["consumer_output"]).absolute() != binary.path
+        ):
+            raise ValueError(
+                "native JSON artifacts differ from their producer selections"
+            )
+        if (
+            data["target"] != "native"
+            or data["emit"] != "bin"
+            or data["sysroot"] is not None
+        ):
+            raise ValueError("unsupported native JSON result")
+        facts = NativeBuildFacts.from_payload(
+            {field.name: data[field.name] for field in fields(NativeBuildFacts)}
+        )
+        profiles = observed.get("selected_profiles", {})
+        if not isinstance(profiles, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in profiles.items()
+        ):
+            raise ValueError("invalid selected profiles")
+        origin = observed.get("emission_origin")
+        result = NativeBuildResult(
+            facts,
+            binary,
+            archive,
+            stub,
+            runtime,
+            compiler,
+            tuple(sorted(profiles.items())),
+            None if origin is None else BackendEmissionOrigin.from_payload(origin),
+        )
+        result.verify()
+        input_report.report_build_result(result.payload())
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        input_report.refuse(f"native JSON result cannot be retained: {exc}")
+
+
+def _emit_reused_native_build_result(result: NativeBuildResult) -> int:
+    """Project this invocation's reuse and the original artifact's provenance."""
+    data = result.facts.payload()
+    output = str(result.binary.path)
+    data.update(
+        {
+            "target": "native",
+            "output": output,
+            "consumer_output": output,
+            "sysroot": None,
+            "emit": "bin",
+            "cache": {"enabled": True, "hit": True, "hit_tier": "build-record"},
+            "link": {"skipped": True},
+            "messages": [f"Successfully built {output} (inputs unchanged)"],
+            "artifacts": {
+                name: str(getattr(result, name).path)
+                for name in ("binary", "archive", "stub", "runtime")
+            },
+        }
+    )
+    observed: dict[str, Any] = {
+        "kind": "molt-build-observation-v1",
+        "compiled_with_verified": False,
+        "selected_profiles": dict(result.selected_profiles),
+    }
+    for name, artifact in (
+        ("compiler", result.compiler),
+        ("runtime", result.runtime),
+        ("artifact", result.binary),
+    ):
+        observed[name] = _recorded_toolchain_artifact(
+            artifact, executable=name == "compiler"
+        )
+    if result.emission_origin is not None:
+        observed["emission_origin"] = result.emission_origin.payload()
+    data["observed_toolchain"] = observed
+    return _emit_build_result_json(
+        data=data,
+        warnings=(),
+        json_output=True,
+        returncode=0,
+        diagnostics_error=None,
+    )
+
+
 def _build_native_link_error_data(
     *,
     target: Target,
@@ -607,6 +808,8 @@ def _emit_native_link_result(
     validate_inputs: Callable[[], None] | None = None,
     emission_origin: BackendEmissionOrigin | None = None,
     link_input_observation: CompilationInputRecord | None = None,
+    result_inputs: tuple[RecordedArtifact, RecordedArtifact, RecordedArtifact]
+    | None = None,
 ) -> int:
     def emit_finalization_failure(message: str) -> int:
         diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
@@ -744,6 +947,12 @@ def _emit_native_link_result(
                 emit_ir_path=emit_ir_path,
             )
             _attach_process_output(data, link_process)
+            _record_native_build_result(
+                data=data,
+                result_inputs=result_inputs,
+                warnings=warnings,
+                diagnostics_error=diagnostics_error,
+            )
             return _emit_build_result_json(
                 data=data,
                 warnings=warnings,

@@ -67,9 +67,19 @@ retain the historical repair evidence without treating it as release acceptance.
 ### Burndown authority and update protocol
 
 This file alone owns current Version 1.0 burndown state, priorities, blockers and
-next closure outcomes. Version 1.0 means the first public Molt release useful for
-real work, with performance, correctness, conformance, security and architectural
-coherence strong enough to demonstrate and stand behind publicly.
+next closure outcomes. The standing goal is to complete every public stable
+contract and release exit criterion for the first Molt version useful for real
+work, with generated-program performance, correctness, conformance, security and
+architectural coherence strong enough to demonstrate and stand behind publicly.
+Minimize the wall clock to that outcome through complete typed authority
+migrations, measured structural simplification and focused independent proof.
+Small user-program cold builds, edits and unchanged rebuilds must be fast;
+additional compiler/distribution build work is preferable to repeated user work.
+Consult published state before dispatch, reconcile the codebase and this ledger
+in each landing, preserve unrelated work, and harvest and retire completed lanes.
+Completion requires the current candidate's declared E1–E4 and authenticated H0
+acceptance plus every open release obligation; a local optimization or green
+check cohort alone does not complete the goal.
 
 Before selecting or resuming work, consult this ledger at the published source
 reported by `tools/agent_coordination.py context`: release decision, active

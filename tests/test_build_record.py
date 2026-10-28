@@ -2005,3 +2005,197 @@ def test_fresh_consumed_source_reuses_without_a_future_process_clock(
         assert reason is None
         assert _current(record, output), "the next observation reuses immediately"
         assert output.read_text(encoding="utf-8") == f"binary of print({value})\n"
+
+
+def _native_result_fixture(tmp_path: Path):
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    paths = {
+        name: artifacts / name
+        for name in ("binary", "archive", "stub", "runtime", "compiler")
+    }
+    for name, path in paths.items():
+        path.write_text(f"original {name}", encoding="utf-8")
+    facts = build_record.NativeBuildFacts(
+        None,
+        str(tmp_path / "app.py"),
+        False,
+        False,
+        (),
+        (),
+        "a" * 64,
+        None,
+        "dev",
+        False,
+        "generic",
+        "default",
+    )
+    result = build_record.NativeBuildResult(
+        facts,
+        *(build_record.RecordedArtifact.capture(paths[name]) for name in paths),
+        (),
+        None,
+    )
+    claim = build_record.RecordedBuildClaim.capture(
+        build_record.BuildClaimKind.ARTIFACTS, artifacts
+    )
+    ledger = _future_ledger()
+    ledger.build_claim(claim.payload())
+    ledger.build_result(result.payload())
+    record, reason = _write(tmp_path, ledger, paths["binary"])
+    assert reason is None
+    return paths, ledger, record, result, claim
+
+
+@pytest.mark.parametrize("role", ["binary", "archive", "stub", "runtime", "compiler"])
+@pytest.mark.parametrize("mutation", ["remove", "replace", "restored-mtime"])
+def test_native_json_checks_every_promised_generation(
+    tmp_path: Path, role: str, mutation: str
+) -> None:
+    paths, _ledger, record, result, claim = _native_result_fixture(tmp_path)
+    acquired = []
+    hit = build_record.check(record, KEY, claim=acquired.append, require_result=True)
+    assert isinstance(hit, build_record.BuildRecordHit) and hit.result == result
+    assert acquired == [claim]
+    path = paths[role]
+    metadata = path.stat()
+    if mutation == "remove":
+        path.unlink()
+    else:
+        if mutation == "replace":
+            path.unlink()
+        path.write_bytes(b"x" * metadata.st_size)
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    assert isinstance(
+        build_record.check(record, KEY, claim=acquired.append, require_result=True), str
+    )
+
+
+def test_native_result_never_recaptures_changed_link_inputs(tmp_path: Path) -> None:
+    paths, ledger, _record, _result, _claim = _native_result_fixture(tmp_path)
+    paths["stub"].write_text("unrelated replacement", encoding="utf-8")
+    _, reason = _write(tmp_path, ledger, paths["binary"])
+    assert reason is not None and "changed" in reason
+
+
+def test_native_result_worker_transport_keeps_typed_result_and_claim(
+    tmp_path: Path,
+) -> None:
+    _paths, _ledger, _record, result, claim = _native_result_fixture(tmp_path)
+    receiver = _future_ledger()
+    input_report._merge_worker_fact(receiver, ["build_claim", claim.payload()])
+    input_report._merge_worker_fact(receiver, ["build_result", result.payload()])
+    assert receiver.claims == [claim]
+    assert receiver.result == result
+    conflicting = result.payload()
+    conflicting["facts"]["profile"] = "release"
+    receiver.build_result(conflicting)
+    assert receiver.refusals == ["build reported conflicting results"]
+
+
+def test_native_result_claim_rechecks_root_after_acquisition(tmp_path: Path) -> None:
+    paths, _ledger, record, _result, claim = _native_result_fixture(tmp_path)
+
+    def replace_root(_claim):
+        claim.root.rename(tmp_path / "original")
+        claim.root.mkdir()
+
+    refused = build_record.check(record, KEY, claim=replace_root, require_result=True)
+    assert isinstance(refused, str) and "claim root changed" in refused
+    assert (tmp_path / "original" / paths["binary"].name).exists()
+
+
+def test_native_result_claim_ignores_unrelated_directory_churn(tmp_path: Path) -> None:
+    _paths, _ledger, record, _result, claim = _native_result_fixture(tmp_path)
+    (claim.root / "unrelated.log").write_text("new log", encoding="utf-8")
+    assert isinstance(
+        build_record.check(record, KEY, claim=lambda value: None, require_result=True),
+        build_record.BuildRecordHit,
+    )
+
+
+@pytest.mark.parametrize(
+    "field", ["facts", "archive", "selected_profiles", "emission_origin"]
+)
+def test_malformed_native_results_refuse_reuse(tmp_path: Path, field: str) -> None:
+    _paths, _ledger, record, _result, _claim = _native_result_fixture(tmp_path)
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["result"][field] = ["not this field's contract"]
+    record.write_text(json.dumps(payload), encoding="utf-8")
+    assert isinstance(
+        build_record.check(record, KEY, claim=lambda value: None, require_result=True),
+        str,
+    )
+
+
+def test_native_claim_refuses_symlink_retarget_during_acquisition(
+    tmp_path: Path,
+) -> None:
+    paths, ledger, _record, _result, original = _native_result_fixture(tmp_path)
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(original.root, target_is_directory=True)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink creation requires host privilege")
+        raise
+    claim = build_record.RecordedBuildClaim.capture(
+        build_record.BuildClaimKind.ARTIFACTS, alias
+    )
+    ledger.claims[:] = [claim]
+    record, reason = _write(tmp_path, ledger, paths["binary"])
+    assert reason is None
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+
+    def retarget(_claim):
+        alias.unlink()
+        alias.symlink_to(replacement, target_is_directory=True)
+
+    result = build_record.check(record, KEY, claim=retarget, require_result=True)
+    assert isinstance(result, str) and "root changed" in result
+    assert paths["binary"].read_text(encoding="utf-8") == "original binary"
+
+
+@pytest.mark.parametrize("role", ["archive", "stub", "runtime", "compiler"])
+def test_native_result_rejects_changed_bytes_despite_equal_public_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+) -> None:
+    from molt import toolchain_facts
+    from molt.toolchain_identity import FileDigestCache
+
+    # Use the real existing cache policy, isolated only by its storage path.
+    # Windows always hashes; fresh POSIX files cannot seed reusable cache rows.
+    cache = FileDigestCache(tmp_path / "digests.sqlite", max_age_ns=10**18)
+    monkeypatch.setattr(toolchain_facts, "host_file_digest_cache", lambda: cache)
+    paths, _ledger, record, result, _claim = _native_result_fixture(tmp_path)
+    expected = getattr(result, role)
+    before = paths[role].stat()
+    replacement = b"x" * before.st_size
+    paths[role].write_bytes(replacement)
+    os.utime(paths[role], ns=(before.st_atime_ns, before.st_mtime_ns))
+    original_stat_token = build_record.stat_token
+
+    def repeated_public_token(path, *args, **kwargs):
+        if Path(path) == paths[role]:
+            return expected.token
+        return original_stat_token(path, *args, **kwargs)
+
+    # Model a repeated public observation without changing process-wide stat or
+    # platform APIs. The independent content owner still reads the real bytes.
+    monkeypatch.setattr(build_record, "stat_token", repeated_public_token)
+    assert build_record.stat_token(paths[role]) == expected.token
+    assert hashlib.sha256(replacement).hexdigest() != expected.sha256
+    rejected = build_record.check(
+        record,
+        KEY,
+        claim=lambda value: None,
+        require_result=True,
+    )
+    assert isinstance(rejected, str) and "content changed" in rejected
+    assert (
+        expected.sha256
+        == hashlib.sha256(f"original {role}".encode("utf-8")).hexdigest()
+    )

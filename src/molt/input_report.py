@@ -44,6 +44,8 @@ class WorkerFactKind(StrEnum):
     PROBE = "probe"
     REFUSE = "refuse"
     BUILD_OUTPUT = "build_output"
+    BUILD_CLAIM = "build_claim"
+    BUILD_RESULT = "build_result"
     READ_STARTED = "read_started"
     READ_FINISHED = "read_finished"
     CONSUMED_FILE = "consumed_file"
@@ -124,9 +126,14 @@ class FactSink(Protocol):
 
     def build_output(self, selection: object) -> None: ...
 
+    def build_claim(self, claim: object, /) -> None: ...
+
+    def build_result(self, result: object, /) -> None: ...
+
 
 # Process-global, not context-local: frontend worker threads report to it.
 _SINK: FactSink | None = None
+_CAPTURE_RESULT = False
 # Data files a reader reports on every use; repeats cost a set lookup.
 _REPORTED: set[str] = set()
 # Owners of immutable captures already reported to this recording, by id. The
@@ -151,20 +158,22 @@ _RECORDING_SESSION: object | None = None
 _READ_SEQUENCE = 0
 
 
-def install_sink(sink: FactSink, log_dir: str) -> None:
+def install_sink(sink: FactSink, log_dir: str, *, capture_result: bool = False) -> None:
     """Send this process's facts to ``sink`` and its workers' to ``log_dir``."""
-    global _SINK, _WORKER_LOG_DIR, _RECORDING_SESSION
+    global _SINK, _WORKER_LOG_DIR, _RECORDING_SESSION, _CAPTURE_RESULT
     _install_hook()
     with _REPORTED_LOCK:
         _REPORTED.clear()
         _REPORTED_OWNERS.clear()
         _WORKER_LOG_DIR = log_dir
         _SINK = sink
+        _CAPTURE_RESULT = capture_result
         _RECORDING_SESSION = object()
 
 
 def remove_sink() -> None:
-    global _SINK, _WORKER_LOG_DIR, _RECORDING_SESSION
+    global _SINK, _WORKER_LOG_DIR, _RECORDING_SESSION, _CAPTURE_RESULT
+    _CAPTURE_RESULT = False
     with _REPORTED_LOCK:
         _SINK = None
         _WORKER_LOG_DIR = None
@@ -413,6 +422,10 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
     elif kind is WorkerFactKind.BUILD_OUTPUT:
         _, selection = entry
         sink.build_output(selection)
+    elif kind is WorkerFactKind.BUILD_CLAIM:
+        sink.build_claim(entry[1])
+    elif kind is WorkerFactKind.BUILD_RESULT:
+        sink.build_result(entry[1])
     elif kind is WorkerFactKind.CONSUMED_FILE:
         _, name, token, sha256 = entry
         sink.consumed_file(name, None if token is None else tuple(token), sha256)
@@ -440,6 +453,11 @@ def _merge_worker_fact(sink: FactSink, entry: list[Any]) -> None:
 def active() -> bool:
     """True while this process records a build or logs facts for one."""
     return _SINK is not None or _WORKER_LOG_DIR is not None
+
+
+def result_active() -> bool:
+    """Only native JSON recording pays for result identities and claims."""
+    return _CAPTURE_RESULT and active()
 
 
 def _report_file_fact(
@@ -667,6 +685,22 @@ def report_build_output(selection: Mapping[str, str | None]) -> None:
         sink.build_output(dict(selection))
     else:
         _worker_log([WorkerFactKind.BUILD_OUTPUT, dict(selection)])
+
+
+def report_build_claim(claim: Mapping[str, object]) -> None:
+    """Report a successful claim at its existing custody authority."""
+    if _SINK is not None:
+        _SINK.build_claim(dict(claim))
+    else:
+        _worker_log([WorkerFactKind.BUILD_CLAIM, dict(claim)])
+
+
+def report_build_result(result: Mapping[str, object]) -> None:
+    """Report typed successful result facts, never an emitted JSON envelope."""
+    if _SINK is not None:
+        _SINK.build_result(dict(result))
+    else:
+        _worker_log([WorkerFactKind.BUILD_RESULT, dict(result)])
 
 
 def refuse(reason: str) -> None:
