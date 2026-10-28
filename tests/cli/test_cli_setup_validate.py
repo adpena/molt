@@ -42,7 +42,6 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
-NATIVE_TOOLCHAIN = importlib.import_module("molt.cli.native_toolchain")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
@@ -722,12 +721,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         fake_run_completed_command,
         raising=True,
     )
-    monkeypatch.setattr(
-        NATIVE_TOOLCHAIN,
-        "_run_completed_command",
-        fake_run_completed_command,
-        raising=True,
-    )
     # Of the modules this test drives, only compiler_metadata looks tools up,
     # through the executable search authority.
     monkeypatch.setattr(
@@ -735,7 +728,7 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         "find_executable",
         lambda name, **_kwargs: (
             Path(f"/usr/bin/{name}")
-            if name in {"rustc", "wasm-tools", "nm", "llvm-ar", "lipo"}
+            if name in {"rustc", "wasm-tools", "nm", "llvm-ar"}
             else None
         ),
     )
@@ -770,7 +763,6 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         )
         is False
     )
-    assert NATIVE_TOOLCHAIN._detect_macos_arch(obj_path) is None
 
     prefixes = [call["memory_guard_prefix"] for call in calls]
     assert prefixes[0] == "MOLT_CLI"

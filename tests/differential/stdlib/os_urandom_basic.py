@@ -1,4 +1,4 @@
-# MOLT_ENV: MOLT_CAPABILITIES=rand
+# MOLT_ENV: MOLT_CAPABILITIES=random
 import os
 
 print("len0", len(os.urandom(0)))

@@ -1484,7 +1484,8 @@ def test_source_build_environment_keeps_provisional_record_when_deletion_refuses
     before = (partial.read_bytes(), provisional.read_bytes())
     deleted = []
 
-    def refuse(path):
+    def refuse(path, *, owning_root):
+        assert owning_root == spec[0].parent
         deleted.append(path)
         return False, "independent deletion refusal"
 
@@ -1506,8 +1507,9 @@ def test_source_build_environment_keeps_provisional_record_when_deletion_refuses
     assert not spec[2].exists()
 
 
+@pytest.mark.parametrize("sealed_partial", [False, True])
 def test_source_build_environment_recovers_exact_provisional_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sealed_partial
 ) -> None:
     spec = _locked_environment_spec(tmp_path, monkeypatch)
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "unrelated-launcher"))
@@ -1518,16 +1520,29 @@ def test_source_build_environment_recovers_exact_provisional_record(
     realized = _realized_environment_manifest(
         spec[3]["python_runtime"], [("ninja", "1.13.0")]
     )
+
+    def capture_sealed(_python, _root, *, attestation=None):
+        assert attestation is None, "publication seals; its capture admits nothing"
+        assert not spec[2].exists(), "seal must precede publication capture"
+        assert not spec[1].stat().st_mode & 0o222
+        assert not spec[1].parent.stat().st_mode & 0o222
+        return realized
+
     monkeypatch.setattr(
         build_environment,
         "_probe_environment_identity",
-        lambda _python, _root: realized,
+        capture_sealed,
     )
 
     def run(argv, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
+            if sealed_partial:
+                library = spec[0] / "lib" / "site-packages"
+                library.mkdir(parents=True)
+                (library / "partial.py").write_bytes(b"unpublished")
+                build_environment.seal_environment_installation(spec[0])
             return subprocess.CompletedProcess(argv, 7)
         environment_root = Path(kwargs["environment"]["UV_PROJECT_ENVIRONMENT"])
         assert "VIRTUAL_ENV" not in kwargs["environment"]
@@ -1556,6 +1571,7 @@ def test_source_build_environment_recovers_exact_provisional_record(
         "realized_environment": realized,
     }
     assert not build_environment.environment_provisioning_record_path(spec[0]).exists()
+    assert not (spec[0] / "lib" / "site-packages" / "partial.py").exists()
 
 
 @pytest.mark.parametrize(
@@ -1736,7 +1752,7 @@ def test_complete_environment_cleans_exact_stale_sibling_record(
     monkeypatch.setattr(
         build_environment,
         "_probe_environment_identity",
-        lambda _python, _root: realized,
+        lambda _python, _root, *, attestation=None: realized,
     )
     monkeypatch.setattr(
         build_environment,
@@ -1767,7 +1783,7 @@ def test_concurrent_source_build_provision_runs_one_sync(
     monkeypatch.setattr(
         build_environment,
         "_probe_environment_identity",
-        lambda _python, _root: realized,
+        lambda _python, _root, *, attestation=None: realized,
     )
 
     def run(argv, **kwargs):
@@ -1869,7 +1885,7 @@ def test_requested_dev_group_reaches_publication_without_exclusion(
     monkeypatch.setattr(
         build_environment,
         "_probe_environment_identity",
-        lambda *_args: _realized_environment_manifest(
+        lambda *_args, attestation=None: _realized_environment_manifest(
             custody["python_runtime"], installed
         ),
     )
@@ -1905,7 +1921,7 @@ def test_source_build_provision_rejects_group_resolution_before_publication(
     monkeypatch.setattr(
         build_environment,
         "_probe_environment_identity",
-        lambda _python, _root: _realized_environment_manifest(
+        lambda _python, _root, *, attestation=None: _realized_environment_manifest(
             spec[3]["python_runtime"], [("packaging", "26.2")]
         ),
     )
@@ -1954,7 +1970,7 @@ def test_active_source_build_environment_rejects_mutated_ambient_content(
     monkeypatch.setattr(
         build_environment,
         "_probe_environment_identity",
-        lambda _python, _root: {
+        lambda _python, _root, *, attestation=None: {
             **realized,
             "environment_closure_sha256": "9" * 64,
         },
@@ -2003,7 +2019,9 @@ def active_source_namespace_case(
     )
     probes: list[tuple[Path, Path]] = []
 
-    def capture(python: Path, root: Path) -> dict[str, object]:
+    def capture(
+        python: Path, root: Path, *, attestation: object = None
+    ) -> dict[str, object]:
         probes.append((python, root))
         return realized
 
@@ -4294,7 +4312,7 @@ def test_editable_publication_refuses_selected_reader_rewrite(
         observe("sync")
         return subprocess.CompletedProcess(argv, 0)
 
-    def capture(python, root, *, external_root, source_root):
+    def capture(python, root, *, external_root, source_root, attestation=None):
         assert (python, root) == (spec[1], spec[0])
         assert external_root == source_root == selected
         observe("capture")

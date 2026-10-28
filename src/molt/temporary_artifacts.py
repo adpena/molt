@@ -744,7 +744,8 @@ def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, obj
         raise ValueError("scratch target generation changed before reclamation")
     owner = {**owner, "state": "reclaiming"}
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
-    ok, error = delete_path(target)
+    # The generation owns its payload, which may hold sealed published images.
+    ok, error = delete_path(target, owning_root=generation)
     owner = {**owner, "state": "reclaimed" if ok else "blocked", "error": error or None}
     write_exact(generation / "owner.json", owner, durability=_RECORDS)
     if not ok:
