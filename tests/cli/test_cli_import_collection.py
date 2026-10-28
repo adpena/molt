@@ -15211,18 +15211,23 @@ def test_build_state_root_cache_tracks_session_id(
     assert alpha != beta
 
 
+@pytest.mark.parametrize("cargo_target", [None, "", "   "])
 def test_backend_daemon_empty_cargo_target_uses_shared_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cargo_target: str | None
 ) -> None:
     from molt.backend_daemon_custody import backend_daemon_root_from_env
     from molt.build_state_layout import build_state_root
+    from molt.dx import checkout_component
 
     project = tmp_path / "repo"
     artifact = tmp_path / "canonical"
     monkeypatch.chdir(tmp_path)
-    env = {"CARGO_TARGET_DIR": "", "MOLT_EXT_ROOT": str(artifact)}
+    env = {"MOLT_EXT_ROOT": str(artifact)}
+    if cargo_target is not None:
+        env["CARGO_TARGET_DIR"] = cargo_target
+    target = artifact / "target" / "checkouts" / checkout_component(project)
     expected = build_state_root(
-        project_root=project, cargo_target=project / "target", environment=env
+        project_root=project, cargo_target=target, environment=env
     )
     assert (
         backend_daemon_root_from_env(env, project_root=project)
