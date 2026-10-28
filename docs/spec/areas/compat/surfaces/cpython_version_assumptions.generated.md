@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 69
 - `operational-tooling` files: 61
-- `scattered-assumption` files: 353
+- `scattered-assumption` files: 354
 
 ## Files
 
@@ -310,6 +310,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 | `runtime/molt-runtime/src/builtins/types/dataclasses/field_runtime.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/native_descriptors.rs` | 2 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/builtins/types/wrappers.rs` | 1 | scattered-assumption | `3.12` |
+| `runtime/molt-runtime/src/builtins/warnings_ext.rs` | 5 | scattered-assumption | `3.12` |
 | `runtime/molt-runtime/src/c_api/tests/api_collections.rs` | 9 | scattered-assumption | `3.125` |
 | `runtime/molt-runtime/src/c_api/tests/api_runtime.rs` | 2 | scattered-assumption | `3.5` |
 | `runtime/molt-runtime/src/call/bind/arguments.rs` | 7 | scattered-assumption | `3.14` |

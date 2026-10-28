@@ -13,8 +13,9 @@ def _warnings_intrinsic(name: str):
     return _require_intrinsic(name)
 
 
-def _molt_warnings_warn(*args):
-    return _warnings_intrinsic("molt_warnings_warn")(*args)
+# `warn` calls this intrinsic directly from its own body: the intrinsic counts
+# exactly that one shim frame before CPython's stacklevel walk begins.
+_MOLT_WARNINGS_WARN = _require_intrinsic("molt_warnings_warn")
 
 
 def _molt_warnings_warn_explicit(*args):
@@ -101,104 +102,56 @@ def _normalize_category(category: Any) -> type:
     return UserWarning
 
 
-def _get_frame(stacklevel: int) -> Any | None:
-    getframe = getattr(_sys, "_getframe", None)
-    if not callable(getframe):
-        return None
-    try:
-        return getframe(stacklevel)
-    except Exception:
-        return None
-
-
-def _get_location(stacklevel: int) -> tuple[str, int, str, Any | None]:
-    frame = _get_frame(stacklevel + 1)
-    if frame is None:
-        return "<string>", 1, "__main__", None
-    filename = "<string>"
-    lineno = 1
-    module = "__main__"
-    module_globals = None
-    try:
-        code = getattr(frame, "f_code", None)
-        if code is not None:
-            filename = getattr(code, "co_filename", filename)
-    except Exception:
-        pass
-    try:
-        lineno = int(getattr(frame, "f_lineno", lineno))
-    except Exception:
-        pass
-    try:
-        globals_map = getattr(frame, "f_globals", None)
-        if globals_map is not None and hasattr(globals_map, "get"):
-            module_globals = globals_map
-            module = globals_map.get("__name__", module)
-    except Exception:
-        pass
-    return filename, lineno, module, module_globals
-
-
 def _bump_filters_version() -> None:
     global _filters_version
     _filters_version += 1
 
 
-def _resolve_registry(
-    registry: Any | None, module_globals: Any | None
-) -> dict[object, Any] | None:
-    reg: Any | None = registry if isinstance(registry, dict) else None
-    if (
-        reg is None
-        and module_globals is not None
-        and hasattr(module_globals, "setdefault")
-    ):
-        try:
-            reg = module_globals.setdefault("__warningregistry__", {})
-        except Exception:
-            reg = None
-    if not isinstance(reg, dict):
+def _resolve_registry(registry: Any | None) -> dict[object, Any] | None:
+    # CPython's `already_warned`: a registry from an older filter version
+    # forgets what it suppressed.
+    if registry is None:
         return None
-    version = reg.get("version")
-    if version != _filters_version:
-        reg.clear()
-        reg["version"] = _filters_version
-    return reg
+    if not isinstance(registry, dict):
+        raise TypeError("'registry' must be a dict or None")
+    if registry.get("version") != _filters_version:
+        registry.clear()
+        registry["version"] = _filters_version
+    return registry
 
 
-def _should_suppress(
+def _module_from_filename(filename: Any) -> str:
+    # CPython's `warn_explicit` names an unnamed module after its file.
+    module = filename or "<unknown>"
+    if module[-3:].lower() == ".py":
+        module = module[:-3]
+    return module
+
+
+def _already_warned(
     action: str,
-    msg_text: str,
+    msg_text: Any,
     category: type,
     lineno: int,
     registry: dict[object, Any] | None,
 ) -> bool:
-    if action in {"ignore", "off"}:
-        return True
+    # CPython `warn_explicit` after the filter search: record the warning
+    # unless the action is "always", then apply once/module deduplication.
     if action == "always":
         return False
+    if registry is not None:
+        registry[(msg_text, category, lineno)] = True
     if action == "once":
         key = (msg_text, category)
         if key in _once_registry:
             return True
         _once_registry.add(key)
         return False
-    if action == "module":
-        if registry is None:
-            return False
+    if action == "module" and registry is not None:
         key = (msg_text, category, 0)
-        if key in registry:
+        if registry.get(key):
             return True
         registry[key] = True
-        return False
-    if action == "default":
-        if registry is None:
-            return False
-        key = (msg_text, category, lineno)
-        if key in registry:
-            return True
-        registry[key] = True
-        return False
     return False
 
 
@@ -283,20 +236,20 @@ def formatwarning(
 
 def showwarning(
     message: Any,
-    category: Any = None,
-    filename: str | None = None,
-    lineno: int | None = None,
+    category: Any,
+    filename: str,
+    lineno: int,
     file: Any | None = None,
     line: str | None = None,
 ) -> None:
-    _molt_warnings_showwarning(
-        message,
-        category,
-        filename or "<string>",
-        lineno if lineno is not None else 1,
-        file,
-        line,
-    )
+    if file is None:
+        _molt_warnings_showwarning(message, category, filename, lineno, file, line)
+        return None
+    try:
+        file.write(formatwarning(message, category, filename, lineno, line))
+    except OSError:
+        pass
+    return None
 
 
 _DEFAULT_SHOWWARNING = showwarning
@@ -309,49 +262,10 @@ def warn(
     source: Any | None = None,
 ) -> None:
     _ = source
-    # Fast path: delegate entirely to Rust when no record/capture hooks.
-    if not _record_stack and not _capture_streams() and not _has_custom_showwarning():
-        _molt_warnings_warn(message, _normalize_category(category), stacklevel)
-        return None
-    # Slow path: Python-level record capture.
-    category = _normalize_category(category)
-    msg_text = str(message)
-    filename, lineno, module, module_globals = _get_location(stacklevel)
-    action = _action_for(msg_text, category, module, lineno)
-
-    if action not in _VALID_ACTIONS:
-        raise ValueError(f"invalid warnings action: {action!r}")
-    if action == "error":
-        raise category(message)
-    registry = _resolve_registry(None, module_globals)
-    if _should_suppress(action, msg_text, category, lineno, registry):
-        return None
-
-    record = _WarningRecord(
-        category(message),
-        category,
-        filename,
-        lineno,
-        module,
-    )
-    if _record_stack:
-        _record_stack[-1].append(record)
-        return None
-
-    streams = _capture_streams()
-    if streams:
-        rendered = formatwarning(message, category, filename, lineno)
-        for stream, terminator in streams:
-            try:
-                if stream is not None and hasattr(stream, "write"):
-                    stream.write(rendered.rstrip() + terminator)
-                    flush = getattr(stream, "flush", None)
-                    if callable(flush):
-                        flush()
-            except Exception:
-                continue
-        return None
-    _resolve_showwarning()(message, category, filename, lineno)
+    # The runtime attributes the warning as CPython's `setup_context` does
+    # (file, line, module and `__warningregistry__` of the frame `stacklevel`
+    # levels above this call) and hands it to `warn_explicit`.
+    _MOLT_WARNINGS_WARN(message, _normalize_category(category), stacklevel)
     return None
 
 
@@ -379,41 +293,41 @@ def warn_explicit(
     source: Any | None = None,
 ) -> None:
     _ = source
-    # Fast path: delegate to Rust when no record/capture hooks.
+    lineno = int(lineno)
+    if module is None:
+        module = _module_from_filename(filename)
+    category = _normalize_category(category)
+    registry = _resolve_registry(registry)
+    # Fast path: the native engine filters and displays when no record or
+    # capture hook is installed.
     if not _record_stack and not _capture_streams() and not _has_custom_showwarning():
         _molt_warnings_warn_explicit(
-            message,
-            _normalize_category(category),
-            filename,
-            lineno,
-            module or "__main__",
-            registry,
-            module_globals,
+            message, category, filename, lineno, module, registry, module_globals
         )
         return None
-    # Slow path: Python-level record capture.
-    category = _normalize_category(category)
-    msg_text = str(message)
-    module_name = module or "__main__"
-    action = _action_for(msg_text, category, module_name, lineno)
-
+    # Captured path: CPython's `warn_explicit` over the Python filter list.
+    if isinstance(message, Warning):
+        text = str(message)
+        category = message.__class__
+    else:
+        text = message
+        message = category(message)
+    if registry is not None and registry.get((text, category, lineno)):
+        return None
+    action = _action_for(text, category, module, lineno)
     if action not in _VALID_ACTIONS:
         raise ValueError(f"invalid warnings action: {action!r}")
+    if action in {"ignore", "off"}:
+        return None
     if action == "error":
-        raise category(message)
-    reg = _resolve_registry(registry, module_globals)
-    if _should_suppress(action, msg_text, category, lineno, reg):
+        raise message
+    if _already_warned(action, text, category, lineno, registry):
         return None
 
-    record = _WarningRecord(
-        category(message),
-        category,
-        filename,
-        lineno,
-        module_name,
-    )
     if _record_stack:
-        _record_stack[-1].append(record)
+        _record_stack[-1].append(
+            _WarningRecord(message, category, filename, lineno, module)
+        )
         return None
 
     streams = _capture_streams()

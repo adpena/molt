@@ -18,9 +18,9 @@
 ## Progress Summary (Generated)
 - Total audited modules: `949`
 - `intrinsic-backed`: `38`
-- `intrinsic-partial`: `162`
-- `intrinsic-support`: `27`
-- `python-compiled`: `343`
+- `intrinsic-partial`: `163`
+- `intrinsic-support`: `28`
+- `python-compiled`: `341`
 - `stub`: `379`
 - `policy-gate`: `0`
 
@@ -265,6 +265,7 @@
 - `urllib.request`
 - `urllib.response`
 - `uuid`
+- `warnings`
 - `xml.etree.ElementTree`
 - `zipfile`
 - `zipfile._path`
@@ -289,6 +290,7 @@
 - `_struct`
 - `_tokenize`
 - `_types`
+- `_warnings`
 - `_weakrefset`
 - `_zoneinfo`
 - `collections.abc`
@@ -330,7 +332,6 @@
 - `_strptime`
 - `_threading_local`
 - `_tracemalloc`
-- `_warnings`
 - `argparse`
 - `asyncio.__main__`
 - `asyncio.base_events`
@@ -632,7 +633,6 @@
 - `unittest.util`
 - `urllib`
 - `urllib.robotparser`
-- `warnings`
 - `wsgiref`
 - `wsgiref.headers`
 - `wsgiref.simple_server`

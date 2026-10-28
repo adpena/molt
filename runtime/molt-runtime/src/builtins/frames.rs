@@ -642,6 +642,43 @@ pub(crate) fn frame_stack_top_info(_py: &PyToken<'_>) -> Option<(String, i64, St
     })
 }
 
+/// One executing Python frame as a location query reads it: the code object,
+/// the globals namespace and the current line (`f_lineno`).
+#[derive(Clone, Copy)]
+pub(crate) struct PythonFrameSite {
+    pub(crate) code_bits: u64,
+    pub(crate) globals_bits: u64,
+    pub(crate) line: i64,
+}
+
+/// Choose one executing Python frame and retain its code and globals for the
+/// caller, who releases both. `choose` sees the Python-visible frames newest
+/// first; runtime namespace contexts without a code object are not Python
+/// calls and are skipped, as [`frame_at_depth`] skips them. No frame object is
+/// materialized. `choose` runs under the frame-stack borrow: it may read
+/// objects, but it must not allocate Python objects or run Python code.
+pub(crate) fn python_frame_site(
+    py: &PyToken<'_>,
+    choose: impl FnOnce(&mut dyn Iterator<Item = PythonFrameSite>) -> Option<PythonFrameSite>,
+) -> Option<PythonFrameSite> {
+    crate::gil_assert();
+    FRAME_STACK.with(|stack| {
+        let stack = stack.borrow();
+        let mut frames = stack.iter().rev().filter_map(|entry| {
+            let line = unsafe { frame_line_from_entry(*entry) }?;
+            Some(PythonFrameSite {
+                code_bits: entry.code_bits,
+                globals_bits: entry.globals_bits,
+                line,
+            })
+        });
+        let site = choose(&mut frames)?;
+        inc_ref_bits(py, site.code_bits);
+        inc_ref_bits(py, site.globals_bits);
+        Some(site)
+    })
+}
+
 pub(crate) fn frame_stack_set_locals_dict(_py: &PyToken<'_>, dict_bits: u64) {
     crate::gil_assert();
     let prev = FRAME_STACK.with(|stack| {
