@@ -114,7 +114,7 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
     parser.add_argument(
         "--set",
         default="core",
-        choices=["core", "smoke"],
+        choices=["core", "smoke", "applications"],
         help="benchmark set (default: core = the curated verified subset)",
     )
     parser.add_argument(
@@ -627,154 +627,172 @@ def _main(api: Mapping[str, Any], argv: list[str], workload_custody: ExitStack) 
             file=sys.stderr,
         )
 
+    sweep_primary: BaseException | None = None
     try:
-        budgets = api["_load_cold_start_budgets"]()
+        try:
+            budgets = api["_load_cold_start_budgets"]()
+            for backend_name in backends:
+                for profile in profiles:
+                    api["_budget_ms_for"](budgets, backend_name, profile)
+        except ValueError as exc:
+            print(f"[scoreboard] {exc}", file=sys.stderr)
+            return 2
+
+        git_rev = api["_git_rev"]()
+        api["SCOREBOARD_DIR"].mkdir(parents=True, exist_ok=True)
+        out_path = (
+            Path(ns.out)
+            if ns.out
+            else api["SCOREBOARD_DIR"] / f"cpython_{git_rev}.json"
+        )
+        log_dir = api["SCOREBOARD_DIR"] / f"logs_{git_rev}"
+        partial_path = out_path.with_suffix(".partial.json")
+
+        benchmarks_run: list[str] = []
+        benchmarks_deferred: list[dict] = []
+        cells: list[Cell] = []
+
+        # Per (backend, profile) we open ONE daemon batch build server and reuse it
+        # across the whole benchmark set — matching bench.py's amortized-build model.
         for backend_name in backends:
+            spec = api["BACKENDS_BY_NAME"][backend_name]
             for profile in profiles:
-                api["_budget_ms_for"](budgets, backend_name, profile)
-    except ValueError as exc:
-        print(f"[scoreboard] {exc}", file=sys.stderr)
-        return 2
-
-    git_rev = api["_git_rev"]()
-    api["SCOREBOARD_DIR"].mkdir(parents=True, exist_ok=True)
-    out_path = (
-        Path(ns.out) if ns.out else api["SCOREBOARD_DIR"] / f"cpython_{git_rev}.json"
-    )
-    log_dir = api["SCOREBOARD_DIR"] / f"logs_{git_rev}"
-    partial_path = out_path.with_suffix(".partial.json")
-
-    benchmarks_run: list[str] = []
-    benchmarks_deferred: list[dict] = []
-    cells: list[Cell] = []
-
-    # Per (backend, profile) we open ONE daemon batch build server and reuse it
-    # across the whole benchmark set — matching bench.py's amortized-build model.
-    for backend_name in backends:
-        spec = api["BACKENDS_BY_NAME"][backend_name]
-        for profile in profiles:
-            cell_budget_ms = api["_budget_ms_for"](budgets, backend_name, profile)
-            batch_server = None
-            if spec.build_target == "native":
-                try:
-                    batch_server = api["bench"]._BenchBatchBuildServer(
-                        api["_perfscore_build_env"](spec, profile)
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(
-                        f"[warn] could not start batch build server for "
-                        f"{backend_name}/{profile}: {exc!r}; falling back to per-build",
-                        file=sys.stderr,
-                    )
-                    batch_server = None
-            try:
-                for script in scripts:
-                    key = api["bench_suites"].canonical_benchmark_key(script)
-                    print(
-                        f"[scoreboard] {key} | {backend_name} | {profile} ...",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                cell_budget_ms = api["_budget_ms_for"](budgets, backend_name, profile)
+                batch_server = None
+                if spec.build_target == "native":
                     try:
-                        cell = api["measure_cell"](
-                            script_path=script,
-                            workload=workloads[script],
-                            spec=spec,
-                            profile=profile,
-                            samples=ns.samples,
-                            warmup=ns.warmup,
-                            rss_mb=ns.rss_mb,
-                            timeout_s=ns.timeout,
-                            batch_server=batch_server,
-                            cpython_cmd=cpython_oracle.cmd,
-                            target_python_version=target_python.short,
-                            log_dir=log_dir,
-                            budget_ms=cell_budget_ms,
-                            authoritative=effective_authoritative,
-                            pypy_bin=pypy_bin,
-                            codon_runner=codon_runner,
-                            repeat=ns.repeat,
-                            emit_cycle_profile=ns.emit_cycle_profile,
-                            execution_host=execution_host
-                            if spec.build_target == "wasm"
-                            else None,
+                        batch_server = api["bench"]._BenchBatchBuildServer(
+                            api["_perfscore_build_env"](spec, profile)
                         )
-                    except NodeRuntimeError as exc:
+                    except Exception as exc:  # noqa: BLE001
                         print(
-                            f"[scoreboard] execution host changed: {exc}",
+                            f"[warn] could not start batch build server for "
+                            f"{backend_name}/{profile}: {exc!r}; falling back to per-build",
                             file=sys.stderr,
                         )
-                        if codon_runner is not None:
-                            codon_runner.close()
-                        return 2
-                    if cell.build_ok:
-                        from tools.perf_scoreboard_build_profiles import (
-                            record_measured_build_identity,
+                        batch_server = None
+                lane_primary: BaseException | None = None
+                try:
+                    for script in scripts:
+                        key = api["bench_suites"].canonical_benchmark_key(script)
+                        print(
+                            f"[scoreboard] {key} | {backend_name} | {profile} ...",
+                            file=sys.stderr,
+                            flush=True,
                         )
-
                         try:
-                            record_measured_build_identity(
-                                provenance,
-                                observation=cell.build_observation,
-                                backend=backend_name,
+                            cell = api["measure_cell"](
+                                script_path=script,
+                                workload=workloads[script],
+                                spec=spec,
                                 profile=profile,
+                                samples=ns.samples,
+                                warmup=ns.warmup,
+                                rss_mb=ns.rss_mb,
+                                timeout_s=ns.timeout,
+                                batch_server=batch_server,
+                                cpython_cmd=cpython_oracle.cmd,
+                                target_python_version=target_python.short,
+                                log_dir=log_dir,
+                                budget_ms=cell_budget_ms,
+                                authoritative=effective_authoritative,
+                                pypy_bin=pypy_bin,
+                                codon_runner=codon_runner,
+                                repeat=ns.repeat,
+                                emit_cycle_profile=ns.emit_cycle_profile,
+                                execution_host=execution_host
+                                if spec.build_target == "wasm"
+                                else None,
                             )
-                        except ValueError as exc:
-                            cell.note = str(exc)
-                            cell.finalize(budget_ms=cell_budget_ms, authoritative=False)
-                            provenance["authoritative"] = False
-                            provenance["authoritative_reason"] = str(exc)
-                    cells.append(cell)
-                    if key not in benchmarks_run:
-                        benchmarks_run.append(key)
-                    # CPython-incompatible benchmarks have no valid floor and
-                    # are excluded from the gate — record the exclusion
-                    # explicitly (no silent truncation).
-                    if cell.verdict == api["VERDICT_CPY_INCOMPAT"]:
-                        dkey = f"{key} [{backend_name}/{profile}]"
-                        if not any(d["benchmark"] == dkey for d in benchmarks_deferred):
-                            benchmarks_deferred.append(
-                                {
-                                    "benchmark": dkey,
-                                    "reason": cell.note
-                                    or "CPython baseline could not run this script",
-                                }
+                        except NodeRuntimeError as exc:
+                            print(
+                                f"[scoreboard] execution host changed: {exc}",
+                                file=sys.stderr,
                             )
-                    verify_workloads()
-                    # Checkpoint partial JSON after every cell (death-recoverable).
-                    try:
-                        api["_checkpoint"](
-                            partial_path,
-                            cells,
-                            benchmarks_run,
-                            benchmarks_deferred,
-                            cpython_version,
-                            ns.samples,
-                            ns.warmup,
-                            provenance=provenance,
-                            cpython_identity=cpython_identity,
-                            pypy_version=pypy_version,
-                            codon_version=codon_version,
-                            execution_host=execution_host_record,
-                            validate_inputs=verify_workloads,
+                            return 2
+                        if cell.build_ok:
+                            from tools.perf_scoreboard_build_profiles import (
+                                record_measured_build_identity,
+                            )
+
+                            try:
+                                record_measured_build_identity(
+                                    provenance,
+                                    observation=cell.build_observation,
+                                    backend=backend_name,
+                                    profile=profile,
+                                )
+                            except ValueError as exc:
+                                cell.note = str(exc)
+                                cell.finalize(
+                                    budget_ms=cell_budget_ms, authoritative=False
+                                )
+                                provenance["authoritative"] = False
+                                provenance["authoritative_reason"] = str(exc)
+                        cells.append(cell)
+                        if key not in benchmarks_run:
+                            benchmarks_run.append(key)
+                        # CPython-incompatible benchmarks have no valid floor and
+                        # are excluded from the gate — record the exclusion
+                        # explicitly (no silent truncation).
+                        if cell.verdict == api["VERDICT_CPY_INCOMPAT"]:
+                            dkey = f"{key} [{backend_name}/{profile}]"
+                            if not any(
+                                d["benchmark"] == dkey for d in benchmarks_deferred
+                            ):
+                                benchmarks_deferred.append(
+                                    {
+                                        "benchmark": dkey,
+                                        "reason": cell.note
+                                        or "CPython baseline could not run this script",
+                                    }
+                                )
+                        verify_workloads()
+                        # Checkpoint partial JSON after every cell (death-recoverable).
+                        try:
+                            api["_checkpoint"](
+                                partial_path,
+                                cells,
+                                benchmarks_run,
+                                benchmarks_deferred,
+                                cpython_version,
+                                ns.samples,
+                                ns.warmup,
+                                provenance=provenance,
+                                cpython_identity=cpython_identity,
+                                pypy_version=pypy_version,
+                                codon_version=codon_version,
+                                execution_host=execution_host_record,
+                                validate_inputs=verify_workloads,
+                            )
+                        except api["ScoreboardSchemaError"] as exc:
+                            api["_print_schema_error"](exc)
+                            return 3
+                        print(
+                            f"    -> {cell.verdict}  warm={api['_fmt'](cell.warm_speedup)} "
+                            f"cold={api['_fmt'](cell.cold_speedup)} tax={api['_fmt'](cell.startup_tax_ms, 0)}ms",
+                            file=sys.stderr,
+                            flush=True,
                         )
-                    except api["ScoreboardSchemaError"] as exc:
-                        api["_print_schema_error"](exc)
-                        return 3
-                    print(
-                        f"    -> {cell.verdict}  warm={api['_fmt'](cell.warm_speedup)} "
-                        f"cold={api['_fmt'](cell.cold_speedup)} tax={api['_fmt'](cell.startup_tax_ms, 0)}ms",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-            finally:
-                if batch_server is not None:
-                    try:
-                        batch_server.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-    if codon_runner is not None:
-        codon_runner.close()
+                except BaseException as exc:
+                    lane_primary = exc
+                    raise
+                finally:
+                    if batch_server is not None:
+                        try:
+                            batch_server.close()
+                        except BaseException as cleanup:
+                            if lane_primary is None:
+                                raise
+                            lane_primary.add_note(
+                                f"benchmark batch server cleanup failed: {cleanup!r}"
+                            )
+    except BaseException as exc:
+        sweep_primary = exc
+        raise
+    finally:
+        if codon_runner is not None:
+            codon_runner.close(sweep_primary)
 
     # --- 5-state classification (#69 --classify) ---------------------------
     # Set after the whole sweep so the WHOLE-board quiescence + each cell's

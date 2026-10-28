@@ -2,9 +2,11 @@
 
 The **benchmark corpus catalog** records intended external Python benchmarks,
 CPython regression tests and real applications. Registration does not mean a
-workload is executable or measured. The catalog currently has no executable
-consumer in the scoreboard or adapters; the runnable core selection belongs to
-`tools/bench_suites.py`, and friend recipes belong to `bench/friends/manifest.toml`.
+workload is executable or measured. HTML5lib and SQLGlot have explicit executable
+recipes consumed by `tools/benchmark_applications.py` and selected through the
+existing benchmark runners. The other catalog rows remain intended coverage.
+The diagnostic core belongs to `tools/bench_suites.py`; friend recipes belong to
+`bench/friends/manifest.toml`.
 The comprehensive optimization portfolio and next application tranche are in
 [doc 69](../../docs/design/foundation/69_benchmark_corpus_union_and_dynamic_calibration.md);
 the full external-suite catalog is [doc 69A](../../docs/design/foundation/69A_benchmark_corpus_catalog.md).
@@ -13,7 +15,7 @@ the full external-suite catalog is [doc 69A](../../docs/design/foundation/69A_be
 
 | Path | What |
 |---|---|
-| `registry.toml` | intended corpus catalog: deduped identities, source suites and proposed semantic tiers. These declarations do not supply executable producers, captured inputs or qualification receipts. |
+| `registry.toml` | intended corpus plus explicit application execution recipes and size/SHA-pinned package/data archives. A recipe supplies inputs, not qualification receipts. |
 | `clbg/` | the 10 Computer Language Benchmarks Game kernels, vendored byte-exact (see `clbg/README.md`). |
 | (adapters) | `tools/pyperformance_adapter.py`, `tools/codon_adapter.py`, `tools/regrtest_adapter.py` — one per external suite. |
 | (harness) | `tools/bench_friends.py` + `bench/friends/manifest.toml` — the "beat them on their own suite" runner. |
@@ -41,6 +43,45 @@ lanes may skip with explicit reasons; skips remain missing coverage. The
 pyperformance adapter now fails on workload errors. Its in-process shim and
 fingerprints do not substitute for upstream pyperf methodology or independent
 semantic output checks.
+
+## Declared application diagnostics
+
+Use the active project interpreter. Acquisition and staging happen before timed
+samples, through the existing archive and source-package-seal authorities:
+
+```bash
+python tools/bench.py --applications --samples 3 --warmup 1
+python tools/perf_scoreboard.py --set applications --backend native \
+  --profile release-fast --samples 3 --warmup 1
+```
+
+Individual, WASM and legacy benchmark runners also expose `--applications`.
+These diagnostics use complete package/resource trees, datasets, project
+configuration, provenance and output fixtures under one sealed project. The
+same admitted paths, import roots, arguments and cwd drive CPython and Molt.
+Unqualified comparator or transformed-source protocols refuse explicitly.
+This does not expand the canonical release gate or qualify an execution target.
+
+The HTML driver emits the complete parsed tree, including attributes, text and
+tails. The SQL driver emits complete parsed/optimized AST dumps and generated
+Spark SQL for the upstream TPC-H input. SQLGlot 30.24.0 is an explicit modern
+variant, not upstream pyperformance's historical `sqlglot_v2`/4.6.0 result.
+References must match the full sealed stdout fixture with empty semantic stderr;
+all guest warmups and samples must then match the qualified reference.
+
+Regenerate expected outputs explicitly with the selected reference interpreter:
+
+```bash
+python tools/benchmark_applications.py --write-oracle html5lib
+python tools/benchmark_applications.py --write-oracle sqlglot
+```
+
+Review oracle changes as semantic changes. Generation does not qualify Molt or
+replace upstream conformance tests. Both application runtime-performance cells
+remain unqualified. In particular, the pinned HTML5lib dependency `six` executes
+source with `exec`; Molt intentionally rejects it under the [AOT policy](../../docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md).
+Retain the failure without a timing score or a package/compiler workaround.
+Failures within the intended subset remain defects, not new policy exclusions.
 
 ## Suites + lane status
 

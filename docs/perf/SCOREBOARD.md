@@ -464,12 +464,12 @@ gate constants, required top-level/provenance/host/summary/cell fields, and the
 `FAIL_COLD_BUDGET`, `WARN_COLD_FLOOR`, `UNSTABLE`), `validate_cell()` now
 fails closed unless the build/run booleans, binary size, compile time, cold and
 warm timings, speedups, startup tax, RSS peaks, and log artifact are present. A
-measured runnable cell must also carry affirmative schema-v6 `output_parity`
+measured runnable cell must also carry affirmative schema-v7 `output_parity`
 evidence from `tools.compat.comparison`: exact stdout, exact user stderr, exact
 exit status, and stable output across the cold observation plus every existing
 warmup and timed warm sample. The receipt stores hashes and the first mismatching sample
 identity, never raw output. Missing, legacy-boolean, mismatching, or unstable
-evidence is `RUN_ERROR`, never a performance verdict. Schema-v3/v4 boards remain
+evidence is `RUN_ERROR`, never a performance verdict. Earlier schema boards remain
 historical; `--rebuild-summary` and `--merge` refuse to promote them without a
 fresh measurement.
  A
@@ -541,7 +541,7 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 
 ```jsonc
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "kind": "cpython_floor_scoreboard",
   "generated_at": "<iso8601 utc>",
   "git_rev": "<full sha>",
@@ -594,11 +594,14 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
   "scoreboard": {
     "<benchmark>": { "<target>": { "<backend>": { "<profile>": {
       "workload": {
+        "schema": "molt.benchmark-workload/2",
         "entry": "tests/benchmarks/<name>.py",
+        "entry_source": "tests/benchmarks/<name>.py",
         "scope": "local-python-source-closure",
         "sources": [{"path": "tests/benchmarks/<name>.py", "size": 123, "sha256": "<exact sha256>"}],
         "topology_sha256": "<closure topology sha256 or empty>",
-        "run_args": [], "molt_args": []
+        "run_args": [], "molt_args": [],
+        "sealed_inputs": null
       },
       // --- build facts ---
       "build_ok": true, "binary_size_kib": 4256.3, "compile_time_s": 3.08,
@@ -661,7 +664,7 @@ artifact, **not** a speedup board, and never feeds the release gate.
 
 ```jsonc
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "kind": "hot_only_cycle_profile",
   "git_rev": "<full sha>",
   "backend": "native", "target": "native", "profile": "release-fast",
@@ -1121,3 +1124,14 @@ the shared typed measurement API as the CPython path.
   is worse than a missing comparison).
 
 Source admission, comparison and final publication follow the [workload-generation contract](../design/foundation/64_perf_scoreboards_and_harness.md#admitted-benchmark-source-generations). Source changes after the final pre-commit admission boundary do not rewrite historical identity. Missing old workload evidence remains unqualified; summary regeneration never supplies it.
+
+For a declared application the same workload-v2 record uses `scope: sealed-project`.
+`sealed_inputs` supplies `seal_sha256`, ordered portable relative `python_roots`
+and an `oracle` path; `topology_sha256` equals that seal digest. The existing
+package-seal authority binds complete declared package/resource, data,
+configuration, provenance and oracle bytes. Comparisons bind the full record,
+while actual invocations use its sealed execution paths/environment/cwd.
+See the [input and publication contract](../design/foundation/64_perf_scoreboards_and_harness.md#admitted-benchmark-source-generations).
+`--set applications` is diagnostic coverage, not an expansion of release
+acceptance. Application timing remains unqualified until its actual guest and
+reference observations satisfy the full contract.

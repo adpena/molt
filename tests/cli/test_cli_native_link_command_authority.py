@@ -54,7 +54,7 @@ def test_cross_compiler_environment_preserves_native_quoted_command(
         native_link_command, "_resolve_native_linker_hint", lambda **_: None
     )
     command, linker, triple = native_link_command._build_native_link_driver_command(
-        output_obj=None, target=target, sysroot_path=None, profile="release-output"
+        target=target, sysroot_path=None, profile="release-output"
     )
     expected = [str(tool), "--sysroot=~/selected SDK", "-target", target.triple]
     assert command == expected

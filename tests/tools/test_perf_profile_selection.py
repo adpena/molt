@@ -228,8 +228,8 @@ def test_batch_request_carries_distinct_profile_inputs(tmp_path):
             requests.append({"params": params, "env_overrides": dict(env_overrides)})
             return {"ok": True, "returncode": 0}
 
-    server = bench._BenchBatchBuildServer.__new__(bench._BenchBatchBuildServer)
-    server._client = Client()
+    server = bench._BenchBatchBuildServer({})
+    server._clients = {bench.REPO_ROOT.resolve(): Client()}
     environments = [
         measure._perfscore_build_env(NATIVE_CRANELIFT, p)
         for p in ("release-fast", "release-output")
@@ -1699,3 +1699,30 @@ def test_sampler_output_owns_exact_directory_through_every_exit(
     if cleanup_failure:
         allocations[0].cleanup()
     assert not Path(allocations[0].name).exists()
+
+
+@pytest.mark.parametrize("selector", ["MOLT_LLVM_PREFIX", "LLVM_CONFIG_PATH"])
+def test_perfscore_preserves_canonical_llvm_selection_without_injecting_a_prefix(
+    monkeypatch, tmp_path, selector
+):
+    # The CLI must see one SDK selection. A benchmark-specific LLVM_SYS prefix
+    # can conflict with its admitted managed SDK or an explicit config path.
+    from molt.llvm_toolchain import required_llvm_backend_pin
+
+    pin = required_llvm_backend_pin(measure.REPO_ROOT)
+    assert pin is not None
+    monkeypatch.delenv(pin.env_var, raising=False)
+    selected = str(tmp_path / "selected-sdk")
+    monkeypatch.setenv(selector, selected)
+    monkeypatch.setattr(
+        measure.bench, "_canonical_bench_env", lambda base: ProcessEnvironment(base)
+    )
+    from tools import perf_scoreboard_model as model
+
+    def unexpected_sdk_probe(*args, **kwargs):
+        pytest.fail("the benchmark must leave SDK discovery to the canonical CLI")
+
+    monkeypatch.setattr(model, "Path", unexpected_sdk_probe)
+    env = measure._perfscore_build_env(NATIVE_LLVM, "release-fast")
+    assert env[selector] == selected
+    assert pin.env_var not in env

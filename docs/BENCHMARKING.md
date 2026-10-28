@@ -58,6 +58,16 @@ does not instantiate the split build fixture.
 
 ## Running Benchmarks
 
+For declared real-application inputs and honest qualification limits, use the
+[application portfolio](../bench/corpus/README.md#declared-application-diagnostics).
+`--set applications` on the existing scoreboard and `--applications` on sibling
+runners select the same sealed package/data/oracle recipes. These diagnostics
+are distinct from the release core. Intentional eval/exec policy failures remain
+visible without a score; unimplemented behavior inside the verified subset stays
+a correctness obligation. Full semantic output and guest stderr must qualify
+before runtime measurements are accepted.
+
+
 Maintainer and agent benchmark/profiling runs should enter through the active
 project environment, for example `uv run --active --project . --python 3.12 ...`.
 Harness internals must reuse `sys.executable` for nested Molt builds and helper

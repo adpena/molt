@@ -6,33 +6,72 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-def _require_callable_intrinsic(name: str):
-    value = _require_intrinsic(name)
+def _require_callable_intrinsic(value, name: str):
     if not callable(value):
         raise RuntimeError(f"intrinsic unavailable: {name}")
     return value
 
 
-_MOLT_GC_COLLECT = _require_callable_intrinsic("molt_gc_collect")
-_MOLT_GC_ENABLE = _require_callable_intrinsic("molt_gc_enable")
-_MOLT_GC_DISABLE = _require_callable_intrinsic("molt_gc_disable")
-_MOLT_GC_ISENABLED = _require_callable_intrinsic("molt_gc_isenabled")
-_MOLT_GC_SET_THRESHOLD = _require_callable_intrinsic("molt_gc_set_threshold")
-_MOLT_GC_GET_THRESHOLD = _require_callable_intrinsic("molt_gc_get_threshold")
-_MOLT_GC_SET_DEBUG = _require_callable_intrinsic("molt_gc_set_debug")
-_MOLT_GC_GET_DEBUG = _require_callable_intrinsic("molt_gc_get_debug")
-_MOLT_GC_GET_COUNT = _require_callable_intrinsic("molt_gc_get_count")
-_MOLT_GC_GET_STATS = _require_callable_intrinsic("molt_gc_get_stats")
-_MOLT_GC_IS_TRACKED = _require_callable_intrinsic("molt_gc_is_tracked")
-_MOLT_GC_IS_FINALIZED = _require_callable_intrinsic("molt_gc_is_finalized")
-_MOLT_GC_GET_OBJECTS = _require_callable_intrinsic("molt_gc_get_objects")
-_MOLT_GC_GET_REFERENTS = _require_callable_intrinsic("molt_gc_get_referents")
-_MOLT_GC_GET_REFERRERS = _require_callable_intrinsic("molt_gc_get_referrers")
-_MOLT_GC_CALLBACKS = _require_callable_intrinsic("molt_gc_callbacks")
-_MOLT_GC_GARBAGE = _require_callable_intrinsic("molt_gc_garbage")
-_MOLT_GC_FREEZE = _require_callable_intrinsic("molt_gc_freeze")
-_MOLT_GC_UNFREEZE = _require_callable_intrinsic("molt_gc_unfreeze")
-_MOLT_GC_GET_FREEZE_COUNT = _require_callable_intrinsic("molt_gc_get_freeze_count")
+_MOLT_GC_COLLECT = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_collect"), "molt_gc_collect"
+)
+_MOLT_GC_ENABLE = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_enable"), "molt_gc_enable"
+)
+_MOLT_GC_DISABLE = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_disable"), "molt_gc_disable"
+)
+_MOLT_GC_ISENABLED = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_isenabled"), "molt_gc_isenabled"
+)
+_MOLT_GC_SET_THRESHOLD = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_set_threshold"), "molt_gc_set_threshold"
+)
+_MOLT_GC_GET_THRESHOLD = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_threshold"), "molt_gc_get_threshold"
+)
+_MOLT_GC_SET_DEBUG = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_set_debug"), "molt_gc_set_debug"
+)
+_MOLT_GC_GET_DEBUG = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_debug"), "molt_gc_get_debug"
+)
+_MOLT_GC_GET_COUNT = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_count"), "molt_gc_get_count"
+)
+_MOLT_GC_GET_STATS = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_stats"), "molt_gc_get_stats"
+)
+_MOLT_GC_IS_TRACKED = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_is_tracked"), "molt_gc_is_tracked"
+)
+_MOLT_GC_IS_FINALIZED = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_is_finalized"), "molt_gc_is_finalized"
+)
+_MOLT_GC_GET_OBJECTS = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_objects"), "molt_gc_get_objects"
+)
+_MOLT_GC_GET_REFERENTS = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_referents"), "molt_gc_get_referents"
+)
+_MOLT_GC_GET_REFERRERS = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_referrers"), "molt_gc_get_referrers"
+)
+_MOLT_GC_CALLBACKS = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_callbacks"), "molt_gc_callbacks"
+)
+_MOLT_GC_GARBAGE = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_garbage"), "molt_gc_garbage"
+)
+_MOLT_GC_FREEZE = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_freeze"), "molt_gc_freeze"
+)
+_MOLT_GC_UNFREEZE = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_unfreeze"), "molt_gc_unfreeze"
+)
+_MOLT_GC_GET_FREEZE_COUNT = _require_callable_intrinsic(
+    _require_intrinsic("molt_gc_get_freeze_count"), "molt_gc_get_freeze_count"
+)
 
 DEBUG_STATS = 1
 DEBUG_COLLECTABLE = 2

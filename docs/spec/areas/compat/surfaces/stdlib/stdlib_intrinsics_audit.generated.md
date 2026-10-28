@@ -7,6 +7,7 @@
 - Every stdlib module and submodule has exactly one status, derived from its own source and its proven imports by `src/molt/stdlib_intrinsic_policy.py`.
 - Intrinsic status rests on the intrinsics a module reads, not on the ones it requires. A module reads an intrinsic when it loads or exports the module-level name bound to it, requires it inside a function or class body, consumes it in an expression, or another stdlib module imports that private binding by name.
 - A requirement nothing reads is a gate failure, never backing: a discarded `_require_intrinsic(...)` statement or a private binding no module loads. Intrinsics that exist only to make a module count (readiness anchors) are not admitted.
+- Intrinsic resolver calls must name a literal `molt_*` intrinsic directly. Name wrappers are rejected because they hide reads from the audit; callable validation may wrap the resolved value.
 - `intrinsic-backed`: reads intrinsics and is attested as full CPython 3.12+ coverage. `intrinsic-partial`: reads intrinsics without that attestation, or carries a stdlib progress marker.
 - `intrinsic-support`: a private fragment its intrinsic owner imports, or a pure forwarding facade whose every resolved owner is intrinsic-backed. Forwarding cycles alone cannot establish support.
 - `python-compiled`: reads no intrinsic. Molt compiles the module's Python source into the binary like application code. This is an admitted implementation, not debt; a module moves to intrinsics when a measured win or a missing host capability requires it.
@@ -19,8 +20,8 @@
 - Total audited modules: `949`
 - `intrinsic-backed`: `38`
 - `intrinsic-partial`: `163`
-- `intrinsic-support`: `28`
-- `python-compiled`: `341`
+- `intrinsic-support`: `27`
+- `python-compiled`: `342`
 - `stub`: `379`
 - `policy-gate`: `0`
 
@@ -290,7 +291,6 @@
 - `_struct`
 - `_tokenize`
 - `_types`
-- `_warnings`
 - `_weakrefset`
 - `_zoneinfo`
 - `collections.abc`
@@ -332,6 +332,7 @@
 - `_strptime`
 - `_threading_local`
 - `_tracemalloc`
+- `_warnings`
 - `argparse`
 - `asyncio.__main__`
 - `asyncio.base_events`

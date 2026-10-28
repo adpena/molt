@@ -39,7 +39,16 @@ class _Printer:
         self._name = name
 
     def __call__(self) -> None:
-        _require_intrinsic(self._name)()
+        # Keep lookup at call time, while exposing the closed printer surface
+        # to static compilation and the intrinsic audit.
+        if self._name == "molt_site_credits":
+            _require_intrinsic("molt_site_credits")()
+        elif self._name == "molt_site_copyright":
+            _require_intrinsic("molt_site_copyright")()
+        elif self._name == "molt_site_license":
+            _require_intrinsic("molt_site_license")()
+        else:
+            raise RuntimeError(f"unknown site printer: {self._name}")
         return None
 
 

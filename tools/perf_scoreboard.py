@@ -100,7 +100,6 @@ from tools.perf_scoreboard_model import (  # noqa: E402
     _budget_ms_for as _budget_ms_for,
     _cell_from_dict as _cell_from_dict,
     _dimensional_improvement as _dimensional_improvement,
-    _llvm_sys_prefix as _llvm_sys_prefix,
     _load_cold_start_budgets as _load_cold_start_budgets,
     _repeat_stability as _repeat_stability,
     _robust_cell_stable as _robust_cell_stable,
@@ -813,6 +812,7 @@ def _profiling_popen(
     cmd: list[str],
     *,
     env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.Popen[str]:
     """Start one interactive profiling child under MOLT_BENCH process custody."""
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
@@ -820,6 +820,7 @@ def _profiling_popen(
     return subprocess.Popen(
         cmd,
         env=env,
+        cwd=cwd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
@@ -831,6 +832,7 @@ def capture_cycle_profile(
     cmd: list[str],
     *,
     env: Mapping[str, str],
+    cwd: Path | None = None,
     rss_mb: int,
     timeout_s: float,
     sample_seconds: int = 3,
@@ -909,7 +911,7 @@ def capture_cycle_profile(
                 "note": f"could not start sampler in -wait mode: {exc!r}",
             }
         try:
-            proc = _profiling_popen(safe_cmd, env=env)
+            proc = _profiling_popen(safe_cmd, env=env, cwd=cwd)
         except OSError as exc:
             primary = exc
             return {
@@ -1586,6 +1588,8 @@ def _resolve_benchmark_set(name: str, explicit: list[str] | None) -> list[Path]:
         keys = bench_suites.SMOKE_BENCHMARKS
     elif name == "core":
         keys = bench_suites.BENCHMARKS
+    elif name == "applications":
+        keys = bench_suites.APPLICATION_BENCHMARKS
     else:
         raise SystemExit(f"unknown benchmark set: {name}")
     scripts = [_resolve_script(k) for k in keys]

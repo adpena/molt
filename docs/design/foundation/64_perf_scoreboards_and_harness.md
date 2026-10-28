@@ -802,77 +802,80 @@ it must add next.
 
 ### Admitted benchmark source generations
 
-Every new scoreboard cell carries its exact workload identity: the selected
-entry, discovered local Python source bytes and topology, and benchmark-specific
-runtime and compiler arguments. The benchmark controller retains the existing
-stable-file custody while Molt and interpreter comparators use the original
-paths. It validates generations outside timed intervals and before publication;
-observed content, path or import-topology drift invalidates the result. The final
-atomic publication callback verifies topology/content and closes the retained
-file contexts, including their mandatory generation fences, before committing
-with the shared atomic writer. A pre-commit failure preserves prior output.
-Checkpoints remain non-authoritative while source custody is open. The short
-final-close-to-rename window is an observation limitation; legitimate changes
-after that admission boundary do not rewrite the recorded historical identity.
-Teardown after commit does not start a new source verdict. This is
-a path-generation contract, not loaded-byte attestation. It preserves ordinary
-`__file__`, sibling import and argv semantics without a temporary-source runner.
+Every current benchmark workload uses `molt.benchmark-workload/2`, admitted by
+`tools/bench_evidence.py`. The public `entry` is its canonical lookup key;
+`entry_source` names the exact project-relative driver row. Absolute external
+keys retain that complete suffix, so nested inputs and equal basenames stay
+distinct. Ordered invocation arguments are part of identity. Physical seal,
+cache and installation paths never replace logical entry identity.
 
-The existing Python import-closure owner supplies dependency discovery and
-content-keyed analysis reuse. Runtime stdlib identity remains the interpreter
-and runtime owners' responsibility; undeclared runtime data and unresolvable
-dynamic imports are not silently promoted to captured Python source. Runtime
-arguments are those selected by the existing benchmark metadata authority.
+Two explicit input shapes share this authority:
 
-Duplicate source aliases and log-name collisions are rejected before builds.
-An external path cannot acquire a repository benchmark key through a substring
-or basename match. Board projection, sharding, merge, baseline comparison and
-history require exact workload identity. Historical cells without this evidence
-remain unqualified and cannot be refreshed by rewriting their schema or labels.
+- `local-python-source-closure`: the compiler's existing dependency owner
+  captures local Python bytes and import topology; `sealed_inputs` is null.
+  Original paths and stable-file custody remain in use. This shape does not
+  claim external package installations or arbitrary data reads.
+- `sealed-project`: the existing `SourcePackageSeal` owns one complete declared
+  inventory: driver, package source/resources and metadata, dataset, project
+  configuration, acquisition/notice provenance and full semantic output oracle.
+  Its digest is the topology identity; `sealed_inputs` records that digest,
+  ordered relative Python roots and relative oracle path. Source rows project
+  from that inventory instead of a second benchmark-specific import scanner.
 
-Retained source handles cost O(source files); capture and content validation cost
-O(source bytes) at each consumer boundary. The existing import resolver may
-reuse unchanged AST analysis, but checks topology anew. These operations are
-outside guest timing and add no guest processes; their effects on cache state
-and cold build cost still require measurement. Evidence changes require the
-canonical methodology version/lock regeneration before qualification.
+The existing corpus catalog supplies application recipes and size/SHA-pinned
+archives through `tools/benchmark_applications.py`. Acquisition and sealing run
+outside timed samples. No separate package cache or timing runner is introduced.
+Package code remains unmodified. The data archive's metadata and declared notices
+stay in sealed provenance. SQL fixture preparation extracts literal data on the
+host; it does not add guest eval/exec support.
+
+CPython references consume the sealed driver, declared package roots and cwd
+with `-P -S -B`, deterministic hashing and no inherited Python startup controls.
+Molt builds use the same project with hermetic module roots; native/WASM guests
+receive its actual data arguments and cwd. The persistent compiler pool is bounded
+by project domains, and retry restarts the affected domain. Sibling producers
+execute the same admitted protocol. Unqualified comparator, guest-stderr capture
+or transformed-source protocols refuse before launch, with explicit capability
+reasons; they do not silently execute a different workload.
+
+References must match the full sealed oracle, including exact semantic stderr,
+then every guest warmup and measured sample must match the qualified reference.
+Complete tree/AST/SQL output is observed by the host, not read from the oracle by
+the timed guest. Output failure, unstable output or unavailable reference cannot
+produce affirmative sealed timing or speedup. Host diagnostics remain separate
+from semantic guest stderr. Source-only diagnostic modes retain their own declared
+reference policy. No exception name or runtime failure invents a policy exclusion.
+
+Generation checks run outside timed child intervals and before final publication.
+The seal owner checks full membership/content; retained file generations also
+reject observed modification/restoration. Content, path, directory or topology
+drift invalidates the result, preserving a primary execution failure with its
+invalidation diagnostic. This is observed path-generation custody, not hostile-
+filesystem immutability, undeclared-input capture or loaded-byte attestation.
+Record its controller, descriptor and IO costs separately from child timings.
+
+The final atomic publication callback validates inputs and closes source custody
+before replacement. Checkpoints remain non-authoritative while custody is open;
+cleanup refusal cannot become a completed board. Pre-commit failure preserves
+prior output. The short final-close-to-rename window remains an observation
+limitation; later legitimate changes do not rewrite historical identity, and
+teardown after commit does not start another source verdict.
+
+Current scoreboard, regular, individual, WASM and legacy benchmark producers
+carry this same workload identity. Shared history, baseline, diff, dashboard and
+trend consumers require valid equal records, including for external-only metrics.
+Missing old fields remain unqualified; merging or rebuilding summaries cannot
+supply missing execution. Raw display and report-only additions/removals remain
+available. Baseline gates reject zero actual comparable measurement pairs.
+Historical artifacts retain their original schema and methodology class.
+
+Declared inputs do not qualify package conformance, runtime performance,
+installed products or backend/profile cells. Positive invocation witnesses
+qualify only their exercised protocol. Representative applications and every
+claimed deployment coordinate still need independent correctness and resource
+measurements; see the [portfolio and current gaps](69_benchmark_corpus_union_and_dynamic_calibration.md).
+Molt's verified-subset and AOT dynamism policies remain unchanged.
 
 The design follows [pyperf's retained metadata and unique benchmark names](https://pyperf.readthedocs.io/en/latest/api.html)
-and [LLVM test-suite's explicit input, verification and build/runtime separation](https://llvm.org/docs/TestSuiteGuide.html).
-Molt's source-generation and publication guarantees are owned by its shared file
-and Python-dependency authorities, not by either external harness.
-
-
-Regular native and WASM benchmark JSON producers carry the same admitted local
-Python-source workload record as the scoreboard. Their source generations stay
-held through measurement and close before the atomic result replacement. Shared
-baseline, diff, dashboard and trend comparisons require equal valid workloads,
-including comparisons of external-runtime-only metrics; matching names or
-profiles cannot substitute for source identity. Historical records and separate
-legacy harness formats without that contract remain retained as unqualified
-data. Strict scoreboard projections and actual metric comparisons reject them;
-raw display and report-only additions/removals remain available. This does not attest loaded bytes or undeclared data,
-and does not upgrade noncanonical benchmark provenance or missing build-profile
-observations. Source checks run outside each measured child interval and still
-have controller/descriptor/IO costs that must be measured separately.
-
-
-
-Input collections are validated before matching benchmark keys, so a renamed
-historical basename cannot disappear from an acceptance gate as an empty match.
-Baseline and threshold gates refuse zero actual comparable measurement pairs;
-ordinary added/removed reports remain available without a performance verdict.
-Current producers consume their admitted Molt/run argument lists. WASM and the
-individual runner reject nonempty guest run arguments, which their current APIs
-do not execute; the legacy harness additionally checks its actual Molt command
-tail against the admitted list before either runtime starts. These refusals do
-not add a new argument parser or silently change the executed program.
-
-
-A workload's public `entry` is the canonical benchmark lookup key. Its required
-`entry_source` names the exact root-relative row in the captured source closure.
-Repository keys equal that coordinate; absolute external keys must end with its
-complete path. This keeps nested external inputs and same-basename dependencies
-distinct. Historical records missing this coordinate remain unqualified.
-Explicit benchmark source roots use the existing import-closure owner; ordinary
-tooling callers retain their manifest's separate search and ownership domains.
+and [LLVM test-suite's explicit inputs, reference outputs and compile/runtime separation](https://llvm.org/docs/TestSuiteGuide.html).
+Molt's custody and publication guarantees remain owned by its shared authorities.

@@ -23,8 +23,9 @@ The implementation currently falls short of this document's proposed union:
 
 - `tools/bench_suites.py` supplies the runnable core, predominantly kernels,
   components and internally generated application proxies. The corpus catalog
-  is not read by the scoreboard or suite adapters. Catalog membership is intent,
-  not runnable, supported or measured coverage.
+  now also supplies explicit HTML5lib and SQLGlot application recipes through
+  `tools/benchmark_applications.py`. Other catalog rows remain intent, not
+  runnable, supported or measured coverage.
 - `bench/friends/manifest.toml` has explicit deferred Molt lanes, including
   pyperformance. Reference-only execution cannot qualify those lanes. Full/group
   pyperformance commands fail when a selected workload errors; explicit runner
@@ -36,16 +37,19 @@ The implementation currently falls short of this document's proposed union:
   fresh-process latency on a warmed host, including imports, initialization,
   input preparation and output. They do not measure in-process steady state;
   first-minus-later process latency does not isolate process startup.
-- `tools/bench_evidence.py` admits the local Python source closure and invocation
-  arguments. It explicitly excludes arbitrary data reads and does not seal an
-  external package installation. Real-application comparison must extend this
-  authority to its dependencies, data and oracle, through every producer,
-  history/merge validator, fixture and report. Existing source-only receipts
-  must retain their original scope.
+- `tools/bench_evidence.py` admits either a local Python source closure or a
+  complete declared project through the existing source-package seal. The
+  sealed shape binds package/resources, data, project configuration, provenance,
+  complete output oracle and invocation. Producers use its execution layout,
+  environment and cwd; current comparison/history consumers require workload v2.
+  This captures declared inputs, not arbitrary ambient reads or loaded bytes.
+  Historical source-only receipts retain their original scope and schema.
 
 Use one executable portfolio contract through the existing scoreboard and
-friend runners. Extend the existing catalog into executable descriptors and
-retire replaced selection tables in the same migration. Each descriptor needs
+friend runners. Application selection and acquisition now derive from the
+existing catalog; the diagnostic core and friend-suite selections retain their
+different existing protocols. Migrate each remaining family completely rather
+than presenting the catalog as an implemented union. Each descriptor needs
 workload kind (kernel, component, proxy or application), producer, immutable
 sources/dependencies/data, scales, invocation, independent output oracle,
 measurement protocol and applicability. Report intended, executable, attempted,
@@ -53,14 +57,24 @@ parity-qualified and measured coverage separately. Keep blocked and unrun cells
 in the intended denominator; do not invent a skip reason from a slow or failing
 execution. Do not gate or score the catalog as if it were already implemented.
 
-The first application tranche is complete-document HTML5 parsing/serialization
-with unmodified html5lib and SQL parse/transform/emit with the package selected
-by upstream pyperformance's SQLGlot recipe. Acquire immutable package and data
-identities before making either cell runnable. Compare complete normalized
-trees/ASTs and emitted output against pinned CPython and upstream expected
-cases; a node count, checksum of a timing marker or round trip alone is
-insufficient. A Flask application remains an explicit blocked cell until its
-server, request trace, database and response/state oracle are qualified.
+The first application tranche uses unmodified html5lib 1.1 for complete-document
+HTML5 parsing/serialization and SQLGlot 30.24.0 for TPC-H parse/transform/emit.
+Package and dataset archives are size/digest pinned in the catalog. SQLGlot's
+input comes from pyperformance 1.14.0; this modern package variant is distinct
+from upstream's historical `sqlglot_v2` recipe, which pins SQLGlot 4.6.0. Do not
+relabel or compare their results as the same workload.
+
+Drivers emit complete trees/ASTs and generated SQL, never expected-output files
+or timing-marker checksums. Explicit CPython oracle generation records full
+expected stdout; each measured reference must match it before guest parity can
+qualify timing. Upstream expected-case coverage remains a separate conformance
+obligation. Both application runtime-performance cells remain unqualified.
+The pinned HTML package imports `six`, whose source `exec` call encounters
+Molt's intentional AOT policy boundary. Retain that diagnostic without a score;
+do not patch the package, special-case its name or broaden eval/exec support.
+Missing implementation inside the verified subset remains engineering debt.
+A Flask application remains blocked until its server, request trace, database
+and response/state oracle are qualified.
 
 This tranche is a starting point, not representative coverage of all Python:
 

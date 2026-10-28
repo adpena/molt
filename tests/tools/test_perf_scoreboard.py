@@ -2493,10 +2493,19 @@ def test_merge_of_shard_boards_requires_every_shard(
 
 
 @pytest.mark.parametrize(
-    "backend,available", [("wasm", True), ("wasm", False), ("native", True)]
+    "backend,available,failure",
+    [
+        ("wasm", True, None),
+        ("wasm", False, None),
+        ("native", True, None),
+        ("native", True, "cleanup"),
+        ("native", True, "measure"),
+        ("native", True, "measure_cleanup"),
+        ("native", True, "interrupt_cleanup"),
+    ],
 )
 def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
-    monkeypatch, tmp_path, backend, available
+    monkeypatch, tmp_path, backend, available, failure
 ):
     from molt import node_runtime
     from tools import perf_scoreboard_cli as cli
@@ -2506,6 +2515,15 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     image.write_bytes(b"independent board engine")
     monkeypatch.setenv("MOLT_NODE_BIN", str(image))
     probes, measured, checkpoints = [], [], []
+    batch_closes, codon_closes, publications = [], [], []
+    cleanup_error = RuntimeError("independent client closure refusal")
+    primary_error = (
+        KeyboardInterrupt("independent measurement interrupt")
+        if failure == "interrupt_cleanup"
+        else ValueError("independent measurement failure")
+    )
+    measure_fails = failure in {"measure", "measure_cleanup", "interrupt_cleanup"}
+    cleanup_fails = failure in {"cleanup", "measure_cleanup", "interrupt_cleanup"}
 
     def resolve(*args, **kwargs):
         if not available:
@@ -2582,13 +2600,25 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
             assert available
 
         def close(self):
-            pass
+            batch_closes.append(self)
+            if cleanup_fails:
+                raise cleanup_error
 
+    class Codon(ps.CodonRunner):
+        def close(self, primary=None):
+            codon_closes.append(primary)
+            super().close(primary)
+
+    api["_resolve_codon"] = lambda _: str(tmp_path / "codon")
+    api["_probe_codon_version"] = lambda _: "fixture-codon"
+    api["CodonRunner"] = Codon
     monkeypatch.setattr(ps.bench, "_BenchBatchBuildServer", Batch)
     api["_perfscore_build_env"] = lambda *a: ProcessEnvironment({})
 
     def measure_fixture(**kwargs):
         assert available, "unavailable Node must refuse before any cell/build"
+        if measure_fails and measured:
+            raise primary_error
         plan = kwargs["execution_host"]
         if backend == "wasm":
             assert plan.runtime.path == image
@@ -2621,6 +2651,7 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
     api["_checkpoint"] = checkpoint
 
     def publish_then_edit_source(path, doc, **kwargs):
+        publications.append(path)
         report._write_scoreboard_doc(path, doc, **kwargs)
         # A legitimate edit after admitted publication cannot retroactively
         # invalidate a historical result or make teardown delete that result.
@@ -2628,22 +2659,56 @@ def test_cli_admits_one_engine_before_cells_and_retains_checkpoints(
 
     api["_write_scoreboard_doc"] = publish_then_edit_source
     output = tmp_path / "result.json"
-    rc = cli.main(
-        api,
-        [
-            "--backend",
-            backend,
-            "--profile",
-            "dev-fast",
-            "--out",
-            str(output),
-            "--no-gate",
-        ],
-    )
+    argv = [
+        "--backend",
+        backend,
+        "--profile",
+        "dev-fast",
+        "--out",
+        str(output),
+        "--no-gate",
+        "--codon",
+    ]
+    if failure is not None:
+        qualified = _cell(
+            warm_molt_s=0.1,
+            warm_cpython_s=0.2,
+            cold_molt_s=0.1,
+            cold_cpython_s=0.2,
+        )
+        qualified.finalize(budget_ms=1000)
+        report._write_scoreboard_doc(
+            output, _board([qualified]), context="previous board"
+        )
+        previous = output.read_bytes()
+        expected = primary_error if measure_fails else cleanup_error
+        with pytest.raises(type(expected)) as caught:
+            cli.main(api, argv)
+        assert caught.value is expected
+        notes = getattr(caught.value, "__notes__", [])
+        if measure_fails and cleanup_fails:
+            assert any("client closure refusal" in note for note in notes)
+        else:
+            assert not notes
+        assert len(batch_closes) == 1
+        assert codon_closes == [expected]
+        assert not publications
+        assert output.read_bytes() == previous
+        assert len(checkpoints) == (1 if measure_fails else 2)
+        partial = output.with_suffix(".partial.json")
+        retained = json.loads(partial.read_text(encoding="utf-8"))
+        assert retained == checkpoints[-1]
+        assert retained["provenance"]["authoritative"] is False
+        assert scripts[0].read_text(encoding="utf-8") == "print(1)\n"
+        return
+    rc = cli.main(api, argv)
     if not available:
         assert rc == 2 and not measured and not probes and not output.exists()
         return
     assert rc == 0 and len(measured) == 2 and len(checkpoints) == 2
+    assert len(batch_closes) == (1 if backend == "native" else 0)
+    assert codon_closes == [None]
+    assert publications == [output]
     assert len(probes) == (1 if backend == "wasm" else 0)
     assert measured[0] is measured[1]
     doc = json.loads(output.read_text(encoding="utf-8"))
@@ -2924,3 +2989,197 @@ def test_invalid_publication_preserves_unrelated_output_and_cleans_stage(
     assert not destination.exists()
     assert other.read_bytes() == b"unrelated result"
     assert set(tmp_path.iterdir()) == {other}
+
+
+@pytest.fixture
+def sealed_scoreboard_workload(monkeypatch, tmp_path):
+    from tools.bench_evidence import admit_benchmark_workload
+    from molt.cli.source_package_seal import (
+        SourcePackageInput,
+        stage_source_package_seal,
+    )
+
+    logical_root = tmp_path / "logical"
+    entry = "tests/benchmarks/bench_sealed_fixture.py"
+    contents = {
+        entry: (
+            "import sys\nfrom sealed_package import VALUE\n"
+            "with open('data/input.txt', encoding='utf-8') as stream:\n"
+            "    print(VALUE + ':' + stream.read().strip() + ':' + sys.argv[1])\n"
+        ),
+        "python/sealed_package.py": "VALUE = 'sealed'\n",
+        "data/input.txt": "payload\n",
+        "oracle/output.txt": "sealed:payload:argument\n",
+    }
+    inputs = []
+    for name, content in contents.items():
+        path = logical_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        role = (
+            "source"
+            if name.endswith(".py")
+            else "oracle"
+            if name.startswith("oracle/")
+            else "fixture"
+        )
+        inputs.append(SourcePackageInput(path, name, role))
+    seal = stage_source_package_seal(tmp_path / "seals", inputs)
+    source = logical_root / entry
+    canonical_key = measure.bench_suites.canonical_benchmark_key
+    monkeypatch.setattr(
+        measure.bench_suites,
+        "canonical_benchmark_key",
+        lambda path: entry if Path(path) == source else canonical_key(path),
+    )
+    with admit_benchmark_workload(
+        source,
+        project_root=logical_root,
+        run_args=["argument"],
+        molt_args=[],
+        sealed_project=seal,
+        python_roots=["python"],
+        oracle="oracle/output.txt",
+    ) as workload:
+        yield workload
+
+
+@pytest.mark.parametrize("wrong_output", [False, True])
+def test_sealed_scoreboard_runs_admitted_inputs_and_rejects_wrong_reference(
+    monkeypatch,
+    tmp_path,
+    sealed_scoreboard_workload,
+    wrong_output,
+):
+    """Real guarded reference children exercise cwd, imports, data and the oracle.
+
+    Compilation is deliberately synthetic: this proves invocation plumbing,
+    never a compiler or performance claim.
+    """
+    workload = sealed_scoreboard_workload
+    poison = tmp_path / "ambient"
+    poison.mkdir()
+    (poison / "sealed_package.py").write_text("VALUE = 'ambient'\n", encoding="utf-8")
+    base = ProcessEnvironment(os.environ).updated({"PYTHONPATH": str(poison)})
+    monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(measure, "_perfscore_build_env", lambda *a: base)
+    monkeypatch.setattr(measure, "_cpython_run_env", lambda: base)
+    owner = OwnedTemporaryDirectory(dir=tmp_path)
+    artifact = Path(owner.name) / "synthetic"
+    artifact.write_bytes(b"synthetic build artifact")
+    builds = []
+
+    def build(
+        script,
+        *,
+        extra_args,
+        env,
+        build_profile,
+        build_target,
+        batch_server,
+        build_timeout_s,
+        source_cwd,
+    ):
+        assert script == str(workload.execution_script)
+        assert source_cwd == workload.source_cwd
+        assert env["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
+        assert env["MOLT_MODULE_ROOTS"] == str(workload.source_cwd / "python")
+        builds.append(script)
+        return measure.bench.MoltBinary(
+            artifact,
+            owner,
+            0.1,
+            1.0,
+            {
+                "selected_profiles": {
+                    "backend": "native",
+                    "guest_profile": "release",
+                    "compiler_profile": "release",
+                    "runtime_profile": "release-fast",
+                    "target": "native",
+                }
+            },
+        )
+
+    monkeypatch.setattr(measure.bench, "prepare_molt_binary", build)
+    monkeypatch.setattr(
+        measure.bench,
+        "molt_binary_invocation",
+        lambda binary, env, *, execution_host: measure.bench.MoltInvocation(
+            (sys.executable, "-P", "-S", "-B", str(workload.execution_script)),
+            env,
+        ),
+    )
+    actual_run = measure._run_measured_command
+    labels = []
+
+    def observe(command, **kwargs):
+        assert kwargs["cwd"] == workload.source_cwd
+        assert command[-1] == "argument"
+        labels.append(kwargs["label"])
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(measure, "_run_measured_command", observe)
+    # A successful independent process that prints a plausible wrong answer
+    # must fail even if the guest could produce the same wrong answer.
+    reference = (sys.executable,)
+    if wrong_output:
+        reference = (sys.executable, "-c", "print('wrong-but-successful')")
+    kwargs = dict(
+        script_path=workload.script,
+        workload=workload,
+        spec=ps.BACKENDS_BY_NAME["native"],
+        profile="release-fast",
+        samples=1,
+        warmup=1,
+        rss_mb=512,
+        timeout_s=15,
+        batch_server=None,
+        cpython_cmd=reference,
+        target_python_version="3.12",
+        log_dir=tmp_path / "logs",
+        pypy_bin="must-not-launch",
+        codon_runner=SimpleNamespace(
+            measure_into=lambda *a, **kw: pytest.fail("sealed Codon launched")
+        ),
+    )
+    if wrong_output:
+        with pytest.raises(ValueError, match="sealed semantic oracle"):
+            measure.measure_cell(**kwargs)
+        assert len(labels) == 2
+    else:
+        cell = measure.measure_cell(**kwargs)
+        assert cell.output_parity["ok"] is True
+        assert cell.benchmark == "tests/benchmarks/bench_sealed_fixture.py"
+        assert len(labels) == 6
+        assert cell.pypy_warm_s is None and cell.codon_warm_s is None
+        text = (tmp_path / cell.log_artifact).read_text(encoding="utf-8")
+        assert "PYPY REFUSED" in text and "CODON REFUSED" in text
+    assert builds == [str(workload.execution_script)]
+    assert not Path(owner.name).exists()
+
+
+def test_sealed_hot_profile_refuses_unsealed_source_transform(
+    monkeypatch,
+    sealed_scoreboard_workload,
+):
+    from tools import perf_scoreboard_profile as profiling
+
+    workload = sealed_scoreboard_workload
+    monkeypatch.setattr(
+        profiling,
+        "build_profiling_binary",
+        lambda *a, **kw: pytest.fail("sealed source reached an unsealed transform"),
+    )
+    cells = profiling.run_hot_only_profiles(
+        scripts=[workload.script],
+        workloads={workload.script: workload},
+        spec=ps.BACKENDS_BY_NAME["native"],
+        profile="release-fast",
+        target_python_version="3.12",
+        inner_loops=5,
+        rss_mb=512,
+    )
+    assert cells[0]["build"]["refused"] is True
+    assert "sealed transformed-source protocol" in cells[0]["build"]["reason"]
+    assert cells[0]["workload"] == workload.record
