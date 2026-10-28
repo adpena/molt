@@ -37,7 +37,7 @@ from molt import dx  # noqa: E402
 _GB = 1024**3
 
 
-def _guard_marker(markers: Path, pid: int, status: str) -> Path:
+def _guard_marker(markers: Path, pid: int, status: str, **fields) -> Path:
     token = f"{pid:032x}"
     marker = markers / f"guard-{pid}-{token}.json"
     marker.write_text(
@@ -48,8 +48,17 @@ def _guard_marker(markers: Path, pid: int, status: str) -> Path:
                 "token": token,
                 "status": status,
                 "guard_process": {"pid": pid, "started_at_ns": pid * 100},
-                "child_launch_state": "recorded",
-                "child_process": {"pid": pid + 1000, "started_at_ns": pid * 100 + 1},
+                # Existing filesystem fixtures represent an unpublished
+                # launch, not a claim that these invented pids are alive.
+                "child_launch_state": "recorded"
+                if status == "completed"
+                else "pending",
+                "child_process": (
+                    {"pid": pid + 1000, "started_at_ns": pid * 100 + 1}
+                    if status == "completed"
+                    else None
+                ),
+                **fields,
             }
         ),
         encoding="utf-8",
@@ -463,7 +472,7 @@ def test_ensure_free_reclaims_across_registered_worktrees_only(tmp_path):
 
 @pytest.mark.parametrize("operation", ["pressure", "gc"])
 @pytest.mark.parametrize("marker_starts", ["before-selection", "after-selection"])
-def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(
+def test_unresolved_guard_protects_its_worktree_but_terminal_marker_does_not(
     tmp_path, monkeypatch, operation, marker_starts
 ):
     _, main, linked = _registered_worktree_scope(tmp_path)
@@ -544,7 +553,7 @@ def test_terminal_parent_watched_pid_cannot_retire_nested_marker(tmp_path):
     parent.write_text(json.dumps(payload), encoding="utf-8")
     os.utime(parent, (200.0, 200.0))
 
-    assert dg._has_active_guard(tmp_path) is True
+    assert dg._guard_protection((tmp_path,)).scopes
 
 
 def test_incident_capsules_in_active_directory_do_not_claim_guard_custody(tmp_path):
@@ -554,7 +563,354 @@ def test_incident_capsules_in_active_directory_do_not_claim_guard_custody(tmp_pa
         '{"status":"starting","command":"cargo test"}\n', encoding="utf-8"
     )
 
-    assert dg._has_active_guard(tmp_path) is False
+    assert not dg._guard_protection((tmp_path,)).scopes
+
+
+@pytest.mark.parametrize("operation", ["gc", "pressure"])
+@pytest.mark.parametrize(
+    "state",
+    [
+        "live",
+        "coordinate-free",
+        "inconclusive",
+        "orphan",
+        "legacy",
+        "cwd-only",
+        "invalid-scope",
+        "snapshot-error",
+    ],
+)
+def test_guard_coordinates_keep_only_the_commands_checkout_and_session(
+    tmp_path, monkeypatch, operation, state
+):
+    from types import SimpleNamespace
+    from molt import checkout_state as cs, process_model
+    from tests.process_guard_common import current_thread_only
+
+    ext, projects, env = _checkout_family(tmp_path)
+    a, b = projects / "a", projects / "b"
+    a.mkdir()
+    b.mkdir()
+    a_roots, b_roots = _checkout_state(ext, a), _checkout_state(ext, b)
+    cs.stamp_checkout_state(a, env)
+    cs.stamp_checkout_state(b, env)
+    active, active_control = _session(ext, a, "active")
+    idle, idle_control = _session(ext, a, "idle")
+    b_session, _ = _session(ext, b, "idle")
+    scratch_a = cs.scratch_state_root(ext / "tmp", owner=a)
+    scratch_b = cs.scratch_state_root(ext / "tmp", owner=b)
+    declared = ext / "tmp/operator-output"
+    declared.mkdir()
+    now = 2_000_000_000.0
+    for path in (*a_roots.values(), *b_roots.values(), scratch_a, scratch_b, declared):
+        _age_scratch_tree(path, now - 40 * DAY)
+
+    pid = 8181
+    samples = {
+        os.getpid(): SimpleNamespace(pid=os.getpid(), pgid=None, started_at_ns=99),
+    }
+    if state in {"live", "coordinate-free", "legacy"}:
+        samples[pid] = SimpleNamespace(pid=pid, pgid=pid, started_at_ns=pid * 100)
+
+    def snapshot():
+        if state == "snapshot-error":
+            raise process_model.ProcessSnapshotError("fixture snapshot unavailable")
+        return samples
+
+    monkeypatch.setattr(
+        process_model,
+        "sample_processes",
+        current_thread_only(snapshot, process_model.sample_processes),
+    )
+    markers = ext / "tmp/memory_guard/active"
+    markers.mkdir(parents=True)
+    scope = {
+        "checkout": str(a),
+        "paths": []
+        if state == "coordinate-free"
+        else [
+            str(a),
+            str(active),
+            str(scratch_a),
+            str(declared / "result.json"),
+        ],
+    }
+    if state == "invalid-scope":
+        scope["paths"] = ["relative-coordinate"]
+    fields = {
+        "artifact_scope": scope,
+        "child_launch_state": "pending" if state == "inconclusive" else "recorded",
+        "child_process": (
+            None
+            if state == "inconclusive"
+            else {"pid": pid + 1000, "started_at_ns": pid * 100 + 1, "pgid": pid + 1000}
+        ),
+    }
+    if state == "legacy":
+        fields.pop("artifact_scope")
+        fields.update(path=str(a / "tools/memory_guard.py"), cwd=str(active / "deep"))
+    elif state == "cwd-only":
+        fields.pop("artifact_scope")
+        fields.update(cwd=str(scratch_a / "deep"))
+        fields.update(child_launch_state="pending", child_process=None)
+    marker = _guard_marker(markers, pid, "child_running", **fields)
+    if operation == "gc":
+        result = _gc(ext, env, now)
+    else:
+        result = dg.ensure_free(
+            root=ext,
+            env=env,
+            config=_cfg(),
+            now_fn=lambda: now,
+            free_bytes_fn=lambda: 0,
+            log=False,
+        )
+
+    assert not b_roots["cargo-target"].exists(), "checkout B must stay collectible"
+    assert not b_session.exists()
+    kept = state not in {"orphan", "cwd-only"}
+    assert a_roots["cargo-target"].exists() == kept
+    assert active.exists() == kept
+    assert active_control.exists() == kept
+    assert idle.exists() == (state in {"coordinate-free", "invalid-scope"}), (
+        "idle sibling session is independent"
+    )
+    assert idle_control.exists() == (state in {"coordinate-free", "invalid-scope"})
+    if operation == "gc":
+        assert scratch_a.exists() == (state != "orphan")
+        assert not scratch_b.exists(), "checkout B's scratch must stay collectible"
+        assert declared.exists() == (
+            state in {"live", "inconclusive", "snapshot-error"}
+        )
+    if state == "orphan":
+        assert result.custody == [], "an observed stale orphan protects nothing"
+    else:
+        assert len(result.custody) == 1
+        (report,) = result.custody
+        (record,) = report["records"]
+        assert record["marker"] == str(marker)
+        assert record["coordinate_free"] == (
+            state in {"coordinate-free", "invalid-scope"}
+        )
+        if state == "inconclusive":
+            assert record["state"] == "ambiguous"
+            assert record["reason"] == "child_launch_identity_unpublished"
+            assert f"--release {marker} --apply" in record["release_command"]
+        if state in {"invalid-scope", "snapshot-error"}:
+            assert record["operator_action_required"]
+            assert record["reason"].startswith(
+                "marker_invalid:"
+                if state == "invalid-scope"
+                else "snapshot_unavailable:"
+            )
+    assert marker.exists(), "collection observes custody; it never releases a marker"
+
+
+@pytest.mark.parametrize("kind", ["checkout-state", "session-target", "scratch"])
+def test_guard_coordinate_is_rechecked_under_retirement_lock(
+    tmp_path, monkeypatch, kind
+):
+    from molt import checkout_state as cs
+
+    ext, projects, env = _checkout_family(tmp_path)
+    a, b = projects / "a", projects / "b"
+    a.mkdir()
+    b.mkdir()
+    if kind == "scratch":
+        kept = cs.scratch_state_root(ext / "tmp", owner=a)
+        other = cs.scratch_state_root(ext / "tmp", owner=b)
+    else:
+        a_roots, b_roots = _checkout_state(ext, a), _checkout_state(ext, b)
+        cs.stamp_checkout_state(a, env)
+        cs.stamp_checkout_state(b, env)
+        if kind == "session-target":
+            kept, _ = _session(ext, a, "selected")
+            other, _ = _session(ext, b, "selected")
+        else:
+            kept, other = a_roots["cargo-target"], b_roots["cargo-target"]
+    now = 2_000_000_000.0
+    if kind == "session-target":
+        # The fake clock must keep enclosing checkout targets current, so
+        # the planner reaches the individual session's retirement boundary.
+        _last_used([*a_roots.values(), *b_roots.values()], 0, now)
+    _age_scratch_tree(kept, now - 40 * DAY)
+    _age_scratch_tree(other, now - 40 * DAY)
+    started = False
+
+    def start_marker():
+        nonlocal started
+        if not started:
+            started = True
+            markers = ext / "tmp/memory_guard/active"
+            markers.mkdir(parents=True)
+            _guard_marker(
+                markers,
+                8181,
+                "spawn_pending",
+                artifact_scope={"checkout": str(a), "paths": [str(kept)]},
+            )
+
+    if kind == "scratch":
+        inventory = dg._scratch_inventory
+
+        def inventory_then_launch(path, deadline):
+            observed = inventory(path, deadline)
+            if path == kept:
+                start_marker()
+            return observed
+
+        monkeypatch.setattr(dg, "_scratch_inventory", inventory_then_launch)
+    else:
+        retire = dg._retire_candidate
+
+        def launch_then_retire(candidate, *args, **kwargs):
+            if candidate.path == kept:
+                assert not candidate.guard_active
+                start_marker()
+            return retire(candidate, *args, **kwargs)
+
+        monkeypatch.setattr(dg, "_retire_candidate", launch_then_retire)
+    result = _gc(ext, env, now)
+    assert started
+    assert kept.is_dir(), "a launch after planning must keep its exact coordinate"
+    assert not other.exists(), "the late guard must not keep a foreign checkout"
+    assert result.custody
+
+
+@pytest.mark.parametrize("operation", ["gc", "pressure"])
+def test_guard_coordinate_does_not_keep_idle_legacy_targets_in_its_own_checkout(
+    tmp_path, operation
+):
+    now = 2_000_000_000.0
+    active = tmp_path / "target/codex-active"
+    idle = tmp_path / "target/codex-idle"
+    for target in (active, idle):
+        _make_dir(target, size_bytes=4096, age_s=40 * DAY, now=now)
+    markers = tmp_path / "tmp/memory_guard/active"
+    markers.mkdir(parents=True)
+    _guard_marker(
+        markers,
+        8181,
+        "spawn_pending",
+        artifact_scope={"checkout": str(tmp_path), "paths": [str(active)]},
+    )
+    if operation == "gc":
+        _gc(tmp_path, {}, now)
+    else:
+        dg.ensure_free(
+            root=tmp_path,
+            env={},
+            config=_cfg(),
+            now_fn=lambda: now,
+            free_bytes_fn=lambda: 0,
+            log=False,
+        )
+    assert active.is_dir()
+    assert not idle.exists(), "a named legacy target must not keep its idle sibling"
+
+
+@pytest.mark.parametrize("session", [False, True])
+@pytest.mark.parametrize("marker_owner", ["checkout", "namespace"])
+def test_build_control_keeps_its_owner_after_its_target_retires(
+    tmp_path, session, marker_owner
+):
+    from molt import checkout_state as cs
+
+    ext, projects, env = _checkout_family(tmp_path)
+    checkout = projects / "lane"
+    checkout.mkdir()
+    roots = _checkout_state(ext, checkout)
+    cs.stamp_checkout_state(checkout, env)
+    target, control = (
+        _session(ext, checkout, "selected")
+        if session
+        else (roots["cargo-target"], roots["build-control"])
+    )
+    markers = ext / "tmp/memory_guard/active"
+    markers.mkdir(parents=True)
+    fields = (
+        {"artifact_scope": {"checkout": str(checkout), "paths": []}}
+        if marker_owner == "checkout"
+        else {}
+    )
+    _guard_marker(markers, 8181, "spawn_pending", **fields)
+    protection = dg._guard_protection((ext,))
+    cs.soft_retire(target, ext, reason="gc", owner=str(checkout))
+    assert not target.exists()
+    assert protection.protects(control, ext) == (marker_owner == "checkout"), (
+        "a control's target owner survives target retirement; it never becomes namespace-owned"
+    )
+    retirement = cs.soft_retire(control, ext, reason="gc", owner=str(target))
+    assert protection.protects(retirement.original, ext, recorded_owner=target) == (
+        marker_owner == "checkout"
+    )
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "checkout",
+        "session",
+        "scratch",
+        "foreign-checkout",
+        "foreign-session",
+        "coordinate-free",
+        "inconclusive",
+        "orphan",
+        "report",
+    ],
+)
+def test_guard_coordinate_rules_have_independent_mutation_oracles(
+    tmp_path, monkeypatch, rule
+):
+    from dataclasses import replace
+    from tests.process_guard_common import current_thread_only
+    from tools.memory_guard_core import active_custody
+
+    protects = dg._GuardProtection.protects
+
+    def mutant(self, path, owner_root, **kwargs):
+        if rule == "foreign-checkout":
+            return True
+        if rule == "foreign-session" and dg.is_session_target(path, owner_root):
+            return True
+        if rule == "checkout" and path.parent.name == "checkouts":
+            return False
+        if rule == "session" and dg.is_session_target(path, owner_root):
+            return False
+        if rule == "scratch" and path.parent.name == "tmp":
+            return False
+        if rule == "coordinate-free":
+            return False
+        return protects(self, path, owner_root, **kwargs)
+
+    if rule == "inconclusive":
+        observe = active_custody.observe_custody
+        monkeypatch.setattr(
+            active_custody,
+            "observe_custody",
+            current_thread_only(
+                lambda *a, **kw: replace(observe(*a, **kw), state="closed"), observe
+            ),
+        )
+    elif rule == "orphan":
+        observe = active_custody.observe_custody
+        monkeypatch.setattr(
+            active_custody,
+            "observe_custody",
+            current_thread_only(
+                lambda *a, **kw: replace(observe(*a, **kw), state="live"), observe
+            ),
+        )
+    elif rule == "report":
+        monkeypatch.setattr(dg._GuardProtection, "report", lambda _: [])
+    else:
+        monkeypatch.setattr(dg._GuardProtection, "protects", mutant)
+    state = rule if rule in {"coordinate-free", "inconclusive", "orphan"} else "live"
+    with pytest.raises(AssertionError):
+        test_guard_coordinates_keep_only_the_commands_checkout_and_session(
+            tmp_path, monkeypatch, "gc", state
+        )
 
 
 # --- 2c. a lock-held dir is never reclaimed (real held lock) ----------------
@@ -831,7 +1187,7 @@ def test_out_of_tree_markers_protect_a_checkout_that_is_its_own_root(
     _guard_marker(markers, 1, "child_running")
 
     assert not (clone / "tmp").exists()
-    assert dg._has_active_guard(clone) is True
+    assert dg._guard_protection((clone,)).scopes
 
 
 # --- HF-313: checkout state retires by last use and by its removed owner ------
@@ -3963,7 +4319,9 @@ def test_scratch_live_custody_keeps_an_old_root(tmp_path, protection):
             ext / "tmp" if protection == "guard" else root
         ) / "memory_guard/active"
         markers.mkdir(parents=True)
-        _guard_marker(markers, 73, "child_running")
+        _guard_marker(
+            markers, 73, "child_running", path=str(owner / "tools/memory_guard.py")
+        )
     with ExitStack() as stack:
         if protection in {"cargo-lock", "lease-lock", "guard-scratch-lock"}:
             lock = (
@@ -3983,6 +4341,9 @@ def test_scratch_live_custody_keeps_an_old_root(tmp_path, protection):
             stack.enter_context(cs.checkout_state_use(((root, None),), publish=False))
         _age_scratch_tree(root, now - 20 * DAY)
         dry = dg.gc(root=ext, env=env, now_fn=lambda: now, apply=False, log=False)
+        if protection in {"guard", "nested-guard"}:
+            assert dry.custody
+            assert "--release" in dry.custody[-1]["records"][0]["release_command"]
         assert str(root) not in _reclaimed(dry)
         assert str(root) not in _reclaimed(_gc(ext, env, now))
         assert root.is_dir()
@@ -4243,8 +4604,9 @@ def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, 
         inventory = dg._scratch_inventory
 
         def shallow_activity(path, deadline):
-            size, _, locked = inventory(path, deadline)
-            return size, cs.checkout_state_last_use(path), locked
+            return replace(
+                inventory(path, deadline), mtime=cs.checkout_state_last_use(path)
+            )
 
         patch(dg, "_scratch_inventory", shallow_activity)
     elif rule == "control-container":
@@ -4252,7 +4614,7 @@ def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, 
     elif rule == "lock":
         patch(dg, "_region_locked", lambda *_: False)
     elif rule == "guard":
-        patch(dg, "_has_active_guard", lambda *_: False)
+        patch(dg, "_guard_protection", lambda *_: dg._GuardProtection())
     elif rule == "protected-path":
         patch(dg, "_protected_paths", lambda *_: [])
     else:
