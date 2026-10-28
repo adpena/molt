@@ -4,10 +4,10 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-# Workload source admission, exact comparison and failure-atomic publication
-# change qualification and cold-path overhead.
-version = 14
-content_sha256 = "396a3932e7df80609dcf53bb576cd16bb5b43d03a16a3684d1c4ffba96ea6a33"
+# Closed callable provenance and argument/result contracts change workload
+# admission and the source analyses used by benchmark transformations.
+version = 15
+content_sha256 = "3cf648040d7f54aa06ec3217a3b6e578dcdb13b7f1bd1a34e6f8f437367f404f"
 
 [[methodology]]
 path = "tools/safe_run.py"
