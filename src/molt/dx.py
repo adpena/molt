@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Collection, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Literal, Mapping, Sequence, cast
 
 from molt import python_environment_contract as _contract
@@ -164,6 +165,198 @@ FALSE_VALUES = {"0", "false", "no", "off"}
 
 class DxConfigError(RuntimeError):
     pass
+
+
+ArtifactRootSource = Literal[
+    "explicit-env",
+    "family-binding",
+    "external-candidate",
+    "plain-clone-default",
+    "github-actions-ephemeral",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRootSelection:
+    root: Path
+    source: ArtifactRootSource
+
+
+@dataclass(frozen=True, slots=True)
+class _ArtifactRootBinding:
+    root: Path
+    device: int
+    inode: int
+
+
+_ARTIFACT_BINDING_SCHEMA = "molt.artifact-root-binding.v1"
+_ARTIFACT_BINDING_MAX_BYTES = 16 * 1024
+_ARTIFACT_BINDING_REMEDY = (
+    "Mount/restore the bound directory or free space there; to change the binding run "
+    "`python -m molt.checkout_provisioning artifact-root --bind /absolute/root` "
+    "or deliberately remove it with "
+    "`python -m molt.checkout_provisioning artifact-root --clear` "
+    "(use --checkout to select the family)."
+)
+_ARTIFACT_BINDING_CACHE: dict[Path, _ArtifactRootBinding | str | None] = {}
+_ARTIFACT_BINDING_CACHE_LOCK = RLock()
+
+
+def artifact_root_binding_path(repo_root: Path) -> Path | None:
+    try:
+        state = custody_layout.checkout_family_state_root(repo_root.resolve())
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise DxConfigError(str(exc)) from exc
+    return None if state is None else state / "artifact-root.json"
+
+
+def _read_artifact_root_binding(
+    record: Path,
+) -> _ArtifactRootBinding | str | None:
+    """Read one bounded family record once, including absence and refusals."""
+    with _ARTIFACT_BINDING_CACHE_LOCK:
+        if record not in _ARTIFACT_BINDING_CACHE:
+            _ARTIFACT_BINDING_CACHE[record] = _load_artifact_root_binding(record)
+        return _ARTIFACT_BINDING_CACHE[record]
+
+
+def _load_artifact_root_binding(
+    record: Path,
+) -> _ArtifactRootBinding | str | None:
+    from molt.exact_json import read_exact
+
+    try:
+        try:
+            record.lstat()
+        except FileNotFoundError:
+            return None
+        value = read_exact(
+            record, max_bytes=_ARTIFACT_BINDING_MAX_BYTES, label="artifact-root binding"
+        )
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema", "root", "device", "inode"}
+            or value["schema"] != _ARTIFACT_BINDING_SCHEMA
+            or not isinstance(value["root"], str)
+            or not value["root"]
+            or type(value["device"]) is not int
+            or type(value["inode"]) is not int
+            or value["device"] < 0
+            or value["inode"] <= 0
+        ):
+            raise ValueError("invalid binding schema or directory identity")
+        root = Path(value["root"])
+        if not root.is_absolute() or root == Path(root.anchor) or ".." in root.parts:
+            raise ValueError("bound root must be an absolute non-volume-root directory")
+        return _ArtifactRootBinding(root, value["device"], value["inode"])
+    except (OSError, ValueError, RuntimeError) as exc:
+        return (
+            f"cannot read artifact-root binding {record}: {exc}. "
+            f"{_ARTIFACT_BINDING_REMEDY}"
+        )
+
+
+def _external_artifact_required_bytes(env: Mapping[str, str]) -> int:
+    configured = env.get("MOLT_EXTERNAL_MIN_FREE_GB", "").strip()
+    try:
+        return capacity_bytes_from_gib(float(configured) if configured else 20.0)
+    except ValueError as exc:
+        raise DxConfigError(
+            f"invalid MOLT_EXTERNAL_MIN_FREE_GB value {configured!r}: {exc}"
+        ) from None
+
+
+def _validate_artifact_binding(
+    binding: _ArtifactRootBinding, env: Mapping[str, str]
+) -> None:
+    root = binding.root
+    try:
+        metadata = root.stat()
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("not a directory")
+        if metadata.st_dev < 0 or metadata.st_ino <= 0:
+            raise ValueError("directory has no stable filesystem identity")
+        if (metadata.st_dev, metadata.st_ino) != (binding.device, binding.inode):
+            raise ValueError("directory identity changed (replaced or unmounted)")
+        if not os.access(root, os.W_OK):
+            raise ValueError("directory is not writable")
+        capacity = probe_capacity(
+            root, required_bytes=_external_artifact_required_bytes(env)
+        )
+        if not capacity.ready:
+            raise ValueError(
+                f"capacity={capacity.available_bytes} bytes, "
+                f"required={capacity.required_bytes} bytes, error={capacity.error}"
+            )
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise DxConfigError(
+            f"bound artifact root {root} is unavailable or unhealthy: {exc}. "
+            f"{_ARTIFACT_BINDING_REMEDY}"
+        ) from exc
+
+
+def set_artifact_root_binding(
+    repo_root: Path, root: Path | None, env: Mapping[str, str] | None = None
+) -> Path:
+    """Atomically bind or clear one family; never create the target directory."""
+    from molt.exact_json import encode_exact, write_exact
+    from molt.file_publication import durable_remove_path
+    from molt.file_locks import _acquire_file_lock, _release_file_lock
+
+    record = artifact_root_binding_path(repo_root)
+    if record is None:
+        raise DxConfigError("artifact-root binding requires a Git checkout family")
+    binding = None
+    if root is not None:
+        try:
+            if not root.is_absolute() or root == Path(root.anchor):
+                raise ValueError("target must be an absolute non-volume-root directory")
+            selected = root.resolve(strict=True)
+            if selected == Path(selected.anchor):
+                raise ValueError("target must not resolve to a volume root")
+            if custody_layout.enclosing_checkouts(selected):
+                raise ValueError("target must be outside every source checkout")
+            metadata = selected.stat()
+            binding = _ArtifactRootBinding(selected, metadata.st_dev, metadata.st_ino)
+            _validate_artifact_binding(binding, os.environ if env is None else env)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise DxConfigError(f"cannot bind artifact root {root}: {exc}") from exc
+    lock = _acquire_file_lock(
+        record.parent / "checkout-provisioning" / "artifact-root.lock",
+        timeout_s=10,
+        timeout_message=f"artifact-root binding is being changed: {record}",
+    )
+    try:
+        try:
+            metadata = record.lstat()
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None and not stat.S_ISREG(metadata.st_mode):
+            raise DxConfigError(
+                f"artifact-root binding is not a regular file: {record}"
+            )
+        if binding is None:
+            durable_remove_path(record)
+        else:
+            _validate_artifact_binding(binding, os.environ if env is None else env)
+            payload = {
+                "schema": _ARTIFACT_BINDING_SCHEMA,
+                "root": str(binding.root),
+                "device": binding.device,
+                "inode": binding.inode,
+            }
+            if len(encode_exact(payload)) > _ARTIFACT_BINDING_MAX_BYTES:
+                raise DxConfigError(
+                    "artifact-root binding exceeds the record size limit"
+                )
+            write_exact(record, payload)
+    finally:
+        _release_file_lock(lock)
+    # The operator is the sole mutation boundary. Other running processes keep
+    # their snapshot; the next process observes the new durable generation.
+    with _ARTIFACT_BINDING_CACHE_LOCK:
+        _ARTIFACT_BINDING_CACHE.pop(record, None)
+    return record
 
 
 CheckoutCustodyKind = Literal["durable", "github-actions-ephemeral", "explicit-scratch"]
@@ -1100,14 +1293,7 @@ def select_external_artifact_root(
     ):
         return None
 
-    configured = env.get("MOLT_EXTERNAL_MIN_FREE_GB", "").strip()
-    try:
-        min_free_gb = float(configured) if configured else 20.0
-        required_bytes = capacity_bytes_from_gib(min_free_gb)
-    except ValueError as exc:
-        raise DxConfigError(
-            f"invalid MOLT_EXTERNAL_MIN_FREE_GB value {configured!r}: {exc}"
-        ) from None
+    required_bytes = _external_artifact_required_bytes(env)
     repo_root = repo_root.resolve()
     for raw_candidate in _candidate_roots(repo_root, env):
         candidate = (
@@ -1128,7 +1314,7 @@ def select_external_artifact_root(
     if require_external:
         raise DxConfigError(
             "no healthy Molt artifact root was found (each candidate needs "
-            f"{min_free_gb:g} GiB free outside the checkout). Use a checkout family "
+            f"{required_bytes / 1024**3:g} GiB free outside the checkout). Use a checkout family "
             "(`<root>/molt-src`, whose artifacts live under `<root>`) or set "
             "MOLT_EXTERNAL_ARTIFACT_ROOTS to an explicit root; see "
             "docs/agent/ORCHESTRATION.md canonical paths."
@@ -1167,7 +1353,7 @@ def require_external_artifact_root(
 def configured_artifact_root(
     env: Mapping[str, str] | None = None, *, relative_to: Path
 ) -> Path | None:
-    """Return the operator's ``MOLT_EXT_ROOT``, resolved, or None when unset.
+    """Return the explicit environment root or healthy family binding, else None.
 
     A relative value is anchored at ``relative_to``. Consumers with their own
     non-checkout default (the user cache home) use this; consumers that need
@@ -1175,34 +1361,76 @@ def configured_artifact_root(
     """
 
     view = os.environ if env is None else env
-    raw = view.get(ARTIFACT_ROOT_ENV, "").strip()
-    if not raw:
+    selection = _configured_artifact_selection(view, relative_to=relative_to)
+    return None if selection is None else selection.root
+
+
+def _configured_artifact_selection(
+    env: Mapping[str, str], *, relative_to: Path
+) -> ArtifactRootSelection | None:
+    raw = env.get(ARTIFACT_ROOT_ENV, "").strip()
+    if raw:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = relative_to / path
+        return ArtifactRootSelection(path.resolve(), "explicit-env")
+    record = artifact_root_binding_path(relative_to)
+    if record is None:
         return None
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        path = Path(relative_to) / path
-    return path.resolve()
+    binding = _read_artifact_root_binding(record)
+    if isinstance(binding, str):
+        raise DxConfigError(binding)
+    if binding is None:
+        return None
+    _validate_artifact_binding(binding, env)
+    return ArtifactRootSelection(binding.root, "family-binding")
 
 
 def _select_artifact_root(
     source_root: Path,
     env: Mapping[str, str],
-    custody: CheckoutCustody,
+    custody: CheckoutCustody | None,
     *,
     prefer_external: bool,
     create_dirs: bool,
-) -> Path:
+) -> ArtifactRootSelection:
+    configured = _configured_artifact_selection(env, relative_to=source_root)
+    if configured is not None:
+        return configured
+    if custody is None:
+        custody = checkout_custody(source_root, env, require_exists=False)
     if custody.source_only:
-        return custody.custody_root
-    return (
-        require_external_artifact_root(
-            source_root,
-            env,
-            create_dirs=create_dirs,
-            prefer_external=prefer_external,
-        )
-        or custody.custody_root
+        return ArtifactRootSelection(custody.custody_root, "github-actions-ephemeral")
+    external = require_external_artifact_root(
+        source_root,
+        env,
+        create_dirs=create_dirs,
+        prefer_external=prefer_external,
     )
+    return ArtifactRootSelection(
+        external if external is not None else custody.custody_root,
+        "external-candidate" if external is not None else "plain-clone-default",
+    )
+
+
+def artifact_root_selection(
+    repo_root: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    prefer_external: bool = False,
+) -> ArtifactRootSelection:
+    """Resolve placement and its source through the single artifact authority."""
+    source = Path(repo_root).expanduser().resolve()
+    view = os.environ if env is None else env
+    selection = _select_artifact_root(
+        source,
+        view,
+        None,
+        prefer_external=prefer_external,
+        create_dirs=False,
+    )
+    _require_external_path(ARTIFACT_ROOT_ENV, selection.root, view, repo_root=source)
+    return selection
 
 
 def artifact_root(
@@ -1213,25 +1441,14 @@ def artifact_root(
 ) -> Path:
     """Return the artifact root `RunContext.canonical_env` exports for a run.
 
-    That is ``MOLT_EXT_ROOT`` when set, else a healthy external root when the
+    That is ``MOLT_EXT_ROOT`` when set, else the healthy durable binding, else
+    a healthy external root when the
     caller or the environment asks for one, else the checkout custody root:
     the family root of a checkout family, the clone itself for a plain clone.
     It creates nothing.
     """
 
-    source = Path(repo_root).expanduser().resolve()
-    view = os.environ if env is None else env
-    root = configured_artifact_root(view, relative_to=source)
-    if root is None:
-        root = _select_artifact_root(
-            source,
-            view,
-            checkout_custody(source, view, require_exists=False),
-            prefer_external=prefer_external,
-            create_dirs=False,
-        )
-    _require_external_path(ARTIFACT_ROOT_ENV, root, view, repo_root=source)
-    return root
+    return artifact_root_selection(repo_root, env, prefer_external=prefer_external).root
 
 
 def project_cargo_target_dir(
@@ -1248,7 +1465,8 @@ def project_cargo_target_dir(
 
     An explicit ``CARGO_TARGET_DIR`` wins; a relative value is relative to the
     working directory, as Cargo reads it. Without
-    one, a development artifact request (``MOLT_PREFER_EXTERNAL_ARTIFACTS`` or
+    one, explicit artifact configuration (environment or family binding) or a
+    development artifact request (``MOLT_PREFER_EXTERNAL_ARTIFACTS`` or
     ``MOLT_REQUIRE_EXTERNAL_ARTIFACTS``) builds under the run context's
     `artifact_root/target/checkouts/<checkout>`, as ``molt dx run`` does;
     otherwise the project keeps
@@ -1286,12 +1504,15 @@ def project_cargo_target_base(project_root: Path, env: Mapping[str, str]) -> Pat
     """Return the root whose ``target`` is `project_cargo_target_dir`'s default.
 
     That is the run context's `artifact_root` under a development artifact
-    request, else the project itself.
+    request or explicit environment/family binding, else the project itself.
     """
 
     project = Path(project_root)
     if development_artifacts_requested(env):
         return artifact_root(project, env, prefer_external=True)
+    configured = configured_artifact_root(env, relative_to=project)
+    if configured is not None:
+        return configured
     return project
 
 
@@ -1717,18 +1938,18 @@ class RunContext:
                         f"Use {GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV} custody instead."
                     )
 
-        if ARTIFACT_ROOT_ENV in forced:
-            ext_root = custody.custody_root
-        else:
-            ext_root = configured_artifact_root(
-                env, relative_to=self.root
-            ) or _select_artifact_root(
-                self.root,
-                env,
-                custody,
-                prefer_external=self.prefer_external_artifacts,
-                create_dirs=create_dirs,
-            )
+        artifact_env = (
+            ProcessEnvironment(env).without((ARTIFACT_ROOT_ENV,))
+            if ARTIFACT_ROOT_ENV in forced
+            else env
+        )
+        ext_root = _select_artifact_root(
+            self.root,
+            artifact_env,
+            custody,
+            prefer_external=self.prefer_external_artifacts,
+            create_dirs=create_dirs,
+        ).root
         _require_external_path(
             ARTIFACT_ROOT_ENV,
             ext_root,
@@ -2048,21 +2269,20 @@ class DxProject:
             env.pop(name, None)
         prefer_external = bool(dx.get("prefer_external_artifacts"))
         _drop_ambient_tmpdir(env, prefer_external=prefer_external)
-        ext_root = configured_artifact_root(env, relative_to=self.root) or (
-            require_external_artifact_root(
-                self.root,
-                env,
-                create_dirs=create_dirs,
-                prefer_external=prefer_external,
-            )
-            or self.root
-        )
+        ext_root = _select_artifact_root(
+            self.root,
+            env,
+            None,
+            create_dirs=create_dirs,
+            prefer_external=prefer_external,
+        ).root
         _require_external_path(
             ARTIFACT_ROOT_ENV,
             ext_root,
             env,
             repo_root=self.root,
         )
+        env[ARTIFACT_ROOT_ENV] = str(ext_root)
         env_cfg = dx.get("env", {})
         if isinstance(env_cfg, dict):
             for key, raw_value in env_cfg.items():

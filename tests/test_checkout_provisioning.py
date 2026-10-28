@@ -26,6 +26,107 @@ from tests.python_environment_test_support import materialize_development_enviro
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "tools" / "molt_dev.py"
 
+
+def test_artifact_root_command_binds_reports_and_clears(
+    checkout, tmp_path, monkeypatch, capsys
+):
+    from molt import disk_capacity, dx
+
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.setenv("MOLT_EXTERNAL_MIN_FREE_GB", "20")
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _: 64 * 1024**3
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    arguments = ["artifact-root", "--checkout", str(checkout), "--json"]
+    assert cp.main([*arguments, "--bind", str(artifacts)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "root": str(artifacts.resolve()),
+        "source": "family-binding",
+        "binding_record": str(checkout / ".git" / "molt" / "artifact-root.json"),
+    }
+    record = Path(payload["binding_record"])
+    saved = json.loads(record.read_text(encoding="utf-8"))
+    assert saved["root"] == str(artifacts.resolve())
+    assert (saved["device"], saved["inode"]) == (
+        artifacts.stat().st_dev,
+        artifacts.stat().st_ino,
+    )
+    # Explicit environment selection is visible without destroying the binding.
+    override = tmp_path / "override"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(override))
+    assert cp.main(arguments) == 0
+    assert json.loads(capsys.readouterr().out)["source"] == "explicit-env"
+    assert json.loads(record.read_text(encoding="utf-8")) == saved
+    monkeypatch.delenv("MOLT_EXT_ROOT")
+    # Clearing must work when the currently bound media is unavailable.
+    artifacts.rename(tmp_path / "offline")
+    assert cp.main(arguments) == 1
+    assert "artifact-root --clear" in capsys.readouterr().err
+    assert cp.main([*arguments, "--clear"]) == 0
+    assert json.loads(capsys.readouterr().out)["source"] == "plain-clone-default"
+    assert not record.exists()
+    assert dx.configured_artifact_root({}, relative_to=checkout) is None
+    assert cp.main([*arguments, "--clear"]) == 0
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["relative", "missing", "file", "checkout", "volume", "full", "unmeasurable"],
+)
+def test_artifact_root_command_rejects_invalid_target_without_mutating_binding(
+    checkout, tmp_path, monkeypatch, capsys, target
+):
+    from molt import disk_capacity, dx
+
+    monkeypatch.setenv("MOLT_EXTERNAL_MIN_FREE_GB", "20")
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _: 64 * 1024**3
+    )
+    healthy = tmp_path / "healthy"
+    healthy.mkdir()
+    record = dx.set_artifact_root_binding(checkout, healthy, {})
+    before = record.read_bytes()
+    candidate = tmp_path / "candidate"
+    if target in {"full", "unmeasurable"}:
+        candidate.mkdir()
+
+        def measure(_):
+            if target == "unmeasurable":
+                raise OSError("fixture cannot measure")
+            return 1
+
+        monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+        monkeypatch.setattr(disk_capacity, "_darwin_important_usage_bytes", measure)
+    elif target == "file":
+        candidate.write_bytes(b"file")
+    elif target == "relative":
+        candidate = Path("relative-root")
+    elif target == "checkout":
+        candidate = checkout
+    elif target == "volume":
+        candidate = Path(checkout.anchor)
+    assert (
+        cp.main(
+            ["artifact-root", "--checkout", str(checkout), "--bind", str(candidate)]
+        )
+        == 1
+    )
+    assert "cannot bind artifact root" in capsys.readouterr().err
+    assert record.read_bytes() == before
+    if target == "missing":
+        assert not candidate.exists()
+
+
+def test_artifact_root_command_requires_git_family(tmp_path, capsys):
+    assert cp.main(["artifact-root", "--checkout", str(tmp_path), "--clear"]) == 1
+    assert "requires a Git checkout family" in capsys.readouterr().err
+
+
 # Logs each run and repairs the tree in place, as `uv sync` does: it drops
 # the sentinel first, so a stale one never survives. "fail" completes the tree
 # and then exits 3; "no-sentinel" exits 0 without the sentinel.

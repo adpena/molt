@@ -898,6 +898,7 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
     source = git_checkout / ".claude" / "worktrees" / "agent"
     _git(git_checkout, "worktree", "add", "-q", "--detach", str(source))
     monkeypatch.setattr(layout, "implementation_source_root", lambda: source)
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.setattr(
         dx,
         "_host_scratch_roots",
@@ -922,10 +923,11 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
     before = repository_source_paths(
         git_checkout, run_git=run_git, include_untracked=True
     )
-    if placement == "inside-other-source":
+    if placement in {"inside-other-source", "scratch"}:
         with pytest.raises(ValueError, match="overlaps source or receipt custody"):
             _ = selected.supervisor_store
-        assert not (root / "proof-supervisor").exists()
+        rejected_root = root if placement == "inside-other-source" else source
+        assert not (rejected_root / "proof-supervisor").exists()
         return
     store = selected.supervisor_store
     expected = root if placement == "external" else git_checkout.parent
@@ -938,6 +940,33 @@ def test_supervisor_storage_never_enters_an_enclosing_source_checkout(
         repository_source_paths(git_checkout, run_git=run_git, include_untracked=True)
         == before
     )
+
+
+def test_supervisor_store_uses_the_durable_artifact_binding(
+    tmp_path, monkeypatch, git_checkout
+):
+    import hashlib
+    from molt import dx
+
+    source = git_checkout.resolve()
+    artifacts = tmp_path / "bound-artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(layout, "implementation_source_root", lambda: source)
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda _: 64 * 1024**3
+    )
+    dx.set_artifact_root_binding(source, artifacts, {})
+    first = layout.CargoOutputLayout(tmp_path / "receipts-one")
+    second = layout.CargoOutputLayout(tmp_path / "receipts-two")
+    namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:24]
+    expected = artifacts / "proof-supervisor" / namespace
+    assert first.supervisor_store == second.supervisor_store == expected
+    assert first.supervisor_target == expected / "target"
+    assert not expected.exists(), "selection must not create output"
+    artifacts.rename(tmp_path / "offline-artifacts")
+    with pytest.raises(dx.DxConfigError, match="bound artifact root"):
+        _ = first.supervisor_store
 
 
 def test_supervisor_intermediates_are_external_but_executable_cas_stays_canonical(

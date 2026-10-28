@@ -892,6 +892,12 @@ def cargo_output_implementation_source(
 
     source = tmp_path / "implementation-source"
     source.mkdir()
+    artifacts = tmp_path / "implementation-artifacts"
+    artifacts.mkdir()
+    # The bootstrap uses DX, including in a plain source fixture. Declare the
+    # fixture's external artifact root through the real boundary; no custody
+    # mock or implicit sibling fallback may authorize its output.
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     monkeypatch.setattr(
         cargo_output_layout, "implementation_source_root", lambda: source
     )
