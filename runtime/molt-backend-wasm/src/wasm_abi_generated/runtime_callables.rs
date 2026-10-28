@@ -11013,11 +11013,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 5,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_warnings_showwarning",
-        import: WasmRuntimeImport::WarningsShowwarning,
-        arity: 6,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_warnings_simplefilter",
         import: WasmRuntimeImport::WarningsSimplefilter,
         arity: 4,
@@ -11035,6 +11030,16 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_warnings_filters_get",
         import: WasmRuntimeImport::WarningsFiltersGet,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_warnings_onceregistry_get",
+        import: WasmRuntimeImport::WarningsOnceregistryGet,
+        arity: 0,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_warnings_filters_mutated",
+        import: WasmRuntimeImport::WarningsFiltersMutated,
         arity: 0,
     },
     RuntimeCallableImportSpec {
@@ -15122,11 +15127,12 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_warnings_warn" => Some(WasmRuntimeImport::WarningsWarn),
         "molt_warnings_warn_explicit" => Some(WasmRuntimeImport::WarningsWarnExplicit),
         "molt_warnings_formatwarning" => Some(WasmRuntimeImport::WarningsFormatwarning),
-        "molt_warnings_showwarning" => Some(WasmRuntimeImport::WarningsShowwarning),
         "molt_warnings_simplefilter" => Some(WasmRuntimeImport::WarningsSimplefilter),
         "molt_warnings_filterwarnings" => Some(WasmRuntimeImport::WarningsFilterwarnings),
         "molt_warnings_resetwarnings" => Some(WasmRuntimeImport::WarningsResetwarnings),
         "molt_warnings_filters_get" => Some(WasmRuntimeImport::WarningsFiltersGet),
+        "molt_warnings_onceregistry_get" => Some(WasmRuntimeImport::WarningsOnceregistryGet),
+        "molt_warnings_filters_mutated" => Some(WasmRuntimeImport::WarningsFiltersMutated),
         "molt_logging_handler_new" => Some(WasmRuntimeImport::LoggingHandlerNew),
         "molt_logging_handler_set_level" => Some(WasmRuntimeImport::LoggingHandlerSetLevel),
         "molt_logging_handler_flush" => Some(WasmRuntimeImport::LoggingHandlerFlush),

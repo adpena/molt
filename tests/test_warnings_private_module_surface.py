@@ -19,11 +19,12 @@ install_registry({{
     "molt_warnings_warn": _host_warnings.warn,
     "molt_warnings_warn_explicit": _host_warnings.warn_explicit,
     "molt_warnings_formatwarning": _host_warnings.formatwarning,
-    "molt_warnings_showwarning": _host_warnings.showwarning,
     "molt_warnings_simplefilter": _host_warnings.simplefilter,
     "molt_warnings_filterwarnings": _host_warnings.filterwarnings,
     "molt_warnings_resetwarnings": _host_warnings.resetwarnings,
     "molt_warnings_filters_get": lambda: list(_host_warnings.filters),
+    "molt_warnings_onceregistry_get": dict,
+    "molt_warnings_filters_mutated": lambda: None,
 }})
 
 
@@ -50,12 +51,13 @@ for name, type_name, is_callable in rows:
 
 checks = {{
     "aliases": (
-        _py_warnings.catch_warnings is _warnings_mod._CatchWarnings
+        _py_warnings.catch_warnings is _warnings_mod.catch_warnings
         and _py_warnings.warn is _warnings_mod.warn
         and _py_warnings.warn_explicit is _warnings_mod.warn_explicit
-        and _py_warnings.WarningMessage is _warnings_mod._WarningRecord
-        and _py_warnings.defaultaction == _warnings_mod._default_action
-        and _py_warnings.filters is _warnings_mod._filters
+        and _py_warnings.WarningMessage is _warnings_mod.WarningMessage
+        and _py_warnings.defaultaction == _warnings_mod.defaultaction
+        and _py_warnings.filters is _warnings_mod.filters
+        and _py_warnings.onceregistry is _warnings_mod.onceregistry
     ),
     "onceregistry_shape": isinstance(_py_warnings.onceregistry, dict),
 }}

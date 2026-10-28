@@ -5,14 +5,14 @@ import sys
 import warnings as _warnings_mod
 
 
-WarningMessage = _warnings_mod._WarningRecord
-catch_warnings = _warnings_mod._CatchWarnings
-defaultaction = _warnings_mod._default_action
+WarningMessage = _warnings_mod.WarningMessage
+catch_warnings = _warnings_mod.catch_warnings
+defaultaction = _warnings_mod.defaultaction
 deprecated = _warnings_mod.deprecated
-filters = _warnings_mod._filters
+filters = _warnings_mod.filters
 filterwarnings = _warnings_mod.filterwarnings
 formatwarning = _warnings_mod.formatwarning
-onceregistry: dict[object, object] = {}
+onceregistry = _warnings_mod.onceregistry
 resetwarnings = _warnings_mod.resetwarnings
 showwarning = _warnings_mod.showwarning
 simplefilter = _warnings_mod.simplefilter
