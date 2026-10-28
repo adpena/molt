@@ -549,17 +549,30 @@ def test_source_demand_activation_join_emits_only_new_incidences(tmp_path, monke
     observed = []
     original = engine.activate
 
-    def record(candidate, phase, arguments=()):
+    def record(candidate, phase, arguments=(), *, argument_count=None, consumer=None):
         if candidate.source in expected and arguments:
-            observed.append((candidate, phase, arguments))
-        original(candidate, phase, arguments)
+            observed.append((candidate, phase, arguments, argument_count, consumer))
+        original(
+            candidate,
+            phase,
+            arguments,
+            argument_count=argument_count,
+            consumer=consumer,
+        )
 
     monkeypatch.setattr(engine, "activate", record)
     for line in range(1, 65):
-        engine.demand(value, "call", (f"argument_{line}",))
+        engine.demand(
+            value,
+            "call",
+            (f"argument_{line}",),
+            argument_count=1,
+            consumer="entry",
+        )
         engine.drain()
     assert len(observed) == 2 * 64
     assert len(set(observed)) == len(observed)
+    assert {item[3:] for item in observed} == {(1, "entry")}
     for _ in range(64):
         engine.queue_value(value)
         engine.drain()
