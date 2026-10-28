@@ -15,6 +15,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 _MOLT_IMP_ACQUIRE_LOCK = _require_intrinsic("molt_imp_acquire_lock")
 _MOLT_IMP_RELEASE_LOCK = _require_intrinsic("molt_imp_release_lock")
 _MOLT_IMP_LOCK_HELD = _require_intrinsic("molt_imp_lock_held")
+del _require_intrinsic
 
 
 def is_builtin(name):

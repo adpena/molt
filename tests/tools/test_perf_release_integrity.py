@@ -622,7 +622,10 @@ def test_measure_cell_closes_actual_binary_owner_on_every_exit(
             scoped.setattr(
                 temporary_artifacts,
                 "delete_path",
-                lambda path: (False, "independent deletion refusal"),
+                lambda path, *, owning_root=None: (
+                    False,
+                    "independent deletion refusal",
+                ),
             )
         if failed or cleanup_failure:
             with pytest.raises(type(original) if failed else OSError) as caught:

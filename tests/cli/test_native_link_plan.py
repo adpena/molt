@@ -111,7 +111,6 @@ def _plan(
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
         bolt_requested=bolt_requested,
         host_platform=host_platform,
-        host_arch=host_arch,
         external_link_requirements=(
             ()
             if external_target is None
@@ -120,6 +119,77 @@ def _plan(
             )
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("host_arch", "explicit_arch", "expected_arch"),
+    [
+        ("arm64", None, "arm64"),
+        ("x86_64", None, "x86_64"),
+        ("arm64", "aarch64", "aarch64"),
+        ("x86_64", "x86_64", "x86_64"),
+    ],
+)
+def test_darwin_link_plans_use_admitted_target_without_arch_probe(
+    monkeypatch, tmp_path, host_arch, explicit_arch, expected_arch
+):
+    from molt.cli import native_toolchain
+    from tests.cli.native_link_test_support import transport_codegen_binding
+
+    def unexpected_process(*args, **kwargs):
+        pytest.fail("link planning must not launch an archive architecture probe")
+
+    monkeypatch.setattr(native_toolchain, "_run_completed_command", unexpected_process)
+    # The selected target, not the machine running this planning test, owns
+    # architecture selection for both application and runtime-image links.
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        native_link_command,
+        machine=lambda: "x86_64" if host_arch == "arm64" else "arm64",
+    )
+    monkeypatch.delenv("CFLAGS", raising=False)
+    monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
+    monkeypatch.setenv("MOLT_MACOSX_DEPLOYMENT_TARGET", "11.0")
+    if explicit_arch is None:
+        monkeypatch.delenv("MOLT_ARCH", raising=False)
+    else:
+        monkeypatch.setenv("MOLT_ARCH", explicit_arch)
+    app = _plan(monkeypatch, tmp_path, host_platform="darwin", host_arch=host_arch)
+    binding = transport_codegen_binding(
+        tmp_path / "runtime", target_triple=app.target.triple
+    )
+    runtime = native_link_command._build_native_runtime_image_link_plan(
+        runtime_lib=binding.runtime_lib,
+        output_image=tmp_path / "runtime.dylib",
+        target=app.target,
+        sysroot_path=None,
+        profile="release",
+        runtime_codegen_binding=binding,
+    )
+    for plan in (app, runtime):
+        assert plan.command.count("-arch") == 1
+        assert plan.command[plan.command.index("-arch") + 1] == expected_arch
+        assert "-target" not in plan.command
+        assert plan.normalized_target is None
+        assert "-mmacosx-version-min=11.0" in plan.command
+    assert "-dynamiclib" in runtime.command
+    assert "-dynamiclib" not in app.command
+
+
+@pytest.mark.parametrize(
+    ("host_arch", "override"), [("arm64", "x86_64"), ("x86_64", "arm64")]
+)
+def test_darwin_arch_override_still_refuses_conflicting_admitted_target(
+    monkeypatch, tmp_path, host_arch, override
+):
+    monkeypatch.setenv("MOLT_ARCH", override)
+    monkeypatch.delenv("CFLAGS", raising=False)
+    monkeypatch.delenv("MACOSX_DEPLOYMENT_TARGET", raising=False)
+    monkeypatch.setenv("MOLT_MACOSX_DEPLOYMENT_TARGET", "11.0")
+    with pytest.raises(RuntimeError, match="compiler command -arch .* conflicts"):
+        _plan(monkeypatch, tmp_path, host_platform="darwin", host_arch=host_arch)
 
 
 def test_native_link_sidecars_are_private_for_overlapping_plans(
@@ -703,14 +773,12 @@ def test_native_driver_and_linker_prefer_one_managed_llvm_family(
 
     command, linker_hint, _target = (
         native_link_command._build_native_link_driver_command(
-            output_obj=None,
             target=resolve_native_target_spec(
                 None, host_platform="win32", host_arch="AMD64"
             ),
             sysroot_path=None,
             profile="dev",
             host_platform="win32",
-            host_arch="AMD64",
         )
     )
 
@@ -729,7 +797,6 @@ def test_explicit_cc_overrides_managed_driver(tmp_path: Path, monkeypatch) -> No
 
     command, linker_hint, _target = (
         native_link_command._build_native_link_driver_command(
-            output_obj=None,
             target=resolve_native_target_spec(None),
             sysroot_path=None,
             profile="dev",
@@ -1322,12 +1389,10 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
         runtime, build_identity=identity, target_triple=None
     )
     command, _, normalized = native_link_command._build_native_link_driver_command(
-        output_obj=None,
         target=target,
         sysroot_path=None,
         profile="dev",
         host_platform=host_platform,
-        host_arch=host_arch,
     )
     assert Path(command[0]) == driver.resolve()
     assert "-target" not in command

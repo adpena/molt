@@ -26,6 +26,26 @@ from tests.python_environment_test_support import materialize_development_enviro
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "tools" / "molt_dev.py"
 
+
+def test_owner_launcher_carries_bytecode_policy_before_isolation(tmp_path):
+    spec = cp.OwnedInstallation("owner", tmp_path, "owner.py", ProcessEnvironment({}))
+    argv = cp._owner_argv(spec, "--check")
+    script_index = argv.index(str(tmp_path / "owner.py"))
+    child = run_guarded_test_process(
+        [
+            argv[0],
+            *argv[1:script_index],
+            "-c",
+            "import json,sys;print(json.dumps([sys.flags.isolated,sys.dont_write_bytecode,sys.pycache_prefix]))",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    assert json.loads(child.stdout) == [1, True, str(Path(sys.prefix) / "bytecode")]
+
+
 # Logs each run and repairs the tree in place, as `uv sync` does: it drops
 # the sentinel first, so a stale one never survives. "fail" completes the tree
 # and then exits 3; "no-sentinel" exits 0 without the sentinel.

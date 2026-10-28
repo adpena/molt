@@ -981,7 +981,7 @@ def test_actual_build_cleanup_failure_escapes_measurement_and_profile_callers(
         scoped.setattr(
             temporary_artifacts,
             "delete_path",
-            lambda path: (False, "independent deletion refusal"),
+            lambda path, *, owning_root=None: (False, "independent deletion refusal"),
         )
         with pytest.raises(
             OSError if original_kind == "cleanup-only" else type(original)
@@ -1054,7 +1054,7 @@ def test_codon_handled_build_io_survives_cleanup_failure(
         scoped.setattr(
             temporary_artifacts,
             "delete_path",
-            lambda path: (False, "independent deletion refusal"),
+            lambda path, *, owning_root=None: (False, "independent deletion refusal"),
         )
         with pytest.raises(OSError) as caught:
             runner.measure_into(
@@ -1136,7 +1136,10 @@ def test_nested_codon_and_native_cleanup_retain_both_exact_owners(
         scoped.setattr(
             temporary_artifacts,
             "delete_path",
-            lambda path: (False, "independent nested deletion refusal"),
+            lambda path, *, owning_root=None: (
+                False,
+                "independent nested deletion refusal",
+            ),
         )
         with pytest.raises(OSError) as caught:
             measure_admitted_cell(
@@ -1219,7 +1222,10 @@ def test_profiling_build_log_failure_closes_or_retains_untransferred_binary(
             scoped.setattr(
                 temporary_artifacts,
                 "delete_path",
-                lambda path: (False, "independent profiling deletion refusal"),
+                lambda path, *, owning_root=None: (
+                    False,
+                    "independent profiling deletion refusal",
+                ),
             )
         with pytest.raises(OSError) as caught:
             profiling.build_profiling_binary(
@@ -1323,7 +1329,10 @@ def test_hot_controller_owns_successful_binary_through_capture_and_cleanup(
                 scoped.setattr(
                     temporary_artifacts,
                     "delete_path",
-                    lambda path: (False, "independent deletion refusal"),
+                    lambda path, *, owning_root=None: (
+                        False,
+                        "independent deletion refusal",
+                    ),
                 )
             if prior_owner is not None:
                 with pytest.raises(OSError) as prior_failure:
@@ -1666,7 +1675,10 @@ def test_sampler_output_owns_exact_directory_through_every_exit(
             scoped.setattr(
                 temporary_artifacts,
                 "delete_path",
-                lambda path: (False, "independent cleanup refusal"),
+                lambda path, *, owning_root=None: (
+                    False,
+                    "independent cleanup refusal",
+                ),
             )
         if outcome in {"read-error", "cancel"} or cleanup_failure:
             with pytest.raises(

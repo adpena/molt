@@ -143,8 +143,24 @@ def test_startup_and_import_samples_share_the_verified_baseline(monkeypatch, tmp
         build_timeout=10,
     )
     assert commands == [
-        [sys.executable, "-I", str(script)],
-        [sys.executable, "-I", "-X", "importtime", str(script)],
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-X",
+            f"pycache_prefix={startup_bench.TMP / 'hello' / 'bytecode'}",
+            str(script),
+        ],
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-X",
+            f"pycache_prefix={startup_bench.TMP / 'hello' / 'bytecode'}",
+            "-X",
+            "importtime",
+            str(script),
+        ],
     ]
     assert row["build_blocker"]["message"] == (
         "compiled build outside reference selection test"

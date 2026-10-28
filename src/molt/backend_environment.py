@@ -18,7 +18,7 @@ from molt.backend_executable_names import (
     CodegenBackend,
 )
 from molt.default_paths import _default_molt_cache
-from molt.dx import scratch_dir
+from molt.dx import scratch_dir, scratch_root
 from molt.source_root import compiler_source_root
 
 # The one input that places backend debug artifacts and scratch objects;
@@ -212,14 +212,34 @@ def backend_debug_artifact_dir(env: Mapping[str, str]) -> Path:
 
     An explicit ``MOLT_DEBUG_ARTIFACT_DIR`` wins, made absolute so a backend
     daemon with another working directory agrees. Otherwise it is the
-    compiler's run scratch, ``molt.dx.scratch_dir(<compiler source>,
-    "molt-backend")``: never inside a checkout, and one directory per compiler
-    and artifact root, so the cache keys that bind it stay stable.
+    compiler's selected run scratch plus ``molt-backend``: never inside a
+    checkout, and one directory per compiler and artifact root, so the cache
+    keys that bind it stay stable. Selection creates no directories or records.
     """
     raw = env.get(DEBUG_ARTIFACT_DIR_ENV, "").strip()
     if raw:
         return Path(raw).expanduser().absolute()
-    return scratch_dir(compiler_source_root(), DEBUG_ARTIFACT_SCRATCH_PURPOSE, env)
+    return scratch_root(compiler_source_root(), env) / DEBUG_ARTIFACT_SCRATCH_PURPOSE
+
+
+def prepare_backend_debug_artifact_dir(env: Mapping[str, str]) -> None:
+    """Bind owned scratch before a backend operation can write beneath it.
+
+    An arbitrary caller-selected directory keeps its own custody. An explicit
+    selection of the canonical owned location still requires its owner record.
+    Writer preparation also validates global scratch selection: an explicit
+    debug destination does not override the operation's other scratch needs.
+    Cache/environment projection must never call this writer boundary.
+    """
+    if not env.get(DEBUG_ARTIFACT_DIR_ENV, "").strip():
+        # No selected directory means the backend's standalone temp policy;
+        # there is no compiler-owned scratch location in this operation.
+        return
+    owner = compiler_source_root()
+    selected = backend_debug_artifact_dir(env)
+    canonical = scratch_root(owner, env) / DEBUG_ARTIFACT_SCRATCH_PURPOSE
+    if selected.resolve() == canonical.resolve():
+        scratch_dir(owner, DEBUG_ARTIFACT_SCRATCH_PURPOSE, env)
 
 
 def backend_process_environment(base: Mapping[str, str]) -> dict[str, str]:

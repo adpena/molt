@@ -1145,11 +1145,13 @@ def _elapsed_since(started: float) -> float:
     return max(0.0, time.monotonic() - started)
 
 
-def _timed_delete(path: Path, *, result: ReclaimResult) -> tuple[bool, str | None]:
+def _timed_delete(
+    path: Path, *, owning_root: Path, result: ReclaimResult
+) -> tuple[bool, str | None]:
     """Measure the existing deletion primitive without changing its custody."""
     started = time.monotonic()
     try:
-        return delete_path(path)
+        return delete_path(path, owning_root=owning_root)
     finally:
         key = str(path)
         result.deletion_elapsed_s[key] = result.deletion_elapsed_s.get(
@@ -1868,7 +1870,9 @@ def _collect_retired_roots(
                         }
                     )
                     continue
-                ok, error = _timed_delete(retirement.path, result=result)
+                ok, error = _timed_delete(
+                    retirement.path, owning_root=owning_root, result=result
+                )
                 if not ok:
                     result.errors.append(f"{retirement.path}: {error}")
                     continue

@@ -309,8 +309,11 @@ def _cpython_argv(python_exe: str, module: str, tempdir: Path) -> list[str]:
     time + peak RSS are the module's, not a worker-pool's. ``--quiet`` trims the
     output; ``--tempdir`` gives the module a private scratch dir so concurrent
     adapter runs and the repo tree are never polluted."""
+    from molt.python_environment_location import environment_bytecode_arguments
+
     return [
         python_exe,
+        *environment_bytecode_arguments(tempdir),
         "-I",  # isolated: ignore env/user site so the measurement is hermetic
         "-m",
         "test",

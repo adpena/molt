@@ -94,11 +94,12 @@ def test_development_admission_requires_complete_operation_intent(
     )
 
 
+@pytest.mark.parametrize("attested", ["legacy", "sealed"])
 @pytest.mark.parametrize("development", [False, True])
 @pytest.mark.parametrize("with_custody", [False, True])
 @pytest.mark.parametrize("failure", [None, "verify", "close"])
 def test_published_admission_keeps_capture_context_until_final_verification(
-    tmp_path, monkeypatch, capsys, with_custody, failure, development
+    tmp_path, monkeypatch, capsys, with_custody, failure, development, attested
 ):
     from molt import source_build_environment
     from molt import input_report
@@ -107,6 +108,42 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     realized = {"environment": "independent captured bytes"}
     payload = {"identity": realized} if with_custody else realized
     (tmp_path / "checkout").mkdir()
+    installed = tmp_path / "lib" / "site-packages"
+    installed.mkdir(parents=True)
+    module = installed / "proof.py"
+    module.write_bytes(b"VALUE = 529\n")
+    from molt import python_environment_contract as contract
+    from molt.exact_json import write_exact
+
+    # Only a legacy attestation (writable installed entries) is sealed.
+    write_exact(
+        tmp_path / contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+        {
+            "realized_environment": {
+                "tree": {
+                    "entries": [
+                        {
+                            "path": "lib/site-packages/proof.py",
+                            "kind": "file",
+                            "access": {
+                                "readable": True,
+                                "writable": attested == "legacy",
+                                "executable": False,
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+    )
+    seal = location.seal_environment_installation
+    sealed = ["sealed"] if attested == "legacy" else []
+
+    def seal_before_fence(root):
+        assert not events
+        seal(root)
+        assert not module.stat().st_mode & stat.S_IWUSR
+        events.append("sealed")
 
     class Context:
         def __init__(self, *, hash_workers, digest_cache):
@@ -139,7 +176,7 @@ def test_published_admission_keeps_capture_context_until_final_verification(
 
     def admit(root, observed, *, development_admission):
         assert root == tmp_path and observed is realized
-        assert events == ["context-open", "captured"]
+        assert events == [*sealed, "context-open", "captured"]
         if development:
             assert development_admission.repo_root == tmp_path / "checkout"
             assert development_admission.python == "3.14"
@@ -173,6 +210,7 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     monkeypatch.setattr(sys, "argv", arguments)
     monkeypatch.setattr(identity, "_arguments", identity._parse_arguments())
     monkeypatch.setattr(input_report, "worker_initializer", lambda _: None)
+    monkeypatch.setattr(location, "seal_environment_installation", seal_before_fence)
     monkeypatch.setattr(files, "PythonFileCaptureContext", Context)
     monkeypatch.setattr(identity, "capture_current_python_environment", capture)
     monkeypatch.setattr(source_build_environment, "admit_published_environment", admit)
@@ -190,7 +228,9 @@ def test_published_admission_keeps_capture_context_until_final_verification(
     else:
         identity._main()
         assert json.loads(capsys.readouterr().out) == payload
+    assert bool(module.stat().st_mode & stat.S_IWUSR) is (attested == "sealed")
     assert events == [
+        *sealed,
         "context-open",
         "captured",
         *(["intent"] if development else []),
@@ -382,10 +422,10 @@ def test_verifier_prefix_cleanup_keeps_primary_failure(
             super().__init__(prefix=prefix, dir=tmp_path)
             owners.append(self)
 
-    def refuse_owned_cleanup(path):
+    def refuse_owned_cleanup(path, *, owning_root=None):
         if owners and Path(path) == Path(owners[0].name):
             return False, "injected deletion refusal"
-        return original_delete(path)
+        return original_delete(path, owning_root=owning_root)
 
     primary = RuntimeError("original probe failure")
     try:
@@ -2825,9 +2865,11 @@ def test_standalone_probe_admits_selected_package_without_repository_tools(
         monkeypatch.setitem(sys.modules, "molt.plugins", namespace)
         prior_path, prior_spec = namespace.__path__, namespace.__spec__
     imports = []
-    with pytest.raises(_CustodyImportReached, match="molt.python_identity_common"):
+    # The facade's first package import is ``from molt import
+    # python_environment_contract``; it reaches __import__ as plain "molt".
+    with pytest.raises(_CustodyImportReached, match=r"^molt$"):
         _execute_probe_to_package_import(source, imports)
-    assert imports == ["molt.python_identity_common"]
+    assert imports == ["molt"]
     assert sys.path[0] == str(selected.parent)
     authority = sys.modules["_molt_package_import_custody"]
     assert authority.__file__ == str(selected / "package_import_custody.py")

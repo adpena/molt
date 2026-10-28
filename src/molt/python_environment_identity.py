@@ -151,6 +151,8 @@ def _parse_arguments():
 
 
 _arguments = _parse_arguments() if __name__ == "__main__" else None
+# Set once this child seals a legacy image, so a refusal can say so truthfully.
+_sealed_before_admission = False
 if _arguments is not None and (
     _arguments.locate_active_environment or _arguments.editable_project
 ):
@@ -532,6 +534,7 @@ def _serve_runtime_session(payload, context, *, requests, responses) -> None:
 
 
 def _main() -> None:
+    global _sealed_before_admission
     args = _arguments
     assert args is not None
     from molt import input_report
@@ -549,6 +552,34 @@ def _main() -> None:
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
         from molt.toolchain_facts import host_file_digest_cache
+
+        if args.admit_published_environment:
+            from molt.exact_json import loads_exact
+            from molt.python_environment_location import (
+                _active_environment_prefix,
+                attestation_records_writable_installation,
+                seal_environment_installation,
+            )
+
+            # Sealing is an intentional permission transition. Seal a legacy
+            # attestation's image before opening the capture fence; admission
+            # compares the sealed live identity against the original
+            # attestation inside that fence. A sealed or unreadable attestation
+            # skips the walk and admission reports its own refusal.
+            sealed_root = args.capture_environment or _active_environment_prefix()
+            try:
+                attestation = loads_exact(
+                    (
+                        sealed_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+                    ).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                attestation = None
+            if isinstance(attestation, Mapping) and (
+                attestation_records_writable_installation(attestation)
+            ):
+                seal_environment_installation(sealed_root)
+                _sealed_before_admission = True
 
         with PythonFileCaptureContext(
             hash_workers=args.hash_workers, digest_cache=host_file_digest_cache()
@@ -632,4 +663,7 @@ if __name__ == "__main__":
     try:
         _main()
     except (OSError, ValueError) as exc:
-        _probe_error(str(exc))
+        detail = str(exc)
+        if _sealed_before_admission:
+            detail = "published image sealing preceded admission: " + detail
+        _probe_error(detail)

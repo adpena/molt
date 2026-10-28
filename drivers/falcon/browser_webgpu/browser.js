@@ -180,14 +180,20 @@ export async function initFalconBrowserWebGpu({
     "tokenizer_json",
   );
   const resolvedInitExport = initExport ?? manifest?.exports?.init ?? "main_molt__init";
+  // The execution manifest URL is the only manifest source. The host treats a
+  // present `manifest` key as an inline manifest, so omit the keys instead of
+  // setting them to undefined.
+  const {
+    manifest: _inlineManifest,
+    runtimeImportAbi: _inlineRuntimeImportAbi,
+    ...hostOptions
+  } = browserHostOptions;
   // Settle every acquisition before rollback: a late host must not escape a
   // failed sibling fetch. Successful initialization transfers this owner.
   const [hostResult, weightsResult, configResult] = await Promise.allSettled([
     loadMoltWasm({
-      ...browserHostOptions,
-      manifest: undefined,
+      ...hostOptions,
       manifestUrl: executionManifestUrl,
-      runtimeImportAbi: undefined,
       env: { MOLT_GPU_BACKEND: "webgpu", ...browserHostOptions.env },
     }),
     fetchImmutableArrayBuffer(resolvedWeightsUrl),
