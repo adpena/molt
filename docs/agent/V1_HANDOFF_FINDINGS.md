@@ -474,6 +474,30 @@ independent literal target layout; production selection is unchanged. The first
 integration's Clippy command is cancelled after that assertion fails and grants
 no passing Clippy evidence.
 
+At `change:I38d00a1f037901797601d82d7f9cf0baf3c95d8e`, the shared run observation
+also derives failure tails from semantic guest stderr, preserving host diagnostics
+separately. Failed original-byte captures carry immutable byte-length/SHA-256
+evidence through the existing bounded failure payload and log before scratch
+cleanup. Normalized text and unavailable captures remain unknown; parity-only
+failures cannot borrow another run's byte identity. Classification stays bounded,
+each stream decodes once, and successful samples add no stream hashing. Thirty-nine
+focused capture/publication controls pass, followed by three parent publication
+controls and 38 methodology/schema controls. An earlier accidental slow-integration
+selection hit its RSS cap and remains rejected with closed descendants. Methodology
+v17 retains the changed failure-classification boundary; old reports are not upgraded.
+
+The exact historical source-package seal and argv are reconstructed for a current
+WASM diagnostic. Its nested receipts distinguish 161.368 seconds provisioning the
+compiler from 101.754 seconds in the backend probe child interval; both children
+return 0. A birth- and lineage-checked operator interrupt makes the probe guard
+report SIGINT/130 and closes the outer CLI at 418.532 seconds before guest
+execution. The earlier process sample belongs to Cargo, so it does not diagnose
+a probe deadlock. The remaining interval and probe CPU/input/OS-admission costs
+are unresolved. This establishes neither a WASM guest regression nor accepted
+compilation latency; compiler provisioning is a separate product-state cost.
+Keep the historical guest failure unresolved. Raw-byte digests do not substitute
+for completion, closure or a successfully admitted probe.
+
 Next attribute ordinary first-compile and edit costs through the existing phase
 and guarded-command telemetry before changing backend preparation, process
 custody, module discovery or linking. Instrumented cumulative costs overlap;
