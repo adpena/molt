@@ -43,6 +43,20 @@ pointer. Owner-bound immutable views are a correctness prerequisite before
 context transport spreads. Tk's bytes/bytearray conversion must follow CPython's
 actual AsObj policy, not infer a new fast path from a mistaken type branch.
 
+The existing entry hot/cold split must reach each runtime helper across Rust
+code-generation units. `RuntimeExecutionGuard`'s policy-selecting entry wrappers
+and borrowed-token accessors, including the native `GilGuard` accessor, expose
+their small bodies for inlining. The lifecycle admission and finalization bodies
+remain explicitly cold and out of line. This follows Rust's
+[`inline` contract](https://doc.rust-lang.org/reference/attributes/codegen.html#the-inline-attribute):
+an inlined private callee alone does not expose its enclosing wrapper to callers.
+The policy, lifecycle leases, GIL nesting, token lifetimes and cleanup edges are
+unchanged. The cost trade is repeated fast-prefix machine code versus removed
+call/return and guard-result transport. Acceptance requires matching guest-latency
+and linked-size evidence on the selected release profile. Comparative cold Rust
+runtime-build cost remains unqualified until a matched rebuild comparison is
+available; the current policy accepts that unknown for measured guest throughput.
+
 The exploratory runtime-entry/TLS percentages, indirect-call observations and
 builtin timings in HF-198/HF-205 are leads from their recorded source/workloads.
 They do not establish current-image attribution or universal multipliers. These
