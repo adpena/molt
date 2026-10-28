@@ -87,10 +87,10 @@ def test_metadata_template_never_claims_restorable_state(tmp_path: Path) -> None
 def test_execution_identity_uses_shared_linked_golden_encoding(tmp_path: Path) -> None:
     (linked_digest,) = _write_manifest(tmp_path, mode="linked")
     assert _snapshot_execution_identity(tmp_path / "output.wasm") == (
-        f"molt.snapshot.execution.v2|linked|linked={linked_digest}"
+        f"molt.snapshot.execution.v3|linked|linked={linked_digest}"
     )
     assert _generate(tmp_path)["execution_identity"] == (
-        f"molt.snapshot.execution.v2|linked|linked={linked_digest}"
+        f"molt.snapshot.execution.v3|linked|linked={linked_digest}"
     )
 
 
@@ -98,7 +98,7 @@ def test_execution_identity_binds_both_split_runtime_modules(tmp_path: Path) -> 
     app_digest, runtime_digest = _write_manifest(tmp_path, mode="split-runtime")
     first = _snapshot_execution_identity(tmp_path / "output.wasm")
     assert first == (
-        "molt.snapshot.execution.v2|split-runtime|"
+        "molt.snapshot.execution.v3|split-runtime|"
         f"app={app_digest}|runtime={runtime_digest}"
     )
 
@@ -110,7 +110,7 @@ def test_execution_identity_binds_both_split_runtime_modules(tmp_path: Path) -> 
     second = _snapshot_execution_identity(tmp_path / "output.wasm")
     assert second != first
     assert second.startswith(
-        f"molt.snapshot.execution.v2|split-runtime|app={app_digest}|runtime=sha256:"
+        f"molt.snapshot.execution.v3|split-runtime|app={app_digest}|runtime=sha256:"
     )
 
 

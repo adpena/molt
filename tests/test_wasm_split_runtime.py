@@ -1940,7 +1940,7 @@ class TestManifestJson:
 
     def test_version(self, split_build_a):
         data = self._read_manifest(split_build_a)
-        assert data["version"] == 2
+        assert data["version"] == 3
 
     def test_mode(self, split_build_a):
         data = self._read_manifest(split_build_a)
