@@ -1216,6 +1216,11 @@ def test_active_guard_marker_records_death_capsule(
     assert payload["child_launch_state"] == "not_started"
     assert payload["command"] == ["python", "-c", "print('ok')"]
     assert payload["cwd"] == str(tmp_path.resolve(strict=False))
+    from tools.memory_guard_core.active_custody import read_marker_record
+
+    scope = read_marker_record(marker).artifact_scope
+    assert scope.checkout == memory_guard.ROOT.resolve()
+    assert tmp_path.resolve() in scope.paths
     assert payload["status"] == "guard_starting"
     assert payload["created_at"]
     assert payload["updated_at"]
@@ -1240,6 +1245,46 @@ def test_active_guard_marker_records_death_capsule(
     assert updated["status"] == "child_running"
     assert updated["child_process"]["pid"] == 123
     assert updated["child_process"]["started_at_ns"] == 200
+
+
+def test_guard_marker_captures_selected_state_scratch_and_outputs_without_creating_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tools.memory_guard_core.active_custody import read_marker_record
+
+    source = tmp_path / "checkout"
+    source.mkdir()
+    monkeypatch.setattr(memory_guard, "ROOT", source)
+    target = tmp_path / "artifacts/target/selected/sessions/current"
+    scratch = tmp_path / "artifacts/tmp/operator-scratch"
+    image = tmp_path / "artifacts/selected-python"
+    output = tmp_path / "artifacts/tmp/declared-output/result.json"
+    env = {
+        "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
+        "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "custody"),
+        "CARGO_TARGET_DIR": str(target),
+        "UV_PROJECT_ENVIRONMENT": str(image),
+        "TMPDIR": str(scratch),
+    }
+    token, marker = memory_guard._write_active_guard_marker(
+        os.getpid(),
+        command=(sys.executable, "-c", "pass"),
+        cwd=source,
+        environ=env,
+        outputs=(output,),
+    )
+    record = read_marker_record(marker)
+    assert record.error is None
+    assert record.artifact_scope.checkout == source
+    assert {source, target, scratch, image, output} <= set(record.artifact_scope.paths)
+    assert not (tmp_path / "artifacts").exists(), "scope capture must be read-only"
+    with pytest.raises(ValueError, match="immutable"):
+        memory_guard.update_active_guard_marker(
+            marker,
+            token,
+            status="launch_prepared",
+            artifact_scope={"checkout": str(source), "paths": []},
+        )
 
 
 def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:

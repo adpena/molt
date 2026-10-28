@@ -115,6 +115,7 @@ SRC_ROOT = ROOT / "src"
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp  # noqa: E402
 from tools.memory_guard_core.active_custody import (  # noqa: E402
     ACTIVE_GUARD_MARKER_SCHEMA_VERSION,
+    command_artifact_scope,
     guard_marker_records,
     observe_custody,
     retire_active_guard_marker,
@@ -626,6 +627,7 @@ def _write_active_guard_marker(
     command: Sequence[str],
     cwd: str | Path | None,
     environ: Mapping[str, str],
+    outputs: Sequence[Path] = (),
 ) -> tuple[str, Path]:
     if type(pid) is not int or pid <= 0:
         raise ValueError("active guard marker requires a live pid")
@@ -647,6 +649,9 @@ def _write_active_guard_marker(
         "path": str(Path(__file__).resolve()),
         "command": list(command),
         "cwd": str(cwd_path.resolve(strict=False)),
+        "artifact_scope": command_artifact_scope(
+            ROOT, command, environ, cwd=cwd_path, outputs=outputs
+        ).to_dict(),
         "status": "guard_starting",
         "created_at": _utc_timestamp(),
         "updated_at": _utc_timestamp(),
@@ -1000,6 +1005,16 @@ def run_guarded(
         command=command,
         cwd=cwd,
         environ=child_env,
+        outputs=tuple(
+            Path(path).resolve(strict=False)
+            for path in (
+                stdout_capture_path,
+                stderr_capture_path,
+                samples_jsonl,
+                running_summary_json,
+            )
+            if path is not None
+        ),
     )
     child_env[ACTIVE_GUARD_TOKEN_ENV] = guard_token
     child_env[ACTIVE_GUARD_MARKER_ENV] = str(guard_marker)

@@ -568,8 +568,11 @@ The daily pass alone finally deletes validated retirements through
   checkout target never retires under its sessions' builds. An explicit
   `CARGO_TARGET_DIR`, every session target named by the current
   `MOLT_SESSION_ID`, and the running interpreter's own environment keep a
-  root too. These are facts about live use; guard markers elsewhere in the
-  artifact root are not.
+  root too. A live or inconclusive guard protects its own source checkout's
+  bound state and the finite paths its command records (HF-525), including a
+  selected session's target and build control. Keeping the enclosing checkout
+  target does not keep idle sibling sessions. A marker elsewhere in the
+  artifact root confers no protection on unrelated checkouts or sessions.
 - Build control follows its target: one GC retires the build control of the
   targets it reclaimed, and worktree retirement reclaims the build control of
   the removed checkout's target and sessions with them. A checkout target's
@@ -1399,9 +1402,25 @@ The design extends `molt.checkout_state`; it adds no second authority.
    held lock, including writes that leave all ancestor mtimes unchanged.
    It never follows links or reads payload bytes. Recent use, a protected
    path, an external checkout-state use lock, a held descendant lock or an
-   unresolved guard marker keeps the root. Markers without a scratch
-   coordinate conservatively keep artifact-root scratch until their custody
-   is resolved. Unreadable, malformed-owner and incompletely inventoried
+   unresolved guard marker whose coordinates cover the root keeps it. The
+   version-2 marker's typed `artifact_scope` records its source checkout, cwd,
+   selected command resources, scratch declarations and guard output paths
+   before launch; its published temporary-artifact target joins that scope.
+   Older records supply the checkout through the guard's `path` and the cwd
+   through `cwd`. Bound ownership and the canonical checkout target/scratch
+   addresses infer that checkout's state without a second owner registry.
+   A record with no usable path coordinate conservatively protects only its
+   owner's state (or unowned state in its own marker namespace when no
+   checkout is attributable), and the dry-run reports this limitation.
+   A shared-root marker never keeps another checkout's bound state.
+
+   Collection captures records before one complete native process snapshot
+   and applies the existing custody observer without modifying markers or
+   leases. An observed stale orphan protects nothing; unavailable or
+   inconclusive observations keep their own coordinates and report the exact
+   `memory_guard_custody.py --release ... --apply` operator command. The
+   collector does not execute that release. Unreadable markers preserve their
+   attributable owner scope. Malformed-owner and incompletely inventoried
    roots stay. Apply reobserves activity and protection under the existing
    exclusive state lock, then calls `soft_retire`; final deletion also
    checks recursive activity and custody. Inventories share the daily pass's
