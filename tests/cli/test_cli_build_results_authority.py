@@ -339,3 +339,167 @@ def test_input_custody_failure_prevents_success_result(
         assert captured.out == ""
         assert "owned producer did not exit" in captured.err
         assert "Successfully built" not in captured.err
+
+
+def _native_record_fixture(tmp_path: Path):
+    from dataclasses import replace
+    from molt.build_record import NativeBuildResult, RecordedArtifact, NativeBuildFacts
+    from molt.capability_policy import CapabilityPolicy, resolve_capability_policy
+    from molt.backend_protocol import (
+        BackendEmissionOrigin,
+        BackendEmissionProducer,
+        BackendAddressedProgramInput,
+        BackendCodegenOrigin,
+    )
+
+    paths = {
+        name: tmp_path / name
+        for name in ("binary", "archive", "stub", "runtime", "compiler")
+    }
+    for name, path in paths.items():
+        path.write_text(f"owned {name}", encoding="utf-8")
+    result = NativeBuildResult(
+        NativeBuildFacts(
+            None,
+            str(tmp_path / "app.py"),
+            False,
+            False,
+            (),
+            (),
+            resolve_capability_policy(CapabilityPolicy()).digest(),
+            None,
+            "dev",
+            False,
+            "generic",
+            "default",
+        ),
+        *(RecordedArtifact.capture(path) for path in paths.values()),
+        (),
+        None,
+    )
+    origin = BackendEmissionOrigin(
+        BackendEmissionProducer("daemon", 12345, None),
+        BackendAddressedProgramInput("b" * 64, 17, ""),
+        result.archive.sha256,
+        result.archive.token[3],
+        BackendCodegenOrigin(12345, ()),
+    )
+    result = replace(result, emission_origin=origin)
+    data = result.facts.payload()
+    data.update(
+        {
+            "target": "native",
+            "emit": "bin",
+            "sysroot": None,
+            "output": str(result.binary.path),
+            "consumer_output": str(result.binary.path),
+            "artifacts": {
+                name: str(paths[name])
+                for name in ("binary", "archive", "stub", "runtime")
+            },
+            "observed_toolchain": build_results._observed_build_toolchain(
+                backend_bin=paths["compiler"],
+                runtime_lib=paths["runtime"],
+                output=paths["binary"],
+                emission_origin=origin,
+            ),
+        }
+    )
+    return result, data
+
+
+def test_native_reuse_projects_current_facts_through_actual_consumers(
+    tmp_path: Path, capsys
+) -> None:
+    from molt.cli.wrapper_build import _parse_wrapper_build_contract_payload
+    from tools.dx_build_timer import _molt_build_artifact, MoltMeasurement
+
+    result, _data = _native_record_fixture(tmp_path)
+    assert build_results._emit_reused_native_build_result(result) == 0
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout)
+    contract, error = _parse_wrapper_build_contract_payload(
+        payload, json_output=True, command="run"
+    )
+    assert error is None and contract is not None
+    assert contract.consumer_output == result.binary.path
+    assert set(contract.artifacts) == {"binary", "archive", "stub", "runtime"}
+    measured = _molt_build_artifact(
+        stdout, result.binary.path, MoltMeasurement.ATTRIBUTION
+    )
+    assert measured["identity"]["sha256"] == result.binary.sha256
+    data = payload["data"]
+    assert data["cache"] == {"enabled": True, "hit": True, "hit_tier": "build-record"}
+    assert data["link"] == {"skipped": True}
+    assert payload["warnings"] == []
+    assert not {"stdout", "stderr", "compile_diagnostics"} & data.keys()
+    assert data["observed_toolchain"]["compiled_with_verified"] is False
+    assert result.emission_origin is not None
+    assert (
+        data["observed_toolchain"]["emission_origin"]
+        == result.emission_origin.payload()
+    )
+    assert (
+        data["observed_toolchain"]["emission_origin"]["producer"]["process_id"] == 12345
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "archive", "stub", "runtime"])
+def test_native_result_reporting_keeps_pre_link_expected_generation(
+    tmp_path: Path, monkeypatch, mutation: str | None
+) -> None:
+    import time
+    from molt import build_record, input_report
+
+    result, data = _native_record_fixture(tmp_path)
+    if mutation is not None:
+        getattr(result, mutation).path.write_text(
+            "replacement after link", encoding="utf-8"
+        )
+    ledger = build_record.InputLedger(time.time_ns())
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    monkeypatch.setattr(input_report, "_CAPTURE_RESULT", True)
+    build_results._record_native_build_result(
+        data=data,
+        result_inputs=(result.archive, result.stub, result.runtime),
+        warnings=(),
+        diagnostics_error=None,
+    )
+    if mutation is None:
+        assert ledger.result == result and not ledger.refusals
+    else:
+        assert ledger.result is None
+        assert any("changed" in reason for reason in ledger.refusals)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "warning",
+        "stdout",
+        "stderr",
+        "compile_diagnostics",
+        "external_native_artifacts",
+        "unclassified_new_result",
+    ],
+)
+def test_invocation_specific_native_results_are_not_recorded(
+    tmp_path: Path, monkeypatch, field: str
+) -> None:
+    import time
+    from molt import build_record, input_report
+
+    result, data = _native_record_fixture(tmp_path)
+    warnings = ["original warning"] if field == "warning" else []
+    if field != "warning":
+        data[field] = "original invocation detail"
+    ledger = build_record.InputLedger(time.time_ns())
+    monkeypatch.setattr(input_report, "_SINK", ledger)
+    monkeypatch.setattr(input_report, "_CAPTURE_RESULT", True)
+    build_results._record_native_build_result(
+        data=data,
+        result_inputs=(result.archive, result.stub, result.runtime),
+        warnings=warnings,
+        diagnostics_error=None,
+    )
+    assert ledger.result is None and ledger.refusals

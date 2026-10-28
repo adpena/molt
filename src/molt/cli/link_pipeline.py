@@ -12,6 +12,8 @@ from molt.cli.link_input_observation import (
     lld_archive_path,
 )
 from molt.toolchain_identity import stable_regular_file_content_identity
+from molt import input_report
+from molt.build_record import RecordedArtifact
 from molt.cli.native_link_plan import NativeLinkerKind
 from molt.native_target import NativeObjectFormat
 
@@ -91,6 +93,9 @@ class _PreparedNativeLink:
     link_selection: tuple[Path, Path] | None = None
     link_input_artifacts: dict[str, tuple[Path, Path]] | None = None
     link_input_observation: CompilationInputRecord | None = None
+    result_inputs: (
+        tuple[RecordedArtifact, RecordedArtifact, RecordedArtifact] | None
+    ) = None
 
 
 def _run_native_link_command(
@@ -252,6 +257,24 @@ def _prepare_native_link(
     if output_binary.parent != Path("."):
         output_binary.parent.mkdir(parents=True, exist_ok=True)
     resolved_runtime_lib = runtime_codegen_binding.runtime_lib
+    result_inputs = None
+    if (
+        json_output
+        and input_report.result_active()
+        and not warnings
+        and not staged_external_native_artifacts
+        and sysroot_path is None
+    ):
+        try:
+            result_inputs = (
+                RecordedArtifact.capture(output_obj),
+                RecordedArtifact.capture(stub_path),
+                RecordedArtifact.from_identity(
+                    resolved_runtime_lib, runtime_codegen_binding.archive
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            input_report.refuse(f"native result inputs cannot be retained: {exc}")
     try:
         runtime_codegen_binding.verify()
         link_plan = _build_native_link_plan(
@@ -672,6 +695,7 @@ def _prepare_native_link(
         runtime_lib=resolved_runtime_lib,
         output_binary=output_binary,
         link_output=link_output,
+        result_inputs=result_inputs,
         external_native_artifacts=staged_external_native_artifacts,
         link_cmd=link_cmd,
         linker_hint=linker_hint,

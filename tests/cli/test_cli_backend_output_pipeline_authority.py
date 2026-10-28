@@ -302,6 +302,7 @@ def terminal_build(
             link_selection=None,
             link_input_artifacts=None,
             link_input_observation=None,
+            result_inputs=None,
         ), None
 
     def finalize(**_):
@@ -527,6 +528,7 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
             primary_output=tmp_path / "app.wasm",
             consumer_output=tmp_path / "app.wasm",
             link_input_observation=None,
+            result_inputs=None,
             bundle_root=None,
             extra_fields={},
             artifacts={},
@@ -602,6 +604,7 @@ def test_wasm_inspection_admission_is_lazy_and_failure_preserves_diagnostics(
             primary_output=kwargs["output_artifact"],
             consumer_output=kwargs["output_artifact"],
             link_input_observation=None,
+            result_inputs=None,
             bundle_root=None,
             extra_fields={},
             artifacts={},
@@ -646,6 +649,7 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
                     primary_output=kwargs["output_artifact"],
                     consumer_output=kwargs["output_artifact"],
                     link_input_observation=None,
+                    result_inputs=None,
                     bundle_root=None,
                     extra_fields={},
                     artifacts={},
@@ -1065,6 +1069,7 @@ def test_reporting_failure_prevents_success_and_retains_published_artifact(
                 primary_output=artifact,
                 consumer_output=artifact,
                 link_input_observation=None,
+                result_inputs=None,
                 bundle_root=None,
                 extra_fields={},
                 artifacts={},
