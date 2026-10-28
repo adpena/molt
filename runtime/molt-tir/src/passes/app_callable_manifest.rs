@@ -204,7 +204,8 @@ pub fn compute_app_callable_manifest_checked(functions: &[FunctionIR]) -> BTreeS
     let compiled = std::mem::take(&mut requirements.compiled_body_symbols);
     let mut names = requirements.into_names();
     if !names.is_empty() {
-        let symbols = crate::runtime_callable_symbols::runtime_callable_symbols_required();
+        let binding = crate::runtime_callable_symbols::RuntimeCallableSymbols::capture();
+        let symbols = binding.required_symbols();
         names.retain(|name| symbols.contains(name));
     }
     names.extend(compiled);

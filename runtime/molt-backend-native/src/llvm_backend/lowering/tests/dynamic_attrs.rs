@@ -451,8 +451,7 @@ fn lower_preserved_has_attr_name_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     // An exact boxed-ABI kind lowers through the admitted runtime route.
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_has_attr_name".into());
     let mut func = TirFunction::new(
         "has_attr_name_preserved".into(),

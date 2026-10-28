@@ -102,7 +102,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend.runtime_callable_symbols.insert(expected.into());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(expected.into());
         let mut func = TirFunction::new(
             format!("iterator_{call_name}"),
             vec![],
@@ -418,8 +418,7 @@ fn unclassified_runtime_declaration_rejects_new_symbol_drift() {
 fn preserved_runtime_call_rejects_name_only_symbol_drift() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_unclassified_runtime_symbol".to_string());
 
     let err = lower_preserved_kind_ir(&backend, "unclassified_runtime_symbol", 2, true, None)

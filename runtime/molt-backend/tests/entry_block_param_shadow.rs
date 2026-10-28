@@ -18,7 +18,7 @@ fn op(kind: &str) -> OpIR {
 /// neither has nor needs. Production uses the identical opt-out for every
 /// non-primary object (stdlib-cache / batch objects; see
 /// `runtime/molt-backend/src/main.rs`). The `cfg(test)` carve-out in
-/// `runtime_callable_symbols_required` only covers *in-crate* unit tests;
+/// `RuntimeCallableSymbols::required_symbols` only covers *in-crate* unit tests;
 /// integration tests link `molt-backend` as a non-test library, so they take
 /// the canonical `emit_app_callable_resolver = false` path instead.
 fn compile_standalone(ir: SimpleIR) -> molt_backend::CompileOutput {

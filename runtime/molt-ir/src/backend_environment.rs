@@ -88,12 +88,15 @@ pub fn daemon_request_env_keys() -> impl Iterator<Item = BackendEnv> {
 }
 
 /// One request's backend settings. Absent and empty values stay distinct:
-/// several pass controls test presence, not truthiness.
-#[derive(Clone, Debug, Default)]
+/// several pass controls test presence, not truthiness. Share a request through
+/// `Arc`; a new environment must perform its own callable-buffer admission.
+#[derive(Debug, Default)]
 pub struct BackendEnvironment {
     values: BTreeMap<BackendEnv, Box<str>>,
     native_semantics: OnceLock<SemanticBackendIdentity>,
     wasm_semantics: OnceLock<SemanticBackendIdentity>,
+    runtime_callable_symbols:
+        OnceLock<Arc<crate::runtime_callable_symbols::RuntimeCallableSymbols>>,
 }
 
 impl PartialEq for BackendEnvironment {
@@ -199,7 +202,11 @@ impl Drop for ScopeGuard {
 
 /// Makes `environment` this thread's request scope until the guard drops.
 pub fn enter(environment: Arc<BackendEnvironment>) -> ScopeGuard {
-    let previous = SCOPE.with(|scope| scope.borrow_mut().replace(environment));
+    enter_scope(Some(environment))
+}
+
+fn enter_scope(environment: Option<Arc<BackendEnvironment>>) -> ScopeGuard {
+    let previous = SCOPE.with(|scope| scope.replace(environment));
     ScopeGuard { previous }
 }
 
@@ -215,7 +222,7 @@ pub fn carry() -> Carried {
 impl Carried {
     /// Runs `work` under the captured request scope.
     pub fn enter<R>(&self, work: impl FnOnce() -> R) -> R {
-        let _guard = self.0.clone().map(enter);
+        let _guard = enter_scope(self.0.clone());
         work()
     }
 }
@@ -234,6 +241,26 @@ fn scoped<R>(key: BackendEnv, read: impl FnOnce(Option<&str>) -> R) -> Option<R>
         );
     }
     found
+}
+
+/// Share one exact callable admission across this request's modules and workers.
+/// The environment is immutable, so its selected buffer cannot drift.
+pub(crate) fn current_runtime_callable_symbols()
+-> Option<Arc<crate::runtime_callable_symbols::RuntimeCallableSymbols>> {
+    SCOPE.with(|scope| {
+        scope.borrow().as_ref().map(|env| {
+            Arc::clone(env.runtime_callable_symbols.get_or_init(|| {
+                Arc::new(
+                    crate::runtime_callable_symbols::RuntimeCallableSymbols::load(|key| {
+                        env.get(key).map(OsString::from)
+                    })
+                    .unwrap_or_else(|err| {
+                        panic!("native runtime callable admission failed: {err}")
+                    }),
+                )
+            }))
+        })
+    })
 }
 
 /// The process environment's value: the one-shot backend's settings.
@@ -484,6 +511,33 @@ mod tests {
             "build identity stays with the process"
         );
         assert_eq!(envs.len(), daemon_request_env_keys().count());
+    }
+
+    #[test]
+    fn an_unscoped_carrier_does_not_inherit_another_request() {
+        let process = var(BackendEnv::MOLT_ENTRY_MODULE);
+        let unscoped = carry();
+        assert!(unscoped.0.is_none());
+        let outer_value = if process.as_deref() == Ok("outer") {
+            "other"
+        } else {
+            "outer"
+        };
+        let _outer = enter(Arc::new(BackendEnvironment::from_values([(
+            BackendEnv::MOLT_ENTRY_MODULE,
+            outer_value,
+        )])));
+        assert_eq!(
+            var(BackendEnv::MOLT_ENTRY_MODULE).as_deref(),
+            Ok(outer_value)
+        );
+        unscoped.enter(|| {
+            assert_eq!(var(BackendEnv::MOLT_ENTRY_MODULE), process);
+        });
+        assert_eq!(
+            var(BackendEnv::MOLT_ENTRY_MODULE).as_deref(),
+            Ok(outer_value)
+        );
     }
 
     #[test]
