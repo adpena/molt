@@ -4049,7 +4049,10 @@ def test_scratch_with_other_or_invalid_owner_metadata_is_kept(tmp_path, invalid)
     value = {"schema": cs.SCHEMA, "owner": str(tmp_path), "kind": "cargo-target"}
     if invalid == "non-string-kind":
         value["kind"] = []
-    record.write_text("not json" if invalid == "malformed-owner" else json.dumps(value))
+    record.write_text(
+        "not json" if invalid == "malformed-owner" else json.dumps(value),
+        encoding="utf-8",
+    )
     now = 2_000_000_000.0
     _age_scratch_tree(root, now - 40 * DAY)
     assert not _gc(ext, env, now).reclaimed
@@ -4074,12 +4077,15 @@ def test_scratch_constructor_rejects_rebound_owner_and_indirect_stamp(tmp_path):
     stamp = root / cs.LAST_USE_STAMP
     stamp.unlink()
     external = tmp_path / "unrelated"
-    external.write_text("preserve")
+    external.write_text("preserve", encoding="utf-8")
     before = external.stat().st_mtime_ns
     stamp.symlink_to(external)
     with pytest.raises(ValueError):
         cs.scratch_state_root(ext / "tmp", owner=owner)
-    assert external.read_text() == "preserve" and external.stat().st_mtime_ns == before
+    assert (
+        external.read_text(encoding="utf-8") == "preserve"
+        and external.stat().st_mtime_ns == before
+    )
 
 
 def test_scratch_constructor_does_not_expose_an_unstampable_root(tmp_path, monkeypatch):
