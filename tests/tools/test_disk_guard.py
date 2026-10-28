@@ -3485,7 +3485,7 @@ def test_incremental_retirement_preserves_durable_failure_evidence(
     # Final deletion belongs to the GC after the window. A storage failure there
     # must be reported, keep the bytes and the record for the next pass, and
     # never recreate the live name.
-    def deny_deletion(path):
+    def deny_deletion(path, *, owning_root=None):
         return False, "injected storage error"
 
     monkeypatch.setattr(dg, "delete_path", deny_deletion)
@@ -4062,7 +4062,10 @@ def test_soft_retirement_refuses_cross_device_before_rename(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("protection", ["none", "path", "lock"])
-def test_retirement_clock_controls_gc_and_live_custody_keeps_it(tmp_path, protection):
+@pytest.mark.parametrize("sealed", [False, True])
+def test_retirement_clock_controls_gc_and_live_custody_keeps_it(
+    tmp_path, protection, sealed
+):
     from molt import checkout_state
     from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 
@@ -4072,6 +4075,13 @@ def test_retirement_clock_controls_gc_and_live_custody_keeps_it(tmp_path, protec
         root = tmp_path / name
         root.mkdir()
         (root / "value").write_bytes(b"data older than retirement")
+        if sealed:
+            from molt.python_environment_location import seal_environment_installation
+
+            library = root / "lib" / "site-packages"
+            library.mkdir(parents=True)
+            (library / "module.py").write_bytes(b"VALUE = 529\n")
+            seal_environment_installation(root)
         os.utime(root / "value", (now - 100 * DAY,) * 2)
         roots.append(
             checkout_state.soft_retire(

@@ -495,6 +495,26 @@ the selected cache prefix: this includes CLI and developer exports, setup
 defaults, and coordination JSON, shell and PowerShell records. Ordinary Python
 children consume that no-write policy at startup; isolated children still require
 the explicit argv policy above.
+The filesystem backs that policy. Before its one capture, the publisher removes
+every write bit from installed files and directories (`lib`, `lib64`, `Lib`,
+`bin`, `Scripts`). Read and execute bits, the `bytecode` namespace, image
+records and sibling locks keep their modes. A child started with `-I` and no
+`-B` therefore cannot write bytecode beside the sources. An image published
+before this rule (its attestation records writable installed entries) is sealed
+before its capture: source-build admission seals in the parent, so the capture
+child imports nothing from the image; proof-queue admission seals in the capture
+child before its fence. `attestation_records_writable_installation` in
+`molt.python_environment_location` makes that decision for both. Admission never
+rewrites an attestation: it accepts only the one-way writable-to-read-only change
+of installed entries and names up to six other differences in its refusal. An
+image attested sealed skips the walk, and a write bit that reappears fails
+admission. The seal walk costs one metadata pass (77 ms for 9,260 entries, warm)
+per legacy admission; the proof-queue child also parses the attestation first
+(14 ms for 7.3 MB). Deletion restores directory owner-write only under an explicit owning
+root (`disk_guard` retirement, unpublished provisioning recovery and guard
+scratch reclamation) and never changes file modes, so external hardlinks keep
+their attributes. Windows keeps its read-only leaf deletion. This is a mode
+seal, not an ACL or a privileged-user sandbox.
 Existing process-state leases retain the selected generation until observed
 process closure, even when a newer generation is selected. Owner/use metadata
 stays outside the image; [checkout state lifecycle](../OPERATIONS.md) owns

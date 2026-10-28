@@ -7,14 +7,18 @@ from molt import python_environment_contract as _contract
 from molt.python_environment_identity import PythonIdentityVerifier
 
 import hashlib
+import copy
 import json
+import os
 import shutil
+import stat
 from pathlib import Path
 import sys
 
 import pytest
 
 from molt import source_build_environment as authority
+from molt import python_environment_location as location
 from molt import source_build_environment_selection as selection
 from molt import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import (
@@ -24,6 +28,358 @@ from tests.python_environment_test_support import (
     wheel_target_manifest,
 )
 from tests.process_guard_common import install_module_view
+
+
+@pytest.fixture
+def real_published_image(tmp_path):
+    """Real no-pip venv and installed package; no mocked capture or admission."""
+    from molt.exact_json import canonical_json_sha256, write_exact
+    from molt.file_deletion import delete_path
+    from molt.python_environment_location import _site_roots
+    from tests.python_environment_test_support import lock_closure_manifest
+
+    captured = authority._python_identity()
+    runtime = captured["runtime"]
+    closure = lock_closure_manifest(["hf529-probe==1.0"], [("hf529-probe", "1.0")])
+    closure["wheel_target"] = captured["wheel_target"]
+    closure["closure_sha256"] = canonical_json_sha256(
+        {key: value for key, value in closure.items() if key != "closure_sha256"}
+    )
+    recipe = {
+        "schema_version": _contract.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "producer_contract": _contract.source_build_environment_contract(),
+        "declared_inputs": {
+            "pyproject.toml": "a" * 64,
+            "uv.lock": "b" * 64,
+            ".python-version": None,
+        },
+        "dependency_groups": closure["dependency_groups"],
+        "dependency_group_requirements": closure["requirements"],
+        "lock_closure": closure,
+        "python_runtime": runtime,
+        "editable_binding": None,
+        "bytecode_policy": _contract.IMAGE_BYTECODE_POLICY,
+        "uv": {"executable": "uv", "version": "fixture", "sha256": "d" * 64},
+    }
+    identity = canonical_json_sha256(recipe)
+    root = tmp_path / "images" / identity
+    executable = create_test_venv(root)
+    (site,) = _site_roots(root)
+    module = site / "hf529_probe.py"
+    module.write_text("VALUE = 529\n", encoding="utf-8")
+    metadata = site / "hf529_probe-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: hf529-probe\nVersion: 1.0\n", encoding="utf-8"
+    )
+    (metadata / "WHEEL").write_text(
+        "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        encoding="utf-8",
+    )
+    (metadata / "RECORD").write_text(
+        "hf529_probe.py,,\n"
+        + "".join(
+            f"{metadata.name}/{name},,\n" for name in ("METADATA", "WHEEL", "RECORD")
+        ),
+        encoding="utf-8",
+    )
+    (root / "bytecode").mkdir()
+    custody = {**recipe, "environment_id": identity}
+    realized = authority._probe_environment_identity(executable, root)
+    manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    write_exact(manifest_path, authority._attested_environment(custody, realized))
+    try:
+        yield root, executable, module, manifest_path
+    finally:
+        ok, error = delete_path(root, owning_root=root.parent)
+        assert ok, error
+
+
+def _admit_published_image(root, executable):
+    """Run the production probe, then the caller's admission, for ``root``."""
+    recorded = json.loads(
+        (root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST).read_bytes()
+    )
+    recipe = {
+        key: value for key, value in recorded.items() if key != "realized_environment"
+    }
+    captured = authority._probe_environment_identity(
+        executable, root, attestation=recorded
+    )
+    return authority._admit_attestation(recorded, recipe, captured)
+
+
+def test_installation_seal_preserves_external_links_and_image_alias_topology(tmp_path):
+    from molt.file_deletion import delete_path
+    from molt.python_environment_location import seal_environment_installation
+
+    image = tmp_path / "image"
+    site = image / "lib" / "site-packages"
+    site.mkdir(parents=True)
+    scripts = image / ("Scripts" if os.name == "nt" else "bin")
+    scripts.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = outside / "source.py"
+    source.write_bytes(b"VALUE = 529\n")
+    before_mode = source.stat().st_mode
+    first = site / "first.py"
+    second = scripts / "second.py"
+    first.hardlink_to(source)
+    second.hardlink_to(source)
+    (scripts / "external").symlink_to(outside, target_is_directory=True)
+    (image / "bytecode").mkdir()
+    try:
+        seal_environment_installation(image)
+        seal_environment_installation(image)
+        assert source.stat().st_mode == before_mode
+        assert outside.stat().st_mode & stat.S_IWUSR
+        assert source.read_bytes() == first.read_bytes() == second.read_bytes()
+        assert first.samefile(second) and not first.samefile(source)
+        assert not first.stat().st_mode & stat.S_IWUSR
+        assert not list(image.glob(".seal-*"))
+        assert (image / "bytecode").stat().st_mode & stat.S_IWUSR
+    finally:
+        assert delete_path(image, owning_root=tmp_path) == (True, "")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="actual POSIX mode/bytecode denial")
+@pytest.mark.parametrize("partial", [False, True])
+def test_sealed_image_refuses_real_isolated_bytecode_and_keeps_admission(
+    real_published_image, partial
+):
+    from tests.process_guard_common import run_guarded_test_process
+
+    root, executable, module, manifest = real_published_image
+    before = manifest.read_bytes()
+    if partial:
+        # Exact interim operator action: lib directories only, files writable.
+        for path in (root / "lib", *(root / "lib").rglob("*")):
+            if path.is_dir():
+                path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+        assert module.stat().st_mode & stat.S_IWUSR
+    from molt.cli.source_build_inventory import SourceBuildInventory
+
+    live_custody = _admit_published_image(root, executable)
+    inventory = SourceBuildInventory(live_custody, root)
+    assert (
+        inventory.file(
+            module.relative_to(root).as_posix(), distribution="hf529-probe"
+        ).path
+        == module
+    )
+    for path in (root / "lib", root / "bin", *root.rglob("*")):
+        if path.is_symlink() or not location.environment_installation_entry(
+            path.relative_to(root).as_posix()
+        ):
+            continue
+        assert path.stat().st_mode & 0o222 == 0, path
+    assert (root / "bytecode").stat().st_mode & stat.S_IWUSR
+    assert manifest.read_bytes() == before  # Never rewrite a legacy attestation.
+    with pytest.raises(PermissionError):
+        (module.parent / "__pycache__").mkdir()
+    # No -B or cache prefix: prove the filesystem backstop, not argv policy.
+    child = run_guarded_test_process(
+        [str(executable), "-I", "-c", "import hf529_probe; print(hf529_probe.VALUE)"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 0 and child.stdout == "529\n", child.stderr
+    assert not list(root.rglob("*.pyc"))
+    assert _admit_published_image(root, executable) == live_custody
+    assert manifest.read_bytes() == before
+
+
+def test_modified_sealed_image_refusal_names_file_and_preserves_attestation(
+    real_published_image,
+):
+    root, executable, module, manifest = real_published_image
+    before = manifest.read_bytes()
+    authority.seal_environment_installation(root)
+    module.chmod(module.stat().st_mode | stat.S_IWUSR)
+    module.write_text("VALUE = 530\n", encoding="utf-8")
+    with pytest.raises(_contract.SourceBuildEnvironmentError) as refused:
+        _admit_published_image(root, executable)
+    assert "differs from captured live bytes" in str(refused.value)
+    assert module.relative_to(root).as_posix() in str(refused.value)
+    assert "sha256" in str(refused.value)
+    assert manifest.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="actual POSIX mode bits")
+def test_sealed_attestation_skips_the_seal_and_refuses_reopened_write_bits(
+    real_published_image,
+):
+    from molt.exact_json import write_exact
+
+    root, executable, module, manifest = real_published_image
+    recorded = json.loads(manifest.read_bytes())
+    recipe = {
+        key: value for key, value in recorded.items() if key != "realized_environment"
+    }
+    authority.seal_environment_installation(root)
+    sealed = authority._attested_environment(
+        recipe, authority._probe_environment_identity(executable, root)
+    )
+    # Independent oracle: the publisher's record of an image sealed before capture.
+    assert location.attestation_records_writable_installation(recorded)
+    assert not location.attestation_records_writable_installation(sealed)
+    write_exact(manifest, sealed)
+    assert _admit_published_image(root, executable) == sealed
+    module.chmod(module.stat().st_mode | stat.S_IWUSR)
+    with pytest.raises(_contract.SourceBuildEnvironmentError) as refused:
+        _admit_published_image(root, executable)
+    assert module.relative_to(root).as_posix() in str(refused.value)
+    assert module.stat().st_mode & stat.S_IWUSR  # Admission did not reseal it.
+
+
+@pytest.mark.parametrize("development", [False, True])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "partial",
+        "content",
+        "read",
+        "execute",
+        "write-up",
+        "added",
+        "removed",
+        "outside",
+        "checksum",
+        "shape",
+    ],
+)
+def test_admission_accepts_only_one_way_installed_permission_transition(
+    tmp_path, development, fault
+):
+    from molt.exact_json import canonical_json_sha256
+    from tests.python_environment_test_support import (
+        build_environment_manifest,
+        materialize_development_environment,
+    )
+
+    if development:
+        image = materialize_development_environment(
+            tmp_path / "checkout", tmp_path / "artifacts"
+        )
+        manifest = copy.deepcopy(image.custody)
+        realized = copy.deepcopy(manifest["realized_image"]["image"])
+    else:
+        manifest = copy.deepcopy(
+            build_environment_manifest(["ninja==1.13.0"])["custody"]
+        )
+        realized = copy.deepcopy(manifest["realized_environment"])
+    tree = realized["tree"]
+    rows = tree["entries"]
+    installed = [
+        row
+        for row in rows
+        if location.environment_installation_entry(row["path"])
+        and row["kind"] in {"file", "hardlink", "directory"}
+    ]
+    assert installed
+    # Independent oracle: explicitly chosen old/new permission values. Digests
+    # merely make each fixture structurally valid; they decide no acceptance.
+    for row in installed:
+        row["access"]["writable"] = True
+    tree["manifest_sha256"] = canonical_json_sha256(rows)
+    field = "realized_image" if development else "realized_environment"
+    custody = {key: value for key, value in manifest.items() if key != field}
+    realized["environment_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in realized.items()
+            if key != "environment_closure_sha256"
+        }
+    )
+    manifest = authority._attested_environment(custody, realized)
+    live = copy.deepcopy(realized)
+    live_rows = live["tree"]["entries"]
+    target = next(row for row in live_rows if row["path"] == installed[0]["path"])
+    selected = live_rows if fault != "partial" else [target]
+    for row in selected:
+        if location.environment_installation_entry(row["path"]) and row["kind"] in {
+            "file",
+            "hardlink",
+            "directory",
+        }:
+            row["access"]["writable"] = False
+    if fault == "read":
+        target["access"]["readable"] = not target["access"]["readable"]
+    elif fault == "execute":
+        target["access"]["executable"] = not target["access"]["executable"]
+    elif fault == "write-up":
+        old = (
+            manifest["realized_image"]["image"]
+            if development
+            else manifest["realized_environment"]
+        )
+        old["tree"]["entries"][0]["access"]["writable"] = False
+        live_rows[0]["access"]["writable"] = True
+        old["tree"]["manifest_sha256"] = canonical_json_sha256(old["tree"]["entries"])
+        if development:
+            manifest["realized_image"] = {
+                "image": old,
+                "image_sha256": canonical_json_sha256(old),
+            }
+        else:
+            old["environment_closure_sha256"] = canonical_json_sha256(
+                {
+                    key: value
+                    for key, value in old.items()
+                    if key != "environment_closure_sha256"
+                }
+            )
+    elif fault == "content":
+        live["tree"]["file_nodes"][0]["sha256"] = "f" * 64
+    elif fault == "added":
+        live_rows.append(
+            {
+                "path": "lib/late",
+                "kind": "directory",
+                "access": {"readable": True, "writable": False, "executable": True},
+            }
+        )
+    elif fault == "removed":
+        live_rows.remove(target)
+    elif fault == "outside":
+        outside = next(
+            row
+            for row in live_rows
+            if not location.environment_installation_entry(row["path"])
+            and "access" in row
+        )
+        outside["access"]["writable"] = not outside["access"]["writable"]
+    elif fault == "checksum":
+        old = (
+            manifest["realized_image"]["image"]
+            if development
+            else manifest["realized_environment"]
+        )
+        old["tree"]["manifest_sha256"] = "f" * 64
+    elif fault == "shape":
+        manifest["realized_image" if development else "realized_environment"] = (
+            "malformed"
+        )
+    live["tree"]["manifest_sha256"] = canonical_json_sha256(live_rows)
+    live["environment_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in live.items()
+            if key != "environment_closure_sha256"
+        }
+    )
+    original = copy.deepcopy(manifest)
+    if fault in {"none", "partial"}:
+        if not development:
+            authority.validate_python_environment_identity(live)
+        authority._admit_attestation(manifest, custody, live)
+    else:
+        with pytest.raises(_contract.SourceBuildEnvironmentError, match="differs"):
+            authority._admit_attestation(manifest, custody, live)
+    assert manifest == original
 
 
 @pytest.fixture
@@ -787,9 +1143,33 @@ def test_runtime_probe_keeps_callers_verifier_prefix(monkeypatch, tmp_path):
     assert not prefix.exists()
 
 
-def test_realized_environment_probe_uses_read_only_capture(monkeypatch, tmp_path):
+@pytest.mark.parametrize("attested", [None, "sealed", "legacy"])
+def test_realized_environment_probe_uses_read_only_capture(
+    monkeypatch, tmp_path, attested
+):
     expected = {"realized": "environment"}
     calls = []
+    attestation = (
+        None
+        if attested is None
+        else {
+            "realized_environment": {
+                "tree": {
+                    "entries": [
+                        {
+                            "path": "lib/python3.12/site-packages/module.py",
+                            "kind": "file",
+                            "access": {
+                                "readable": True,
+                                "writable": attested == "legacy",
+                                "executable": False,
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+    )
 
     def run(argv, **kwargs):
         verifier_prefix = Path(argv[4].split("=", 1)[1])
@@ -801,13 +1181,23 @@ def test_realized_environment_probe_uses_read_only_capture(monkeypatch, tmp_path
             argv, 0, json.dumps(expected), "", descendants_closed=True
         )
 
+    sealed = []
     monkeypatch.setattr(authority.process_guard, "run_completed_command", run)
     monkeypatch.setattr(
         authority, "validate_python_environment_identity", lambda value: value
     )
+    monkeypatch.setattr(
+        authority,
+        "seal_environment_installation",
+        lambda root: sealed.append((root, list(calls))),
+    )
     executable = Path("selected-python")
     probe = authority._probe_environment_identity
-    assert probe(executable, tmp_path) == expected
+    assert probe(executable, tmp_path, attestation=attestation) == expected
+    # Only a legacy attestation with writable installed entries is sealed, and
+    # before the capture starts; the child stays a plain capture that imports
+    # nothing from the image.
+    assert sealed == ([(tmp_path, [])] if attested == "legacy" else [])
     assert calls == [
         [
             str(executable),
@@ -822,6 +1212,48 @@ def test_realized_environment_probe_uses_read_only_capture(monkeypatch, tmp_path
         ]
     ]
     assert not Path(calls[0][4].split("=", 1)[1]).exists()
+
+
+@pytest.mark.parametrize("attested", ["sealed", "legacy"])
+def test_probe_refusal_names_the_seal_only_after_sealing(
+    monkeypatch, tmp_path, attested
+):
+    attestation = {
+        "realized_environment": {
+            "tree": {
+                "entries": [
+                    {
+                        "path": "lib/python3.12/site-packages/module.py",
+                        "kind": "file",
+                        "access": {
+                            "readable": True,
+                            "writable": attested == "legacy",
+                            "executable": False,
+                        },
+                    }
+                ]
+            }
+        }
+    }
+    sealed = []
+    monkeypatch.setattr(authority, "seal_environment_installation", sealed.append)
+
+    def refuse(*_args, **_kwargs):
+        raise _contract.SourceBuildEnvironmentError("capture refused")
+
+    monkeypatch.setattr(authority, "_probe_source_build_python", refuse)
+    with pytest.raises(_contract.SourceBuildEnvironmentError) as refused:
+        authority._probe_environment_identity(
+            Path("selected-python"), tmp_path, attestation=attestation
+        )
+    if attested == "legacy":
+        assert sealed == [tmp_path]
+        assert str(refused.value) == (
+            f"published image was sealed before admission: {tmp_path}; capture refused"
+        )
+    else:
+        assert sealed == []
+        assert str(refused.value) == "capture refused"
 
 
 @pytest.mark.parametrize("output", ["not json", '{"schema":1,"schema":2}', "{}"])

@@ -545,8 +545,16 @@ def test_capture_independent_operations_and_exact_pin(tmp_path, monkeypatch):
     assert result["admitted_target"] is False
     assert result["observation"]["rows"] == rows
     assert snapshot_requests == [("4.20",)]
-    assert len(commands) == 1 and commands[0][:3] == [str(executable), "-I", "-c"]
-    assert commands[0][3] == policy.OBSERVATION_PROGRAM
+    assert len(commands) == 1
+    assert commands[0][:6] == [
+        str(executable),
+        "-B",
+        "-X",
+        f"pycache_prefix={Path(sys.prefix) / 'bytecode'}",
+        "-I",
+        "-c",
+    ]
+    assert commands[0][6] == policy.OBSERVATION_PROGRAM
     payload["version"] = "4.20.6"
     with pytest.raises(policy.SchemaError, match="exact pinned release"):
         policy.capture_observations("4.20", executable)
