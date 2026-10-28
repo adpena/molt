@@ -20,7 +20,7 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend.runtime_callable_symbols.insert(symbol.into());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
         let mut func = TirFunction::new(
             "runtime_call".into(),
             vec![],
@@ -75,8 +75,7 @@ fn direct_raw_runtime_calls_bind_words_without_owners() {
     // released, with no boxed-call or call_bind indirection.
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_runtime_init".into());
     let mut func = TirFunction::new(
         "host_init".into(),
@@ -124,7 +123,7 @@ fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
         for with_result in [false, true] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
-            backend.runtime_callable_symbols.insert(symbol.into());
+            std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
             let mut func = TirFunction::new(
                 "void_runtime_call".into(),
                 vec![],
@@ -174,7 +173,7 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
             let symbol = format!("molt_{kind}");
-            backend.runtime_callable_symbols.remove(&symbol);
+            std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).remove(&symbol);
             let mut func = TirFunction::new(
                 "unavailable_runtime".into(),
                 vec![],
@@ -265,8 +264,7 @@ fn boxed_runtime_calls_retire_unbound_owned_results() {
     for (opcode, kind) in [(OpCode::Call, "call"), (OpCode::Copy, "cell_new")] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend
-            .runtime_callable_symbols
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
             .insert("molt_cell_new".into());
         let mut func = TirFunction::new(
             "discard_runtime_result".into(),
@@ -322,7 +320,8 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
                 let symbol = format!("molt_{kind}");
-                backend.runtime_callable_symbols.insert(symbol.clone());
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+                    .insert(symbol.clone());
                 let mut func = TirFunction::new(
                     "boxed_argument_owner".into(),
                     vec![],
@@ -859,7 +858,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend.runtime_callable_symbols.insert(producer.into());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(producer.into());
         let mut func = TirFunction::new(
             "discard_container_result".into(),
             vec![],
@@ -1016,7 +1015,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend.runtime_callable_symbols.insert(symbol.into());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
         let mut func = TirFunction::new(
             "raw_iterator_input".into(),
             vec![],

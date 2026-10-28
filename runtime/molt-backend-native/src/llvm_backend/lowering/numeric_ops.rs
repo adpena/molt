@@ -1185,6 +1185,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 (v.into(), TirType::Bool)
             }
+            (TirType::I64, "not") => {
+                let v = self
+                    .backend
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        operand.into_int_value(),
+                        self.backend.context.i64_type().const_zero(),
+                        "int_not",
+                    )
+                    .unwrap();
+                (v.into(), TirType::Bool)
+            }
             (TirType::I64, "invert") => {
                 let v = self
                     .backend

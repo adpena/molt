@@ -8,9 +8,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 pub use molt_ir::repr::Repr;
-pub use molt_ir::runtime_callable_symbols::{
-    runtime_callable_symbols_from_env, runtime_callable_symbols_required,
-};
+pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;
 pub use molt_ir::stdlib_module_symbols::{
     parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };

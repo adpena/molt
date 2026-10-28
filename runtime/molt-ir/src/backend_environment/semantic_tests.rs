@@ -74,7 +74,7 @@ fn request_reuse_values_and_partition_presence_are_not_output_path_identity() {
 #[test]
 fn semantic_identity_is_lazy_cached_and_does_not_change_environment_equality() {
     let admitted = Arc::new(env(serde_json::json!({"MOLT_ENTRY_MODULE":"app"})));
-    let same = (*admitted).clone();
+    let same = env(serde_json::json!({"MOLT_ENTRY_MODULE":"app"}));
     assert!(admitted.native_semantics.get().is_none());
     assert!(admitted.wasm_semantics.get().is_none());
     let _scope = enter(Arc::clone(&admitted));

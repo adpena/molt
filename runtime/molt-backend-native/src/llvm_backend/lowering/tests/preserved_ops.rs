@@ -306,8 +306,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
             let mut backend = make_backend(&ctx);
             // Generic boxed calls require both semantic ABI classification
             // and availability in the selected linked runtime profile.
-            backend
-                .runtime_callable_symbols
+            std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
                 .insert(format!("molt_{kind}"));
             let mut target_abi = test_native_linkage_abi(
                 if kind == "func_new_closure" {
@@ -382,9 +381,10 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
             if available {
-                backend.runtime_callable_symbols.insert(symbol.clone());
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+                    .insert(symbol.clone());
             } else {
-                backend.runtime_callable_symbols.remove(&symbol);
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).remove(&symbol);
             }
             let error = lower_preserved_kind_ir(&backend, kind, supplied, true, None)
                 .expect_err("descriptor construction must enforce generated ABI admission");
@@ -396,7 +396,7 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
         // runtime route must materialize each argument according to its type.
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend.runtime_callable_symbols.insert(symbol.clone());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.clone());
         let mut func = TirFunction::new(
             format!("boxed_{kind}"),
             vec![],
@@ -566,7 +566,8 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
             if admitted {
-                backend.runtime_callable_symbols.insert(symbol.clone());
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+                    .insert(symbol.clone());
             }
             let func = runtime_call_shape_function(OpCode::Copy, kind, &symbol, arity, true, true);
             if !admitted {
@@ -800,7 +801,8 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
             for with_result in [false, true] {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                backend.runtime_callable_symbols.insert(symbol.into());
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+                    .insert(symbol.into());
                 let func =
                     runtime_call_shape_function(opcode, kind, symbol, arity, with_result, false);
 
@@ -848,7 +850,7 @@ fn preserved_vector_reductions_reject_wrong_arity_before_materialization() {
         for arity in [2, 4] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
-            backend.runtime_callable_symbols.insert(symbol.clone());
+            std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.clone());
             let func = runtime_call_shape_function(OpCode::Copy, kind, &symbol, arity, true, true);
             let error = try_lower_tir_to_llvm(&func, &backend)
                 .expect_err("a preserved reduction must carry exactly three object operands");
@@ -875,8 +877,7 @@ fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend
-            .runtime_callable_symbols
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
             .insert("molt_dict_set".into());
         let func = runtime_call_shape_function(opcode, "dict_set", "molt_dict_set", 3, true, true);
         let ir = try_lower_tir_to_llvm(&func, &backend)
@@ -929,7 +930,7 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
             for with_result in [false, true] {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                backend.runtime_callable_symbols.remove(symbol);
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).remove(symbol);
                 let func =
                     runtime_call_shape_function(opcode, kind, symbol, arity, with_result, true);
                 let error = try_lower_tir_to_llvm(&func, &backend)
@@ -1240,7 +1241,7 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
         ),
     ];
     for &(_, _, sym) in cases {
-        backend.runtime_callable_symbols.insert(sym.to_string());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(sym.to_string());
     }
     for &(kind, nops, sym) in cases {
         let ir = lower_preserved_kind_ir(&backend, kind, nops, false, None).unwrap_or_else(|e| {
@@ -1267,8 +1268,7 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
 fn lower_preserved_void_runtime_result_shape_fails_loud() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_print_newline".to_string());
     let err = lower_preserved_kind_ir(&backend, "print_newline", 0, true, None)
         .expect_err("void preserved runtime ops must not bind a boxed result");
@@ -1281,8 +1281,7 @@ fn preserved_runtime_calls_reject_raw_carriers_even_when_linked() {
     for (kind, arity) in [("int_from_i64", 1), ("int_as_i64", 1), ("is_truthy", 1)] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend
-            .runtime_callable_symbols
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
             .insert(format!("molt_{kind}"));
         let error = lower_preserved_kind_ir(&backend, kind, arity, true, None)
             .expect_err("machine i64 ABI cannot authorize boxed operands/results");
@@ -1347,7 +1346,7 @@ fn lower_bare_copy_without_original_kind_passes_through() {
 fn lower_preserved_len_ignores_transport_container_type() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend.runtime_callable_symbols.insert("molt_len".into());
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert("molt_len".into());
     let mut func = TirFunction::new(
         "len_preserved".into(),
         vec![],
@@ -1385,9 +1384,7 @@ fn lower_preserved_len_ignores_transport_container_type() {
 fn lower_preserved_len_uses_tir_tuple_fact() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
-        .insert("molt_len_tuple".into());
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert("molt_len_tuple".into());
     let mut func = TirFunction::new(
         "len_typed_tuple".into(),
         vec![TirType::Tuple(vec![TirType::DynBox, TirType::DynBox])],
@@ -1422,9 +1419,8 @@ fn lower_preserved_len_uses_tir_tuple_fact() {
 fn custom_container_calls_retire_discarded_owned_returns() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend.runtime_callable_symbols.insert("molt_len".into());
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert("molt_len".into());
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_iter_checked".into());
     let mut func = TirFunction::new(
         "container_owned_sinks".into(),
@@ -1480,7 +1476,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
     for (kind, symbol) in [("len", "molt_len"), ("iter", "molt_iter_checked")] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        backend.runtime_callable_symbols.insert(symbol.into());
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
         let mut func = TirFunction::new(
             "raw_preserved_container".into(),
             vec![],
@@ -1594,8 +1590,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
 fn lower_preserved_list_append_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_list_append".into());
     let mut func = TirFunction::new(
         "list_append_preserved".into(),
@@ -1663,8 +1658,7 @@ fn lower_del_boundary_calls_dec_ref_runtime() {
 fn lower_preserved_list_pop_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_list_pop".to_string());
     let ir = lower_preserved_kind_ir(&backend, "list_pop", 2, true, None)
         .expect("list_pop must lower through the boxed runtime call");
@@ -1751,8 +1745,7 @@ fn preserved_word_ranges_use_static_entry_block_slots() {
 fn lower_preserved_tuple_from_list_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_tuple_from_list".into());
     let mut func = TirFunction::new(
         "tuple_from_list_preserved".into(),
@@ -1792,9 +1785,7 @@ fn lower_preserved_tuple_from_list_calls_runtime() {
 fn lower_preserved_set_add_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
-        .insert("molt_set_add".into());
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert("molt_set_add".into());
     let mut func = TirFunction::new(
         "set_add_preserved".into(),
         vec![],
@@ -1830,8 +1821,7 @@ fn lower_preserved_set_add_calls_runtime() {
 fn lower_preserved_list_extend_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_list_extend".into());
     let mut func = TirFunction::new(
         "list_extend_preserved".into(),
@@ -1871,7 +1861,7 @@ fn lower_preserved_list_extend_calls_runtime() {
 fn lower_preserved_aiter_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend.runtime_callable_symbols.insert("molt_aiter".into());
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert("molt_aiter".into());
     let mut func = TirFunction::new(
         "aiter_preserved".into(),
         vec![],
@@ -1945,8 +1935,7 @@ fn lower_preserved_gen_send_calls_runtime() {
 fn lower_preserved_context_exit_calls_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    backend
-        .runtime_callable_symbols
+    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_context_exit".into());
     let mut func = TirFunction::new(
         "context_exit_preserved".into(),
@@ -2080,7 +2069,8 @@ fn shared_boxed_text_calls_use_owned_abi_and_exact_arity() {
                 for bound in [false, true] {
                     let ctx = Context::create();
                     let mut backend = make_backend(&ctx);
-                    backend.runtime_callable_symbols.insert(symbol.clone());
+                    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+                        .insert(symbol.clone());
                     let func = runtime_call_shape_function(
                         OpCode::Copy,
                         &kind,
@@ -2107,7 +2097,8 @@ fn shared_boxed_text_calls_use_owned_abi_and_exact_arity() {
                 }
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                backend.runtime_callable_symbols.insert(symbol.clone());
+                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
+                    .insert(symbol.clone());
                 let func = runtime_call_shape_function(
                     OpCode::Copy,
                     &kind,

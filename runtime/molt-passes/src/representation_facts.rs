@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::repr::Repr;
 use crate::tir::blocks::{BlockId, Terminator};
@@ -9,7 +9,7 @@ use crate::tir::op_kinds_generated::{
     opcode_repr_projectable_float_result_rule_table,
     opcode_repr_raw_i64_full_deopt_seed_rule_table, opcode_requires_i64_shift_count_guard_table,
 };
-use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -120,7 +120,358 @@ fn repr_by_value_with_types(
     for &id in &full_deopt_values {
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
+    constrain_boxed_binding_observations(tir_func, &mut repr_by_value);
     repr_by_value
+}
+
+/// A scalar fact describes a mathematical value, not permission to mint another
+/// object for a binding view. A full-width view that reaches a boxed consumer
+/// must borrow the persistent box published by its store. Keep raw-only views
+/// raw; the scalar, range and recurrence solvers remain independent of this
+/// physical-carrier constraint.
+fn constrain_boxed_binding_observations(func: &TirFunction, repr: &mut HashMap<ValueId, Repr>) {
+    use crate::tir::passes::alias_analysis::build_alias_union_find;
+    use crate::tir::passes::ownership_lattice_min::binding_view_roots;
+    use crate::tir::passes::value_identity::scalar_value_source;
+
+    // Most functions have no full-width binding publication. They need no
+    // alias/CFG allocation or additional closure.
+    if !func.blocks.values().flat_map(|block| &block.ops).any(|op| {
+        op.opcode == OpCode::Copy
+            && op_original_kind(op)
+                .is_some_and(crate::tir::op_kinds_generated::copy_kind_is_binding_view_table)
+            && op
+                .results
+                .iter()
+                .any(|result| repr.get(result) == Some(&Repr::RawI64FullDeopt))
+    }) {
+        return;
+    }
+
+    let aliases = build_alias_union_find(func);
+    let views = binding_view_roots(func, &aliases);
+    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
+    let incomings = block_arg_incomings_for(func);
+    // Resolve each value's canonical alias root once; worklist edges never
+    // walk an alias chain again.
+    let roots: HashMap<ValueId, ValueId> = repr
+        .keys()
+        .map(|&value| (value, aliases.root(value)))
+        .collect();
+    let mut raw_aliases: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    for (&value, &carrier) in repr.iter() {
+        if carrier.is_raw_i64_carrier() {
+            raw_aliases.entry(roots[&value]).or_default().push(value);
+        }
+    }
+
+    let mut observed = Vec::new();
+    let mut invalidated = Vec::new();
+    // Losing any one raw input invalidates a forwarding/checked result or
+    // phi. No consumer needs to recount the other inputs on each removal.
+    let mut dependents: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    // A boxed observation of a phi observes whichever incoming binding it
+    // carries. Mixed owner/view phis need this edge too; the phi itself need
+    // not be a binding-view root in OwnershipRootFacts.
+    let mut phi_sources: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut phi_arguments = HashSet::new();
+    for (&(block, index), sources) in &incomings {
+        if let Some(argument) = func.blocks[&block].args.get(index) {
+            phi_arguments.insert(argument.id);
+            phi_sources
+                .entry(roots[&argument.id])
+                .or_default()
+                .extend(sources.iter().map(|value| roots[value]));
+            if !is_raw_integer(repr, argument.id) {
+                observed.push(roots[&argument.id]);
+            } else {
+                for &source in sources {
+                    if !is_raw_integer(repr, source) {
+                        invalidated.push(argument.id);
+                    } else {
+                        dependents.entry(source).or_default().push(argument.id);
+                    }
+                }
+            }
+        }
+    }
+
+    // Only operations whose consumption changes after losing a raw operand or result
+    // need a use edge. Opaque calls are observed once, irrespective of arity;
+    // copies/refcounts never become object observations by themselves.
+    let mut conditional_consumers = Vec::new();
+    let mut consumer_uses: HashMap<ValueId, Vec<usize>> = HashMap::new();
+    for block in func
+        .blocks
+        .values()
+        .filter(|block| reachable.contains(&block.id))
+    {
+        for op in &block.ops {
+            let use_plan = integer_operand_use(op);
+            let observation = use_plan.observation;
+            let result_requirement = match observation {
+                IntegerOperandObservation::UnlessRawOperandsAndResult => op.results.first(),
+                _ => None,
+            };
+            match observation {
+                IntegerOperandObservation::Never => {}
+                IntegerOperandObservation::UnlessAllRaw
+                | IntegerOperandObservation::UnlessRawOperandsAndResult
+                    if op.operands.iter().all(|&value| is_raw_integer(repr, value))
+                        && result_requirement.is_none_or(|&value| is_raw_integer(repr, value)) =>
+                {
+                    let index = conditional_consumers.len();
+                    conditional_consumers.push(Some(op.operands.as_slice()));
+                    for &operand in op.operands.iter().chain(result_requirement) {
+                        if is_raw_integer(repr, operand) {
+                            consumer_uses.entry(operand).or_default().push(index);
+                        }
+                    }
+                }
+                IntegerOperandObservation::Always
+                | IntegerOperandObservation::UnlessAllRaw
+                | IntegerOperandObservation::UnlessRawOperandsAndResult => {
+                    observed.extend(
+                        op.operands
+                            .iter()
+                            .filter(|&&value| is_raw_integer(repr, value))
+                            .map(|value| roots[value]),
+                    );
+                }
+            }
+            if let Some(&result) = op.results.first()
+                && is_raw_integer(repr, result)
+            {
+                // One scalar-forwarding operand, or all numeric operands,
+                // determine the emitted result carrier. Other producers keep
+                // their independent representation proof.
+                let source = scalar_value_source(op);
+                let inputs = if let Some(source) = source.as_ref() {
+                    std::slice::from_ref(source)
+                } else if use_plan.raw_result_depends_on_operands {
+                    op.operands.as_slice()
+                } else {
+                    &[]
+                };
+                for &source in inputs {
+                    if !is_raw_integer(repr, source) {
+                        invalidated.push(result);
+                    } else {
+                        dependents.entry(source).or_default().push(result);
+                    }
+                }
+            }
+        }
+        // Returns cross an object boundary. Conditions and switch selectors
+        // consume scalars; phi argument transport is indexed above.
+        if let Terminator::Return { values } = &block.terminator {
+            observed.extend(values.iter().map(|value| roots[value]));
+        }
+    }
+
+    // Each alias root is demanded once; each full-width value is removed
+    // once. A conditional consumer becomes boxed at most once, and a phi's
+    // demand traverses its incoming list once. Closure is O(V + E), including
+    // high-arity operations and phis, after the canonical alias/CFG queries.
+    let mut demanded = HashSet::new();
+    while !observed.is_empty() || !invalidated.is_empty() {
+        if let Some(root) = observed.pop() {
+            if demanded.insert(root) {
+                if views.contains(&root) {
+                    invalidated.extend(raw_aliases.remove(&root).into_iter().flatten());
+                }
+                observed.extend(phi_sources.remove(&root).into_iter().flatten());
+            }
+            continue;
+        }
+        let value = invalidated.pop().expect("a carrier removal remains");
+        if !is_raw_integer(repr, value) {
+            continue;
+        }
+        repr.insert(value, Repr::MaybeBigInt);
+        invalidated.extend(dependents.remove(&value).into_iter().flatten());
+        if phi_arguments.contains(&value) {
+            observed.push(roots[&value]);
+        }
+        for consumer in consumer_uses.remove(&value).into_iter().flatten() {
+            if let Some(operands) = conditional_consumers[consumer].take() {
+                observed.extend(
+                    operands
+                        .iter()
+                        .filter(|&&operand| is_raw_integer(repr, operand))
+                        .map(|operand| roots[operand]),
+                );
+            }
+        }
+    }
+}
+
+fn is_raw_integer(repr: &HashMap<ValueId, Repr>, value: ValueId) -> bool {
+    repr.get(&value)
+        .is_some_and(|repr| repr.is_raw_i64_carrier())
+}
+
+/// Only machine-scalar uses are transparent to binding identity. Opaque calls,
+/// owned captures, identity comparisons and storage are object observations.
+/// In particular, semantic integer types and borrowed call custody say nothing
+/// about a callee's physical operand ABI.
+#[derive(Clone, Copy)]
+enum IntegerOperandObservation {
+    Never,
+    UnlessAllRaw,
+    UnlessRawOperandsAndResult,
+    Always,
+}
+
+/// One exhaustive physical-use policy owns both boxed observation demand and
+/// operand-dependent result carriers. Adding an opcode requires an explicit
+/// decision here; constants and independent producers never inherit a result
+/// carrier from a boxed operand merely because its mathematical range fits.
+struct IntegerOperandUse {
+    observation: IntegerOperandObservation,
+    raw_result_depends_on_operands: bool,
+}
+
+fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
+    if crate::tir::passes::value_identity::copy_value_source(op).is_some()
+        || crate::tir::dominators::exception_edge_binds_handler_arguments(op.opcode)
+    {
+        return IntegerOperandUse {
+            observation: IntegerOperandObservation::Never,
+            raw_result_depends_on_operands: false,
+        };
+    }
+    let raw_operands = |arity| {
+        if op.operands.len() == arity {
+            IntegerOperandObservation::UnlessAllRaw
+        } else {
+            IntegerOperandObservation::Always
+        }
+    };
+    let raw_operands_and_result = |arity| {
+        if op.operands.len() == arity && op.results.len() == 1 {
+            IntegerOperandObservation::UnlessRawOperandsAndResult
+        } else {
+            IntegerOperandObservation::Always
+        }
+    };
+    let binary = raw_operands(2);
+    let unary = raw_operands(1);
+    let binary_result = raw_operands_and_result(2);
+    let unary_result = raw_operands_and_result(1);
+    let (observation, raw_result_depends_on_operands) = match op.opcode {
+        OpCode::IncRef | OpCode::DecRef | OpCode::DelBoundary => {
+            (IntegerOperandObservation::Never, false)
+        }
+        OpCode::CheckedAdd | OpCode::CheckedMul => (binary, true),
+        OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
+            (binary, false)
+        }
+        OpCode::Not | OpCode::Bool => (unary, false),
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => (binary_result, true),
+        OpCode::Pos | OpCode::BitNot => (unary_result, true),
+        OpCode::Add
+        | OpCode::InplaceAdd
+        | OpCode::Sub
+        | OpCode::InplaceSub
+        | OpCode::Mul
+        | OpCode::InplaceMul
+        | OpCode::Div
+        | OpCode::FloorDiv
+        | OpCode::Mod
+        | OpCode::Pow
+        | OpCode::Neg
+        | OpCode::Shl
+        | OpCode::Shr => (IntegerOperandObservation::Always, true),
+        OpCode::Is
+        | OpCode::IsNot
+        | OpCode::In
+        | OpCode::NotIn
+        | OpCode::And
+        | OpCode::Or
+        | OpCode::Alloc
+        | OpCode::StackAlloc
+        | OpCode::ObjectNewBound
+        | OpCode::Free
+        | OpCode::LoadAttr
+        | OpCode::LoadMethod
+        | OpCode::LoadSuperMethod
+        | OpCode::StoreAttr
+        | OpCode::DelAttr
+        | OpCode::Index
+        | OpCode::StoreIndex
+        | OpCode::DelIndex
+        | OpCode::DeleteVar
+        | OpCode::Call
+        | OpCode::CallMethod
+        | OpCode::CallLoadedMethod
+        | OpCode::CallargsPushMethodReceiver
+        | OpCode::CallBuiltin
+        | OpCode::OrdAt
+        | OpCode::BoxVal
+        | OpCode::UnboxVal
+        | OpCode::TypeGuard
+        | OpCode::BuildList
+        | OpCode::BuildDict
+        | OpCode::BuildTuple
+        | OpCode::BuildSet
+        | OpCode::BuildSlice
+        | OpCode::GetIter
+        | OpCode::IterNext
+        | OpCode::IterNextUnboxed
+        | OpCode::UnpackSequence
+        | OpCode::ForIter
+        | OpCode::AllocTask
+        | OpCode::StateSwitch
+        | OpCode::StateTransition
+        | OpCode::StateYield
+        | OpCode::StateSet
+        | OpCode::IsPending
+        | OpCode::TaskWait
+        | OpCode::ClosureLoad
+        | OpCode::ClosureStore
+        | OpCode::FrameContextSet
+        | OpCode::Yield
+        | OpCode::YieldFrom
+        | OpCode::Raise
+        | OpCode::CheckException
+        | OpCode::ExceptionPending
+        | OpCode::FunctionDefaultsVersion
+        | OpCode::TryStart
+        | OpCode::TryEnd
+        | OpCode::StateBlockStart
+        | OpCode::StateBlockEnd
+        | OpCode::ModuleSlot
+        | OpCode::ConstInt
+        | OpCode::ConstBigInt
+        | OpCode::ConstFloat
+        | OpCode::ConstStr
+        | OpCode::ConstBool
+        | OpCode::ConstNone
+        | OpCode::ConstBytes
+        | OpCode::Copy
+        | OpCode::Import
+        | OpCode::ImportFrom
+        | OpCode::ModuleCacheGet
+        | OpCode::ModuleCacheSet
+        | OpCode::ModuleCacheDel
+        | OpCode::ModuleGetAttr
+        | OpCode::ModuleImportFrom
+        | OpCode::ModuleGetGlobal
+        | OpCode::ModuleGetName
+        | OpCode::ModuleSetAttr
+        | OpCode::ModuleDelGlobal
+        | OpCode::ModuleDelGlobalIfPresent
+        | OpCode::WarnStderr
+        | OpCode::ScfIf
+        | OpCode::ScfFor
+        | OpCode::ScfWhile
+        | OpCode::ScfYield => (IntegerOperandObservation::Always, false),
+    };
+    IntegerOperandUse {
+        observation,
+        raw_result_depends_on_operands,
+    }
 }
 
 pub fn native_projectable_scalar_reprs_for(
@@ -166,7 +517,7 @@ pub fn native_projectable_scalar_reprs_for(
                 }
             }
         }
-        if propagate_native_projectable_identity_values(
+        if propagate_native_projectable_bool_float_values(
             tir_func,
             repr_by_value,
             &value_types,
@@ -571,6 +922,7 @@ fn op_original_kind(op: &TirOp) -> Option<&str> {
 
 fn block_arg_incomings_for(tir_func: &TirFunction) -> HashMap<(BlockId, usize), Vec<ValueId>> {
     let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
+    let labels = crate::tir::dominators::exception_label_to_block(tir_func);
     let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
     let mut add_edge = |target: BlockId, args: &[ValueId]| {
         for (index, &arg) in args.iter().enumerate() {
@@ -584,37 +936,15 @@ fn block_arg_incomings_for(tir_func: &TirFunction) -> HashMap<(BlockId, usize), 
         if !reachable.contains(&block.id) {
             continue;
         }
-        match &block.terminator {
-            Terminator::Branch { target, args } => add_edge(*target, args),
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                add_edge(*then_block, then_args);
-                add_edge(*else_block, else_args);
+        for op in &block.ops {
+            if crate::tir::dominators::exception_edge_binds_handler_arguments(op.opcode)
+                && let Some(AttrValue::Int(label)) = op.attrs.get("value")
+                && let Some(&target) = labels.get(label)
+            {
+                add_edge(target, &op.operands);
             }
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            }
-            | Terminator::StateDispatch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                for (_, target, args) in cases {
-                    add_edge(*target, args);
-                }
-                add_edge(*default, default_args);
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
         }
+        block.terminator.for_each_edge(&mut add_edge);
     }
     block_arg_incomings
 }
@@ -627,16 +957,13 @@ fn merge_projected_reprs<'a>(reprs: impl Iterator<Item = &'a Repr>) -> Option<Re
         merged = match (merged, repr) {
             (None, repr) => Some(repr),
             (Some(existing), repr) if existing == repr => Some(existing),
-            (Some(Repr::RawI64Safe), Repr::RawI64FullDeopt)
-            | (Some(Repr::RawI64FullDeopt), Repr::RawI64Safe)
-            | (Some(Repr::RawI64FullDeopt), Repr::RawI64FullDeopt) => Some(Repr::RawI64FullDeopt),
             _ => return None,
         };
     }
     saw_any.then_some(merged).flatten()
 }
 
-fn propagate_native_projectable_identity_values(
+fn propagate_native_projectable_bool_float_values(
     tir_func: &TirFunction,
     repr_by_value: &HashMap<ValueId, Repr>,
     value_types: &HashMap<ValueId, TirType>,
@@ -665,7 +992,7 @@ fn propagate_native_projectable_identity_values(
     }
 
     for id in all_value_ids {
-        if carrier_by_value.contains_key(&id) {
+        if carrier_by_value.contains_key(&id) || is_raw_i64_semantic_candidate(value_types, id) {
             continue;
         }
         let projected = if let Some(source) = copy_source.get(&id) {
@@ -693,7 +1020,12 @@ fn propagate_native_projectable_identity_values(
         } else {
             None
         };
-        if let Some(repr) = projected
+        // Integer carriers are already closed by repr_by_value_for, including
+        // boxed binding observations and their phi dependencies. This native
+        // projection must not recreate a constrained integer from a neighbor.
+        // Only the native bool/float projection has a separate eligibility
+        // filter and therefore needs this propagation.
+        if let Some(repr @ (Repr::Bool | Repr::FloatUnboxed)) = projected
             && insert_projected_value_repr(carrier_by_value, id, repr, value_types)
         {
             changed = true;
@@ -788,52 +1120,7 @@ fn propagate_raw_i64_identity_values_with_phi_support(
     // metadata). Counting that edge failed the all-incomings rule for EVERY
     // loop-header phi, silently demoting every frontend-peeled accumulator to
     // the boxed `molt_add` lane on the value-keyed (WASM/LLVM) backends.
-    let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
-    let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
-    let mut add_edge = |target: BlockId, args: &[ValueId]| {
-        for (index, &arg) in args.iter().enumerate() {
-            block_arg_incomings
-                .entry((target, index))
-                .or_default()
-                .push(arg);
-        }
-    };
-    for block in tir_func.blocks.values() {
-        if !reachable.contains(&block.id) {
-            continue;
-        }
-        match &block.terminator {
-            Terminator::Branch { target, args } => add_edge(*target, args),
-            Terminator::CondBranch {
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-                ..
-            } => {
-                add_edge(*then_block, then_args);
-                add_edge(*else_block, else_args);
-            }
-            Terminator::Switch {
-                cases,
-                default,
-                default_args,
-                ..
-            }
-            | Terminator::StateDispatch {
-                cases,
-                default,
-                default_args,
-                ..
-            } => {
-                for (_, target, args) in cases {
-                    add_edge(*target, args);
-                }
-                add_edge(*default, default_args);
-            }
-            Terminator::Return { .. } | Terminator::Unreachable => {}
-        }
-    }
+    let block_arg_incomings = block_arg_incomings_for(tir_func);
 
     // Index Copy producers and block-arg membership for the worklist.
     let mut copy_source: HashMap<ValueId, ValueId> = HashMap::new();
