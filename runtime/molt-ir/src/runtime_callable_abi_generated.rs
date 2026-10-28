@@ -5503,11 +5503,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_importlib_stabilize_module_state",
-        arity: 6,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_importlib_suffixes",
         arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
