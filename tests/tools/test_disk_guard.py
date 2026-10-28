@@ -991,6 +991,7 @@ def test_any_checkout_state_retires_once_unused_past_the_max_age(tmp_path):
         "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS",
         "MOLT_SESSION_TARGET_IDLE_HOURS",
         "MOLT_AGENT_EVIDENCE_IDLE_DAYS",
+        "MOLT_SCRATCH_IDLE_DAYS",
     ],
 )
 # 0.05 days and 0.05 hours both undercut the two-hour protection window.
@@ -3771,3 +3772,513 @@ def test_soft_retirement_does_not_free_space_in_pressure_accounting(tmp_path):
     assert Path(result.retirements[str(root)]).is_dir()
     assert result.free_before == result.free_after == 10 * _GB
     assert result.reclaimed_bytes == 0
+
+
+# HF-435 item 1 shares checkout-state ownership and soft retirement. These
+# filesystem oracles also kill removal of each policy gate independently.
+def _age_scratch_tree(root: Path, moment: float) -> None:
+    for path in [*root.rglob("*"), root]:
+        os.utime(path, (moment, moment), follow_symlinks=False)
+
+
+def test_scratch_constructor_binds_one_lane_and_throttles_metadata(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    from molt import checkout_state as cs
+    from tests.process_guard_common import ModuleView, current_thread_only
+
+    ext, projects, _ = _checkout_family(tmp_path)
+    owner = projects / "lane"
+    owner.mkdir()
+    now = [2_000_000_000.0]
+    monkeypatch.setattr(
+        cs,
+        "time",
+        ModuleView(cs.time, time=current_thread_only(lambda: now[0], cs.time.time)),
+    )
+    publications = []
+    write = cs.write_exact
+
+    def observe_record(path, *args, **kwargs):
+        if path.parent.parent == ext / "tmp" and path.name == cs.OWNER_RECORD:
+            publications.append(path)
+        return write(path, *args, **kwargs)
+
+    monkeypatch.setattr(cs, "write_exact", observe_record)
+    selected = cs.scratch_state_root(ext / "tmp", owner=owner, create=False)
+    digest = hashlib.sha256(
+        os.path.normcase(str(owner.resolve())).encode()
+    ).hexdigest()[:12]
+    assert selected == ext / "tmp" / ("scratch-" + digest)
+    assert not selected.exists()
+    root = cs.scratch_state_root(ext / "tmp", owner=owner)
+    record = root / cs.OWNER_RECORD
+    assert json.loads(record.read_bytes()) == {
+        "schema": cs.SCHEMA,
+        "owner": str(owner.resolve()),
+        "kind": "scratch",
+    }
+    assert cs.bound_checkout_owner(root, ext) == cs.CheckoutOwner(
+        owner.resolve(), "scratch"
+    )
+    signature = (record.stat().st_ino, record.stat().st_mtime_ns, record.read_bytes())
+    stamp = root / cs.LAST_USE_STAMP
+    assert stamp.stat().st_mtime == now[0]
+    now[0] += HOUR / 2
+    assert cs.scratch_state_root(ext / "tmp", owner=owner) == root
+    assert stamp.stat().st_mtime == now[0] - HOUR / 2
+    now[0] += HOUR
+    cs.scratch_state_root(ext / "tmp", owner=owner)
+    assert stamp.stat().st_mtime == now[0]
+    assert (
+        record.stat().st_ino,
+        record.stat().st_mtime_ns,
+        record.read_bytes(),
+    ) == signature
+    assert publications == [record], "the owner record is published exactly once"
+    other = projects / "other"
+    other.mkdir()
+    assert cs.scratch_state_root(ext / "tmp", owner=other) != root
+
+
+@pytest.mark.parametrize("owner_gone", [False, True])
+def test_scratch_used_survives_then_idle_or_orphaned_retires_softly(
+    tmp_path, owner_gone
+):
+    from molt import checkout_state as cs
+
+    ext, projects, env = _checkout_family(tmp_path)
+    owner = projects / "lane"
+    owner.mkdir()
+    root = cs.scratch_state_root(ext / "tmp", owner=owner)
+    payload = root / "retained.txt"
+    payload.write_bytes(b"recover this exact scratch payload")
+    inode = root.stat().st_ino
+    now = 2_000_000_000.0
+    if owner_gone:
+        owner.rmdir()
+    _age_scratch_tree(root, now - HOUR)
+    assert str(root) not in _reclaimed(_gc(ext, env, now))
+    # Removing the owner selects the two-hour rule; a live owner's scratch
+    # gets the complete three-day idle limit instead.
+    age = 2 * HOUR if owner_gone else 3 * DAY
+    _age_scratch_tree(root, now - age)
+    dry = dg.gc(root=ext, env=env, now_fn=lambda: now, apply=False, log=False)
+    selected = [row for row in dry.reclaimed if row["path"] == str(root)]
+    assert len(selected) == 1 and selected[0]["kind"] == "scratch"
+    assert selected[0]["est_bytes"] == sum(p.stat().st_size for p in root.iterdir())
+    assert (
+        root.is_dir() and payload.read_bytes() == b"recover this exact scratch payload"
+    )
+    result = _gc(ext, env, now)
+    retired = Path(result.retirements[str(root)])
+    assert not root.exists() and retired.stat().st_ino == inode
+    assert (
+        retired / payload.name
+    ).read_bytes() == b"recover this exact scratch payload"
+    record = cs.read_soft_retirement(
+        retired.with_name(retired.name + cs.RETIREMENT_RECORD_SUFFIX), ext
+    )
+    assert (
+        record is not None and record.owner == str(owner) and record.retired_at == now
+    )
+    assert str(retired) not in _reclaimed(_gc(ext, env, now + 7 * DAY - 1))
+    assert str(retired) in _reclaimed(_gc(ext, env, now + 7 * DAY))
+    assert not retired.exists()
+
+
+def test_untracked_scratch_uses_its_registered_limit_and_recursive_last_use(tmp_path):
+    from molt import checkout_state as cs
+
+    ext, _, env = _checkout_family(tmp_path)
+    root = ext / "tmp" / "pre-constructor"
+    nested = root / "nested" / "deep" / "file"
+    nested.parent.mkdir(parents=True)
+    nested.write_bytes(b"legacy payload")
+    now = 2_000_000_000.0
+    _age_scratch_tree(root, now - 3 * DAY + 1)
+    assert str(root) not in _reclaimed(_gc(ext, env, now))
+    _age_scratch_tree(root, now - 4 * DAY)
+    os.utime(nested, (now - HOUR, now - HOUR))
+    assert str(root) not in _reclaimed(_gc(ext, env, now))
+    _age_scratch_tree(root, now - 4 * DAY)
+    # The same registration owns the new and the pre-constructor limits.
+    assert str(root) not in _reclaimed(_gc(ext, {**env, cs.SCRATCH_IDLE_ENV: "5"}, now))
+    result = _gc(ext, env, now)
+    assert str(root) in _reclaimed(result)
+    retired = Path(result.retirements[str(root)])
+    assert (retired / "nested/deep/file").read_bytes() == b"legacy payload"
+    assert not (retired / cs.OWNER_RECORD).exists(), "GC must never invent an owner"
+
+
+def test_scratch_rule_preserves_every_existing_control_container(tmp_path):
+    from molt import checkout_state as cs
+
+    ext, projects, env = _checkout_family(tmp_path)
+    owner = projects / "lane"
+    owner.mkdir()
+    roots = _checkout_state(ext, owner)
+    cs.stamp_checkout_state(owner, env)
+    now = 2_000_000_000.0
+    # Ten days selects scratch, but not the existing thirty-day checkout rule.
+    for path in roots.values():
+        _age_scratch_tree(path, now - 10 * DAY)
+    protected = [ext / "tmp" / name for name in cs.scratch_control_names()]
+    protected += [ext / "tmp/pt-abcdefgh", ext / "tmp/molt-backend-deadbeef"]
+    for path in protected:
+        path.mkdir(parents=True, exist_ok=True)
+        _age_scratch_tree(path, now - 10 * DAY)
+        assert cs.checkout_state_kind_of(path, ext) is None
+    assert not _gc(ext, env, now).reclaimed
+    assert all(path.is_dir() for path in [*roots.values(), *protected])
+
+
+@pytest.mark.parametrize(
+    "protection",
+    [
+        "path",
+        "guard",
+        "nested-guard",
+        "cargo-lock",
+        "lease-lock",
+        "guard-scratch-lock",
+        "use-lock",
+    ],
+)
+def test_scratch_live_custody_keeps_an_old_root(tmp_path, protection):
+    from contextlib import ExitStack
+    from molt import checkout_state as cs
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    ext, projects, env = _checkout_family(tmp_path)
+    owner = projects / "lane"
+    owner.mkdir()
+    root = cs.scratch_state_root(ext / "tmp", owner=owner)
+    now = 2_000_000_000.0
+    if protection == "path":
+        env["MOLT_PROOF_SCRATCH_ROOT"] = str(root / "child")
+    if protection in {"guard", "nested-guard"}:
+        markers = (
+            ext / "tmp" if protection == "guard" else root
+        ) / "memory_guard/active"
+        markers.mkdir(parents=True)
+        _guard_marker(markers, 73, "child_running")
+    with ExitStack() as stack:
+        if protection in {"cargo-lock", "lease-lock", "guard-scratch-lock"}:
+            lock = (
+                root
+                / "deep/nested/debug"
+                / {
+                    "cargo-lock": ".cargo-lock",
+                    "lease-lock": "lease.lock",
+                    "guard-scratch-lock": "lock",
+                }[protection]
+            )
+            lock.parent.mkdir(parents=True)
+            handle = _try_acquire_file_lock(lock)
+            assert handle is not None
+            stack.callback(_release_file_lock, handle)
+        elif protection == "use-lock":
+            stack.enter_context(cs.checkout_state_use(((root, None),), publish=False))
+        _age_scratch_tree(root, now - 20 * DAY)
+        dry = dg.gc(root=ext, env=env, now_fn=lambda: now, apply=False, log=False)
+        assert str(root) not in _reclaimed(dry)
+        assert str(root) not in _reclaimed(_gc(ext, env, now))
+        assert root.is_dir()
+
+
+def test_scratch_inventory_exhaustion_or_error_never_authorizes_retirement(
+    tmp_path, monkeypatch
+):
+    ext, _, env = _checkout_family(tmp_path)
+    root = ext / "tmp" / "legacy"
+    root.mkdir(parents=True)
+    now = 2_000_000_000.0
+    _age_scratch_tree(root, now - 4 * DAY)
+
+    def incomplete(*_args):
+        raise TimeoutError("scratch inventory budget exhausted")
+
+    monkeypatch.setattr(dg, "_scratch_inventory", incomplete)
+    result = _gc(ext, env, now)
+    assert root.is_dir() and str(root) not in _reclaimed(result)
+    assert {
+        "path": str(root),
+        "reason": "scratch inventory budget exhausted",
+    } in result.skipped
+
+
+def test_scratch_activity_is_rechecked_under_exclusive_retirement(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+    from molt import checkout_state as cs
+
+    ext, _, env = _checkout_family(tmp_path)
+    root = ext / "tmp" / "legacy"
+    deep = root / "nested/deep/file"
+    deep.parent.mkdir(parents=True)
+    deep.write_bytes(b"still used")
+    now = 2_000_000_000.0
+    _age_scratch_tree(root, now - 4 * DAY)
+    original = cs.checkout_state_retirement
+
+    @contextmanager
+    def start_using(path, **kwargs):
+        with original(path, **kwargs) as exclusive:
+            if path == root:
+                os.utime(deep, (now, now))
+            yield exclusive
+
+    monkeypatch.setattr(cs, "checkout_state_retirement", start_using)
+    assert str(root) not in _reclaimed(_gc(ext, env, now))
+    assert deep.read_bytes() == b"still used"
+
+
+@pytest.mark.parametrize(
+    "invalid", ["foreign-owner", "malformed-owner", "non-string-kind"]
+)
+def test_scratch_with_other_or_invalid_owner_metadata_is_kept(tmp_path, invalid):
+    from molt import checkout_state as cs
+
+    ext, _, env = _checkout_family(tmp_path)
+    root = ext / "tmp/legacy"
+    root.mkdir(parents=True)
+    record = root / cs.OWNER_RECORD
+    value = {"schema": cs.SCHEMA, "owner": str(tmp_path), "kind": "cargo-target"}
+    if invalid == "non-string-kind":
+        value["kind"] = []
+    record.write_text(
+        "not json" if invalid == "malformed-owner" else json.dumps(value),
+        encoding="utf-8",
+    )
+    now = 2_000_000_000.0
+    _age_scratch_tree(root, now - 40 * DAY)
+    assert not _gc(ext, env, now).reclaimed
+    assert record.is_file()
+
+
+def test_scratch_constructor_rejects_rebound_owner_and_indirect_stamp(tmp_path):
+    from molt import checkout_state as cs
+
+    ext, projects, _ = _checkout_family(tmp_path)
+    owner = projects / "lane"
+    owner.mkdir()
+    root = cs.scratch_state_root(ext / "tmp", owner=owner)
+    record = root / cs.OWNER_RECORD
+    original = record.read_bytes()
+    _forge(record, owner=str(projects / "different-lane"))
+    wrong = record.read_bytes()
+    with pytest.raises(ValueError, match="scratch owner does not bind"):
+        cs.scratch_state_root(ext / "tmp", owner=owner)
+    assert record.read_bytes() == wrong
+    record.write_bytes(original)
+    stamp = root / cs.LAST_USE_STAMP
+    stamp.unlink()
+    external = tmp_path / "unrelated"
+    external.write_text("preserve", encoding="utf-8")
+    before = external.stat().st_mtime_ns
+    stamp.symlink_to(external)
+    with pytest.raises(ValueError):
+        cs.scratch_state_root(ext / "tmp", owner=owner)
+    assert (
+        external.read_text(encoding="utf-8") == "preserve"
+        and external.stat().st_mtime_ns == before
+    )
+
+
+def test_scratch_constructor_does_not_expose_an_unstampable_root(tmp_path, monkeypatch):
+    from molt import checkout_state as cs
+    from tests.process_guard_common import ModuleView
+
+    ext, projects, _ = _checkout_family(tmp_path)
+    owner = projects / "lane"
+    owner.mkdir()
+    original = os.utime
+
+    def deny_stamp(path, *args, **kwargs):
+        if Path(path).is_relative_to(ext) and Path(path).name == cs.LAST_USE_STAMP:
+            raise PermissionError("cannot publish scratch use")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(cs, "os", ModuleView(os, utime=deny_stamp))
+    with pytest.raises(PermissionError, match="cannot publish scratch use"):
+        cs.scratch_state_root(ext / "tmp", owner=owner)
+
+
+def test_scratch_command_use_holds_only_its_declared_managed_ancestor(tmp_path):
+    from molt import checkout_state as cs
+
+    ext, projects, env = _checkout_family(tmp_path)
+    owner = projects / "lane"
+    owner.mkdir()
+    root = cs.scratch_state_root(ext / "tmp", owner=owner)
+    other = projects / "other"
+    other.mkdir()
+    sibling = cs.scratch_state_root(ext / "tmp", owner=other)
+    selected = {**env, "TMPDIR": str(root / "deep" / "temp"), "TMP": str(root)}
+    resources = cs.checkout_state_environment_roots(
+        owner, selected, include_current_process=False
+    )
+    assert resources == ((root, None),)
+    assert not (root / "deep").exists(), "resource selection creates no scratch"
+    assert not cs.checkout_state_environment_roots(
+        owner, {"TMPDIR": str(ext / "tmp/manual")}, include_current_process=False
+    ), "untracked host temp directories must not acquire artifact-root locks"
+    now = 2_000_000_000.0
+    _age_scratch_tree(root, now - 20 * DAY)
+    _age_scratch_tree(sibling, now - 20 * DAY)
+    with cs.checkout_state_use(resources, publish=False):
+        result = _gc(ext, env, now)
+        assert root.is_dir() and str(root) not in _reclaimed(result)
+        assert str(sibling) in _reclaimed(result), (
+            "a sibling is not this command's resource"
+        )
+    assert str(root) in _reclaimed(_gc(ext, env, now))
+
+
+@pytest.mark.parametrize("held", ["nested-lock", "recent-file", "guard"])
+def test_expired_scratch_retirement_stays_while_custody_or_activity_holds_it(
+    tmp_path, held
+):
+    from contextlib import ExitStack
+    from molt import checkout_state as cs
+    from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+
+    ext, _, env = _checkout_family(tmp_path)
+    root = ext / "tmp/legacy"
+    file = root / "nested/deep/value"
+    file.parent.mkdir(parents=True)
+    file.write_bytes(b"keep until quiescent")
+    now = 2_000_000_000.0
+    _age_scratch_tree(root, now - 20 * DAY)
+    retired = cs.soft_retire(
+        root, ext, reason="scratch", owner=str(ext), now=now - 8 * DAY
+    )
+    with ExitStack() as stack:
+        if held == "nested-lock":
+            handle = _try_acquire_file_lock(retired.path / "nested/deep/.cargo-lock")
+            assert handle is not None
+            stack.callback(_release_file_lock, handle)
+            _age_scratch_tree(retired.path, now - 20 * DAY)
+        elif held == "recent-file":
+            os.utime(retired.path / "nested/deep/value", (now, now))
+        else:
+            markers = retired.path / "memory_guard/active"
+            markers.mkdir(parents=True)
+            marker = _guard_marker(markers, 91, "child_running")
+            _age_scratch_tree(retired.path, now - 20 * DAY)
+        assert str(retired.path) not in _reclaimed(_gc(ext, env, now))
+        assert (
+            retired.path / "nested/deep/value"
+        ).read_bytes() == b"keep until quiescent"
+        if held == "guard":
+            marker.unlink()
+    _age_scratch_tree(retired.path, now - 20 * DAY)
+    assert str(retired.path) in _reclaimed(_gc(ext, env, now))
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "owner-once",
+        "stamp-resolution",
+        "used",
+        "idle",
+        "orphan",
+        "untracked-limit",
+        "recursive-activity",
+        "control-container",
+        "lock",
+        "guard",
+        "protected-path",
+        "retirement-window",
+    ],
+)
+def test_scratch_rules_have_independent_mutation_oracles(tmp_path, monkeypatch, rule):
+    """Each plausible omitted rule must fail the unchanged filesystem oracle."""
+    from dataclasses import replace
+    from tests.process_guard_common import current_thread_only
+    from molt import checkout_state as cs
+
+    def patch(module, name, mutant):
+        original = getattr(module, name)
+        monkeypatch.setattr(
+            module,
+            name,
+            current_thread_only(mutant, original) if callable(mutant) else mutant,
+        )
+
+    if rule == "owner-once":
+        write = cs._record_checkout_owner
+
+        def rewrite(root, *, owner, kind):
+            (root / cs.OWNER_RECORD).unlink(missing_ok=True)
+            write(root, owner=owner, kind=kind)
+
+        patch(cs, "_record_checkout_owner", rewrite)
+    elif rule == "stamp-resolution":
+        patch(cs, "USE_RESOLUTION_S", 0.0)
+    elif rule in {"used", "idle"}:
+        decide = cs.checkout_state_decision
+
+        def wrong_decision(root, artifact, **kwargs):
+            if cs.checkout_state_kind_of(root, artifact) == "scratch":
+                return "max-age" if rule == "used" else None
+            return decide(root, artifact, **kwargs)
+
+        patch(cs, "checkout_state_decision", wrong_decision)
+        patch(dg, "checkout_state_decision", wrong_decision)
+    elif rule == "orphan":
+        patch(cs, "orphaned_checkout_state", lambda *_: None)
+    elif rule == "untracked-limit":
+        limits = dg.retention_limits
+        patch(
+            dg,
+            "retention_limits",
+            lambda env: replace(limits(env), scratch_idle_s=2 * HOUR),
+        )
+    elif rule == "recursive-activity":
+        inventory = dg._scratch_inventory
+
+        def shallow_activity(path, deadline):
+            size, _, locked = inventory(path, deadline)
+            return size, cs.checkout_state_last_use(path), locked
+
+        patch(dg, "_scratch_inventory", shallow_activity)
+    elif rule == "control-container":
+        patch(cs, "scratch_control_names", lambda: frozenset())
+    elif rule == "lock":
+        patch(dg, "_region_locked", lambda *_: False)
+    elif rule == "guard":
+        patch(dg, "_has_active_guard", lambda *_: False)
+    elif rule == "protected-path":
+        patch(dg, "_protected_paths", lambda *_: [])
+    else:
+        patch(dg, "RETIREMENT_WINDOW_S", 0.0)
+
+    # The same positive tests run normally above, so fixture failures cannot
+    # masquerade as a killed mutant. They inspect actual records and payloads.
+    with pytest.raises(AssertionError):
+        if rule in {"owner-once", "stamp-resolution"}:
+            test_scratch_constructor_binds_one_lane_and_throttles_metadata(
+                tmp_path, monkeypatch
+            )
+        elif rule in {"used", "idle", "orphan", "retirement-window"}:
+            test_scratch_used_survives_then_idle_or_orphaned_retires_softly(
+                tmp_path, rule == "orphan"
+            )
+        elif rule in {"untracked-limit", "recursive-activity"}:
+            test_untracked_scratch_uses_its_registered_limit_and_recursive_last_use(
+                tmp_path
+            )
+        elif rule == "control-container":
+            test_scratch_rule_preserves_every_existing_control_container(tmp_path)
+        else:
+            protection = {
+                "lock": "cargo-lock",
+                "guard": "guard",
+                "protected-path": "path",
+            }[rule]
+            test_scratch_live_custody_keeps_an_old_root(tmp_path, protection)

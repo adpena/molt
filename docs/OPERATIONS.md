@@ -751,7 +751,7 @@ standing policy; `CLAUDE.md` imports it.
   - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
   - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
   - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` so differential runs reuse the same shared Cargo artifacts by default
-  - `MOLT_DIFF_ROOT=<scratch>/diff`, `MOLT_DIFF_TMPDIR=<scratch>` and `TMPDIR=<scratch>`, where `<scratch>` is `molt.dx.scratch_root`: `$MOLT_EXT_ROOT/tmp`, or a per-checkout folder under the host temp root when that path would fall inside the checkout
+  - `MOLT_DIFF_ROOT=<scratch>/diff`, `MOLT_DIFF_TMPDIR=<scratch>` and `TMPDIR=<scratch>`, where `<scratch>` is `molt.dx.scratch_root`: `$MOLT_EXT_ROOT/tmp/scratch-<checkout path digest>`, or the same lane-owned child of a per-checkout host-temp folder when the artifact scratch container would fall inside the checkout; control state keeps its existing shared addresses
   - `UV_CACHE_DIR=$MOLT_EXT_ROOT/.uv-cache`
   - `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=<policy default>`
   - `MOLT_USE_SCCACHE=1` and `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`; `CARGO_INCREMENTAL` stays unset, so the Cargo profile builds workspace crates incrementally while sccache caches registry crates

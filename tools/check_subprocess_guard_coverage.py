@@ -480,7 +480,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "lanes before agents start long-running work",
     ),
     AllowedRawSubprocessUse(
-        "tools/agent_coordination.py",
+        "tools/coordination_records.py",
         "harvest_agent_evidence.is_blob",
         "Popen",
         "one git cat-file --batch-check stream per evidence harvest answers "
@@ -488,7 +488,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "for the direct child in a finally block",
     ),
     AllowedRawSubprocessUse(
-        "tools/agent_coordination.py",
+        "tools/coordination_records.py",
         "harvest_agent_evidence.is_blob",
         "run",
         "bounded 10 s git rev-parse --show-object-format probe that selects the "

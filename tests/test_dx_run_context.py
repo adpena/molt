@@ -13,6 +13,7 @@ from tests.process_guard_common import (
 from molt.process_environment import NameRule, ProcessEnvironment
 import molt.dx as dx
 from molt import custody_layout
+from molt.checkout_state import scratch_state_root
 import pytest
 from molt.dx import (
     CANONICAL_RUN_ENV_KEYS,
@@ -110,7 +111,9 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
     assert "CARGO_INCREMENTAL" not in env
     assert env["MOLT_CACHE"] == str(tmp_path.resolve() / ".molt_cache")
     # Scratch never lands in the source tree, even for a repo-local root.
-    scratch = custody_layout.out_of_tree_scratch_root(tmp_path)
+    scratch = scratch_state_root(
+        custody_layout.out_of_tree_scratch_root(tmp_path), owner=tmp_path, create=False
+    )
     assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(tmp_path.resolve() / ".uv-cache")
@@ -422,7 +425,9 @@ def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> N
     assert env["CARGO_TARGET_DIR"] == str(
         resolved_external / "target" / "checkouts" / dx.checkout_component(repo_root)
     )
-    assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
+    assert env["MOLT_DIFF_TMPDIR"] == str(
+        scratch_state_root(resolved_external / "tmp", owner=repo_root, create=False)
+    )
     assert resolved_external.is_dir()
 
 
@@ -451,8 +456,12 @@ def test_run_context_prefers_windows_external_drive_artifact_root_by_default(
     assert env["CARGO_TARGET_DIR"] == str(
         resolved_external / "target" / "checkouts" / dx.checkout_component(repo_root)
     )
-    assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
-    assert env["TMPDIR"] == str(resolved_external / "tmp")
+    assert env["MOLT_DIFF_TMPDIR"] == str(
+        scratch_state_root(resolved_external / "tmp", owner=repo_root, create=False)
+    )
+    assert env["TMPDIR"] == str(
+        scratch_state_root(resolved_external / "tmp", owner=repo_root, create=False)
+    )
     assert resolved_external.is_dir()
 
 
@@ -489,7 +498,9 @@ def test_run_context_skips_unhealthy_windows_external_candidate(
 
     resolved_external = healthy.resolve()
     assert env["MOLT_EXT_ROOT"] == str(resolved_external)
-    assert env["TMPDIR"] == str(resolved_external / "tmp")
+    assert env["TMPDIR"] == str(
+        scratch_state_root(resolved_external / "tmp", owner=repo_root, create=False)
+    )
 
 
 def test_an_artifact_root_proves_child_creation_once(tmp_path: Path) -> None:
@@ -1063,7 +1074,9 @@ def test_dx_project_scratch_stays_out_of_an_in_checkout_artifact_root() -> None:
     env = DxProject(root).canonical_env(
         {"PATH": "/usr/bin", "MOLT_EXT_ROOT": str(root)}, create_dirs=False
     )
-    scratch = custody_layout.scratch_root(root, root)
+    scratch = scratch_state_root(
+        custody_layout.scratch_root(root, root), owner=root, create=False
+    )
     assert not scratch.is_relative_to(root)
     # Every scratch key agrees with the one layout authority.
     assert {key: env[key] for key in ("TMPDIR", "MOLT_DIFF_TMPDIR")} == {
@@ -1159,7 +1172,11 @@ def test_clone_outside_a_checkout_family_keeps_scratch_out_of_the_source_tree(
     ):
         scratch = Path(env[key])
         assert source not in (scratch, *scratch.parents), (key, scratch)
-    assert Path(env["TMPDIR"]) == custody_layout.out_of_tree_scratch_root(repo_root)
+    assert Path(env["TMPDIR"]) == scratch_state_root(
+        custody_layout.out_of_tree_scratch_root(repo_root),
+        owner=repo_root,
+        create=False,
+    )
 
 
 @pytest.fixture
@@ -1300,10 +1317,13 @@ def test_scratch_dir_and_tmpdir_share_one_root(
 ) -> None:
     family, lane = family_layout
 
-    assert dx.scratch_root(lane, {}) == family / "tmp"
-    assert dx.scratch_dir(lane, "bench", {}) == family / "tmp" / "bench"
-    assert dx.scratch_dir(lane, "runtime_safety/miri", {}) == (
-        family / "tmp" / "runtime_safety" / "miri"
+    scratch = scratch_state_root(family / "tmp", owner=lane, create=False)
+    assert dx.scratch_root(lane, {}) == scratch
+    assert not scratch.exists(), "selection must remain read-only"
+    assert dx.scratch_dir(lane, "bench", {}) == scratch / "bench"
+    assert (
+        dx.scratch_dir(lane, "runtime_safety/miri", {})
+        == scratch / "runtime_safety" / "miri"
     )
     exported = RunContext(lane).canonical_env({}, create_dirs=False)
     assert Path(exported["TMPDIR"]) == dx.scratch_root(lane, {})
@@ -1345,8 +1365,8 @@ def test_selected_storage_moves_scratch_but_not_control_state(
     assert selected.root == ram.resolve()
 
     scratch = dx.scratch_root(lane, env)
-    assert scratch.parent == ram.resolve()
-    assert dx.scratch_dir(lane, "gs", env) == scratch / "gs"
+    assert scratch.parent.parent == ram.resolve()
+    assert dx.scratch_dir(lane, "gs", env) == scratch.parent / "gs"
     # Locks and guard markers stay where every process looks for them.
     assert dx.control_state_dir(lane, "memory_guard", env) == (
         family / "tmp" / "memory_guard"
@@ -1358,7 +1378,7 @@ def test_selected_storage_moves_scratch_but_not_control_state(
     shm = tmp_path / "shm"
     shm.mkdir()
     monkeypatch.setattr(dx, "SHARED_MEMORY_ROOT", shm)
-    assert dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": "memory"}).parent == (
+    assert dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": "memory"}).parent.parent == (
         shm.resolve()
     )
 
@@ -1415,7 +1435,9 @@ def test_proof_scratch_root_prefers_the_queue_issued_root(
     family, lane = family_layout
     issued = tmp_path / "queue" / "scratch"
 
-    assert dx.proof_scratch_root(lane, {}) == family / "tmp"
+    assert dx.proof_scratch_root(lane, {}) == scratch_state_root(
+        family / "tmp", owner=lane, create=False
+    )
     assert dx.proof_scratch_root(lane, {"MOLT_PROOF_SCRATCH_ROOT": str(issued)}) == (
         issued.resolve()
     )
@@ -2470,3 +2492,55 @@ def test_capsule_selected_session_records_only_its_canonical_checkout_state(
     )
     assert foreign.is_dir()
     assert not (foreign / checkout_state.OWNER_RECORD).exists()
+
+
+@pytest.mark.parametrize("writer", ["transpiler", "translation", "tv", "proof"])
+def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, writer):
+    from molt.checkout_state import read_checkout_owner
+
+    source = tmp_path / "source"
+    source.mkdir()
+    artifact = tmp_path / "artifact"
+    environment = {"MOLT_EXT_ROOT": str(artifact)}
+    for key in (
+        "MOLT_DIFF_TMPDIR",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "MOLT_TV_DIR",
+        "MOLT_PROOF_SCRATCH_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
+    selected = dx.scratch_root(source, environment)
+    assert not selected.exists()
+    if writer == "transpiler":
+        from tools import check_transpiler_determinism
+
+        monkeypatch.setattr(check_transpiler_determinism, "_repo_root", lambda: source)
+        assert check_transpiler_determinism._tmp_root() == selected
+    elif writer == "translation":
+        from tools import translation_validate
+
+        monkeypatch.setattr(translation_validate, "_REPO_ROOT", source)
+        assert translation_validate._temp_root(environment) == selected
+        assert not selected.exists(), "a projection must remain read-only"
+        assert translation_validate._temp_root(environment, create=True) == selected
+    elif writer == "tv":
+        from molt.frontend import tv_hooks
+
+        monkeypatch.setattr(tv_hooks, "_REPO_ROOT", source)
+        tv_hooks.reset()
+        try:
+            assert tv_hooks._temp_root(environment) == selected
+            assert not selected.exists(), "a projection must remain read-only"
+            assert tv_hooks.tv_dump_dir().parent == selected
+        finally:
+            tv_hooks.reset()
+    else:
+        assert dx.proof_scratch_root(source, environment) == selected
+        assert not selected.exists(), "a projection must remain read-only"
+        assert dx.proof_scratch_root(source, environment, create=True) == selected
+    owner = read_checkout_owner(selected)
+    assert owner is not None and owner.kind == "scratch" and owner.path == source
+    assert (selected / ".molt-last-use").is_file()

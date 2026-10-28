@@ -68,7 +68,7 @@ _dump_dir: Path | None = None
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _temp_root(env: Mapping[str, str] | None = None) -> Path:
+def _temp_root(env: Mapping[str, str] | None = None, *, create: bool = False) -> Path:
     """Return the canonical temp root for TV snapshots."""
     env_view = os.environ if env is None else env
     explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
@@ -76,7 +76,7 @@ def _temp_root(env: Mapping[str, str] | None = None) -> Path:
         return Path(explicit).expanduser()
     from molt.dx import scratch_root
 
-    return scratch_root(_REPO_ROOT, env_view)
+    return scratch_root(_REPO_ROOT, env_view, create=create)
 
 
 def tv_active() -> bool:
@@ -96,7 +96,7 @@ def tv_dump_dir() -> Path:
             _dump_dir = Path(explicit).expanduser()
             _dump_dir.mkdir(parents=True, exist_ok=True)
         else:
-            temp_root = _temp_root()
+            temp_root = _temp_root(create=True)
             temp_root.mkdir(parents=True, exist_ok=True)
             _dump_dir = Path(
                 tempfile.mkdtemp(

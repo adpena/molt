@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import sys
 from pathlib import Path
+from molt.checkout_state import scratch_state_root
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -39,7 +40,9 @@ def test_temp_root_prefers_explicit_overrides(tmp_path: Path) -> None:
     assert translation_validate._temp_root(env) == ambient_tmp
 
     env.pop("TMPDIR")
-    assert translation_validate._temp_root(env) == ext_root.resolve() / "tmp"
+    assert translation_validate._temp_root(env) == scratch_state_root(
+        ext_root.resolve() / "tmp", owner=translation_validate._REPO_ROOT, create=False
+    )
 
 
 def test_target_root_defaults_to_the_canonical_artifact_root(monkeypatch) -> None:
@@ -212,7 +215,9 @@ def test_run_molt_build_stamps_target_python(
         "_target_python_command",
         lambda target_python: [f"python{target_python.short}"],
     )
-    monkeypatch.setattr(translation_validate, "_temp_root", lambda env=None: tmp_path)
+    monkeypatch.setattr(
+        translation_validate, "_temp_root", lambda env=None, *, create=False: tmp_path
+    )
 
     def fake_run_subprocess(cmd, **kwargs):
         if "-m" in cmd and "molt.cli" in cmd:
