@@ -396,13 +396,11 @@ pub(crate) struct RuntimeState {
     pub(crate) method_cache: MethodCache,
     pub(crate) special_cache: SpecialCache,
     pub(crate) canonical_objects: CanonicalObjectCache,
-    pub(crate) module_cache: Mutex<HashMap<String, u64>>,
     pub(crate) interpreter_sys: crate::builtins::module_table::InterpreterSysNamespace,
-    /// Import-bedrock ModuleTable (design doc 69): dense per-ModuleId state
-    /// machine + slots, one instance per isolate, sized from the installed
-    /// module registry on first use. Owned by builtins::module_table.
+    pub(crate) interpreter_builtins: crate::builtins::module_table::InterpreterBuiltinsNamespace,
+    /// Interpreter-owned canonical module dictionary with lazy compiled-module
+    /// initialization/transaction metadata. Owned by builtins::module_table.
     pub(crate) module_table: OnceLock<crate::builtins::module_table::ModuleTable>,
-    pub(crate) importlib_default_meta_path_bootstrapped: AtomicBool,
     pub(crate) intrinsic_registry_module: AtomicPtr<u8>,
     pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
     pub(crate) exceptions: ExceptionsRuntimeState,
@@ -554,10 +552,10 @@ impl RuntimeState {
             method_cache: MethodCache::new(),
             special_cache: SpecialCache::new(),
             canonical_objects: CanonicalObjectCache::new(),
-            module_cache: Mutex::new(HashMap::new()),
             interpreter_sys: crate::builtins::module_table::InterpreterSysNamespace::new(),
+            interpreter_builtins: crate::builtins::module_table::InterpreterBuiltinsNamespace::new(
+            ),
             module_table: OnceLock::new(),
-            importlib_default_meta_path_bootstrapped: AtomicBool::new(false),
             intrinsic_registry_module: AtomicPtr::new(std::ptr::null_mut()),
             exception_type_cache: Mutex::new(HashMap::new()),
             exceptions: ExceptionsRuntimeState::new(),

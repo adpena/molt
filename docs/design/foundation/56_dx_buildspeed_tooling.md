@@ -1425,6 +1425,35 @@ cell and its local allocator rule; changes to the maintained crate select native
 integration, Rust and WASM CI families. Shared compile-path measurements and
 qualification limits live in [`tools/PERF_AUTHORITY.md`](../../../tools/PERF_AUTHORITY.md).
 
+### 2.11 Version updates and the cost of new machinery
+
+**ADAPT:** distinguish the installed compiler, selected toolchain, target language
+semantics and platform capabilities. [Go selects toolchains from module
+requirements](https://go.dev/doc/toolchain); [Rust editions converge on one
+internal representation](https://doc.rust-lang.org/edition-guide/editions/);
+TypeScript separates [emit target](https://www.typescriptlang.org/tsconfig/target.html)
+from [API declarations](https://www.typescriptlang.org/tsconfig/lib.html).
+For Molt, extend `target_python.py` and the existing pinned CPython
+`gen_stdlib_module_union.py --compare-sources` machinery. A source delta selects
+semantic owners and distinguishing witnesses; it does not establish behavioral
+parity. Python runtime differences still require implementation and execution.
+
+**RETAIN:** one implementation beneath explicit version boundaries. The tsrs
+[porting contract](https://github.com/oxc-project/tsrs/blob/280b426b89cd4ecd6153cf48228826bd60a99c61/docs/PORTING.md)
+uses pinned upstream source and baselines; its
+[compatibility table](https://github.com/oxc-project/tsrs/blob/280b426b89cd4ecd6153cf48228826bd60a99c61/docs/COMPATIBILITY.md)
+separates intended coverage from observed gaps. Reuse Molt's existing source pins,
+proof selection and release ledger rather than adding another compatibility list.
+
+**DEFER:** a persisted frontend representation until an affected Molt workload
+demonstrates a material net saving. tsrs's
+[measured proposal](https://github.com/oxc-project/tsrs/blob/280b426b89cd4ecd6153cf48228826bd60a99c61/docs/PERSISTED_FRONTEND.md#recommendation)
+rejects its own cache after comparing recoverable work, loading cost and migration
+effort. Reconsider for Molt only when profiling identifies the dominant reusable
+phase and a bounded experiment includes cache-hit cost, invalidation, memory and
+correctness. These are development decisions; emitted programs need no version
+onboarding or proof machinery.
+
 ## 3. The structural facts/mechanisms to build (each tied to the class it retires)
 
 ### FACT-A: The recompile-blast-radius ratchet (retires DX-1)

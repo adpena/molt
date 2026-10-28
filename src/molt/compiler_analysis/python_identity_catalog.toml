@@ -54,6 +54,14 @@ BUILTIN_LEN = 47
 BUILTIN_OPEN = 48
 INTRINSIC_SYS_PLATFORM = 49
 INTRINSIC_OS_NAME = 50
+INTRINSIC_MODULE_IMPORT = 51
+INTRINSIC_IMPORTLIB_IMPORT_MODULE = 52
+INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL = 53
+INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK = 54
+INTRINSIC_IMPORTLIB_IMPORT_REQUIRED = 55
+INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION = 56
+INTRINSIC_IMPORTLIB_FIND_SPEC = 57
+INTRINSICS_LOAD = 58
 
 [target_property]
 SYS_PLATFORM = "sys_platform"
@@ -68,6 +76,51 @@ target_property = "SYS_PLATFORM"
 name = "molt_os_name"
 identity = "INTRINSIC_OS_NAME"
 target_property = "OS_NAME"
+
+[[intrinsic_callable]]
+name = "molt_module_import"
+identity = "INTRINSIC_MODULE_IMPORT"
+runtime_import_protocol = true
+
+[[intrinsic_callable]]
+name = "molt_importlib_import_module"
+identity = "INTRINSIC_IMPORTLIB_IMPORT_MODULE"
+runtime_import_protocol = true
+
+[[intrinsic_callable]]
+name = "molt_importlib_import_optional"
+identity = "INTRINSIC_IMPORTLIB_IMPORT_OPTIONAL"
+runtime_import_protocol = true
+
+[[intrinsic_callable]]
+name = "molt_importlib_import_or_fallback"
+identity = "INTRINSIC_IMPORTLIB_IMPORT_OR_FALLBACK"
+runtime_import_protocol = true
+
+[[intrinsic_callable]]
+name = "molt_importlib_import_required"
+identity = "INTRINSIC_IMPORTLIB_IMPORT_REQUIRED"
+runtime_import_protocol = true
+
+[[intrinsic_callable]]
+name = "molt_importlib_import_transaction"
+identity = "INTRINSIC_IMPORTLIB_IMPORT_TRANSACTION"
+runtime_import_protocol = true
+
+[[intrinsic_callable]]
+name = "molt_importlib_find_spec"
+identity = "INTRINSIC_IMPORTLIB_FIND_SPEC"
+runtime_import_protocol = true
+
+[[intrinsic_callable]]
+name = "molt_require_intrinsic_runtime"
+identity = "INTRINSICS_REQUIRE"
+acquisition = "required"
+
+[[intrinsic_callable]]
+name = "molt_load_intrinsic_runtime"
+identity = "INTRINSICS_LOAD"
+acquisition = "optional"
 
 [member_bits]
 IMPORTLIB_IMPORT_MODULE = 0
@@ -104,6 +157,7 @@ BUILTINS_VARS = 30
 BUILTINS_SETATTR = 31
 BUILTINS_EVAL = 32
 BUILTINS_EXEC = 33
+INTRINSICS_LOAD = 34
 
 [[builtin]]
 name = "__import__"
@@ -330,6 +384,24 @@ owner = "INTRINSICS_MODULE"
 name = "require_intrinsic"
 identity = "INTRINSICS_REQUIRE"
 guard = "INTRINSICS_REQUIRE"
+
+[[acquisition]]
+owner = "INTRINSICS_MODULE"
+name = "_require_intrinsic"
+identity = "INTRINSICS_REQUIRE"
+guard = "INTRINSICS_REQUIRE"
+
+[[acquisition]]
+owner = "INTRINSICS_MODULE"
+name = "load_intrinsic"
+identity = "INTRINSICS_LOAD"
+guard = "INTRINSICS_LOAD"
+
+[[acquisition]]
+owner = "INTRINSICS_MODULE"
+name = "_load_intrinsic"
+identity = "INTRINSICS_LOAD"
+guard = "INTRINSICS_LOAD"
 
 [[write]]
 owner = "MODULE_SPEC_CLASS"

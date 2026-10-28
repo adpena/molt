@@ -348,12 +348,8 @@ pub(crate) fn frame_effective_builtins_bits(
     if let Some(bits) = frame_stack_active_builtins() {
         return Ok(bits);
     }
-    let cached = {
-        let cache = crate::builtins::exceptions::internals::module_cache(_py);
-        cache.lock().unwrap().get("builtins").copied()
-    };
-    if let Some(bits) = cached {
-        return Ok(normalize_builtins_value(bits));
+    if let Some(bits) = crate::builtins::module_table::interpreter_builtins_dictionary(_py) {
+        return Ok(bits);
     }
     // A compiled application admits its builtins body in the module registry.
     // Materialize that canonical namespace before capture, never substitute a
@@ -366,10 +362,21 @@ pub(crate) fn frame_effective_builtins_bits(
             .expect("admitted builtins registry row");
         let module = crate::builtins::module_table::module_ensure(_py, id);
         let failed = exception_pending(_py);
-        let bits = normalize_builtins_value(module);
-        // The module table owns this published namespace after ensure returns.
+        // Only the interpreter role guarantees a default borrowed lifetime.
+        // A public replacement can bypass initialization, and publication
+        // callbacks may remove the module's last dictionary entry.
+        let dictionary = crate::builtins::module_table::interpreter_builtins_dictionary(_py);
         dec_ref_bits(_py, module);
-        return if failed { Err(()) } else { Ok(bits) };
+        if failed || exception_pending(_py) {
+            return Err(());
+        }
+        return dictionary.ok_or_else(|| {
+            crate::raise_exception::<()>(
+                _py,
+                "SystemError",
+                "canonical builtins initializer did not publish the interpreter dictionary",
+            );
+        });
     }
     Ok(0)
 }

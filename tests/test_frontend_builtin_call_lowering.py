@@ -18,6 +18,7 @@ from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
+from molt.compiler_analysis.python_imports import ModuleSourceRole
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.logical_source_paths import toolchain_logical_path
 from molt.frontend._types import (
@@ -514,7 +515,14 @@ def test_module_annotation_callables_follow_frame_and_import_metadata(
         for index, op in enumerate(ops)
         if op.kind == "MODULE_SET_ATTR"
     }
-    assert enter < metadata_stores["__spec__"] < publication
+    (spec_admission,) = [
+        index
+        for index, op in enumerate(ops)
+        if op.kind == "CALL" and op.args[0] == "molt_module_initialization_spec"
+    ]
+    assert enter < spec_admission < publication
+    assert ops[spec_admission].args[1] == gen.module_obj
+    assert "__spec__" not in metadata_stores
     assert metadata_stores["__doc__"] > publication
     annotation_functions = [
         index
@@ -4527,12 +4535,12 @@ def test_source_import_statements_use_import_transaction_details() -> None:
 def test_bootstrap_source_imports_keep_internal_module_import_boundary() -> None:
     for module_name in (
         "builtins",
-        "_molt_importer",
         "importlib",
         "importlib._bootstrap",
     ):
         gen = SimpleTIRGenerator(
             module_name=module_name,
+            module_source_role="stdlib",
             known_modules={"json"},
             stdlib_allowlist={"json"},
         )
@@ -4544,6 +4552,121 @@ def test_bootstrap_source_imports_keep_internal_module_import_boundary() -> None
 
         assert "json" in _module_import_targets(main_ops)
         assert "json" not in _importlib_transaction_targets(main_ops)
+
+
+@pytest.mark.parametrize(
+    "module_name", ["builtins", "importlib", "importlib.resources"]
+)
+@pytest.mark.parametrize("chunked", [False, True])
+def test_bootstrap_fromlist_prepares_all_children_before_any_binding(
+    module_name: str,
+    chunked: bool,
+) -> None:
+    gen = SimpleTIRGenerator(
+        module_name=module_name,
+        module_source_role="stdlib",
+        module_execution_kind="module",
+        module_chunking=chunked,
+        module_chunk_max_ops=1 if chunked else 0,
+        known_modules={"pkg", "pkg.child", "pkg.broken", "pkg.later"},
+    )
+    gen.visit(
+        ast.parse("from pkg import child as first, broken as second, later as third\n")
+    )
+    functions = gen.to_json()["functions"]
+    owners = [
+        function
+        for function in functions
+        if any(
+            op.get("s_value") == "molt_importlib_prepare_fromlist"
+            for op in function["ops"]
+        )
+    ]
+    (owner,) = owners
+    assert (owner["name"] in gen.module_chunk_symbols) is chunked
+    if not chunked:
+        assert owner["name"] == "molt_main"
+    ops = owner["ops"]
+    definitions = {op["out"]: op for op in ops if "out" in op}
+    (prepare,) = [
+        op
+        for op in ops
+        if op.get("kind") == "call"
+        and op.get("s_value") == "molt_importlib_prepare_fromlist"
+    ]
+    name, parent, fromlist = prepare["args"]
+    assert definitions[name]["s_value"] == "pkg"
+    names = definitions[fromlist]
+    assert names["kind"] == "tuple_new"
+    assert [definitions[item]["s_value"] for item in names["args"]] == [
+        "child",
+        "broken",
+        "later",
+    ]
+    assert _module_import_targets(ops) == {"pkg"}
+    assert not _import_transaction_details(ops)
+    parent_load = definitions[parent]
+    assert parent_load["kind"] == "module_import"
+    assert definitions[parent_load["args"][0]]["s_value"] == "pkg"
+    assert ops.index(parent_load) < ops.index(prepare)
+    imports = [op for op in ops if op["kind"] == "module_import_from"]
+    assert [definitions[op["args"][1]]["s_value"] for op in imports] == [
+        "child",
+        "broken",
+        "later",
+    ]
+    for imported, alias in zip(imports, ("first", "second", "third"), strict=True):
+        assert imported["args"][0] == parent
+        assert ops.index(prepare) < ops.index(imported)
+        (binding,) = [
+            op
+            for op in ops
+            if op["kind"] == "module_set_attr"
+            and definitions[op["args"][1]].get("s_value") == alias
+        ]
+        assert binding["args"][2] == imported["out"]
+        assert ops.index(imported) < ops.index(binding)
+
+
+@pytest.mark.parametrize(
+    "module_name,role,in_function",
+    [
+        ("user_package", "user", False),
+        ("importlib", "user", False),
+        ("importlib", "stdlib", True),
+    ],
+)
+def test_nonbootstrap_fromlist_has_only_public_transaction_owner(
+    module_name: str,
+    role: ModuleSourceRole,
+    in_function: bool,
+) -> None:
+    statement = "from pkg import child as first, broken as second\n"
+    source = "def load():\n" + indent(statement, "    ") if in_function else statement
+    gen = SimpleTIRGenerator(
+        module_name=module_name,
+        module_source_role=role,
+        known_modules={"pkg", "pkg.child", "pkg.broken"},
+    )
+    gen.visit(ast.parse(source))
+    functions = gen.to_json()["functions"]
+    ops = next(
+        function["ops"]
+        for function in functions
+        if (
+            str(function["name"]).endswith("__load")
+            if in_function
+            else function["name"] == "molt_main"
+        )
+    )
+    assert _import_transaction_details(ops) == [("pkg", ("child", "broken"), 0)]
+    assert not _module_import_targets(ops)
+    assert all(
+        op.get("s_value") != "molt_importlib_prepare_fromlist"
+        for function in functions
+        for op in function["ops"]
+    )
+    assert len([op for op in ops if op["kind"] == "module_import_from"]) == 2
 
 
 def test_known_child_from_import_uses_transaction_owned_fromlist() -> None:

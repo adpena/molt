@@ -102,7 +102,7 @@ impl MoltLock {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct MoltRLock {
+pub(crate) struct MoltRLock {
     state: Mutex<RLockState>,
     cvar: Condvar,
 }
@@ -171,7 +171,7 @@ struct MoltLocal {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl MoltRLock {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new(RLockState {
                 locked: false,
@@ -182,7 +182,7 @@ impl MoltRLock {
         }
     }
 
-    fn try_acquire(&self) -> bool {
+    pub(crate) fn try_acquire(&self) -> bool {
         let tid = current_thread_id();
         let mut guard = self.state.lock().unwrap();
         if !guard.locked {
@@ -198,7 +198,7 @@ impl MoltRLock {
         false
     }
 
-    fn acquire(&self, timeout: Option<Duration>) -> bool {
+    pub(crate) fn acquire(&self, timeout: Option<Duration>) -> bool {
         let tid = current_thread_id();
         let mut guard = self.state.lock().unwrap();
         if !guard.locked {
@@ -247,7 +247,7 @@ impl MoltRLock {
         }
     }
 
-    fn release(&self) -> bool {
+    pub(crate) fn release(&self) -> bool {
         let tid = current_thread_id();
         let mut guard = self.state.lock().unwrap();
         if !guard.locked || guard.owner != tid {
@@ -262,7 +262,7 @@ impl MoltRLock {
         true
     }
 
-    fn locked(&self) -> bool {
+    pub(crate) fn locked(&self) -> bool {
         self.state.lock().unwrap().locked
     }
 

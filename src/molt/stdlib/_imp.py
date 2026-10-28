@@ -1,17 +1,20 @@
 """Low-level import-machinery helpers used by `importlib`.
 
 CPython exposes this as a built-in module that the public `importlib`
-implementation uses for builtin / frozen / dynamic-extension hooks. In
-the molt compiled-binary contract there are no frozen modules, no
-dynamically-loaded C extensions, and no GIL-style import lock — so this
-module exposes a deterministic shim that returns honest answers for
-every attribute consumers might probe (False, empty list, no-op).
+implementation uses for builtin / frozen / dynamic-extension hooks. Molt
+uses the interpreter's runtime-owned import lock for finder callbacks;
+the remaining capabilities below stay explicit.
 """
 
 from __future__ import annotations
 
 
 import sys
+from _intrinsics import require_intrinsic as _require_intrinsic
+
+_MOLT_IMP_ACQUIRE_LOCK = _require_intrinsic("molt_imp_acquire_lock")
+_MOLT_IMP_RELEASE_LOCK = _require_intrinsic("molt_imp_release_lock")
+_MOLT_IMP_LOCK_HELD = _require_intrinsic("molt_imp_lock_held")
 
 
 def is_builtin(name):
@@ -69,18 +72,15 @@ def extension_suffixes():
 
 
 def lock_held():
-    """molt does not use a CPython-style import lock."""
-    return False
+    return _MOLT_IMP_LOCK_HELD()
 
 
 def acquire_lock():
-    """No-op — molt does not use a CPython-style import lock."""
-    return None
+    return _MOLT_IMP_ACQUIRE_LOCK()
 
 
 def release_lock():
-    """No-op — molt does not use a CPython-style import lock."""
-    return None
+    return _MOLT_IMP_RELEASE_LOCK()
 
 
 def _fix_co_filename(co, fname):

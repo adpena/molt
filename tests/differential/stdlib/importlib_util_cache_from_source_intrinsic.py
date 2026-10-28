@@ -3,18 +3,20 @@
 
 import importlib.util
 import os
-import re
+import sys
 import tempfile
 
 
 def _canonical_cache_basename(cache_path: str) -> str:
-    return re.sub(
-        r"(?:\.)?cpython-\d+(?:\.opt-[^.]+)?",
-        "",
-        os.path.basename(cache_path),
-    )
+    # The implementation name is intentionally different. Validate the exact
+    # runtime-owned tag before normalizing that one coordinate for comparison.
+    basename = os.path.basename(cache_path)
+    assert basename == "name." + sys.implementation.cache_tag + ".pyc"
+    return "name.<tag>.pyc"
 
 
+previous_cache_prefix = sys.pycache_prefix
+sys.pycache_prefix = None
 with tempfile.TemporaryDirectory(prefix="molt_importlib_cache_from_source_") as root:
     py_path = os.path.join(root, "name.py")
     non_py_path = os.path.join(root, "name")
@@ -28,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix="molt_importlib_cache_from_source_") as 
         os.path.basename(os.path.dirname(py_cache)),
         _canonical_cache_basename(py_cache),
     )
-    py_layout_ok = py_layout == os.path.join("__pycache__", "name.pyc")
+    py_layout_ok = py_layout == os.path.join("__pycache__", "name.<tag>.pyc")
     print("py_layout", py_layout)
     print("py_layout_ok", py_layout_ok)
     assert py_layout_ok
@@ -49,3 +51,5 @@ with tempfile.TemporaryDirectory(prefix="molt_importlib_cache_from_source_") as 
     optimization_deterministic = optimized_a == optimized_b
     print("optimization_deterministic", optimization_deterministic)
     assert optimization_deterministic
+
+sys.pycache_prefix = previous_cache_prefix

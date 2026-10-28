@@ -59,9 +59,15 @@ pub use dynamic_class_attr::*;
 pub use keyword_metadata::*;
 pub(crate) use keyword_metadata::{HARD_KEYWORDS, keyword_contains};
 pub(crate) use module_spec::alloc_module_spec;
+pub(crate) use module_spec::{
+    commit_module_spec_suffix_namespace, module_spec_suffix_value,
+    module_spec_suffix_value_from_namespace, stage_module_spec_suffix_namespace,
+};
 pub use module_spec::{
+    molt_importlib_module_spec_cached_get, molt_importlib_module_spec_cached_set,
+    molt_importlib_module_spec_has_location_get, molt_importlib_module_spec_has_location_set,
     molt_importlib_module_spec_init, molt_importlib_module_spec_parent,
-    molt_importlib_module_spec_repr, molt_importlib_module_spec_type,
+    molt_importlib_module_spec_repr, molt_importlib_module_spec_type, molt_importlib_suffixes,
 };
 pub use native_descriptors::*;
 pub use wrappers::*;
@@ -122,6 +128,12 @@ define_types_runtime_state! {
     module_spec_class,
     module_spec_init_fn,
     module_spec_parent_fn,
+    module_spec_cached_get_fn,
+    module_spec_cached_set_fn,
+    module_spec_has_location_get_fn,
+    module_spec_has_location_set_fn,
+    module_spec_suffix_namespace,
+    module_spec_suffix_bound,
     compiled_loader_base_class,
     compiled_loader_builtin_class,
     compiled_loader_frozen_class,

@@ -4,7 +4,7 @@ use super::*;
 pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut owned: Vec<u64> = Vec::new();
-        let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(3);
+        let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(4);
 
         let builtin_importer_bits = crate::builtins::types::compiled_loader_builtin_class(_py);
         if builtin_importer_bits == 0 {
@@ -34,6 +34,20 @@ pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
         }
         owned.push(module_spec_bits);
         values.push((b"ModuleSpec", module_spec_bits));
+
+        // The exception schema/cache owns this single identity independently
+        // of mutable importlib or builtins bindings. Payload entries project it.
+        let deadlock =
+            crate::builtins::exceptions::exception_type_bits_from_name(_py, "_DeadlockError");
+        if deadlock == 0 || exception_pending(_py) {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
+            }
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(_py, deadlock);
+        owned.push(deadlock);
+        values.push((b"_DeadlockError", deadlock));
 
         let mut pairs: Vec<u64> = Vec::with_capacity(values.len() * 2);
         for (key, value_bits) in values {
@@ -459,45 +473,90 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
     })
 }
 
+fn importlib_external_producer_owns_namespace(
+    _py: &PyToken<'_>,
+    namespace_bits: u64,
+) -> Result<(), u64> {
+    let provider = crate::builtins::module_table::module_registry()
+        .and_then(|registry| registry.compiled_spec("_frozen_importlib_external"))
+        .filter(|spec| spec.is_stdlib_provider)
+        .map(|spec| spec.provider_name);
+    let Some(provider) = provider else {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "importlib suffix producer has no admitted source body",
+        ));
+    };
+    if !crate::builtins::modules::module_body_owns_globals(_py, provider, namespace_bits) {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            "importlib suffix producer does not own its defining globals",
+        ));
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_frozen_external_payload(machinery_bits: u64) -> u64 {
+pub extern "C" fn molt_importlib_frozen_external_commit(namespace_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if let Err(error) = importlib_external_producer_owns_namespace(_py, namespace_bits) {
+            return error;
+        }
+        let _ = crate::builtins::types::commit_module_spec_suffix_namespace(_py, namespace_bits);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_frozen_external_payload(
+    machinery_bits: u64,
+    namespace_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if let Err(error) = importlib_external_producer_owns_namespace(_py, namespace_bits) {
+            return error;
+        }
+        let staged = crate::builtins::types::stage_module_spec_suffix_namespace(_py);
+        if staged == 0 {
+            return MoltObject::none().bits();
+        }
+        let staged = crate::builtins::exceptions::ExceptionValue::adopt(_py, staged);
         let mut owned: Vec<u64> = Vec::new();
         let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(16);
 
-        let bytecode_suffixes_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"BYTECODE_SUFFIXES"),
-            b"BYTECODE_SUFFIXES",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let bytecode_suffixes_bits =
+            match crate::builtins::types::module_spec_suffix_value_from_namespace(
+                _py,
+                staged.bits(),
+                b"BYTECODE_SUFFIXES",
+            ) {
+                Some(bits) => bits,
+                None => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
                 }
-                return err;
-            }
-        };
+            };
         owned.push(bytecode_suffixes_bits);
         values.push((b"BYTECODE_SUFFIXES", bytecode_suffixes_bits));
 
-        let debug_bytecode_suffixes_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"DEBUG_BYTECODE_SUFFIXES"),
-            b"DEBUG_BYTECODE_SUFFIXES",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let debug_bytecode_suffixes_bits =
+            match crate::builtins::types::module_spec_suffix_value_from_namespace(
+                _py,
+                staged.bits(),
+                b"BYTECODE_SUFFIXES",
+            ) {
+                Some(bits) => bits,
+                None => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
                 }
-                return err;
-            }
-        };
+            };
         owned.push(debug_bytecode_suffixes_bits);
         values.push((b"DEBUG_BYTECODE_SUFFIXES", debug_bytecode_suffixes_bits));
 
@@ -530,42 +589,40 @@ pub extern "C" fn molt_importlib_frozen_external_payload(machinery_bits: u64) ->
         owned.push(magic_number_bits);
         values.push((b"MAGIC_NUMBER", magic_number_bits));
 
-        let optimized_bytecode_suffixes_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"OPTIMIZED_BYTECODE_SUFFIXES"),
-            b"OPTIMIZED_BYTECODE_SUFFIXES",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let optimized_bytecode_suffixes_bits =
+            match crate::builtins::types::module_spec_suffix_value_from_namespace(
+                _py,
+                staged.bits(),
+                b"BYTECODE_SUFFIXES",
+            ) {
+                Some(bits) => bits,
+                None => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
                 }
-                return err;
-            }
-        };
+            };
         owned.push(optimized_bytecode_suffixes_bits);
         values.push((
             b"OPTIMIZED_BYTECODE_SUFFIXES",
             optimized_bytecode_suffixes_bits,
         ));
 
-        let source_suffixes_bits = match importlib_required_attribute(
-            _py,
-            machinery_bits,
-            runtime_static_name_slot(_py, b"SOURCE_SUFFIXES"),
-            b"SOURCE_SUFFIXES",
-            "importlib.machinery",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
+        let source_suffixes_bits =
+            match crate::builtins::types::module_spec_suffix_value_from_namespace(
+                _py,
+                staged.bits(),
+                b"SOURCE_SUFFIXES",
+            ) {
+                Some(bits) => bits,
+                None => {
+                    for bits in owned {
+                        dec_ref_bits(_py, bits);
+                    }
+                    return MoltObject::none().bits();
                 }
-                return err;
-            }
-        };
+            };
         owned.push(source_suffixes_bits);
         values.push((b"SOURCE_SUFFIXES", source_suffixes_bits));
 

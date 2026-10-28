@@ -28,8 +28,10 @@ from molt import host_capacity
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import module_dependencies as cli_module_dependencies
+from molt.cli import module_graph as cli_module_graph
 from molt.cli import frontend_worker as cli_frontend_worker
 from molt.cli.models import _FrontendLayerPlan, _FrontendParallelLayerState
+from molt.cli.module_resolution import _stdlib_root_path
 
 
 @pytest.fixture
@@ -301,6 +303,7 @@ def test_a2_worker_applies_phase_timeout_per_module(tmp_path, monkeypatch) -> No
             "optimization_profile": "dev",
             "pgo_hot_functions": ["slow_module::molt_main"],
             "frontend_phase_timeout": frontend_phase_timeout,
+            "module_source_role": "user",
         }
 
     result = cli_frontend_worker._frontend_lower_module_worker(_payload(0.25))
@@ -388,7 +391,14 @@ def _make_execution_context(
         stdlib_allowlist_sorted=(),
         pgo_hot_function_names_sorted=(),
         module_dep_closures={name: frozenset({name}) for name in names},
-        module_graph_metadata=None,
+        module_graph_metadata=cli_module_graph._build_module_graph_metadata(
+            module_graph,
+            generated_module_source_paths={},
+            entry_module="__main__",
+            entry_execution_kind="direct_main",
+            namespace_module_names=(),
+            stdlib_root=_stdlib_root_path(),
+        ),
         module_chunking=False,
         scoped_lowering_inputs=None,
         frontend_module_costs={name: 1.0 for name in names},

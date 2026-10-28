@@ -42,15 +42,16 @@ pub use bootstrap_loader::{
 };
 pub use find_spec::{
     molt_importlib_admit_spec, molt_importlib_filefinder_find_spec,
-    molt_importlib_find_in_path_package_context,
+    molt_importlib_find_in_path_package_context, molt_importlib_find_spec,
 };
+pub(crate) use import_transaction::importlib_import_resolved_attempt;
 pub use import_transaction::{
     molt_importlib_export_attrs, molt_importlib_import_module, molt_importlib_import_optional,
     molt_importlib_import_or_fallback, molt_importlib_import_required,
     molt_importlib_import_transaction, molt_importlib_load_module_shim,
-    molt_importlib_resolve_name,
+    molt_importlib_prepare_fromlist, molt_importlib_resolve_name,
 };
-pub(super) use metadata_spec::importlib_module_from_spec_impl;
+pub(super) use metadata_spec::{importlib_init_module_attrs_impl, importlib_module_from_spec_impl};
 pub use metadata_spec::{
     molt_importlib_metadata_dist_paths, molt_importlib_metadata_distributions_payload,
     molt_importlib_metadata_entry_points_filter_payload,
@@ -61,10 +62,29 @@ pub use metadata_spec::{
     molt_importlib_spec_from_loader, molt_importlib_stabilize_module_state,
 };
 pub use payloads::{
-    molt_importlib_frozen_external_payload, molt_importlib_frozen_payload,
-    molt_importlib_metadata_types_payload, molt_typing_private_payload,
+    molt_importlib_frozen_external_commit, molt_importlib_frozen_external_payload,
+    molt_importlib_frozen_payload, molt_importlib_metadata_types_payload,
+    molt_typing_private_payload,
 };
 pub use reload_bootstrap::{
+    molt_imp_acquire_lock, molt_imp_lock_held, molt_imp_release_lock,
     molt_importlib_bootstrap_payload, molt_importlib_ensure_default_meta_path,
     molt_importlib_namespace_paths, molt_importlib_reload, molt_importlib_search_paths,
 };
+
+pub(crate) use reload_bootstrap::importlib_seed_default_generation;
+
+pub(super) use find_spec::importlib_find_spec_impl;
+pub(super) use reload_bootstrap::{
+    importlib_acquire_import_lock, importlib_complete_initial_defaults,
+    importlib_take_default_generation, release_default_owners,
+};
+
+#[cfg(test)]
+pub(super) use reload_bootstrap::importlib_retire_default_generation;
+
+#[cfg(test)]
+pub(super) use reload_bootstrap::pending_default_owners;
+
+#[cfg(test)]
+pub(super) use reload_bootstrap::importlib_finish_initial_defaults;

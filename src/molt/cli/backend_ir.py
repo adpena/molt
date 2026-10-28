@@ -40,6 +40,7 @@ from molt.cli.frontend_integration import (
 )
 from molt.cli.models import (
     _FrontendIntegrationState,
+    ModuleSourceRole,
     _ExternalNativeModuleInitSpec,
     _ExternalPackageNativeArtifactPlan,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
@@ -455,6 +456,8 @@ def _build_module_registry(
     entry_module: str,
     module_graph: Mapping[str, Path],
     logical_source_path_by_module: Mapping[str, str],
+    module_is_namespace_by_module: Mapping[str, bool],
+    module_source_role_by_module: Mapping[str, ModuleSourceRole],
     module_order: Sequence[str],
     runtime_import_dispatch_roots: Collection[str],
     native_module_init_specs: Sequence[_ExternalNativeModuleInitSpec],
@@ -495,6 +498,8 @@ def _build_module_registry(
             ModuleRegistryEntry(
                 name=name,
                 kind=kind,
+                has_location=not module_is_namespace_by_module[name],
+                is_stdlib_provider=module_source_role_by_module[name] == "stdlib",
                 init_symbol=(
                     SimpleTIRGenerator.module_init_symbol(name) if has_init else ""
                 ),
@@ -522,6 +527,8 @@ def _build_module_registry(
                 ModuleRegistryEntry(
                     name=spec.module,
                     kind="alias",
+                    has_location=False,
+                    is_stdlib_provider=False,
                     alias_of=spec.alias_of,
                     origin=f"<static:{spec.module}>",
                 )
@@ -531,6 +538,8 @@ def _build_module_registry(
             ModuleRegistryEntry(
                 name=spec.module,
                 kind="extension" if spec.is_extension else "source",
+                has_location=False,
+                is_stdlib_provider=False,
                 init_symbol=SimpleTIRGenerator.module_init_symbol(spec.module),
                 is_package=spec.module in external_package_names,
                 origin=f"<static:{spec.module}>",
@@ -546,6 +555,11 @@ def _build_module_registry(
             ModuleRegistryEntry(
                 name="__main__",
                 kind="source",
+                has_location=not module_is_namespace_by_module[entry_module],
+                # This fixed row is the explicit program entry capability,
+                # not an advertised named stdlib provider. The original named
+                # entry row retains its source provider role for imports.
+                is_stdlib_provider=False,
                 # __main__ shares the entry module's init body (the frontend
                 # compiles the entry module with __main__ semantics); there is
                 # no separate trampoline init on the registry lane.
@@ -610,50 +624,12 @@ def _registry_init_symbol_rewrite_map(registry: ModuleRegistry) -> dict[str, str
     return rewrite
 
 
-_IMPORT_TRANSACTION_SYMBOL = "molt_importlib_import_transaction"
-
-
-def _literal_plain_import_transaction_name(
-    op: Mapping[str, Any],
-    *,
-    const_str_by_var: Mapping[str, str],
-    const_none_vars: Collection[str],
-    empty_tuple_vars: Collection[str],
-    const_int_by_var: Mapping[str, int],
-) -> str | None:
-    """Match the frontend's plain-import transaction shape and return the
-    literal absolute module name.
-
-    The shape (``_emit_import_transaction`` with empty fromlist, level 0):
-    ``call molt_importlib_import_transaction [<const_str name>, <globals>,
-    <const_none locals>, <empty tuple_new fromlist>, <const 0 level>]``.
-    Anything else (fromlist imports, relative levels, computed names) keeps
-    the CPython-parity transaction lane.
-    """
-    if op.get("kind") != "call" or op.get("s_value") != _IMPORT_TRANSACTION_SYMBOL:
-        return None
-    args = op.get("args")
-    if not isinstance(args, list) or len(args) != 5:
-        return None
-    name = const_str_by_var.get(args[0])
-    if name is None:
-        return None
-    if args[2] not in const_none_vars:
-        return None
-    if args[3] not in empty_tuple_vars:
-        return None
-    if const_int_by_var.get(args[4]) != 0:
-        return None
-    return name
-
-
 def _has_import_lane_site(ops: list[Any]) -> bool:
     """Whether ``ops`` hold an op that ``_rewrite_native_import_lanes`` reads.
 
-    The rewrite changes a direct ``molt_init_*`` call, a ``module_import`` or a
-    direct compiler-owned plain-import transaction call. Observable intrinsic
-    callable references keep their ordinary transaction semantics. Most functions
-    hold none of these sites, so one scan of their kinds skips them.
+    Only internal initializer calls and bootstrap ``module_import`` operations
+    use dense catalog slots. Ordinary Python import transactions keep the ordered
+    public finder protocol, including literal names present in the catalog.
     """
     for op in ops:
         if not isinstance(op, dict):
@@ -663,9 +639,7 @@ def _has_import_lane_site(ops: list[Any]) -> bool:
             return True
         if kind == "call":
             symbol = op.get("s_value")
-            if isinstance(symbol, str) and (
-                symbol.startswith("molt_init_") or symbol == _IMPORT_TRANSACTION_SYMBOL
-            ):
+            if isinstance(symbol, str) and symbol.startswith("molt_init_"):
                 return True
     return False
 
@@ -674,44 +648,20 @@ def _rewrite_native_import_lanes(
     functions: list[dict[str, Any]],
     registry: ModuleRegistry,
 ) -> str | None:
-    """Lower literal import sites onto symbolic module slots and module ensure.
+    """Bind internal initializer dispatch to symbolic catalog slots.
 
-    Rewrites, in every prepared backend-IR function:
-
-    * direct ``call molt_init_*`` ops (entry dispatch, eager sys init, spawn
-      override, static-native provider inits) into ensure calls — after this
-      pass init bodies are reachable ONLY through ``MODULE_INIT_TABLE``
-      (invariant I5, gate G3);
-    * ``module_import`` ops whose literal const name owns a registry init
-      lane into ensure calls;
-    * plain-import transaction calls (``import x`` / ``import a.b`` — empty
-      fromlist, level 0, literal absolute name with a registry init lane)
-      into ``ensure(full_id)`` followed by ``ensure(top_id)`` (the import
-      statement binds the top-level module).  This is design §4.2/§10.1
-      with a symbolic module name in reusable IR. Final emission supplies its
-      dense ModuleId; the runtime call still receives only a boxed integer.
-
-    Names without a registry init lane keep their dynamic ops so the
-    importlib fallback ladder (runtime-root spec imports, extension loaders)
-    is preserved.  Returns an error message when a direct init call targets a
-    symbol outside the registry (fail closed — that call could bypass
-    init-exactly-once). The function list belongs to assembly; changed entries
-    replace borrowed function records without mutating their operations.
+    Entry/sys/spawn/static-provider initializer calls and bootstrap-only
+    ``module_import`` operations enter the same dense initialization authority.
+    Public imports remain frontend transactions: a catalog entry proves a body
+    exists, not that user finders may be bypassed. Unknown direct initializer
+    symbols fail closed. Changed function records retain copy-on-write custody.
     """
     rewrite_map = _registry_init_symbol_rewrite_map(registry)
-    rewrite_plain_imports = not any(
-        func.get("name") == _IMPORT_TRANSACTION_SYMBOL
-        and not func.get("is_extern", False)
-        for func in functions
-    )
     for function_index, func in enumerate(functions):
         ops = func.get("ops")
         if not isinstance(ops, list) or not _has_import_lane_site(ops):
             continue
         const_str_by_var: dict[str, str] = {}
-        const_none_vars: set[str] = set()
-        empty_tuple_vars: set[str] = set()
-        const_int_by_var: dict[str, int] = {}
         for op in ops:
             if not isinstance(op, dict) or not isinstance(op.get("out"), str):
                 continue
@@ -719,12 +669,6 @@ def _rewrite_native_import_lanes(
             out = op["out"]
             if kind == "const_str" and isinstance(op.get("s_value"), str):
                 const_str_by_var[out] = op["s_value"]
-            elif kind == "const_none":
-                const_none_vars.add(out)
-            elif kind == "tuple_new" and not op.get("args"):
-                empty_tuple_vars.add(out)
-            elif kind == "const" and isinstance(op.get("value"), int):
-                const_int_by_var[out] = op["value"]
         next_var = _next_tir_var_index([op for op in ops if isinstance(op, dict)])
         new_ops: list[dict[str, Any]] = []
         changed = False
@@ -786,69 +730,6 @@ def _rewrite_native_import_lanes(
                             out_var=out_name,
                         )
                     )
-                    changed = True
-                    continue
-            elif kind == "call" and rewrite_plain_imports:
-                name = _literal_plain_import_transaction_name(
-                    op,
-                    const_str_by_var=const_str_by_var,
-                    const_none_vars=const_none_vars,
-                    empty_tuple_vars=empty_tuple_vars,
-                    const_int_by_var=const_int_by_var,
-                )
-                full_id = (
-                    registry.ensure_lane_id(name) if isinstance(name, str) else None
-                )
-                top_id = (
-                    registry.ensure_lane_id(name.split(".", 1)[0])
-                    if isinstance(name, str) and full_id is not None
-                    else None
-                )
-                if full_id is not None and top_id is not None:
-                    out_var = op.get("out")
-                    out_name = out_var if isinstance(out_var, str) else f"v{next_var}"
-                    if not isinstance(out_var, str):
-                        next_var += 1
-                    if top_id == full_id:
-                        id_var = f"v{next_var}"
-                        boxed_var = f"v{next_var + 1}"
-                        next_var += 2
-                        new_ops.extend(
-                            _module_ensure_call_ops(
-                                registry.rows[full_id].name,
-                                id_var=id_var,
-                                boxed_var=boxed_var,
-                                out_var=out_name,
-                            )
-                        )
-                    else:
-                        # `import a.b` initializes a.b (parent-first inside
-                        # ensure) and binds the top-level module.  A failure
-                        # in the first ensure leaves the pending exception
-                        # set; ensure propagates it without running another
-                        # init, and the site's existing check_exception fires.
-                        full_id_var = f"v{next_var}"
-                        full_boxed_var = f"v{next_var + 1}"
-                        full_out_var = f"v{next_var + 2}"
-                        top_id_var = f"v{next_var + 3}"
-                        top_boxed_var = f"v{next_var + 4}"
-                        next_var += 5
-                        new_ops.extend(
-                            _module_ensure_call_ops(
-                                registry.rows[full_id].name,
-                                id_var=full_id_var,
-                                boxed_var=full_boxed_var,
-                                out_var=full_out_var,
-                            )
-                        )
-                        new_ops.extend(
-                            _module_ensure_call_ops(
-                                registry.rows[top_id].name,
-                                id_var=top_id_var,
-                                boxed_var=top_boxed_var,
-                                out_var=out_name,
-                            )
-                        )
                     changed = True
                     continue
             new_ops.append(op)
@@ -2084,6 +1965,8 @@ def _prepare_backend_ir(
     entry_module: str,
     module_graph: Mapping[str, Path],
     logical_source_path_by_module: Mapping[str, str],
+    module_is_namespace_by_module: Mapping[str, bool],
+    module_source_role_by_module: Mapping[str, ModuleSourceRole],
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
     integration_state: _FrontendIntegrationState,
@@ -2289,6 +2172,8 @@ def _prepare_backend_ir(
                 entry_module=entry_module,
                 module_graph=module_graph,
                 logical_source_path_by_module=logical_source_path_by_module,
+                module_is_namespace_by_module=module_is_namespace_by_module,
+                module_source_role_by_module=module_source_role_by_module,
                 module_order=module_order,
                 runtime_import_dispatch_roots=native_runtime_import_dispatch_roots,
                 native_module_init_specs=native_module_init_specs,

@@ -309,7 +309,7 @@ impl MoltQueue {
 }
 
 #[cfg(target_arch = "wasm32")]
-struct MoltRLock {
+pub(crate) struct MoltRLock {
     locked: Cell<bool>,
     owner: Cell<u64>,
     count: Cell<u64>,
@@ -370,7 +370,7 @@ enum QueueKindWasm {
 
 #[cfg(target_arch = "wasm32")]
 impl MoltRLock {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             locked: Cell::new(false),
             owner: Cell::new(0),
@@ -378,7 +378,7 @@ impl MoltRLock {
         }
     }
 
-    fn try_acquire(&self) -> bool {
+    pub(crate) fn try_acquire(&self) -> bool {
         let tid = 1;
         if !self.locked.get() {
             self.locked.set(true);
@@ -394,7 +394,7 @@ impl MoltRLock {
         false
     }
 
-    fn release(&self) -> bool {
+    pub(crate) fn release(&self) -> bool {
         let tid = 1;
         if !self.locked.get() || self.owner.get() != tid {
             return false;
@@ -408,7 +408,7 @@ impl MoltRLock {
         true
     }
 
-    fn locked(&self) -> bool {
+    pub(crate) fn locked(&self) -> bool {
         self.locked.get()
     }
 

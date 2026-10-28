@@ -685,6 +685,7 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
     common = dict(
         codegen=CodegenSelection(),
@@ -853,6 +854,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
 
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
@@ -960,6 +962,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
     common = dict(
         codegen=CodegenSelection(),
@@ -1065,6 +1068,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
     common = dict(
         codegen=CodegenSelection(),
@@ -1156,6 +1160,7 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
     common = dict(
         codegen=CodegenSelection(),
@@ -1264,6 +1269,7 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
 
     def prepare(*, backend_compiler_fingerprint: str, output_name: str):

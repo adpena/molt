@@ -33,6 +33,15 @@ class SchemaError(ValueError):
 
 
 @dataclass(frozen=True)
+class IntrinsicCallable:
+    name: str
+    identity: str
+    target_property: str | None = None
+    runtime_import_protocol: bool = False
+    acquisition: str | None = None
+
+
+@dataclass(frozen=True)
 class Schema:
     identity_bits: tuple[tuple[str, int], ...]
     member_bits: tuple[tuple[str, int], ...]
@@ -41,7 +50,7 @@ class Schema:
     acquisitions: tuple[tuple[str, str, str, str], ...]
     writes: tuple[tuple[str, str, tuple[str, ...]], ...]
     target_properties: tuple[tuple[str, str], ...]
-    intrinsic_callables: tuple[tuple[str, str, str], ...]
+    intrinsic_callables: tuple[IntrinsicCallable, ...]
 
 
 def _bits(raw: object, label: str) -> tuple[tuple[str, int], ...]:
@@ -209,7 +218,7 @@ def load_schema(
             intrinsic_manifest.read_text(encoding="utf-8")
         )
     }
-    intrinsic_callables: list[tuple[str, str, str]] = []
+    intrinsic_callables: list[IntrinsicCallable] = []
     intrinsic_names: set[str] = set()
     intrinsic_identities: set[str] = set()
     used_properties: set[str] = set()
@@ -219,31 +228,61 @@ def load_schema(
     other_callable_identities.update(
         {"OTHER", "UNBOUND", "INERT_VALUE", "STATIC_FALSE"}
     )
-    for row in _rows(
-        data["intrinsic_callable"],
-        "intrinsic_callable",
-        {"name", "identity", "target_property"},
-    ):
+    rows = data["intrinsic_callable"]
+    if not isinstance(rows, list) or not rows:
+        raise SchemaError("intrinsic_callable must be a nonempty array of tables")
+    for row in rows:
+        if not isinstance(row, dict) or set(row) not in (
+            {"name", "identity", "target_property"},
+            {"name", "identity", "runtime_import_protocol"},
+            {"name", "identity", "acquisition"},
+        ):
+            raise SchemaError("intrinsic callable requires one explicit semantic facet")
         name = _name(row["name"], "intrinsic callable name")
         identity = _reference(row["identity"], identity_names, "intrinsic identity")
-        target_property = _reference(
-            row["target_property"], set(properties), "target property"
+        target_property = (
+            _reference(row["target_property"], set(properties), "target property")
+            if "target_property" in row
+            else None
         )
+        runtime_import = "runtime_import_protocol" in row
+        if runtime_import and row["runtime_import_protocol"] is not True:
+            raise SchemaError("runtime_import_protocol must be true")
+        acquisition = row.get("acquisition")
+        if "acquisition" in row and (
+            not isinstance(acquisition, str)
+            or acquisition not in {"required", "optional"}
+        ):
+            raise SchemaError("intrinsic acquisition must be required or optional")
         if name in intrinsic_names:
             raise SchemaError(f"duplicate intrinsic callable {name!r}")
-        if identity in intrinsic_identities or identity in other_callable_identities:
+        shared_acquisition = acquisition is not None and identity in {
+            value for owner, _, value, _ in acquisitions if owner == "INTRINSICS_MODULE"
+        }
+        if identity in intrinsic_identities or (
+            identity in other_callable_identities and not shared_acquisition
+        ):
             raise SchemaError(f"ambiguous intrinsic identity {identity!r}")
         producer = producers.get(name)
         if producer is None:
             raise SchemaError(f"intrinsic callable {name!r} has no manifest producer")
-        if producer.arity != 0:
+        if target_property is not None and producer.arity != 0:
             raise SchemaError(
                 f"target property intrinsic {name!r} must take no arguments"
             )
+        if acquisition is not None and (not shared_acquisition or producer.arity != 2):
+            raise SchemaError(
+                "intrinsic acquisition requires its two-argument public producer"
+            )
         intrinsic_names.add(name)
         intrinsic_identities.add(identity)
-        used_properties.add(target_property)
-        intrinsic_callables.append((name, identity, target_property))
+        if target_property is not None:
+            used_properties.add(target_property)
+        intrinsic_callables.append(
+            IntrinsicCallable(
+                name, identity, target_property, runtime_import, acquisition
+            )
+        )
     if used_properties != set(properties):
         raise SchemaError(
             f"orphan target properties: {sorted(set(properties) - used_properties)}"
@@ -308,8 +347,8 @@ def render_python(schema: Schema) -> str:
         "str",
         "PythonIdentity",
         [
-            (repr(name), f"PythonIdentity.{identity}")
-            for name, identity, _ in schema.intrinsic_callables
+            (repr(row.name), f"PythonIdentity.{row.identity}")
+            for row in schema.intrinsic_callables
         ],
     )
     mapping(
@@ -318,12 +357,38 @@ def render_python(schema: Schema) -> str:
         "PythonTargetProperty",
         [
             (
-                f"int(PythonIdentity.{identity})",
-                f"PythonTargetProperty.{target_property}",
+                f"int(PythonIdentity.{row.identity})",
+                f"PythonTargetProperty.{row.target_property}",
             )
-            for _, identity, target_property in schema.intrinsic_callables
+            for row in schema.intrinsic_callables
+            if row.target_property is not None
         ],
     )
+    lines.append("INTRINSIC_RUNTIME_IMPORT_IDENTITIES: Final[IdentityMask] = (\n")
+    lines.extend(
+        f"    int(PythonIdentity.{row.identity}) |\n"
+        for row in schema.intrinsic_callables
+        if row.runtime_import_protocol
+    )
+    lines.append("    0\n)\n\n")
+    for name, rows in (
+        ("ALL_INTRINSIC_CALLABLE_IDENTITIES", schema.intrinsic_callables),
+        (
+            "INTRINSIC_ACQUISITION_IDENTITIES",
+            tuple(row for row in schema.intrinsic_callables if row.acquisition),
+        ),
+        (
+            "OPTIONAL_INTRINSIC_ACQUISITION_IDENTITIES",
+            tuple(
+                row
+                for row in schema.intrinsic_callables
+                if row.acquisition == "optional"
+            ),
+        ),
+    ):
+        lines.append(f"{name}: Final[IdentityMask] = (\n")
+        lines.extend(f"    int(PythonIdentity.{row.identity}) |\n" for row in rows)
+        lines.append("    0\n)\n\n")
     mapping(
         "BUILTIN_IDENTITIES",
         "str",

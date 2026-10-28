@@ -234,6 +234,7 @@ def test_frontend_analysis_uses_admitted_native_selection(
             entry_module="app",
             entry_execution_kind="script",
             namespace_module_names=set(),
+            stdlib_root=path.parent / "stdlib",
         ),
         module_resolution_cache=_ModuleResolutionCache(),
         roots=[path.parent],

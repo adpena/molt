@@ -19,6 +19,7 @@ from molt.compiler_analysis.python_lexical_scope import (
     module_annotation_execution,
 )
 from molt.compiler_analysis.python_imports import (
+    is_compiler_intrinsics_module,
     SourceImportSite,
     SourceAllExports,
 )
@@ -58,6 +59,7 @@ from molt.compiler_analysis.python_namespace_writes import (
     python_package_name,
 )
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    INTRINSIC_RUNTIME_IMPORT_IDENTITIES,
     PythonIdentity,
 )
 from molt.compiler_analysis.python_binding_flow import (
@@ -1631,6 +1633,7 @@ def _collect_imports(
                 uses_runtime_import_protocol = call is not None and bool(
                     call.possible_import_call_kinds()
                     or call.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC)
+                    or call.callee_identities & INTRINSIC_RUNTIME_IMPORT_IDENTITIES
                 )
             demand(binding_index.expression_result(node.func), "call")
             for value in (*node.args, *(keyword.value for keyword in node.keywords)):
@@ -1718,12 +1721,7 @@ def _collect_imports(
                     if isinstance(node, ast.Import)
                     else node.module != "__future__"
                     and not (
-                        node.level == 0
-                        and (
-                            node.module == "_intrinsics"
-                            or node.module is not None
-                            and node.module.endswith("._intrinsics")
-                        )
+                        node.level == 0 and is_compiler_intrinsics_module(node.module)
                     )
                 )
             _record_import_statement(node)

@@ -26,7 +26,7 @@ def fixture_matrix():
         {
             "id": f"perf:fixture:{n}",
             "python": "3.14",
-            "reference_python": "3.14.3",
+            "reference_python": "3.14.8",
             "platform": "windows",
             "arch": "arm64",
             "rust_target": "aarch64-pc-windows-msvc",

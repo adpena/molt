@@ -1121,11 +1121,56 @@ pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        use crate::builtins::exceptions::ExceptionValue;
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let cached = importlib_cache_from_source(&path);
+        let Some(sys) = crate::builtins::modules::interpreter_sys_module(_py) else {
+            return raise_exception::<_>(_py, "RuntimeError", "sys module is unavailable");
+        };
+        inc_ref_bits(_py, sys);
+        let sys = ExceptionValue::adopt(_py, sys);
+        let read = |object, name: &[u8]| -> Option<ExceptionValue<'_, '_>> {
+            let key = attr_name_bits_from_bytes(_py, name)?;
+            let key = ExceptionValue::adopt(_py, key);
+            crate::builtins::attributes::get_attr_name(_py, object, key.bits())
+                .ok()
+                .map(|bits| ExceptionValue::adopt(_py, bits))
+        };
+        let Some(implementation) = read(sys.bits(), b"implementation") else {
+            return MoltObject::none().bits();
+        };
+        let Some(tag) = read(implementation.bits(), b"cache_tag") else {
+            return MoltObject::none().bits();
+        };
+        if obj_from_bits(tag.bits()).is_none() {
+            return raise_exception::<_>(
+                _py,
+                "NotImplementedError",
+                "sys.implementation.cache_tag is None",
+            );
+        }
+        let tag = match string_arg_from_bits(_py, tag.bits(), "cache_tag") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let Some(suffixes) =
+            crate::builtins::types::module_spec_suffix_value(_py, b"BYTECODE_SUFFIXES")
+        else {
+            return MoltObject::none().bits();
+        };
+        let suffixes = ExceptionValue::adopt(_py, suffixes);
+        let suffix = crate::molt_index(suffixes.bits(), MoltObject::from_int(0).bits());
+        let suffix = ExceptionValue::adopt(_py, suffix);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let suffix = match string_arg_from_bits(_py, suffix.bits(), "bytecode suffix") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        let cached = importlib_cache_from_source(&path, &tag, &suffix);
         match alloc_str_bits(_py, &cached) {
             Ok(bits) => bits,
             Err(err_bits) => err_bits,

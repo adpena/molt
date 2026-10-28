@@ -317,6 +317,30 @@ runtime_name = "molt_importlib_compiled_loader_find_spec"
 import_name = "importlib_compiled_loader_find_spec"
 callable_arity = 4
 
+[[reserved_runtime_callable]]
+index = 31
+runtime_name = "molt_importlib_module_spec_cached_get"
+import_name = "importlib_module_spec_cached_get"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 32
+runtime_name = "molt_importlib_module_spec_cached_set"
+import_name = "importlib_module_spec_cached_set"
+callable_arity = 2
+
+[[reserved_runtime_callable]]
+index = 33
+runtime_name = "molt_importlib_module_spec_has_location_get"
+import_name = "importlib_module_spec_has_location_get"
+callable_arity = 1
+
+[[reserved_runtime_callable]]
+index = 34
+runtime_name = "molt_importlib_module_spec_has_location_set"
+import_name = "importlib_module_spec_has_location_set"
+callable_arity = 2
+
 
 # Return contracts derive from boxed-call semantics, poll-table membership,
 # or an unambiguous void/non-i64 machine result. Compiler-only i64 returns
@@ -602,6 +626,12 @@ type = 2
 name = "module_cache_set"
 type = 3
 runtime_name = "molt_module_cache_set"
+callable_arity = 2
+
+[[import]]
+name = "module_initialization_spec"
+type = 3
+runtime_name = "molt_module_initialization_spec"
 callable_arity = 2
 
 [[import]]
@@ -3372,6 +3402,10 @@ type = 3
 
 [[import]]
 name = "importlib_frozen_external_payload"
+type = 3
+
+[[import]]
+name = "importlib_frozen_external_commit"
 type = 2
 
 [[import]]
@@ -3382,6 +3416,10 @@ type = 0
 name = "importlib_import_transaction"
 boxed_call = true
 type = 10
+
+[[import]]
+name = "importlib_prepare_fromlist"
+type = 4
 
 [[import]]
 name = "importlib_import_optional"

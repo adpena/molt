@@ -210,6 +210,16 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
                 result=spec_val,
             )
         )
+        if path_obj is not None and not self.module_is_namespace:
+            has_location = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=has_location))
+            self.emit(
+                MoltOp(
+                    kind="SETATTR_GENERIC_OBJ",
+                    args=[spec_val, "has_location", has_location],
+                    result=MoltValue("none"),
+                )
+            )
         if path_list_val is not None:
             self.emit(
                 MoltOp(
@@ -218,7 +228,11 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
                     result=MoltValue("none"),
                 )
             )
-        self._emit_module_attr_set_on(self.module_obj, "__spec__", spec_val)
+        self._emit_runtime_call(
+            "molt_module_initialization_spec",
+            [self.module_obj, spec_val],
+            type_hint="None",
+        )
 
     def _emit_module_frame_enter(self, node: ast.Module) -> None:
         if not self._is_module_entry() or self.module_frame_entered:

@@ -647,6 +647,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         module_execution_kind_by_module={},
         frontend_module_costs=None,
         stdlib_like_by_module={"sys": True},
+        module_source_role_by_module={},
     )
 
     def cache_for(binding):

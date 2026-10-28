@@ -328,6 +328,12 @@ unsafe extern "C" fn fake_import_add_module_borrowed(
 ) -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
+unsafe extern "C" fn fake_import_module_dict_borrowed() -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
+}
+unsafe extern "C" fn fake_import_get_module(_name: u64) -> OwnedHandleResult {
+    OwnedHandleResult::missing()
+}
 unsafe extern "C" fn fake_eval_get_builtins_borrowed() -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
@@ -662,6 +668,8 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     object_str: support::fake_runtime::object_str,
     object_repr: support::fake_runtime::object_repr,
     sys_get_object_borrowed: fake_sys_get_object_borrowed,
+    import_module_dict_borrowed: fake_import_module_dict_borrowed,
+    import_get_module: fake_import_get_module,
     eval_get_builtins_borrowed: fake_eval_get_builtins_borrowed,
     classify_heap: Some(support::fake_runtime::classify_heap),
     inc_ref: support::fake_runtime::inc_ref,

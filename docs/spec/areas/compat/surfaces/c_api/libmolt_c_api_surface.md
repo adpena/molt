@@ -225,8 +225,9 @@ skip empty cleanup, and drop a redundant base reference plainly only after the
 initialized view owns the same exporter. Actual abort/finalizer cleanup still
 preserves the pending exception.
 
-Known source-parity limit: the pinned CPython 3.12.13/3.13.11/3.14.3 `c` pack
-branch does not recheck release after a key callback and may use its earlier
+Known source-parity limit: the `c` pack branch in the
+[maintained CPython references](../../contracts/verified_subset_contract.md)
+does not recheck release after a key callback and may use its earlier
 data pointer. Molt retains a final release check for this case. Character
 conversion failures still precede release, but a successful character store
 after key-induced release is not claimed as exact CPython parity. This includes

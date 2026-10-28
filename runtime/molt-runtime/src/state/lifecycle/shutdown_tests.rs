@@ -235,12 +235,12 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
         // Transfer the actual module owner into the production cache. Clearing
         // its namespace is what makes both cycles unreachable during teardown.
         assert!(
-            crate::runtime_state(py)
-                .module_cache
-                .lock()
-                .unwrap()
-                .insert("shutdown_cycle_owner".into(), owner)
-                .is_none()
+            crate::builtins::module_table::replace_module_owned_for_test(
+                py,
+                "shutdown_cycle_owner",
+                Some(owner)
+            )
+            .is_none()
         );
         assert!(crate::object::gc::native_gc_is_enrolled(rooted_address));
         publish_tls_dictionary_callback(py);

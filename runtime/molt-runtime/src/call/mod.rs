@@ -25,6 +25,17 @@ impl ExceptionBaselineGuard {
             previous: crate::exception_stack_baseline_get(),
         }
     }
+
+    /// Raw compiled bodies have no ordinary function-entry prologue. Their
+    /// handler cleanup starts above the caller's currently installed levels.
+    /// Only cold body dispatch uses this; normal call wrappers retain their
+    /// existing save/restore behavior.
+    #[inline]
+    pub(crate) fn enter_at_current_depth(_py: &PyToken<'_>) -> Self {
+        let guard = Self::new();
+        crate::exception_stack_baseline_set(crate::builtins::exceptions::exception_stack_depth());
+        guard
+    }
 }
 
 impl Drop for ExceptionBaselineGuard {

@@ -52,6 +52,20 @@ architecture, runner, and Rust-target coordinates. Generated projections do not
 redeclare those facts. Human status and coverage-index documents are
 presentations, not receipt inputs or hidden support authorities.
 
+For each admitted Python minor, the primary reference is its latest maintained
+patch release, recorded exactly in `config/verified_subset.toml` and joined to
+the exact source tag/revision in `config/cpython_regrtest_sources.toml`.
+Advancing a reference requires fresh source capture and regenerated projections;
+historical source readings, calibrations and execution receipts keep their
+original patch attribution and do not qualify the new reference. Source pins
+for a pending target, including Python 3.15, do not admit that target or expand
+the release matrix.
+
+Compatibility with older patches within these Python minor lines remains a
+useful secondary goal. Preserve bounded regression references and historical
+receipt provenance, but v1.0 does not require a matrix covering every historical
+patch. Primary latest-patch qualification takes priority.
+
 Python 3.15 is also required before v1.0 release. Its target admission, semantic
 and ABI migration, and complete release-matrix qualification remain open under
 V1-35 in the [release ledger](../../../../agent/V1_HANDOFF_FINDINGS.md#open-release-requirements).

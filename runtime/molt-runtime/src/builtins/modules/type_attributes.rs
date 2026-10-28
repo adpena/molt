@@ -71,7 +71,13 @@ pub(crate) unsafe fn raise_module_attribute_miss(
     let message = match spec {
         None => Ok(format!("module '{label}' has no attribute '{attribute}'")),
         Some(spec) => {
-            let message = match spec_is_initializing(py, spec) {
+            let message = match crate::builtins::platform::spec_is_initializing(
+                py,
+                spec,
+                crate::builtins::module_table::ModuleImportPolicy::CImport,
+            )
+            .map_err(|_| ())
+            {
                 Err(()) => Err(()),
                 Ok(true) => Ok(format!(
                     "partially initialized module '{label}' has no attribute '{attribute}' \
@@ -118,30 +124,6 @@ unsafe fn module_dict_entry(
         inc_ref_bits(py, bits);
     }
     Ok(entry)
-}
-
-/// CPython `_PyModuleSpec_IsInitializing`. A lookup or truth error propagates
-/// from 3.13; 3.12 clears it and answers "not initializing".
-fn spec_is_initializing(py: &PyToken<'_>, spec: u64) -> Result<bool, ()> {
-    let key = attr_name_bits_from_bytes(py, b"_initializing").ok_or(())?;
-    let value = crate::builtins::platform::getattr_optional_bits(py, spec, key);
-    dec_ref_bits(py, key);
-    let initializing = match value {
-        Ok(Some(value)) => {
-            let truth = crate::object::ops::truth_value(py, obj_from_bits(value));
-            dec_ref_bits(py, value);
-            truth
-        }
-        Ok(None) => Ok(false),
-        Err(_) => Err(()),
-    };
-    match initializing {
-        Err(()) if !crate::object::ops_sys::runtime_target_at_least(py, 3, 13) => {
-            clear_exception(py);
-            Ok(false)
-        }
-        result => result,
-    }
 }
 
 /// CPython `_PyModuleSpec_IsUninitializedSubmodule`: a missing attribute is a

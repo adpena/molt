@@ -16,7 +16,10 @@ fn compiled_finder_binds_defaults_on_class_instance_and_subclass() {
             .expect("missing name");
         let marker = MoltObject::from_int(39).bits();
         for receiver in [builtin, instance, child] {
-            let find = required_attr(py, receiver, b"find_spec").expect("bound finder");
+            let key = attr_name_bits_from_bytes(py, b"find_spec").expect("finder key");
+            let find = crate::builtins::attributes::get_attr_name(py, receiver, key)
+                .expect("bound finder");
+            dec_ref_bits(py, key);
             let result = unsafe { call_callable1(py, find, missing) };
             assert!(obj_from_bits(result).is_none());
             assert!(!exception_pending(py));

@@ -453,6 +453,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         entry_module="__main__",
         module_graph={"__main__": source_path},
         logical_source_path_by_module={"__main__": str(source_path)},
+        module_is_namespace_by_module={"__main__": False},
         known_modules={"__main__"},
         stdlib_allowlist=set(),
         integration_state=integration_state,
@@ -465,6 +466,9 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         runtime_feedback_summary=None,
         emit_ir_path=None,
         target_python=molt_target_python._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"],
+        module_source_role_by_module={
+            name: "user" for name in {"__main__": source_path}
+        },
     )
 
     assert error is None

@@ -154,10 +154,7 @@ fn importlib_system_module_authority_returns_and_releases_one_owner() {
         assert!(!module_ptr.is_null());
         let module_bits = MoltObject::from_ptr(module_ptr).bits();
         let refcount = || unsafe { (*crate::header_from_obj_ptr(module_ptr)).ref_count_snapshot() };
-        let prior = crate::builtins::exceptions::internals::module_cache(_py)
-            .lock()
-            .unwrap()
-            .remove("sys");
+        let prior = crate::builtins::module_table::replace_module_owned_for_test(_py, "sys", None);
         crate::builtins::module_table::publish_interpreter_sys_for_test(_py, module_bits);
         let baseline = refcount();
         {
@@ -170,10 +167,12 @@ fn importlib_system_module_authority_returns_and_releases_one_owner() {
         crate::builtins::modules::molt_module_cache_del(name);
         dec_ref_bits(_py, name);
         if let Some(prior) = prior {
-            crate::builtins::exceptions::internals::module_cache(_py)
-                .lock()
-                .unwrap()
-                .insert("sys".into(), prior);
+            let displaced = crate::builtins::module_table::replace_module_owned_for_test(
+                _py,
+                "sys",
+                Some(prior),
+            );
+            assert!(displaced.is_none());
         }
 
         dec_ref_bits(_py, module_bits);
@@ -184,6 +183,7 @@ fn importlib_system_module_authority_returns_and_releases_one_owner() {
 fn import_attempt_reports_a_resolver_miss_without_manufacturing_an_exception() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
+        let _resolver = crate::test_support::EmptyImportResolver::new(_py);
         let name = attr_name_bits_from_bytes(_py, b"molt_absent_import_outcome_probe").unwrap();
         let outcome = crate::builtins::modules::module_import_attempt(name);
         assert!(matches!(
@@ -343,50 +343,25 @@ fn importlib_module_from_spec_impl_materializes_module_without_util_callback() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
 
     crate::with_gil_entry_nopanic!(_py, {
-        let spec_holder_name_bits = alloc_test_string_bits(_py, "spec-holder");
-        let spec_bits = crate::molt_module_new(spec_holder_name_bits);
-        assert!(!obj_from_bits(spec_bits).is_none());
-
         let module_name_bits = alloc_test_string_bits(_py, "pkg.helper");
-        let parent_bits = alloc_test_string_bits(_py, "pkg");
-        for (slot, name, value_bits) in [
-            (
-                runtime_static_name_slot(_py, b"name"),
-                b"name".as_slice(),
-                module_name_bits,
-            ),
-            (
-                runtime_static_name_slot(_py, b"loader"),
-                b"loader".as_slice(),
-                MoltObject::none().bits(),
-            ),
-            (
-                runtime_static_name_slot(_py, b"origin"),
-                b"origin".as_slice(),
-                MoltObject::none().bits(),
-            ),
-            (
-                runtime_static_name_slot(_py, b"parent"),
-                b"parent".as_slice(),
-                parent_bits,
-            ),
-            (
-                runtime_static_name_slot(_py, b"cached"),
-                b"cached".as_slice(),
-                MoltObject::none().bits(),
-            ),
-            (
-                runtime_static_name_slot(_py, b"submodule_search_locations"),
-                b"submodule_search_locations".as_slice(),
-                MoltObject::none().bits(),
-            ),
-        ] {
-            importlib_set_attr(_py, spec_bits, slot, name, value_bits)
-                .expect("spec attribute install should not raise");
-        }
+        // Use the real ModuleSpec producer, including its required
+        // has_location=False fact and derived parent, rather than an incomplete
+        // module-shaped stand-in for the factory protocol.
+        let spec_bits = crate::builtins::types::alloc_module_spec(
+            _py,
+            module_name_bits,
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+            MoltObject::from_bool(false).bits(),
+        )
+        .expect("actual ModuleSpec fixture");
 
         let module_bits = importlib_ffi::importlib_module_from_spec_impl(_py, spec_bits);
-        assert!(!exception_pending(_py));
+        assert!(
+            !exception_pending(_py),
+            "actual ModuleSpec must satisfy the factory protocol: {:?}",
+            pending_exception_kind_and_message(_py)
+        );
         assert!(!obj_from_bits(module_bits).is_none());
 
         let spec_attr_name =
@@ -413,10 +388,8 @@ fn importlib_module_from_spec_impl_materializes_module_without_util_callback() {
         );
 
         dec_ref_bits(_py, module_bits);
-        dec_ref_bits(_py, parent_bits);
         dec_ref_bits(_py, module_name_bits);
         dec_ref_bits(_py, spec_bits);
-        dec_ref_bits(_py, spec_holder_name_bits);
     });
 }
 
@@ -819,14 +792,25 @@ fn importlib_cache_from_source_matches_cpython_layout() {
     let module_path = platform_test_path(&["pkg", "mod.py"]);
     let cache_dir = path_join_text(path_dirname_text(&module_path, sep), "__pycache__", sep);
     assert_eq!(
-        importlib_cache_from_source(&module_path),
-        path_join_text(cache_dir, "mod.pyc", sep)
+        importlib_cache_from_source(&module_path, "implementation-312", ".pyc"),
+        path_join_text(cache_dir.clone(), "mod.implementation-312.pyc", sep)
     );
     let extensionless = platform_test_path(&["pkg", "mod"]);
     assert_eq!(
-        importlib_cache_from_source(&extensionless),
-        format!("{extensionless}c")
+        importlib_cache_from_source(&extensionless, "implementation-312", ".pyc"),
+        path_join_text(cache_dir.clone(), "modimplementation-312.pyc", sep)
     );
+    for (filename, expected) in [
+        ("mod.custom", "mod.implementation-312.pyc"),
+        (".hidden", "hidden.implementation-312.pyc"),
+        ("mod.one.py", "mod.one.implementation-312.pyc"),
+    ] {
+        let path = platform_test_path(&["pkg", filename]);
+        assert_eq!(
+            importlib_cache_from_source(&path, "implementation-312", ".pyc"),
+            path_join_text(cache_dir.clone(), expected, sep)
+        );
+    }
 }
 
 #[test]
@@ -855,7 +839,7 @@ fn importlib_find_in_path_resolves_package_and_module() {
         pkg.submodule_search_locations,
         Some(vec![pkg_dir.to_string_lossy().into_owned()])
     );
-    assert_eq!(pkg.cached, Some(importlib_cache_from_source(&pkg_origin)));
+    assert_eq!(pkg.cached, None);
     assert!(pkg.has_location);
     assert_eq!(pkg.loader_kind, "source");
 
@@ -864,10 +848,7 @@ fn importlib_find_in_path_resolves_package_and_module() {
     let module_origin = module.origin.clone().expect("module origin");
     assert!(module_origin.ends_with("moddemo.py"));
     assert_eq!(module.submodule_search_locations, None);
-    assert_eq!(
-        module.cached,
-        Some(importlib_cache_from_source(&module_origin))
-    );
+    assert_eq!(module.cached, None);
     assert!(module.has_location);
     assert_eq!(module.loader_kind, "source");
 
@@ -2856,7 +2837,7 @@ mod resolver_admission_tests {
         }
     }
 
-    extern "C" fn find_spec(_name: u64, _package: u64) -> u64 {
+    extern "C" fn find_spec(_name: u64, _path: u64, _target: u64) -> u64 {
         FINDER_CALLS.set(FINDER_CALLS.get() + 1);
         let error = FINDER_ERROR.get();
         if error != 0 {
@@ -2874,6 +2855,55 @@ mod resolver_admission_tests {
             (*crate::header_from_obj_ptr(obj_from_bits(bits).as_ptr().unwrap()))
                 .ref_count_snapshot()
         }
+    }
+
+    #[test]
+    fn catalog_origin_match_uses_physical_paths_and_ignores_unmapped_build_origin() {
+        let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("catalog-origin-match")
+            .expect("own physical source coordinates");
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let directory = artifacts.path();
+        let source = directory.join("provider").join("msilib.py");
+        let external = directory.join("external").join("msilib.py");
+        let boundary = directory.join("provider-suffix").join("msilib.py");
+        for file in [&source, &external, &boundary] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "marker = 42\n").unwrap();
+        }
+        crate::with_gil_entry_nopanic!(py, {
+            let same = |left: &std::path::Path, right: &std::path::Path| {
+                importlib_catalog_origin_matches(
+                    py,
+                    left.to_str().unwrap(),
+                    right.to_str().unwrap(),
+                )
+                .expect("physical coordinate comparison")
+            };
+            assert!(same(&source, &source));
+            assert!(!same(&external, &source));
+            assert!(
+                !same(&boundary, &source),
+                "a lexical root prefix is not provenance"
+            );
+            assert!(!same(
+                &source,
+                &directory.join("unmapped-compiler-origin.py")
+            ));
+            assert!(!same(&directory.join("missing-candidate.py"), &source));
+            #[cfg(unix)]
+            {
+                let external_alias = directory.join("provider-alias.py");
+                std::os::unix::fs::symlink(&source, &external_alias).unwrap();
+                assert!(
+                    same(&external_alias, &source),
+                    "actual source aliases retain identity"
+                );
+                let misleading_inside = source.parent().unwrap().join("external-alias.py");
+                std::os::unix::fs::symlink(&external, &misleading_inside).unwrap();
+                assert!(!same(&misleading_inside, &source));
+            }
+            assert!(!exception_pending(py));
+        });
     }
 
     #[test]
@@ -2901,6 +2931,13 @@ mod resolver_admission_tests {
             )
             .expect("write extension candidate");
         }
+        // A real admitted catalog body must not outrank the public finder.
+        // The old compiled-first lane initialized g4_src before consulting it.
+        crate::builtins::module_table::tests::install_test_registry();
+        let names: Vec<String> = (0..suffixes.len())
+            .map(|index| format!("molt_resolver_candidate_{index}"))
+            .chain(std::iter::once("g4_src".to_owned()))
+            .collect();
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
                 let sys_name = alloc_test_string_bits(py, "sys");
@@ -2927,12 +2964,17 @@ mod resolver_admission_tests {
                         "import_resolver_admission_find_spec",
                         find_spec as *const (),
                     ),
-                    2,
+                    3,
                 );
                 assert!(!function_ptr.is_null());
                 let finder = MoltObject::from_ptr(function_ptr).bits();
                 let _finder = owner(finder);
                 loader_identity_setattr(py, util, b"find_spec", finder);
+                let meta = alloc_list(py, &[util]);
+                assert!(!meta.is_null());
+                let meta = MoltObject::from_ptr(meta).bits();
+                loader_identity_setattr(py, sys, b"meta_path", meta);
+                dec_ref_bits(py, meta);
                 unsafe {
                     assert!(dict_set_in_place(py, modules_ptr, util_name, util));
                 }
@@ -2954,9 +2996,8 @@ mod resolver_admission_tests {
                     refs(util),
                     refs(finder),
                 ];
-                for (index, _) in suffixes.iter().enumerate() {
-                    let name_text = format!("molt_resolver_candidate_{index}");
-                    let name = alloc_test_string_bits(py, &name_text);
+                for name_text in &names {
+                    let name = alloc_test_string_bits(py, name_text);
                     let _name = owner(name);
                     for fail in [false, true] {
                         FINDER_ERROR.set(if fail { original.bits() } else { 0 });
@@ -2986,6 +3027,31 @@ mod resolver_admission_tests {
                                     format!("No module named '{name_text}'"),
                                 ))
                             );
+                            let raised = crate::builtins::exceptions::ExceptionValue::adopt(
+                                py,
+                                molt_exception_last_pending(),
+                            );
+                            clear_exception(py);
+                            for (field, expected) in [
+                                (b"name".as_slice(), name),
+                                (b"path".as_slice(), MoltObject::none().bits()),
+                                (b"name_from".as_slice(), MoltObject::none().bits()),
+                            ] {
+                                let key =
+                                    alloc_test_string_bits(py, std::str::from_utf8(field).unwrap());
+                                let value = crate::builtins::attributes::get_attr_name(
+                                    py,
+                                    raised.bits(),
+                                    key,
+                                )
+                                .expect("public import failure metadata");
+                                assert_eq!(
+                                    value, expected,
+                                    "finder miss owns the admitted name and default path"
+                                );
+                                dec_ref_bits(py, value);
+                                dec_ref_bits(py, key);
+                            }
                         }
                         clear_exception(py);
                         assert_eq!(
@@ -3220,5 +3286,787 @@ fn environment_intrinsic_admission_precedes_callbacks_and_operand_conversion() {
         for bits in [operand, class, function] {
             dec_ref_bits(py, bits);
         }
+    });
+}
+
+static METADATA_CACHE_READS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static METADATA_CACHE_FAIL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn metadata_observed_cached(_spec: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        METADATA_CACHE_READS.fetch_add(1, Ordering::SeqCst);
+        if METADATA_CACHE_FAIL.load(Ordering::SeqCst) {
+            raise_exception::<_>(py, "RuntimeError", "cached getter ran")
+        } else {
+            MoltObject::from_int(431).bits()
+        }
+    })
+}
+
+#[test]
+fn spec_metadata_cached_projection_obeys_target_version_and_factory_ownership() {
+    use crate::builtins::exceptions::ExceptionValue;
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let class = ExceptionValue::adopt(
+            py,
+            loader_identity_class(py, "ObservedMetadataSpec", builtin_classes(py).object),
+        );
+        let function = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "metadata_observed_cached",
+                metadata_observed_cached as *const (),
+            ),
+            1,
+        );
+        assert!(!function.is_null());
+        let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
+        let property = crate::object::builders::alloc_property_obj(
+            py,
+            function.bits(),
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+        );
+        assert!(!property.is_null());
+        let property = ExceptionValue::adopt(py, MoltObject::from_ptr(property).bits());
+        loader_identity_class_namespace(py, class.bits(), b"cached", property.bits());
+        let spec = ExceptionValue::adopt(py, unsafe { call_callable0(py, class.bits()) });
+        let name = ExceptionValue::adopt(py, alloc_test_string_bits(py, "metadata_target"));
+        let parent = ExceptionValue::adopt(py, alloc_test_string_bits(py, ""));
+        let origin = ExceptionValue::adopt(py, alloc_test_string_bits(py, "metadata-source"));
+        for (key, value) in [
+            (b"name".as_slice(), name.bits()),
+            (b"loader", MoltObject::none().bits()),
+            (b"parent", parent.bits()),
+            (b"submodule_search_locations", MoltObject::none().bits()),
+            (b"has_location", MoltObject::from_bool(true).bits()),
+            (b"origin", origin.bits()),
+        ] {
+            loader_identity_setattr(py, spec.bits(), key, value);
+        }
+        let cache_key = intern_runtime_static_name(py, b"__cached__");
+        assert_ne!(cache_key, 0);
+        // Independent CPython controls: ordinary/factory-owned fields, reload
+        // override, and a getter that must remain unobserved on 3.15+. These
+        // policy cells are not target-version release acceptance.
+        for minor in [12, 13, 14, 15] {
+            transaction.with_target_python_minor(py, minor, || {
+                for (preexisting, override_existing, fail) in [
+                    (false, false, false),
+                    (true, false, false),
+                    (true, true, false),
+                    (false, false, true),
+                ] {
+                    let module = ExceptionValue::adopt(py, unsafe {
+                        call_callable0(py, crate::builtins::types::simplenamespace_class(py))
+                    });
+                    assert!(!exception_pending(py));
+                    let existing = MoltObject::from_int(909).bits();
+                    if preexisting {
+                        loader_identity_setattr(py, module.bits(), b"__cached__", existing);
+                    }
+                    METADATA_CACHE_READS.store(0, Ordering::SeqCst);
+                    METADATA_CACHE_FAIL.store(fail, Ordering::SeqCst);
+                    let result = importlib_ffi::importlib_init_module_attrs_impl(
+                        py,
+                        spec.bits(),
+                        module.bits(),
+                        override_existing,
+                    );
+                    let observes_cache = minor < 15 && (!preexisting || override_existing);
+                    if observes_cache && fail {
+                        assert!(result.is_err());
+                        assert_pending_exception_contains(
+                            py,
+                            "RuntimeError",
+                            &["cached getter ran"],
+                        );
+                    } else {
+                        assert!(result.is_ok());
+                        assert!(!exception_pending(py));
+                    }
+                    assert_eq!(
+                        METADATA_CACHE_READS.load(Ordering::SeqCst),
+                        if observes_cache {
+                            if fail { 1 } else { 2 }
+                        } else {
+                            0
+                        }
+                    );
+                    let cached = getattr_optional_bits(py, module.bits(), cache_key).unwrap();
+                    assert_eq!(
+                        cached,
+                        if preexisting && !observes_cache {
+                            Some(existing)
+                        } else if observes_cache && !fail {
+                            Some(MoltObject::from_int(431).bits())
+                        } else {
+                            None
+                        }
+                    );
+                    if let Some(value) = cached {
+                        dec_ref_bits(py, value);
+                    }
+                    METADATA_CACHE_FAIL.store(false, Ordering::SeqCst);
+                }
+            });
+        }
+        let predicate_class = ExceptionValue::adopt(
+            py,
+            loader_identity_class(py, "CachedPredicateTrap", builtin_classes(py).object),
+        );
+        let predicate = ExceptionValue::adopt(py, loader_identity_failing_property(py));
+        loader_identity_class_namespace(
+            py,
+            predicate_class.bits(),
+            b"__cached__",
+            predicate.bits(),
+        );
+        for minor in [14, 15] {
+            transaction.with_target_python_minor(py, minor, || {
+                let module = ExceptionValue::adopt(py, unsafe {
+                    call_callable0(py, predicate_class.bits())
+                });
+                assert!(!exception_pending(py));
+                METADATA_CACHE_READS.store(0, Ordering::SeqCst);
+                let result = importlib_ffi::importlib_init_module_attrs_impl(
+                    py,
+                    spec.bits(),
+                    module.bits(),
+                    false,
+                );
+                if minor == 14 {
+                    assert!(result.is_err());
+                    assert_pending_exception_contains(
+                        py,
+                        "RuntimeError",
+                        &["loader identity descriptor called"],
+                    );
+                } else {
+                    assert!(result.is_ok());
+                    assert!(!exception_pending(py));
+                }
+                assert_eq!(METADATA_CACHE_READS.load(Ordering::SeqCst), 0);
+            });
+        }
+        assert!(!exception_pending(py));
+    });
+}
+
+static EXEC_PRESENCE_READS: AtomicU64 = AtomicU64::new(0);
+static EXEC_PRESENCE_CALLS: AtomicU64 = AtomicU64::new(0);
+static EXEC_PRESENCE_FIRST: AtomicU64 = AtomicU64::new(0);
+static EXEC_PRESENCE_SECOND: AtomicU64 = AtomicU64::new(0);
+extern "C" fn execution_presence_first(_module: u64) -> u64 {
+    EXEC_PRESENCE_CALLS.store(1, Ordering::SeqCst);
+    MoltObject::none().bits()
+}
+extern "C" fn execution_presence_second(_module: u64) -> u64 {
+    EXEC_PRESENCE_CALLS.store(2, Ordering::SeqCst);
+    MoltObject::none().bits()
+}
+extern "C" fn execution_presence_getter(_loader: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let call = if EXEC_PRESENCE_READS.fetch_add(1, Ordering::SeqCst) == 0 {
+            EXEC_PRESENCE_FIRST.load(Ordering::SeqCst)
+        } else {
+            EXEC_PRESENCE_SECOND.load(Ordering::SeqCst)
+        };
+        inc_ref_bits(py, call);
+        call
+    })
+}
+
+#[test]
+fn existing_spec_exec_distinguishes_presence_probe_from_final_descriptor_call() {
+    use crate::builtins::exceptions::ExceptionValue;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let class = ExceptionValue::adopt(
+            py,
+            loader_identity_class(py, "ObservedExecutorLoader", builtin_classes(py).object),
+        );
+        let runtime_function = |name, address, arity| {
+            let pointer = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(name, address),
+                arity,
+            );
+            assert!(!pointer.is_null());
+            ExceptionValue::adopt(py, MoltObject::from_ptr(pointer).bits())
+        };
+        let first = runtime_function(
+            "execution_presence_first",
+            execution_presence_first as *const (),
+            1,
+        );
+        let second = runtime_function(
+            "execution_presence_second",
+            execution_presence_second as *const (),
+            1,
+        );
+        let getter = runtime_function(
+            "execution_presence_getter",
+            execution_presence_getter as *const (),
+            1,
+        );
+        let property = crate::object::builders::alloc_property_obj(
+            py,
+            getter.bits(),
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+        );
+        assert!(!property.is_null());
+        let property = ExceptionValue::adopt(py, MoltObject::from_ptr(property).bits());
+        loader_identity_class_namespace(py, class.bits(), b"exec_module", property.bits());
+        let loader = ExceptionValue::adopt(py, unsafe { call_callable0(py, class.bits()) });
+        let name = ExceptionValue::adopt(
+            py,
+            alloc_test_string_bits(py, "_molt_exec_descriptor_cutpoint"),
+        );
+        let spec = ExceptionValue::adopt(
+            py,
+            crate::builtins::types::alloc_module_spec(
+                py,
+                name.bits(),
+                loader.bits(),
+                MoltObject::none().bits(),
+                MoltObject::from_bool(false).bits(),
+            )
+            .unwrap(),
+        );
+        let module = ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(alloc_module_obj(py, name.bits())).bits(),
+        );
+        let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
+        importlib_dict_set_string_key(
+            py,
+            crate::ptr_from_bits(dictionary),
+            name.bits(),
+            module.bits(),
+        )
+        .unwrap();
+        EXEC_PRESENCE_FIRST.store(first.bits(), Ordering::SeqCst);
+        EXEC_PRESENCE_SECOND.store(second.bits(), Ordering::SeqCst);
+        EXEC_PRESENCE_READS.store(0, Ordering::SeqCst);
+        EXEC_PRESENCE_CALLS.store(0, Ordering::SeqCst);
+        let result = importlib_spec_execution_transaction(
+            py,
+            "_molt_exec_descriptor_cutpoint",
+            name.bits(),
+            spec.bits(),
+            crate::ptr_from_bits(dictionary),
+            ImportlibSpecExecutionOptions {
+                target: ImportlibSpecTarget::Exact(module.bits()),
+                allow_load_module_fallback: false,
+            },
+        );
+        EXEC_PRESENCE_FIRST.store(0, Ordering::SeqCst);
+        EXEC_PRESENCE_SECOND.store(0, Ordering::SeqCst);
+        let reads = EXEC_PRESENCE_READS.load(Ordering::SeqCst);
+        let called = EXEC_PRESENCE_CALLS.load(Ordering::SeqCst);
+        let result = result.unwrap();
+        dec_ref_bits(py, result);
+        assert!(
+            unsafe { dict_del_in_place(py, crate::ptr_from_bits(dictionary), name.bits()) }
+                .unwrap()
+        );
+        assert_eq!(
+            reads, 2,
+            "hasattr and invocation are separate descriptor reads"
+        );
+        assert_eq!(
+            called, 2,
+            "the final descriptor, never the presence-probe value, executes"
+        );
+        assert!(!exception_pending(py));
+    });
+}
+
+static SPEC_PROTOCOL_MODE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SPEC_PROTOCOL_TRUE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SPEC_PROTOCOL_FALSE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SPEC_PROTOCOL_SPEC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SPEC_PROTOCOL_REPLACEMENT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static SPEC_PROTOCOL_NAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SPEC_PROTOCOL_DICTIONARY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static SPEC_PROTOCOL_BODY_ERROR: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static SPEC_PROTOCOL_FLAG_ERROR: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+extern "C" fn spec_protocol_setattr(spec: u64, name: u64, value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let flag = crate::attr_name_bits_from_bytes(py, b"_initializing").unwrap();
+        // The setter receives a pinned Python str key; flag is an owned str.
+        let is_flag = unsafe { crate::object::ops_compare::string_storage_equal(name, flag) };
+        dec_ref_bits(py, flag);
+        if is_flag {
+            let initializing = is_truthy(py, obj_from_bits(value));
+            if initializing {
+                SPEC_PROTOCOL_TRUE.fetch_add(1, Ordering::SeqCst);
+            } else {
+                SPEC_PROTOCOL_FALSE.fetch_add(1, Ordering::SeqCst);
+            }
+            let mode = SPEC_PROTOCOL_MODE.load(Ordering::SeqCst);
+            if (mode == 3 && initializing) || (mode == 4 && !initializing) {
+                return crate::molt_exception_set_last(
+                    SPEC_PROTOCOL_FLAG_ERROR.load(Ordering::SeqCst),
+                );
+            }
+        }
+        crate::molt_object_setattr(spec, name, value)
+    })
+}
+
+extern "C" fn spec_protocol_create(_loader: u64, _spec: u64) -> u64 {
+    MoltObject::none().bits()
+}
+
+extern "C" fn spec_protocol_exec(_loader: u64, module: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let mode = SPEC_PROTOCOL_MODE.load(Ordering::SeqCst);
+        let spec = SPEC_PROTOCOL_SPEC.load(Ordering::SeqCst);
+        assert_eq!(
+            spec_is_initializing(
+                py,
+                spec,
+                crate::builtins::module_table::ModuleImportPolicy::Python
+            ),
+            Ok(mode != 5)
+        );
+        let dictionary = crate::ptr_from_bits(SPEC_PROTOCOL_DICTIONARY.load(Ordering::SeqCst));
+        let name = SPEC_PROTOCOL_NAME.load(Ordering::SeqCst);
+        assert_eq!(
+            unsafe { dict_get_in_place(py, dictionary, name) }.unwrap(),
+            Some(module)
+        );
+        if matches!(mode, 1 | 4 | 5) {
+            return crate::molt_exception_set_last(SPEC_PROTOCOL_BODY_ERROR.load(Ordering::SeqCst));
+        }
+        if mode == 2 {
+            assert!(unsafe { dict_del_in_place(py, dictionary, name) }.unwrap());
+        } else {
+            loader_identity_setattr(
+                py,
+                module,
+                b"__spec__",
+                SPEC_PROTOCOL_REPLACEMENT.load(Ordering::SeqCst),
+            );
+        }
+        MoltObject::none().bits()
+    })
+}
+
+#[test]
+fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_errors() {
+    use crate::builtins::exceptions::{self, ExceptionFieldSlot};
+    use crate::builtins::module_table::ModuleImportPolicy;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        for mode in 0..6 {
+            SPEC_PROTOCOL_MODE.store(mode, Ordering::SeqCst);
+            SPEC_PROTOCOL_TRUE.store(0, Ordering::SeqCst);
+            SPEC_PROTOCOL_FALSE.store(0, Ordering::SeqCst);
+            let spec_base = crate::molt_importlib_module_spec_type();
+            let spec_class = loader_identity_class(py, "FlagProtocolSpec", spec_base);
+            let setter = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "spec_protocol_setattr",
+                    spec_protocol_setattr as *const (),
+                ),
+                3,
+            );
+            let setter = MoltObject::from_ptr(setter).bits();
+            loader_identity_class_namespace(py, spec_class, b"__setattr__", setter);
+            let loader_class =
+                loader_identity_class(py, "FlagProtocolLoader", builtin_classes(py).object);
+            let executor = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "spec_protocol_exec",
+                    spec_protocol_exec as *const (),
+                ),
+                2,
+            );
+            let executor = MoltObject::from_ptr(executor).bits();
+            loader_identity_class_namespace(py, loader_class, b"exec_module", executor);
+            let creator = crate::builtins::functions::alloc_runtime_function_obj(
+                py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "spec_protocol_create",
+                    spec_protocol_create as *const (),
+                ),
+                2,
+            );
+            let creator = MoltObject::from_ptr(creator).bits();
+            loader_identity_class_namespace(py, loader_class, b"create_module", creator);
+            let loader = unsafe { call_callable0(py, loader_class) };
+            let name = alloc_test_string_bits(py, "_molt_spec_flag_protocol");
+            let spec = unsafe { call_callable2(py, spec_class, name, loader) };
+            assert!(!exception_pending(py));
+            let replacement =
+                unsafe { call_callable0(py, crate::builtins::types::simplenamespace_class(py)) };
+            crate::builtins::module_table::set_spec_initializing(py, replacement, true);
+            let body_error =
+                MoltObject::from_ptr(alloc_exception(py, "ValueError", "body identity")).bits();
+            let flag_error =
+                MoltObject::from_ptr(alloc_exception(py, "RuntimeError", "flag identity")).bits();
+            let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
+            SPEC_PROTOCOL_SPEC.store(spec, Ordering::SeqCst);
+            SPEC_PROTOCOL_REPLACEMENT.store(replacement, Ordering::SeqCst);
+            SPEC_PROTOCOL_NAME.store(name, Ordering::SeqCst);
+            SPEC_PROTOCOL_DICTIONARY.store(dictionary, Ordering::SeqCst);
+            SPEC_PROTOCOL_BODY_ERROR.store(body_error, Ordering::SeqCst);
+            SPEC_PROTOCOL_FLAG_ERROR.store(flag_error, Ordering::SeqCst);
+            let existing = if mode == 5 {
+                let module = importlib_ffi::importlib_module_from_spec_impl(py, spec);
+                importlib_dict_set_string_key(py, crate::ptr_from_bits(dictionary), name, module)
+                    .unwrap();
+                Some(module)
+            } else {
+                None
+            };
+            let result = importlib_spec_execution_transaction(
+                py,
+                "_molt_spec_flag_protocol",
+                name,
+                spec,
+                crate::ptr_from_bits(dictionary),
+                ImportlibSpecExecutionOptions {
+                    target: if mode == 5 {
+                        ImportlibSpecTarget::Exact(
+                            existing.expect("existing target in _exec control"),
+                        )
+                    } else {
+                        ImportlibSpecTarget::Fresh
+                    },
+                    allow_load_module_fallback: false,
+                },
+            );
+            assert_eq!(
+                SPEC_PROTOCOL_TRUE.load(Ordering::SeqCst),
+                usize::from(mode != 5)
+            );
+            assert_eq!(
+                SPEC_PROTOCOL_FALSE.load(Ordering::SeqCst),
+                usize::from(mode != 3 && mode != 5)
+            );
+            if mode == 0 {
+                let module = result.unwrap();
+                assert!(!exception_pending(py));
+                assert_eq!(
+                    spec_is_initializing(py, spec, ModuleImportPolicy::Python),
+                    Ok(false)
+                );
+                assert_eq!(
+                    spec_is_initializing(py, replacement, ModuleImportPolicy::Python),
+                    Ok(true)
+                );
+                dec_ref_bits(py, module);
+            } else {
+                assert!(result.is_err());
+                let selected = exceptions::molt_exception_last_pending();
+                if mode == 2 {
+                    assert!(exceptions::exception_matches_builtin_name(
+                        py, selected, "KeyError"
+                    ));
+                } else {
+                    assert_eq!(
+                        selected,
+                        if matches!(mode, 3 | 4) {
+                            flag_error
+                        } else {
+                            body_error
+                        }
+                    );
+                }
+                if mode == 4 {
+                    let context =
+                        exceptions::exception_field(py, flag_error, ExceptionFieldSlot::Context)
+                            .unwrap();
+                    assert_eq!(context.bits(), body_error);
+                }
+                crate::clear_exception(py);
+                dec_ref_bits(py, selected);
+            }
+            let public =
+                unsafe { dict_get_in_place(py, crate::ptr_from_bits(dictionary), name) }.unwrap();
+            assert_eq!(public.is_some(), matches!(mode, 0 | 5));
+            if public.is_some() {
+                assert!(
+                    unsafe { dict_del_in_place(py, crate::ptr_from_bits(dictionary), name) }
+                        .unwrap()
+                );
+            }
+            if let Some(module) = existing {
+                dec_ref_bits(py, module);
+            }
+            exceptions::exception_replace_field_bits(
+                py,
+                flag_error,
+                ExceptionFieldSlot::Context,
+                MoltObject::none().bits(),
+            )
+            .unwrap();
+            for bits in [
+                spec_base,
+                spec_class,
+                setter,
+                loader_class,
+                executor,
+                creator,
+                loader,
+                name,
+                spec,
+                replacement,
+                body_error,
+                flag_error,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn initial_finder_generation_preserves_public_customization_and_retires_owners() {
+    use crate::builtins::exceptions::ExceptionValue;
+    for mode in [
+        "unchanged",
+        "replaced",
+        "none",
+        "mutated-restored",
+        "custom-hooks",
+        "mutated-hooks",
+    ] {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = ExceptionValue::adopt(py, alloc_test_string_bits(py, "sys"));
+            let sys = ExceptionValue::adopt(py, crate::molt_module_new(name.bits()));
+            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys.bits());
+            let read = |key| {
+                let key = intern_runtime_static_name(py, key);
+                ExceptionValue::adopt(
+                    py,
+                    crate::builtins::attributes::get_attr_name(py, sys.bits(), key).unwrap(),
+                )
+            };
+            let meta = read(b"meta_path");
+            let hooks = read(b"path_hooks");
+            let initial = unsafe {
+                crate::object::seq_access::snapshot(
+                    py,
+                    ptr_from_bits(meta.bits()),
+                    "test initial finders",
+                )
+            }
+            .unwrap();
+            assert_eq!(initial.len(), 1, "one early runtime catalog finder");
+            let finder = initial[0];
+            let machinery = ExceptionValue::adopt(py, crate::molt_module_new(name.bits()));
+            let path_finder = MoltObject::from_int(731).bits();
+            loader_identity_setattr(py, machinery.bits(), b"PathFinder", path_finder);
+            let defaults = ExceptionValue::adopt(
+                py,
+                MoltObject::from_ptr(alloc_list(py, &[MoltObject::from_int(419).bits()])).bits(),
+            );
+            loader_identity_setattr(
+                py,
+                machinery.bits(),
+                b"_default_path_hooks",
+                defaults.bits(),
+            );
+            let refs =
+                |bits| unsafe { (*header_from_obj_ptr(ptr_from_bits(bits))).ref_count_snapshot() };
+            match mode {
+                "replaced" => {
+                    let other =
+                        ExceptionValue::adopt(py, MoltObject::from_ptr(alloc_list(py, &[])).bits());
+                    loader_identity_setattr(py, sys.bits(), b"meta_path", other.bits());
+                }
+                "none" => {
+                    loader_identity_setattr(py, sys.bits(), b"meta_path", MoltObject::none().bits())
+                }
+                "mutated-restored" => unsafe {
+                    assert!(crate::object::list_mutation::clear(
+                        py,
+                        ptr_from_bits(meta.bits())
+                    ));
+                    assert!(crate::object::list_mutation::append(
+                        py,
+                        ptr_from_bits(meta.bits()),
+                        finder
+                    ));
+                },
+                "custom-hooks" => {
+                    let custom = ExceptionValue::adopt(
+                        py,
+                        MoltObject::from_ptr(alloc_list(py, &[MoltObject::from_int(97).bits()]))
+                            .bits(),
+                    );
+                    loader_identity_setattr(py, sys.bits(), b"path_hooks", custom.bits());
+                }
+                "mutated-hooks" => unsafe {
+                    assert!(crate::object::list_mutation::append(
+                        py,
+                        ptr_from_bits(hooks.bits()),
+                        MoltObject::from_int(1).bits()
+                    ));
+                    assert!(crate::object::list_mutation::clear(
+                        py,
+                        ptr_from_bits(hooks.bits())
+                    ));
+                },
+                _ => (),
+            }
+            let before = (refs(meta.bits()), refs(hooks.bits()));
+            importlib_finish_initial_defaults(py, unsafe {
+                module_dict_bits(ptr_from_bits(machinery.bits()))
+            })
+            .expect("default generation disposition");
+            assert!(!exception_pending(py));
+            assert_eq!(
+                (refs(meta.bits()), refs(hooks.bits())),
+                (before.0 - 1, before.1 - 1),
+                "terminal phase retires both temporary list owners"
+            );
+            {
+                let current = read(b"meta_path");
+                if mode == "none" {
+                    assert!(obj_from_bits(current.bits()).is_none());
+                } else {
+                    let current = unsafe {
+                        crate::object::seq_access::snapshot(
+                            py,
+                            ptr_from_bits(current.bits()),
+                            "test final finders",
+                        )
+                    }
+                    .unwrap();
+                    let expected: &[u64] = match mode {
+                        "replaced" => &[],
+                        "mutated-restored" => &[finder],
+                        _ => &[finder, path_finder],
+                    };
+                    assert_eq!(&*current, expected);
+                }
+                let current = read(b"path_hooks");
+                let current = unsafe {
+                    crate::object::seq_access::snapshot(
+                        py,
+                        ptr_from_bits(current.bits()),
+                        "test final hooks",
+                    )
+                }
+                .unwrap();
+                let expected: &[u64] = match mode {
+                    "custom-hooks" => &[MoltObject::from_int(97).bits()],
+                    "mutated-hooks" => &[],
+                    _ => &[MoltObject::from_int(419).bits()],
+                };
+                assert_eq!(&*current, expected);
+            }
+            importlib_finish_initial_defaults(py, unsafe {
+                module_dict_bits(ptr_from_bits(machinery.bits()))
+            })
+            .expect("default generation disposition");
+            assert_eq!(
+                (refs(meta.bits()), refs(hooks.bits())),
+                (before.0 - 1, before.1 - 1)
+            );
+        });
+    }
+}
+
+#[test]
+fn import_lock_reentry_failed_release_and_terminal_custody_share_one_owner() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());
+        assert_eq!(molt_imp_acquire_lock(), MoltObject::none().bits());
+        let guard = ImportLockGuard::acquire(py).unwrap();
+        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(true).bits());
+        assert_eq!(molt_imp_release_lock(), MoltObject::none().bits());
+        guard.finish(py).unwrap();
+        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());
+        molt_imp_release_lock();
+        assert_pending_exception_contains(py, "RuntimeError", &["not holding the import lock"]);
+        importlib_retire_default_generation(py, runtime_state(py));
+        molt_imp_acquire_lock();
+        assert_pending_exception_contains(
+            py,
+            "ImportError",
+            &["interpreter import state is retired"],
+        );
+        assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static PLATFORM_FINALIZER_DISPOSITION: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(not(target_arch = "wasm32"))]
+extern "C" fn platform_retirement_finalizer(_self: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let platform = platform_state(py);
+        let retired = platform.environment_mapping.load(Ordering::Acquire)
+            == MoltObject::none().bits()
+            && matches!(
+                *platform.import_defaults.lock().unwrap(),
+                DefaultFinderGeneration::Retired
+            );
+        PLATFORM_FINALIZER_DISPOSITION.store(if retired { 1 } else { 2 }, Ordering::Release);
+        MoltObject::none().bits()
+    })
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn platform_terminal_custody_precedes_environment_value_finalizers() {
+    crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("env.write", |py| {
+        PLATFORM_FINALIZER_DISPOSITION.store(0, Ordering::Release);
+        molt_env_mapping_init();
+        assert!(!exception_pending(py));
+        let root = platform_state(py)
+            .environment_mapping
+            .load(Ordering::Acquire);
+        let class =
+            loader_identity_class(py, "TerminalEnvironmentOwner", builtin_classes(py).object);
+        let function = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "platform_retirement_finalizer",
+                platform_retirement_finalizer as *const (),
+            ),
+            1,
+        );
+        assert!(!function.is_null());
+        let function = MoltObject::from_ptr(function).bits();
+        loader_identity_class_namespace(py, class, b"__del__", function);
+        dec_ref_bits(py, function);
+        let value = unsafe { call_callable0(py, class) };
+        assert!(!exception_pending(py));
+        let key = alloc_test_string_bits(py, "__MOLT_TERMINAL_CALLBACK__");
+        assert!(unsafe { dict_set_in_place(py, ptr_from_bits(root), key, value) });
+        dec_ref_bits(py, key);
+        dec_ref_bits(py, value);
+        assert_eq!(PLATFORM_FINALIZER_DISPOSITION.load(Ordering::Acquire), 0);
+        assert!(platform_clear_runtime_state(py, runtime_state(py)));
+        assert_eq!(
+            PLATFORM_FINALIZER_DISPOSITION.load(Ordering::Acquire),
+            1,
+            "both terminal dispositions must precede the actual value finalizer"
+        );
+        assert!(!exception_pending(py));
+        dec_ref_bits(py, class);
     });
 }

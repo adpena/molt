@@ -1,11 +1,11 @@
 //! Fresh execution transactions for compiler-emitted module bodies.
 //!
 //! `runpy` and importlib must execute the same compiled module body as normal
-//! imports.  This module is the sole bridge: it temporarily removes the
-//! canonical cache/table entry, invokes the normal importer, seeds the new
-//! module namespace at publication time, and restores the prior import state
-//! on every exit path.  No source parser or second import dispatcher lives
-//! here.
+//! imports. A scoped execution context owns its private namespace independently
+//! of global import initialization rows and public membership. Publication seeds
+//! execution metadata and the optional run-name swap; ordinary imports performed
+//! by the body still consult the public dictionary and its initialization owner. No source parser, second module store or
+//! alternate import dispatcher lives here.
 
 use super::*;
 use std::cell::RefCell;
@@ -58,71 +58,6 @@ const SCRIPT_METADATA_PENDING: u8 =
 
 thread_local! {
     static EXECUTION_STACK: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
-    static IMPORT_PUBLICATION_SCOPES: RefCell<Vec<(usize, String, PythonImportPublication)>> = const { RefCell::new(Vec::new()) };
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PythonImportPublication {
-    Normal,
-    Suppress,
-}
-
-/// The compiled initializer must publish into Molt's internal import cache so
-/// the normal dispatcher can run, but runpy and Loader.exec_module own neither
-/// canonical sys.modules insertion nor parent-attribute publication. Keep both
-/// effects under this scope through cleanup and exact cache restoration.
-struct ImportPublicationScope {
-    runtime_id: usize,
-    name: String,
-}
-
-impl ImportPublicationScope {
-    fn enter(runtime_id: usize, name: &str, policy: PythonImportPublication) -> Self {
-        IMPORT_PUBLICATION_SCOPES.with(|stack| {
-            stack
-                .borrow_mut()
-                .push((runtime_id, name.to_string(), policy));
-        });
-        Self {
-            runtime_id,
-            name: name.to_string(),
-        }
-    }
-}
-
-impl Drop for ImportPublicationScope {
-    fn drop(&mut self) {
-        IMPORT_PUBLICATION_SCOPES.with(|stack| {
-            let popped = stack.borrow_mut().pop();
-            debug_assert_eq!(popped.as_ref().map(|(id, _, _)| *id), Some(self.runtime_id));
-            debug_assert_eq!(popped.as_ref().map(|(_, name, _)| name), Some(&self.name));
-        });
-    }
-}
-
-pub(super) fn python_import_publication_policy(
-    _py: &PyToken<'_>,
-    name: &str,
-) -> PythonImportPublication {
-    let runtime_id = runtime_state(_py) as *const _ as usize;
-    IMPORT_PUBLICATION_SCOPES.with(|stack| {
-        stack
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|(id, suppressed, policy)| {
-                (*id == runtime_id && suppressed == name).then_some(*policy)
-            })
-            .unwrap_or(PythonImportPublication::Normal)
-    })
-}
-
-fn cached_module_owned_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
-    let cache = crate::builtins::exceptions::internals::module_cache(_py);
-    let guard = cache.lock().unwrap();
-    let bits = guard.get(name).copied()?;
-    inc_ref_bits(_py, bits);
-    Some(bits)
 }
 
 struct Argv0Swap {
@@ -323,48 +258,6 @@ unsafe fn restore_sys_path_swap(_py: &PyToken<'_>, swap: Option<SysPathSwap>) {
     }
 }
 
-fn module_cache_del_by_name(_py: &PyToken<'_>, name: &str) -> Result<(), u64> {
-    let name_ptr = alloc_string(_py, name.as_bytes());
-    if name_ptr.is_null() {
-        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-    }
-    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let result = molt_module_cache_del(name_bits);
-    dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if !obj_from_bits(result).is_none() {
-            dec_ref_bits(_py, result);
-        }
-        Err(MoltObject::none().bits())
-    } else {
-        if !obj_from_bits(result).is_none() {
-            dec_ref_bits(_py, result);
-        }
-        Ok(())
-    }
-}
-
-fn module_cache_set_by_name(_py: &PyToken<'_>, name: &str, module_bits: u64) -> Result<(), u64> {
-    let name_ptr = alloc_string(_py, name.as_bytes());
-    if name_ptr.is_null() {
-        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-    }
-    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-    let result = molt_module_cache_set(name_bits, module_bits);
-    dec_ref_bits(_py, name_bits);
-    if exception_pending(_py) {
-        if !obj_from_bits(result).is_none() {
-            dec_ref_bits(_py, result);
-        }
-        Err(MoltObject::none().bits())
-    } else {
-        if !obj_from_bits(result).is_none() {
-            dec_ref_bits(_py, result);
-        }
-        Ok(())
-    }
-}
-
 pub(super) unsafe fn copy_dict_entries(_py: &PyToken<'_>, src_ptr: *mut u8, dst_ptr: *mut u8) {
     unsafe {
         let Some(source_order) = crate::object::ops_dict::dict_snapshot(
@@ -560,6 +453,9 @@ pub(super) fn on_module_publish(
     name: &str,
     module_bits: u64,
 ) -> Result<(), u64> {
+    if !crate::builtins::module_table::executing_private_body(_py, name) {
+        return Ok(());
+    }
     let runtime_id = runtime_state(_py) as *const _ as usize;
     let seed = EXECUTION_STACK.with(|stack| {
         let mut stack = stack.borrow_mut();
@@ -567,6 +463,7 @@ pub(super) fn on_module_publish(
         if ctx.runtime_id != runtime_id || ctx.import_name != name || ctx.module_bits != 0 {
             return None;
         }
+        inc_ref_bits(_py, module_bits);
         ctx.module_bits = module_bits;
         Some((
             ctx.init_globals_bits,
@@ -612,6 +509,11 @@ pub(super) fn on_module_publish(
                 .unwrap_or_default();
             set_module_dict_text(_py, module_dict_ptr, b"__package__", package)?;
             for name in [b"__spec__".as_slice(), b"__cached__", b"__loader__"] {
+                if name == b"__cached__"
+                    && crate::object::ops_sys::runtime_target_at_least(_py, 3, 15)
+                {
+                    continue;
+                }
                 set_module_dict_name(_py, module_dict_ptr, name, MoltObject::none().bits())?;
             }
         }
@@ -632,7 +534,30 @@ pub(super) fn on_module_publish(
 /// object supplied to `Loader.exec_module`. This preserves object identity and
 /// makes body mutations (including partial state on exceptions) observable on
 /// exactly the caller-owned module, as in CPython.
+/// Defining globals of this exact active private body, never public membership.
+pub(super) fn execution_owns_globals(py: &PyToken<'_>, name: &str, globals: u64) -> bool {
+    if !crate::builtins::module_table::executing_private_body(py, name) {
+        return false;
+    }
+    let runtime = runtime_state(py) as *const _ as usize;
+    EXECUTION_STACK.with(|stack| {
+        stack.borrow().last().is_some_and(|context| {
+            context.runtime_id == runtime
+                && context.import_name == name
+                && obj_from_bits(context.module_bits)
+                    .as_ptr()
+                    .is_some_and(|module| unsafe {
+                        object_type_id(module) == TYPE_ID_MODULE
+                            && module_dict_bits(module) == globals
+                    })
+        })
+    })
+}
+
 pub(super) fn module_new_target(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    if !crate::builtins::module_table::executing_private_body(_py, name) {
+        return None;
+    }
     let runtime_id = runtime_state(_py) as *const _ as usize;
     EXECUTION_STACK.with(|stack| {
         let stack = stack.borrow();
@@ -736,8 +661,9 @@ pub(super) fn module_metadata_override_bits(
 
 /// Complete CPython's module metadata tuple once the compiler publishes the
 /// generated `__spec__`.  The compiler owns spec construction; execution only
-/// mirrors `spec.loader` and `spec.cached` into the two module globals, exactly
-/// once, before user statements begin.
+/// reads `spec.loader` and `spec.cached` once before user statements. Loader is
+/// projected; cached is projected only before target 3.15, preserving that
+/// version's observable getter without replacing an init_globals value.
 pub(super) unsafe fn after_module_metadata_set(
     _py: &PyToken<'_>,
     module_bits: u64,
@@ -831,7 +757,15 @@ pub(super) unsafe fn after_module_metadata_set(
                 }
                 return Err(MoltObject::none().bits());
             }
-            let set_result = set_module_dict_name(_py, dict_ptr, module_name, value_bits);
+            // runpy still reads spec.cached in 3.15, but no longer overlays
+            // __cached__; an existing init_globals value remains untouched.
+            let set_result = if module_name == b"__cached__"
+                && crate::object::ops_sys::runtime_target_at_least(_py, 3, 15)
+            {
+                Ok(())
+            } else {
+                set_module_dict_name(_py, dict_ptr, module_name, value_bits)
+            };
             if !obj_from_bits(value_bits).is_none() {
                 dec_ref_bits(_py, value_bits);
             }
@@ -987,39 +921,6 @@ pub(crate) fn execute_compiled_module(
     };
     let execution_name = crate::builtins::module_table::module_execution_target_name(import_name)
         .unwrap_or(import_name);
-    let sync_policy = PythonImportPublication::Suppress;
-    let _publication_scope = ImportPublicationScope::enter(runtime_id, execution_name, sync_policy);
-
-    let previous_bits = cached_module_owned_bits(_py, execution_name);
-    let table_snapshot =
-        match crate::builtins::module_table::begin_module_execution(_py, execution_name) {
-            Ok(snapshot) => snapshot,
-            Err(bits) => {
-                if let Some(previous) = previous_bits {
-                    dec_ref_bits(_py, previous);
-                }
-                unsafe {
-                    restore_argv0_swap(_py, argv0_swap.take());
-                    restore_sys_path_swap(_py, path_swap.take());
-                }
-                return Err(ModuleExecutionError::runtime(bits));
-            }
-        };
-    if let Err(bits) = module_cache_del_by_name(_py, execution_name) {
-        let saved = save_pending_exception(_py);
-        crate::builtins::module_table::restore_module_execution(_py, table_snapshot);
-        if let Some(previous) = previous_bits {
-            let _ = module_cache_set_by_name(_py, execution_name, previous);
-            dec_ref_bits(_py, previous);
-        }
-        unsafe {
-            restore_argv0_swap(_py, argv0_swap.take());
-            restore_sys_path_swap(_py, path_swap.take());
-        }
-        restore_pending_exception(_py, saved);
-        return Err(ModuleExecutionError::runtime(bits));
-    }
-
     if let Some(bits) = init_globals_bits {
         inc_ref_bits(_py, bits);
     }
@@ -1052,24 +953,20 @@ pub(crate) fn execute_compiled_module(
         });
     });
 
-    let name_ptr = alloc_string(_py, execution_name.as_bytes());
-    let result = if name_ptr.is_null() {
-        crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+    let dispatched = crate::builtins::module_table::execute_private_body(_py, execution_name);
+    let ctx = EXECUTION_STACK.with(|stack| stack.borrow_mut().pop().expect("execution context"));
+    let result = if ctx.module_bits == 0 {
+        MoltObject::none().bits()
     } else {
-        let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let bits = molt_module_import_inner(name_bits);
-        dec_ref_bits(_py, name_bits);
-        bits
+        ctx.module_bits
     };
-    if obj_from_bits(result).is_none() && !exception_pending(_py) {
+    if dispatched.is_ok() && ctx.module_bits == 0 && !exception_pending(_py) {
         let _ = raise_exception::<u64>(
             _py,
             "ModuleNotFoundError",
             &format!("No module named {execution_name:?}"),
         );
     }
-
-    let ctx = EXECUTION_STACK.with(|stack| stack.borrow_mut().pop().expect("execution context"));
     let missing_compiled_body =
         ctx.module_bits == 0 && pending_exception_is(_py, "ModuleNotFoundError");
     if let Some(bits) = ctx.init_globals_bits {
@@ -1082,16 +979,6 @@ pub(crate) fn execute_compiled_module(
     let mut cleanup_exception = None;
     restore_sys_modules_swap(_py, ctx.sys_modules_swap);
     capture_pending_exception(_py, &mut cleanup_exception);
-    if module_cache_del_by_name(_py, execution_name).is_err() {
-        capture_pending_exception(_py, &mut cleanup_exception);
-    }
-    crate::builtins::module_table::restore_module_execution(_py, table_snapshot);
-    if let Some(bits) = previous_bits {
-        if module_cache_set_by_name(_py, execution_name, bits).is_err() {
-            capture_pending_exception(_py, &mut cleanup_exception);
-        }
-        dec_ref_bits(_py, bits);
-    }
     let final_exception = if execution_exception.is_some() {
         if let Some(bits) = cleanup_exception {
             dec_ref_bits(_py, bits);
@@ -1106,8 +993,8 @@ pub(crate) fn execute_compiled_module(
         restore_sys_path_swap(_py, path_swap.take());
     }
 
-    // Keep serialization custody alive until every cache/table/sys restoration
-    // above is complete.  The field is otherwise intentionally unread.
+    // Keep serialization custody alive through every public run-name/sys swap
+    // restoration. Private execution never borrowed an ordinary import row.  The field is otherwise intentionally unread.
     let _sys_transition_guard = ctx.sys_transition_guard;
 
     if exception_pending(_py) || obj_from_bits(result).is_none() {

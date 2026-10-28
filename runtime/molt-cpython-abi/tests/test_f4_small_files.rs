@@ -23,20 +23,12 @@ unsafe extern "C" fn fake_bytes_data(_bits: u64, out_len: *mut usize) -> *const 
     ptr::null()
 }
 
-unsafe extern "C" fn fake_sys_get_object_borrowed(
-    data: *const u8,
-    len: usize,
-    _policy: molt_cpython_abi::hooks::SysLookupPolicy,
-) -> BorrowedHandleResult {
-    let name = unsafe { std::slice::from_raw_parts(data, len) };
-    if name == b"modules" {
-        let mut g = SYS_MODULES.lock().unwrap();
-        if *g == 0 {
-            *g = unsafe { support::fake_runtime::alloc_dict() };
-        }
-        return BorrowedHandleResult::ok(*g);
+unsafe extern "C" fn fake_import_module_dict_borrowed() -> BorrowedHandleResult {
+    let mut modules = SYS_MODULES.lock().unwrap();
+    if *modules == 0 {
+        *modules = unsafe { support::fake_runtime::alloc_dict() };
     }
-    BorrowedHandleResult::missing()
+    BorrowedHandleResult::ok(*modules)
 }
 
 unsafe extern "C" fn fake_import_add_module_borrowed(
@@ -87,7 +79,7 @@ fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.bytes_data = fake_bytes_data;
-    hooks.sys_get_object_borrowed = fake_sys_get_object_borrowed;
+    hooks.import_module_dict_borrowed = fake_import_module_dict_borrowed;
     hooks.import_add_module_borrowed = fake_import_add_module_borrowed;
     hooks.import_module = fake_import_module_fails;
     support::enter_runtime_class_abi_test(hooks)

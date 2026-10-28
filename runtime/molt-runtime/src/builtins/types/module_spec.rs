@@ -122,7 +122,59 @@ fn configure_module_spec_class(
     let property_bits = MoltObject::from_ptr(property_ptr).bits();
     let published = set_class_method(py, dict_ptr, "parent", property_bits);
     dec_ref_bits(py, property_bits);
-    published
+    if !published {
+        return false;
+    }
+    for (name, get_slot, get_name, get_fn, set_slot, set_name, set_fn) in [
+        (
+            "cached",
+            &state.module_spec_cached_get_fn,
+            "molt_importlib_module_spec_cached_get",
+            molt_importlib_module_spec_cached_get as *const (),
+            &state.module_spec_cached_set_fn,
+            "molt_importlib_module_spec_cached_set",
+            molt_importlib_module_spec_cached_set as *const (),
+        ),
+        (
+            "has_location",
+            &state.module_spec_has_location_get_fn,
+            "molt_importlib_module_spec_has_location_get",
+            molt_importlib_module_spec_has_location_get as *const (),
+            &state.module_spec_has_location_set_fn,
+            "molt_importlib_module_spec_has_location_set",
+            molt_importlib_module_spec_has_location_set as *const (),
+        ),
+    ] {
+        let getter = builtin_func_bits(
+            py,
+            NativeCallableSpec::function(get_slot),
+            crate::builtins::functions::runtime_fn_addr(get_name, get_fn),
+            1,
+        );
+        if getter == 0 || exception_pending(py) {
+            return false;
+        }
+        let setter = builtin_func_bits(
+            py,
+            NativeCallableSpec::function(set_slot),
+            crate::builtins::functions::runtime_fn_addr(set_name, set_fn),
+            2,
+        );
+        if setter == 0 || exception_pending(py) {
+            return false;
+        }
+        let property_ptr = alloc_property_obj(py, getter, setter, none);
+        if property_ptr.is_null() {
+            return false;
+        }
+        let property_bits = MoltObject::from_ptr(property_ptr).bits();
+        let published = set_class_method(py, dict_ptr, name, property_bits);
+        dec_ref_bits(py, property_bits);
+        if !published {
+            return false;
+        }
+    }
+    true
 }
 
 /// `__init__(self, name, loader=None, origin=None, is_package=None)`: the
@@ -235,7 +287,6 @@ fn initialize_module_spec(
         || !set_spec_attr(py, spec_bits, b"loader", loader_bits)
         || !set_spec_attr(py, spec_bits, b"origin", origin_bits)
         || !set_spec_attr(py, spec_bits, b"loader_state", none)
-        || !set_spec_attr(py, spec_bits, b"cached", none)
     {
         return false;
     }
@@ -254,8 +305,282 @@ fn initialize_module_spec(
     };
     let located = set_spec_attr(py, spec_bits, b"submodule_search_locations", locations_bits);
     dec_ref_bits(py, locations_bits);
-    let has_location = MoltObject::from_bool(!obj_from_bits(origin_bits).is_none()).bits();
-    located && set_spec_attr(py, spec_bits, b"has_location", has_location)
+    // ModuleSpec's origin is descriptive. File factories separately admit
+    // has_location from their actual file provenance, as CPython _set_fileattr.
+    let has_location = MoltObject::from_bool(false).bits();
+    located
+        && set_spec_attr(py, spec_bits, b"_set_fileattr", has_location)
+        && set_spec_attr(py, spec_bits, b"_cached", none)
+}
+
+// Before the defining frozen-external body runs, this dictionary owns its
+// initial list objects. Binding transfers those objects into the verified
+// defining globals and retires the bootstrap dictionary; later reads use
+// those globals, never a rediscovered sys.modules entry.
+fn new_module_spec_suffix_namespace(py: &PyToken<'_>) -> u64 {
+    use crate::builtins::exceptions::ExceptionValue;
+    let mut owners = Vec::new();
+    let mut pairs = Vec::new();
+    for (name, suffixes) in [
+        (
+            b"SOURCE_SUFFIXES".as_slice(),
+            if crate::builtins::platform::sys_platform_str() == "win32" {
+                &[".py", ".pyw"][..]
+            } else {
+                &[".py"][..]
+            },
+        ),
+        (b"BYTECODE_SUFFIXES".as_slice(), &[".pyc"][..]),
+    ] {
+        let Some(key) = attr_name_bits_from_bytes(py, name) else {
+            return 0;
+        };
+        owners.push(ExceptionValue::adopt(py, key));
+        let mut values = Vec::new();
+        for suffix in suffixes {
+            let ptr = alloc_string(py, suffix.as_bytes());
+            if ptr.is_null() {
+                return 0;
+            }
+            let value = MoltObject::from_ptr(ptr).bits();
+            owners.push(ExceptionValue::adopt(py, value));
+            values.push(value);
+        }
+        let ptr = alloc_list(py, &values);
+        if ptr.is_null() {
+            return 0;
+        }
+        let list = MoltObject::from_ptr(ptr).bits();
+        owners.push(ExceptionValue::adopt(py, list));
+        pairs.extend_from_slice(&[key, list]);
+    }
+    let ptr = alloc_dict_with_pairs(py, &pairs);
+    if ptr.is_null() {
+        0
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+fn module_spec_suffix_namespace(py: &PyToken<'_>) -> u64 {
+    let state = types_state(py);
+    init_atomic_bits(py, &state.module_spec_suffix_namespace, || {
+        state
+            .module_spec_suffix_bound
+            .store(MoltObject::from_bool(false).bits(), AtomicOrdering::Release);
+        new_module_spec_suffix_namespace(py)
+    })
+}
+
+pub(crate) fn module_spec_suffix_value_from_namespace(
+    py: &PyToken<'_>,
+    namespace: u64,
+    name: &[u8],
+) -> Option<u64> {
+    let key = attr_name_bits_from_bytes(py, name)?;
+    let ptr = obj_from_bits(namespace).as_ptr()?;
+    let result = unsafe { dict_get_in_place(py, ptr, key) };
+    dec_ref_bits(py, key);
+    if exception_pending(py) {
+        return None;
+    }
+    let Some(result) = result.ok()? else {
+        let _ = raise_exception::<u64>(
+            py,
+            "NameError",
+            &format!("name '{}' is not defined", String::from_utf8_lossy(name)),
+        );
+        return None;
+    };
+    inc_ref_bits(py, result);
+    Some(result)
+}
+
+pub(crate) fn module_spec_suffix_value(py: &PyToken<'_>, name: &[u8]) -> Option<u64> {
+    let namespace = module_spec_suffix_namespace(py);
+    if namespace == 0 {
+        return None;
+    }
+    module_spec_suffix_value_from_namespace(py, namespace, name)
+}
+
+/// Owned staging namespace. No defining globals or canonical root are changed.
+pub(crate) fn stage_module_spec_suffix_namespace(py: &PyToken<'_>) -> u64 {
+    let state = types_state(py);
+    let current = module_spec_suffix_namespace(py);
+    if current == 0 {
+        return 0;
+    }
+    // Re-executing the defining body creates fresh defaults, as its Python
+    // assignments do; machinery keeps any previously exported list objects.
+    if state.module_spec_suffix_bound.load(AtomicOrdering::Acquire)
+        == MoltObject::from_bool(true).bits()
+    {
+        new_module_spec_suffix_namespace(py)
+    } else {
+        inc_ref_bits(py, current);
+        current
+    }
+}
+
+/// The verified defining body calls this only after its assignments succeed.
+/// Reload assignments already modify the bound dictionary incrementally; a
+/// different later defining module cannot replace the first successful owner.
+pub(crate) fn commit_module_spec_suffix_namespace(py: &PyToken<'_>, globals: u64) -> bool {
+    use crate::builtins::exceptions::ExceptionValue;
+    let state = types_state(py);
+    if state.module_spec_suffix_bound.load(AtomicOrdering::Acquire)
+        == MoltObject::from_bool(true).bits()
+    {
+        return true;
+    }
+    for name in [
+        b"SOURCE_SUFFIXES".as_slice(),
+        b"BYTECODE_SUFFIXES".as_slice(),
+    ] {
+        let Some(value) = module_spec_suffix_value_from_namespace(py, globals, name) else {
+            return false;
+        };
+        let _value = ExceptionValue::adopt(py, value);
+    }
+    if state.module_spec_suffix_bound.load(AtomicOrdering::Acquire)
+        == MoltObject::from_bool(true).bits()
+    {
+        return true;
+    }
+    inc_ref_bits(py, globals);
+    let displaced = state
+        .module_spec_suffix_namespace
+        .swap(globals, AtomicOrdering::AcqRel);
+    state
+        .module_spec_suffix_bound
+        .store(MoltObject::from_bool(true).bits(), AtomicOrdering::Release);
+    if displaced != 0 {
+        dec_ref_bits(py, displaced);
+    }
+    !exception_pending(py)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_suffixes() -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::exceptions::ExceptionValue;
+        let Some(source) = module_spec_suffix_value(py, b"SOURCE_SUFFIXES") else {
+            return MoltObject::none().bits();
+        };
+        let source = ExceptionValue::adopt(py, source);
+        let Some(bytecode) = module_spec_suffix_value(py, b"BYTECODE_SUFFIXES") else {
+            return MoltObject::none().bits();
+        };
+        let bytecode = ExceptionValue::adopt(py, bytecode);
+        let ptr = alloc_tuple(py, &[source.bits(), bytecode.bits()]);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+/// CPython's `_get_cached`: suffix dispatch is a Python method call, while
+/// source cache paths use the same runtime policy as cache_from_source.
+fn module_spec_cached_from_origin(py: &PyToken<'_>, origin: u64) -> Option<u64> {
+    use crate::builtins::exceptions::ExceptionValue;
+    for name in [
+        b"SOURCE_SUFFIXES".as_slice(),
+        b"BYTECODE_SUFFIXES".as_slice(),
+    ] {
+        let endswith = ExceptionValue::adopt(py, get_spec_attr(py, origin, b"endswith")?);
+        let policy = ExceptionValue::adopt(py, module_spec_suffix_value(py, name)?);
+        let suffixes =
+            ExceptionValue::adopt(py, unsafe { tuple_from_iter_bits(py, policy.bits()) }?);
+        let result = ExceptionValue::adopt(py, unsafe {
+            call_callable1(py, endswith.bits(), suffixes.bits())
+        });
+        if exception_pending(py) {
+            return None;
+        }
+        if !crate::object::ops::truth_value(py, obj_from_bits(result.bits())).ok()? {
+            continue;
+        }
+        if name == b"BYTECODE_SUFFIXES" {
+            inc_ref_bits(py, origin);
+            return Some(origin);
+        }
+        let cached = crate::builtins::platform::molt_importlib_cache_from_source(origin);
+        if exception_pending(py) {
+            dec_ref_bits(py, cached);
+            if crate::builtins::platform::clear_pending_if_kind(py, &["NotImplementedError"]) {
+                return Some(MoltObject::none().bits());
+            }
+            return None;
+        }
+        return Some(cached);
+    }
+    Some(MoltObject::none().bits())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_module_spec_cached_get(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        use crate::builtins::exceptions::ExceptionValue;
+        let result = (|| -> Option<u64> {
+            let cached = ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"_cached")?);
+            if obj_from_bits(cached.bits()).is_none() {
+                let origin = ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"origin")?);
+                if !obj_from_bits(origin.bits()).is_none() {
+                    let located =
+                        ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"_set_fileattr")?);
+                    if crate::object::ops::truth_value(py, obj_from_bits(located.bits())).ok()? {
+                        let origin =
+                            ExceptionValue::adopt(py, get_spec_attr(py, self_bits, b"origin")?);
+                        let cached = ExceptionValue::adopt(
+                            py,
+                            module_spec_cached_from_origin(py, origin.bits())?,
+                        );
+                        if !set_spec_attr(py, self_bits, b"_cached", cached.bits()) {
+                            return None;
+                        }
+                    }
+                }
+            }
+            get_spec_attr(py, self_bits, b"_cached")
+        })();
+        result.unwrap_or_else(|| MoltObject::none().bits())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_module_spec_cached_set(self_bits: u64, value_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let _ = set_spec_attr(py, self_bits, b"_cached", value_bits);
+        MoltObject::none().bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_module_spec_has_location_get(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        get_spec_attr(py, self_bits, b"_set_fileattr").unwrap_or_else(|| MoltObject::none().bits())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_module_spec_has_location_set(
+    self_bits: u64,
+    value_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if let Ok(value) = crate::object::ops::truth_value(py, obj_from_bits(value_bits)) {
+            let _ = set_spec_attr(
+                py,
+                self_bits,
+                b"_set_fileattr",
+                MoltObject::from_bool(value).bits(),
+            );
+        }
+        MoltObject::none().bits()
+    })
 }
 
 /// Owned `name.rpartition(".")[0]`.
@@ -440,203 +765,5 @@ pub extern "C" fn molt_importlib_module_spec_type() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn str_bits(py: &PyToken<'_>, value: &[u8]) -> u64 {
-        let ptr = alloc_string(py, value);
-        assert!(!ptr.is_null());
-        MoltObject::from_ptr(ptr).bits()
-    }
-
-    fn attr(py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> u64 {
-        let value = get_spec_attr(py, obj_bits, name).expect("ModuleSpec attribute");
-        assert!(!exception_pending(py));
-        value
-    }
-
-    fn attr_text(py: &PyToken<'_>, obj_bits: u64, name: &[u8]) -> String {
-        let value = attr(py, obj_bits, name);
-        let text = string_obj_to_owned(obj_from_bits(value)).expect("str attribute");
-        dec_ref_bits(py, value);
-        text
-    }
-
-    extern "C" fn observed_setattr(self_bits: u64, name_bits: u64, value_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, {
-            if crate::object::ops_format::string_obj_matches_bytes(
-                obj_from_bits(name_bits),
-                b"name",
-            ) {
-                let observed = str_bits(py, b"observed.leaf");
-                let result = crate::molt_object_setattr(self_bits, name_bits, observed);
-                dec_ref_bits(py, observed);
-                result
-            } else {
-                crate::molt_object_setattr(self_bits, name_bits, value_bits)
-            }
-        })
-    }
-
-    #[test]
-    fn runtime_factory_obeys_mutable_class_attribute_protocol() {
-        struct RemoveAttribute(u64, u64);
-        impl Drop for RemoveAttribute {
-            fn drop(&mut self) {
-                crate::with_gil_entry_nopanic!(py, {
-                    crate::molt_del_attr_name(self.0, self.1);
-                    dec_ref_bits(py, self.1);
-                    dec_ref_bits(py, self.0);
-                });
-            }
-        }
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            let class = module_spec_class(py);
-            let setter =
-                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
-                    py,
-                    crate::provenance::abi::expose_function_address(observed_setattr as *const ()),
-                    3,
-                ))
-                .bits();
-            let setter_name = str_bits(py, b"__setattr__");
-            inc_ref_bits(py, class);
-            let _restore_class = RemoveAttribute(class, setter_name);
-            crate::molt_set_attr_name(class, setter_name, setter);
-            dec_ref_bits(py, setter);
-            assert!(!exception_pending(py));
-            let name = str_bits(py, b"original");
-            let none = MoltObject::none().bits();
-            let spec = alloc_module_spec(py, name, none, none, none).expect("observed spec");
-            assert_eq!(attr_text(py, spec, b"name"), "observed.leaf");
-            assert_eq!(attr_text(py, spec, b"parent"), "observed");
-            for bits in [spec, name] {
-                dec_ref_bits(py, bits);
-            }
-        });
-    }
-
-    #[test]
-    fn runtime_factory_and_facade_type_share_one_canonical_class() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            let class_bits = module_spec_class(py);
-            assert_ne!(class_bits, 0);
-            assert_eq!(
-                attr_text(py, class_bits, b"__module__"),
-                "_frozen_importlib"
-            );
-            let facade_bits = molt_importlib_module_spec_type();
-            assert_eq!(facade_bits, class_bits);
-            dec_ref_bits(py, facade_bits);
-
-            let none = MoltObject::none().bits();
-            let name = str_bits(py, b"pkg.leaf");
-            let origin = str_bits(py, b"/tmp/leaf.so");
-            let not_package = MoltObject::from_bool(false).bits();
-            let spec = alloc_module_spec(py, name, none, origin, not_package).expect("module spec");
-            assert_eq!(type_of_bits(py, spec), class_bits);
-            assert_eq!(attr_text(py, spec, b"name"), "pkg.leaf");
-            assert_eq!(attr_text(py, spec, b"origin"), "/tmp/leaf.so");
-            assert_eq!(attr_text(py, spec, b"parent"), "pkg");
-            for (field, expected) in [
-                (b"loader".as_slice(), none),
-                (b"loader_state".as_slice(), none),
-                (b"cached".as_slice(), none),
-                (b"submodule_search_locations".as_slice(), none),
-                (
-                    b"has_location".as_slice(),
-                    MoltObject::from_bool(true).bits(),
-                ),
-            ] {
-                assert_eq!(attr(py, spec, field), expected);
-            }
-            let repr = molt_importlib_module_spec_repr(spec);
-            assert_eq!(
-                string_obj_to_owned(obj_from_bits(repr)).as_deref(),
-                Some("ModuleSpec(name='pkg.leaf', loader=None, origin='/tmp/leaf.so')")
-            );
-            dec_ref_bits(py, repr);
-
-            let is_package = MoltObject::from_bool(true).bits();
-            let package =
-                alloc_module_spec(py, name, none, none, is_package).expect("package spec");
-            assert_eq!(attr_text(py, package, b"parent"), "pkg.leaf");
-            let package_repr = molt_repr_from_obj(package);
-            assert!(!exception_pending(py));
-            assert_eq!(
-                string_obj_to_owned(obj_from_bits(package_repr)).as_deref(),
-                Some("ModuleSpec(name='pkg.leaf', loader=None, submodule_search_locations=[])")
-            );
-            dec_ref_bits(py, package_repr);
-            assert_eq!(
-                attr(py, package, b"has_location"),
-                MoltObject::from_bool(false).bits()
-            );
-            let locations = attr(py, package, b"submodule_search_locations");
-            assert_eq!(molt_len(locations), MoltObject::from_int(0).bits());
-            dec_ref_bits(py, locations);
-
-            for bits in [package, spec, origin, name] {
-                dec_ref_bits(py, bits);
-            }
-        });
-    }
-
-    #[test]
-    fn class_call_binds_positional_and_keyword_initializer_arguments() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            let class_bits = module_spec_class(py);
-            assert_ne!(class_bits, 0);
-            let none = MoltObject::none().bits();
-            let name = str_bits(py, b"top");
-            let origin = str_bits(py, b"built-in");
-            let positional = unsafe { call_callable2(py, class_bits, name, none) };
-            assert!(!exception_pending(py));
-            assert_eq!(type_of_bits(py, positional), class_bits);
-            assert_eq!(attr_text(py, positional, b"parent"), "");
-            assert_eq!(attr(py, positional, b"origin"), none);
-
-            let origin_key = str_bits(py, b"origin");
-            let package_key = str_bits(py, b"is_package");
-            let builder = molt_callargs_new(1, 2);
-            unsafe {
-                let _ = molt_callargs_push_pos(builder, name);
-                let _ = crate::molt_callargs_push_kw(builder, origin_key, origin);
-                let _ = crate::molt_callargs_push_kw(
-                    builder,
-                    package_key,
-                    MoltObject::from_int(1).bits(),
-                );
-            }
-            let keyword = molt_call_bind(class_bits, builder);
-            assert!(!exception_pending(py));
-            assert_eq!(attr_text(py, keyword, b"origin"), "built-in");
-            assert_eq!(attr(py, keyword, b"loader"), none);
-            assert_eq!(
-                attr(py, keyword, b"has_location"),
-                MoltObject::from_bool(true).bits()
-            );
-            assert_eq!(attr_text(py, keyword, b"parent"), "top");
-
-            let parent_name = str_bits(py, b"parent");
-            let _ = molt_set_attr_name(keyword, parent_name, name);
-            assert!(exception_pending(py), "parent is a read-only property");
-            clear_exception(py);
-
-            for bits in [
-                parent_name,
-                keyword,
-                package_key,
-                origin_key,
-                positional,
-                origin,
-                name,
-            ] {
-                dec_ref_bits(py, bits);
-            }
-        });
-    }
-}
+#[path = "module_spec/tests.rs"]
+mod tests;

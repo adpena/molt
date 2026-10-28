@@ -540,9 +540,10 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
         record_exception(_py, exc_ptr);
         // Raising publishes only the pending owner. Handler entry explicitly
         // changes handled state; a consuming builtin must preserve its caller.
-        if !exception_handler_active() && !generator_raise_active() && !task_raise_active() {
-            context_stack_unwind(_py, MoltObject::from_ptr(exc_ptr).bits());
-        }
+        // Lexical CONTEXT_EXIT/UNWIND_TO belongs to the frame handling or
+        // propagating this exception. A raise in a nested initializer/callback
+        // must not unwind caller-owned contexts. Task-terminal cleanup retains
+        // its explicit scheduler boundary.
         MoltObject::none().bits()
     })
 }

@@ -1041,9 +1041,70 @@ fn transaction_rejects_gil_before_process_state_lock() {
     );
 }
 
+/// Standalone cache/error tests supply the actual public resolver boundary.
+/// The catalog is deliberately not consulted: an empty finder is a genuine
+/// resolver miss, while ordinary cached values bypass this callback entirely.
+/// Public util membership (including a preexisting None) is escrowed exactly.
+pub(crate) struct EmptyImportResolver {
+    previous: Option<u64>,
+}
+
+impl EmptyImportResolver {
+    pub(crate) fn new(py: &crate::PyToken<'_>) -> Self {
+        extern "C" fn find_spec(_name: u64, _package: u64) -> u64 {
+            crate::MoltObject::none().bits()
+        }
+        use crate::{MoltObject, dec_ref_bits};
+        let name = crate::attr_name_bits_from_bytes(py, b"importlib.util").unwrap();
+        let module = crate::object::builders::alloc_module_obj(py, name);
+        assert!(!module.is_null());
+        let module = MoltObject::from_ptr(module).bits();
+        let function = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "empty_public_import_finder",
+                find_spec as *const (),
+            ),
+            2,
+        );
+        assert!(!function.is_null());
+        let function = MoltObject::from_ptr(function).bits();
+        let key = crate::attr_name_bits_from_bytes(py, b"find_spec").unwrap();
+        crate::builtins::modules::molt_module_set_attr(module, key, function);
+        assert!(!crate::exception_pending(py));
+        let previous = crate::builtins::module_table::replace_module_owned_for_test(
+            py,
+            "importlib.util",
+            Some(module),
+        );
+        // Replacement consumes the module owner; its dictionary owns function.
+        for bits in [name, key, function] {
+            dec_ref_bits(py, bits);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for EmptyImportResolver {
+    fn drop(&mut self) {
+        crate::with_gil_entry_nopanic!(py, {
+            let removed = crate::builtins::module_table::replace_module_owned_for_test(
+                py,
+                "importlib.util",
+                self.previous.take(),
+            );
+            if let Some(bits) = removed {
+                crate::dec_ref_bits(py, bits);
+            }
+        });
+    }
+}
+
 /// Standalone runtime tests explicitly publish the same provider namespace as
-/// a compiled initializer. This fixture owns/restores its cache projection;
-/// production lookup has no test-only materialization or secondary cache.
+/// a compiled initializer. This fixture owns/restores public membership. The
+/// first builtins provider also establishes the interpreter role, whose owner
+/// is escrowed by the surrounding RuntimeTestTransaction rather than selected
+/// again by mutable public membership.
 pub(crate) struct NativeProviderTestNamespace {
     name: u64,
     previous: u64,
@@ -1062,6 +1123,9 @@ impl NativeProviderTestNamespace {
         assert!(crate::intrinsics::registry::publish_python_native_namespace(py, provider, module));
         crate::molt_module_cache_set(name, module);
         assert!(!crate::exception_pending(py));
+        if provider == "builtins" {
+            crate::builtins::module_table::publish_interpreter_builtins_for_test(py, module);
+        }
         Self {
             name,
             previous,

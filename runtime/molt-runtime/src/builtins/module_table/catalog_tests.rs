@@ -37,8 +37,9 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
             None,
             None,
             MODULE_KIND_SOURCE,
-            MODULE_FLAG_PACKAGE,
-        );
+            MODULE_FLAG_PACKAGE | MODULE_FLAG_HAS_LOCATION | MODULE_FLAG_STDLIB_PROVIDER,
+        )
+        .row("zz_static", init, None, None, MODULE_KIND_SOURCE, 0);
     let mut blob = builder.build();
     // Literal independent image fields: only the terminal package row has
     // this origin. Alias row flags/origins intentionally differ.
@@ -52,20 +53,116 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
         assert_eq!(
             registry.compiled_spec(name),
             Some(CompiledModuleSpec {
+                provider_name: "package",
+                is_stdlib_provider: true,
+                has_body: true,
                 origin: "/catalog/package/__init__.py",
                 is_package: true,
+                has_location: true,
             })
         );
     }
     assert_eq!(
         registry.compiled_spec("builtin"),
         Some(CompiledModuleSpec {
+            provider_name: "builtin",
+            is_stdlib_provider: false,
+            has_body: true,
             origin: "",
             is_package: false,
+            has_location: false,
         })
+    );
+    assert_eq!(
+        registry.compiled_spec("zz_static"),
+        Some(CompiledModuleSpec {
+            provider_name: "zz_static",
+            is_stdlib_provider: false,
+            has_body: true,
+            origin: "",
+            is_package: false,
+            has_location: false,
+        }),
+        "source kind alone does not admit a file location"
     );
     for name in ["namespace_reserved", "no_body", "absent"] {
         assert_eq!(registry.compiled_spec(name), None);
     }
     assert_eq!(INITIALIZER_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn selected_body_availability_uses_source_provider_role_including_alias_metadata() {
+    static BODY_CALLS: AtomicUsize = AtomicUsize::new(0);
+    extern "C" fn body() -> u64 {
+        BODY_CALLS.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        transaction.with_target_python_minor(py, 13, || {
+            for name in ["msilib", "multiprocessing.popen_spawn_win32"] {
+                if name.starts_with("multiprocessing") && cfg!(target_os = "windows") {
+                    continue;
+                }
+                for is_stdlib in [false, true] {
+                    let mut builder = BlobBuilder::new();
+                    builder
+                        .row("alias", 0, None, Some(1), MODULE_KIND_ALIAS, 0)
+                        .row(
+                            name,
+                            body as *const () as usize as u64,
+                            None,
+                            None,
+                            MODULE_KIND_SOURCE,
+                            if is_stdlib {
+                                MODULE_FLAG_STDLIB_PROVIDER
+                            } else {
+                                0
+                            },
+                        );
+                    let blob = builder.build();
+                    let registry = ModuleRegistry::parse(blob.as_ptr()).unwrap();
+                    let spec = registry.compiled_spec("alias").unwrap();
+                    assert_eq!(spec.provider_name, name);
+                    assert_eq!(spec.is_stdlib_provider, is_stdlib);
+                    let before = BODY_CALLS.load(Ordering::SeqCst);
+                    dispatch_module_body(py, &registry, 1, body as *const () as usize as u64);
+                    if is_stdlib {
+                        assert_eq!(BODY_CALLS.load(Ordering::SeqCst), before);
+                        let error = crate::builtins::exceptions::ExceptionValue::adopt(
+                            py,
+                            crate::molt_exception_last_pending(),
+                        );
+                        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                            py,
+                            error.bits(),
+                            "ModuleNotFoundError",
+                        ));
+                        crate::clear_exception(py);
+                        let key = crate::attr_name_bits_from_bytes(py, b"name").unwrap();
+                        let missing =
+                            crate::builtins::attributes::get_attr_name(py, error.bits(), key)
+                                .unwrap();
+                        let expected = if name == "msilib" { "msilib" } else { "msvcrt" };
+                        assert_eq!(
+                            crate::string_obj_to_owned(obj_from_bits(missing)).as_deref(),
+                            Some(expected)
+                        );
+                        dec_ref_bits(py, key);
+                        dec_ref_bits(py, missing);
+                        crate::clear_exception(py);
+                    } else {
+                        assert!(!exception_pending(py));
+                        assert_eq!(
+                            BODY_CALLS.load(Ordering::SeqCst),
+                            before + 1,
+                            "same-name user source is not a stdlib provider"
+                        );
+                    }
+                }
+            }
+        });
+    });
 }

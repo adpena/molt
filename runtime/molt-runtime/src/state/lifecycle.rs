@@ -560,12 +560,9 @@ fn trace_shutdown(step: &str) {
     }
 }
 
-pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, state: &RuntimeState) {
+pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, _state: &RuntimeState) {
     crate::gil_assert();
     PARSE_ARENA.with(|arena| arena.borrow_mut().reset());
-    state
-        .importlib_default_meta_path_bootstrapped
-        .store(false, AtomicOrdering::Release);
 }
 
 fn release_asyncgen_hooks(

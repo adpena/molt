@@ -170,9 +170,9 @@ enum ExtensionPhase {
     MultiPhase { execute: bool },
 }
 
-/// Public admission is independent of private-cache publication. Multi-phase
-/// execution cannot replace a different public module; single-phase init may.
-/// Every admitted result still replaces a stale private entry with its identity.
+/// Multi-phase execution cannot replace a different public module;
+/// single-phase initialization may. Admission and transaction custody agree
+/// before any displaced owner is released.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ExtensionPublicationAdmission {
     Replace,
@@ -210,7 +210,7 @@ impl ModulePublication {
             }
         }
         // Publication can fail after installing only some owners. Rollback
-        // detaches our exact identity independently from all three stores.
+        // detaches our exact dictionary and transaction identity before release.
         self.published = true;
         let _ = crate::builtins::modules::module_cache_publish(
             self.name_bits,
@@ -250,6 +250,33 @@ impl ModulePublication {
         self.committed = true;
         Ok(bits)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_module_publication(
+    py: &crate::PyToken<'_>,
+    name_bits: u64,
+    module: u64,
+    control: impl FnOnce(),
+) {
+    assert!(register_cpython_hooks());
+    let object =
+        unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(module) };
+    assert!(!object.is_null());
+    let mut publication = ModulePublication {
+        object: unsafe { NativeObjectOwner::from_owned(object) },
+        name_bits,
+        def: ptr::null_mut(),
+        register_state: false,
+        published: false,
+        committed: false,
+    };
+    let name = crate::string_obj_to_owned(MoltObject::from_bits(name_bits)).unwrap();
+    publication
+        .publish(py, &name, module, ExtensionPublicationAdmission::Replace)
+        .unwrap();
+    control();
+    drop(publication); // Actual conditional extension rollback authority.
 }
 
 impl Drop for ModulePublication {
@@ -1146,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn multiphase_exec_replaces_a_stale_private_module() {
+    fn multiphase_exec_uses_the_current_dictionary_publication() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
         with_gil(|py| unsafe {
@@ -1158,7 +1185,7 @@ mod tests {
             crate::builtins::module_table::publish_interpreter_sys_for_test(&py, sys);
             let modules = crate::builtins::modules::sys_modules_dict_bits(&py, sys).unwrap();
             let modules_ptr = MoltObject::from_bits(modules).as_ptr().unwrap();
-            let text = "multiphase_stale_private.physical";
+            let text = "multiphase_current_publication.physical";
             let name = hook_alloc_str(text.as_ptr(), text.len());
             let old = crate::builtins::modules::molt_module_new(name);
             crate::builtins::modules::molt_module_cache_set(name, old);
@@ -1197,8 +1224,9 @@ mod tests {
                 dict_get_in_place(&py, modules_ptr, name).unwrap(),
                 Some(created)
             );
-            let cache = crate::builtins::exceptions::internals::module_cache(&py);
-            assert_eq!(cache.lock().unwrap().get(text).copied(), Some(created));
+            let stored = crate::builtins::module_table::module_lookup(&py, text).unwrap();
+            assert_eq!(stored, Some(created));
+            dec_ref_bits(&py, stored.unwrap());
             crate::builtins::modules::module_cache_publish(
                 name,
                 old,
@@ -1226,11 +1254,13 @@ mod tests {
                 dict_get_in_place(&py, modules_ptr, name).unwrap(),
                 Some(already_public)
             );
+            let stored = crate::builtins::module_table::module_lookup(&py, text).unwrap();
             assert_eq!(
-                cache.lock().unwrap().get(text).copied(),
+                stored,
                 Some(already_public),
-                "an already-public result still replaces stale private ownership"
+                "extension and public imports share one dictionary identity"
             );
+            dec_ref_bits(&py, stored.unwrap());
             let def_address = (&raw mut def).addr();
             for bits in [created, already_public] {
                 assert_eq!(crate::c_api::molt_module_capi_get_def(bits), def_address);
@@ -1419,10 +1449,11 @@ mod tests {
                     if multiphase { None } else { Some(second) }
                 );
                 if !multiphase {
-                    // The trusted initializer owns private publication too;
+                    // The trusted initializer reconciles transaction custody too;
                     // first-init-wins must not republish its predecessor.
-                    let private = crate::builtins::exceptions::internals::module_cache(&py);
-                    assert_eq!(private.lock().unwrap().get(&name).copied(), Some(second));
+                    let stored = crate::builtins::module_table::module_lookup(&py, &name).unwrap();
+                    assert_eq!(stored, Some(second));
+                    dec_ref_bits(&py, stored.unwrap());
                     let object =
                         molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(second);
                     assert_eq!(modules::PyState_FindModule(&raw mut def), object);
@@ -1458,7 +1489,7 @@ mod tests {
                     );
 
                     // Simulate public replacement after only some transaction
-                    // owners were installed. Rollback must retire our private
+                    // owners were installed. Rollback must retire our transient
                     // owner without deleting this different public identity.
                     let replacement_ptr = alloc_module_obj(&py, name_bits);
                     assert!(!replacement_ptr.is_null());
@@ -1484,8 +1515,9 @@ mod tests {
                         dict_get_in_place(&py, modules_ptr, name_bits).unwrap(),
                         Some(replacement)
                     );
-                    let private = crate::builtins::exceptions::internals::module_cache(&py);
-                    assert!(!private.lock().unwrap().contains_key(&name));
+                    let stored = crate::builtins::module_table::module_lookup(&py, &name).unwrap();
+                    assert_eq!(stored, Some(replacement));
+                    dec_ref_bits(&py, stored.unwrap());
                     dec_ref_bits(&py, replacement);
                 }
                 let def_address = (&raw mut def).addr();

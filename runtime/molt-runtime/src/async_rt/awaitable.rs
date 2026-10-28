@@ -986,18 +986,24 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
     // The compiled guest owns Future callback ordering, loop identity and
     // cancellation. Reuse the same promise bridge as Future.__await__ without
     // recursively re-entering a foreign future's self-yielding __await__.
-    let Some(module_id) = crate::builtins::module_table::module_id_of("asyncio.futures") else {
-        return raise_exception::<_>(
-            py,
-            "RuntimeError",
-            "Future scheduling requires compiled asyncio.futures",
-        );
-    };
-    let module = crate::builtins::module_table::module_ensure(py, module_id);
-    if exception_pending(py) {
-        dec_ref_bits(py, module);
+    // This bridge calls a compiler-owned implementation helper, rather than
+    // executing a Python import statement on behalf of the caller.
+    let Some(module_name) = crate::attr_name_bits_from_bytes(py, b"asyncio.futures") else {
         return MoltObject::none().bits();
-    }
+    };
+    let imported = crate::builtins::modules::catalog_import_attempt(module_name);
+    dec_ref_bits(py, module_name);
+    let module = match imported {
+        Ok(crate::builtins::modules::ModuleImportOutcome::Imported(bits)) => bits,
+        Ok(crate::builtins::modules::ModuleImportOutcome::Missing { .. }) => {
+            return raise_exception::<_>(
+                py,
+                "RuntimeError",
+                "Future scheduling requires compiled asyncio.futures",
+            );
+        }
+        Err(error) => return error,
+    };
     let Some(name) = crate::attr_name_bits_from_bytes(py, b"_wait_for_future") else {
         dec_ref_bits(py, module);
         return MoltObject::none().bits();

@@ -34,9 +34,11 @@ differential/runtime proof lane must still exercise the admitted target cells.
 
 `config/python_compatibility_error_sources.json` records SHA-256 hashes and
 version-tagged source URLs for CPython 3.12.0, 3.13.0 and 3.14.0, with
-`memoryobject.c` pinned to the independently reviewed evidence patches 3.12.13,
-3.13.11 and 3.14.3. These historical source coordinates are separate from the
-current reference-executable policy. The evidence
+`memoryobject.c` joined to the latest maintained primary references in
+`config/verified_subset.toml` and their exact source pins. Missing current source
+receipts remain unqualified until captured; historical source coordinates remain
+at their original identities in repository history and do not satisfy a current
+reference requirement. The evidence
 covers the complete Windows loop inheritance chain and these operation owners:
 
 | Operation | CPython authority | Relevant behavior |
@@ -53,6 +55,19 @@ Older CPython iterator implementations could return an iterator while retaining
 a pending exception. Their call-specialization-dependent failure is not a stable
 semantic oracle; differential receipts must identify the actual patch interpreter.
 Historical `.0` source readings do not establish behavior of a maintained oracle.
+Advancing a primary reference captures new source bytes and retains the original
+patch attribution of historical readings and execution receipts. It never
+relabels a prior calibration as proof of a later patch. Pending Python 3.15
+source roles remain separate from admitted reference targets.
+
+Refresh source receipts with
+`python tools/compatibility_error_protocol.py --refresh-sources`. The existing
+guarded Git reader verifies each tag's commit, release header and file-object
+content before the shared generator publisher atomically replaces the receipt.
+An interruption or changed content at an unchanged coordinate publishes nothing.
+This development-only command fetches one shallow filtered Git generation per
+distinct source version and reads its finite declared files. Ordinary `--check`
+and `--write` remain offline and add no guest startup or runtime work.
 
 Memoryview format syntax, leaf scalar admission, rank rejection, and released
 iterator ordering share runtime helpers. Half-float packing/unpacking uses
@@ -64,7 +79,9 @@ canonical CPython source registry through their declared outcome versions and
 paths. The stdlib snapshot does not contain these bodies. Run
 `python tools/compatibility_error_protocol.py --refresh-sources` after moving
 those pins. It collects every required body before atomic receipt publication,
-preserves independent evidence rows and reports old/new hashes for review.
+retains the exact identity of unchanged coordinates and refuses changed content
+at an unchanged coordinate. Prior patch receipts remain in repository history;
+they are never relabeled as receipts for the new pins.
 A refreshed hash is source evidence, not semantic approval, target admission or
 execution qualification. Review the applicable function bodies when their hashes
 change; `--check` and `--write` remain offline and refuse stale receipts.

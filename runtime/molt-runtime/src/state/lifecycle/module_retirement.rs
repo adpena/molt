@@ -57,6 +57,17 @@ impl<'a, 'py> ModuleRetirement<'a, 'py> {
             inc_ref_bits(self.py, bits);
             self.namespaces.push((bits, 1));
         }
+        if self.phase < 2
+            && let Some(bits) =
+                crate::builtins::module_table::interpreter_builtins_dictionary(self.py)
+            && !self
+                .namespaces
+                .iter()
+                .any(|&(owned, rank)| owned == bits && rank == 2)
+        {
+            inc_ref_bits(self.py, bits);
+            self.namespaces.push((bits, 2));
+        }
         for (name, phase) in [("sys", 1), ("builtins", 2)] {
             if phase > self.phase
                 && let Some(bits) =
@@ -73,42 +84,17 @@ impl<'a, 'py> ModuleRetirement<'a, 'py> {
                 }
             }
         }
-        {
-            let cache = state.module_cache.lock().unwrap();
-            for (name, phase) in [("sys", 1), ("builtins", 2)] {
-                if phase <= self.phase {
-                    continue;
-                }
-                if let Some(&bits) = cache.get(name)
-                    && !self
-                        .namespaces
-                        .iter()
-                        .any(|&(old, rank)| old == bits && rank == phase)
-                {
-                    self.namespaces.reserve(1);
-                    inc_ref_bits(self.py, bits);
-                    self.namespaces.push((bits, phase));
-                }
-            }
-        }
     }
 
     pub(super) fn drain(&mut self, state: &RuntimeState) -> bool {
         crate::gil_assert();
         self.capture_namespaces(state);
-        let mut modules = {
-            let mut cache = state.module_cache.lock().unwrap();
-            let mut detached = Vec::with_capacity(cache.len());
-            cache.retain(|name, bits| {
-                if self.keeps(name, *bits) {
-                    true
-                } else {
-                    detached.push(*bits);
-                    false
-                }
-            });
-            detached
-        };
+        let mut modules = Vec::new();
+        if self.phase >= 2
+            && let Some(bits) = state.interpreter_builtins.take_for_shutdown(self.py)
+        {
+            modules.push(bits);
+        }
         // The interpreter role retires with sys, independently of public
         // replacement/deletion. Its terminal sentinel forbids resurrection.
         if self.phase >= 1
@@ -116,9 +102,9 @@ impl<'a, 'py> ModuleRetirement<'a, 'py> {
         {
             modules.push(bits);
         }
-        // Retire the registry projection before the first callback. Leaving
-        // READY slots behind retains modules and permits torn namespaces to be
-        // returned or reconstructed after the owning cache has been detached.
+        // Retire initialization metadata and detach the dictionary cohort
+        // before callbacks. Transient slots and public entries release their
+        // actual owners together; completed rows contain no retained module.
         modules.extend(
             crate::builtins::module_table::take_module_roots_for_shutdown(
                 self.py,
@@ -136,8 +122,8 @@ impl<'a, 'py> ModuleRetirement<'a, 'py> {
         });
         let changed = !modules.is_empty();
         let mut cleared = Vec::new();
-        // Different cache keys and the registry each own an edge, but one
-        // namespace is cleared only once per pass. All owners remain pinned
+        // Dictionary aliases and semantic roles can share a namespace. Clear
+        // that namespace once per pass. All detached owners remain pinned
         // until every namespace in this detached cohort has been processed.
         for &bits in &modules {
             // Earlier finalizers may replace a core role with a module that
@@ -180,6 +166,9 @@ impl Drop for ModuleRetirement<'_, '_> {
         for (bits, _) in self.namespaces.drain(..) {
             dec_ref_bits(self.py, bits);
         }
+        if self.phase == 2 {
+            crate::builtins::module_table::retire_module_dictionary(self.py);
+        }
     }
 }
 
@@ -194,11 +183,8 @@ mod tests {
 
     fn publish(py: &PyToken<'_>, name: &str, bits: u64) {
         inc_ref_bits(py, bits);
-        let old = runtime_state(py)
-            .module_cache
-            .lock()
-            .unwrap()
-            .insert(name.into(), bits);
+        let old =
+            crate::builtins::module_table::replace_module_owned_for_test(py, name, Some(bits));
         if let Some(old) = old {
             dec_ref_bits(py, old);
         }
@@ -321,7 +307,11 @@ mod tests {
                 assert!(retirement.drain(state));
                 assert!(!retirement.advance());
                 assert!(!retirement.drain(state));
-                assert!(state.module_cache.lock().unwrap().is_empty());
+                assert!(
+                    crate::builtins::module_table::module_lookup(py, "late_builtin_alias")
+                        .unwrap()
+                        .is_none()
+                );
                 for bits in [class, sys, builtin] {
                     dec_ref_bits(py, bits);
                 }

@@ -83,9 +83,11 @@ def test_target_property_callable_catalog_has_exact_manifest_producers() -> None
         ("SYS_PLATFORM", "sys_platform"),
         ("OS_NAME", "os_name"),
     )
-    assert schema.intrinsic_callables == (
-        ("molt_sys_platform", "INTRINSIC_SYS_PLATFORM", "SYS_PLATFORM"),
-        ("molt_os_name", "INTRINSIC_OS_NAME", "OS_NAME"),
+    assert tuple(row for row in schema.intrinsic_callables if row.target_property) == (
+        gen.IntrinsicCallable(
+            "molt_sys_platform", "INTRINSIC_SYS_PLATFORM", "SYS_PLATFORM"
+        ),
+        gen.IntrinsicCallable("molt_os_name", "INTRINSIC_OS_NAME", "OS_NAME"),
     )
     assert catalog.INTRINSIC_CALLABLE_IDENTITIES["molt_sys_platform"] is (
         catalog.PythonIdentity.INTRINSIC_SYS_PLATFORM
@@ -160,6 +162,42 @@ def test_target_property_catalog_rejects_duplicate_intrinsic_row(
         encoding="utf-8",
     )
     with pytest.raises(gen.SchemaError, match="duplicate intrinsic callable"):
+        gen.load_schema(path)
+
+
+@pytest.mark.parametrize(
+    "before,after,expected",
+    [
+        (
+            "runtime_import_protocol = true",
+            "runtime_import_protocol = false",
+            "must be true",
+        ),
+        (
+            "runtime_import_protocol = true",
+            'runtime_import_protocol = true\ntarget_property = "SYS_PLATFORM"',
+            "one explicit semantic facet",
+        ),
+        (
+            'name = "molt_module_import"',
+            'name = "molt_missing_import_entry"',
+            "no manifest producer",
+        ),
+        (
+            'acquisition = "required"',
+            'acquisition = ["required"]',
+            "required or optional",
+        ),
+    ],
+)
+def test_intrinsic_protocol_catalog_rejects_unproven_declarations(
+    tmp_path, before, after, expected
+):
+    source = gen.SOURCE.read_text(encoding="utf-8")
+    path = tmp_path / "invalid.toml"
+    assert before in source
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    with pytest.raises(gen.SchemaError, match=expected):
         gen.load_schema(path)
 
 
@@ -243,8 +281,9 @@ def test_catalog_rejects_ambiguous_shape_identity_and_orphan_guard(
     with pytest.raises(gen.SchemaError, match="ambiguous shape identity"):
         gen.load_schema(ambiguous)
     orphan = tmp_path / "orphan.toml"
+    unused_bit = max(bit for _, bit in gen.load_schema().member_bits) + 1
     orphan.write_text(
-        source.replace("[member_bits]", "[member_bits]\nORPHAN = 34", 1),
+        source.replace("[member_bits]", f"[member_bits]\nORPHAN = {unused_bit}", 1),
         encoding="utf-8",
     )
     with pytest.raises(gen.SchemaError, match="orphan member guards"):

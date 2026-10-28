@@ -16,6 +16,7 @@ SCRIPT_PATH = REPO_ROOT / "src" / "molt" / "stdlib" / "importlib" / "machinery.p
 _MACHINERY_INTRINSICS = [
     "molt_importlib_read_file",
     "molt_importlib_admit_spec",
+    "molt_importlib_ensure_default_meta_path",
     "molt_importlib_filefinder_find_spec",
     "molt_importlib_sourcefileloader_exec_module",
     "molt_importlib_zip_source_loader_exec_module",
@@ -35,6 +36,7 @@ _MACHINERY_INTRINSICS = [
     "molt_exception_last_pending",
     "molt_sys_platform",
     "molt_importlib_module_spec_type",
+    "molt_importlib_suffixes",
     "molt_importlib_compiled_loader",
     "molt_importlib_compiled_loader_types",
     "molt_path_splitroot",
@@ -51,6 +53,8 @@ _RUNTIME_LOADER_TYPES = (
     _RUNTIME_FROZEN_IMPORTER,
 )
 _RUNTIME_LOADER = _RUNTIME_BUILTIN_IMPORTER()
+_RUNTIME_SOURCE_SUFFIXES = [".py"]
+_RUNTIME_BYTECODE_SUFFIXES = [".pyc"]
 
 
 def _splitroot(path, posix, windows_utf16, pathlib):
@@ -60,13 +64,24 @@ def _splitroot(path, posix, windows_utf16, pathlib):
     return ntpath.splitroot(path)
 
 
+def _complete_initial_finders(namespace):
+    assert namespace["ModuleSpec"] is _RUNTIME_MODULE_SPEC
+    assert isinstance(namespace["_default_path_hooks"], list)
+    assert namespace["PathFinder"].__module__ == namespace["__name__"]
+
+
 def _bootstrap_intrinsics():
     # Identity sentinels only: behavior is tested against the real Rust owner.
     return {
         "molt_importlib_admit_spec": lambda fullname, spec: None,
+        "molt_importlib_ensure_default_meta_path": _complete_initial_finders,
         "molt_importlib_filefinder_find_spec": lambda fullname, path, machinery: None,
         "molt_importlib_extension_loader_type_declare": lambda cls: None,
         "molt_importlib_module_spec_type": lambda: _RUNTIME_MODULE_SPEC,
+        "molt_importlib_suffixes": lambda: (
+            _RUNTIME_SOURCE_SUFFIXES,
+            _RUNTIME_BYTECODE_SUFFIXES,
+        ),
         "molt_importlib_compiled_loader": lambda: _RUNTIME_LOADER,
         "molt_importlib_compiled_loader_types": lambda: _RUNTIME_LOADER_TYPES,
         "molt_path_splitroot": _splitroot,
@@ -114,6 +129,10 @@ def test_module_spec_is_the_runtime_type_authority() -> None:
     machinery = _load_machinery_module()
 
     assert machinery.ModuleSpec is _RUNTIME_MODULE_SPEC
+    assert machinery.SOURCE_SUFFIXES is _RUNTIME_SOURCE_SUFFIXES
+    assert machinery.BYTECODE_SUFFIXES is _RUNTIME_BYTECODE_SUFFIXES
+    assert machinery.DEBUG_BYTECODE_SUFFIXES is _RUNTIME_BYTECODE_SUFFIXES
+    assert machinery.OPTIMIZED_BYTECODE_SUFFIXES is _RUNTIME_BYTECODE_SUFFIXES
 
 
 @pytest.mark.parametrize("missing", tuple(_bootstrap_intrinsics()))

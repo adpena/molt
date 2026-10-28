@@ -25,6 +25,7 @@ from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
     ImportScanMode,
     ModuleExecutionKind,
+    ModuleSourceRole,
     _ModuleGraphScanAuthority,
     _ModuleSourceScanAuthority,
     _PrecomputedModuleImportScan,
@@ -108,32 +109,6 @@ def _write_generated_module_source(
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_text_if_changed(path, source)
     return path
-
-
-def _write_importer_module(output_dir: Path) -> Path:
-    lines = [
-        '"""Auto-generated import dispatcher for Molt-compiled modules."""',
-        "",
-        "from __future__ import annotations",
-        "",
-    ]
-    lines.extend(
-        [
-            "from _intrinsics import require_intrinsic as _require_intrinsic",
-            "",
-            "_IMPORT_TRANSACTION = _require_intrinsic(",
-            "    'molt_importlib_import_transaction', globals()",
-            ")",
-            "",
-            "def _molt_import(name, globals=None, locals=None, fromlist=(), level=0):",
-            "    return _IMPORT_TRANSACTION(name, globals, locals, fromlist, level)",
-        ]
-    )
-    return _write_generated_module_source(
-        _module_import_scanner.IMPORTER_MODULE_NAME,
-        "\n".join(lines) + "\n",
-        output_dir,
-    )
 
 
 def _collect_namespace_parents(
@@ -325,6 +300,7 @@ def _build_frontend_module_costs(
 def _build_module_graph_metadata(
     module_graph: Mapping[str, Path],
     *,
+    stdlib_root: Path,
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
@@ -361,7 +337,16 @@ def _build_module_graph_metadata(
         if module_deps is not None
         else None
     )
+    # This is source-provider provenance, not a module-name classification or
+    # a target-runtime filesystem root. Reuse the resolved compile source role
+    # everywhere downstream, including cache identities and registry flags.
+    provider_root = stdlib_root.resolve()
+    source_roles: dict[str, ModuleSourceRole] = {
+        name: ("stdlib" if path.resolve().is_relative_to(provider_root) else "user")
+        for name, path in module_graph.items()
+    }
     return _ModuleGraphMetadata(
+        module_source_role_by_module=MappingProxyType(source_roles),
         logical_source_path_by_module=MappingProxyType(logical_source_path_by_module),
         module_is_namespace_by_module=MappingProxyType(module_is_namespace_by_module),
         module_is_package_by_module=MappingProxyType(module_is_package_by_module),
@@ -408,7 +393,6 @@ def _augment_support_modules(
     artifacts_root: Path,
     stub_parents: Collection[str],
     entry_module: str,
-    needs_generated_importer: bool,
     diagnostics_enabled: bool,
     import_admission_policy: _ImportAdmissionPolicy | None,
 ) -> _SupportModuleAugmentation:
@@ -472,9 +456,6 @@ def _augment_support_modules(
             name, stub_path, package_paths=tuple(Path(path) for path in paths)
         )
         namespace_sources.add(name)
-    importer_name = _module_import_scanner.IMPORTER_MODULE_NAME
-    if needs_generated_importer and importer_name not in module_graph:
-        capture_generated(importer_name, _write_importer_module(artifacts_root))
     generated_imports = frozenset()
     if generated_scans:
         closure = _graph_discovery._discover_module_graph_from_paths(
@@ -500,20 +481,12 @@ def _augment_support_modules(
             reason = (
                 "namespace_stub"
                 if name in namespace_sources
-                else "importer_generated"
-                if name == importer_name
-                else "runtime_import_support"
-                if needs_generated_importer
                 else "package_parent_closure"
             )
             _graph_discovery._record_module_reason(module_reasons, name, reason)
     generated_module_source_paths = {
         name: generated_module_logical_path(name) for name in namespace_sources
     }
-    if needs_generated_importer and importer_name in module_graph:
-        generated_module_source_paths[importer_name] = generated_module_logical_path(
-            importer_name
-        )
     return _SupportModuleAugmentation(
         namespace_module_names=frozenset(namespace_sources),
         generated_module_source_paths=generated_module_source_paths,
@@ -522,9 +495,7 @@ def _augment_support_modules(
 
 
 _ENTRY_REACHABLE_REASONS = frozenset({"entry_closure"})
-_RUNTIME_SUPPORT_REASONS = frozenset(
-    {"runtime_import_support", "importer_generated", "spawn_closure"}
-)
+_RUNTIME_SUPPORT_REASONS = frozenset({"runtime_import_support", "spawn_closure"})
 _STDLIB_SUPPORT_REASONS = frozenset({"core_required", "core_closure"})
 _PACKAGE_PARENT_REASONS = frozenset(
     {"package_parent", "package_parent_closure", "namespace_stub"}
@@ -1360,7 +1331,6 @@ def _finalize_runtime_import_closure(
     policy = _module_import_scanner._module_graph_needs_runtime_import_support(
         module_graph=module_graph,
         scan_authority=authority,
-        explicit_imports=explicit_imports,
     )
     runtime_roots = set(dispatch_roots) | set(explicit_imports)
     dynamic_owner_required = any(
@@ -1368,7 +1338,6 @@ def _finalize_runtime_import_closure(
     )
     if dynamic_owner_required and not policy.needs_runtime_import_support:
         policy = _RuntimeImportSupportPolicy(
-            policy.needs_generated_importer,
             True,
         )
     if not policy.needs_runtime_import_support and not dynamic_owner_required:
@@ -1425,11 +1394,9 @@ def _finalize_runtime_import_closure(
         policy = _module_import_scanner._module_graph_needs_runtime_import_support(
             module_graph=module_graph,
             scan_authority=_ModuleGraphScanAuthority(tuple(scan_authorities.values())),
-            explicit_imports=runtime_roots,
         )
         if dynamic_owner_required and not policy.needs_runtime_import_support:
             policy = _RuntimeImportSupportPolicy(
-                policy.needs_generated_importer,
                 True,
             )
         catalog_names = runtime_roots | _runtime_import_parent_modules(
@@ -1625,7 +1592,6 @@ def _materialize_import_plan(
             artifacts_root=artifacts_root,
             stub_parents=stub_parents,
             entry_module=entry_module,
-            needs_generated_importer=(runtime_closure.policy.needs_generated_importer),
             import_admission_policy=_native_support_source_admission_policy(
                 next_native_artifact_plan
             ),
@@ -1683,6 +1649,7 @@ def _materialize_import_plan(
     stdlib_allowlist.add("molt.stdlib")
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
+        stdlib_root=stdlib_root,
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
         entry_execution_kind=prepared_module_graph.image_scope.entry_execution_kind,

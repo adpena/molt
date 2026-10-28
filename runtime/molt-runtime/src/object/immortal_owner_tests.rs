@@ -335,12 +335,12 @@ fn module_roots_and_literal_caches_survive_repeated_runtime_retirement() {
                 }
                 assert!(!crate::exception_pending(py));
                 assert!(
-                    crate::runtime_state(py)
-                        .module_cache
-                        .lock()
-                        .unwrap()
-                        .insert("immortal_owner_fixture".to_owned(), module_bits)
-                        .is_none()
+                    crate::builtins::module_table::replace_module_owned_for_test(
+                        py,
+                        "immortal_owner_fixture",
+                        Some(module_bits)
+                    )
+                    .is_none()
                 );
                 // Transfer creator ownership to the real runtime module cache.
                 // The transaction now exercises production teardown, including

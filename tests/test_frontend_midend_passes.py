@@ -3304,13 +3304,28 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
     locals_set = kinds.index("FRAME_LOCALS_SET")
     assert kinds.index("MODULE_CACHE_SET") < kinds.index("CODE_SLOT_SET") < enter
     assert not any(op.kind == "MODULE_IMPORT" for op in ops[:enter])
-    spec_stores = [
+    plain_spec_stores = [
         index
         for index, op in enumerate(ops)
         if op.kind == "MODULE_SET_ATTR" and strings.get(op.args[1].name) == "__spec__"
     ]
+    spec_admissions = [
+        index
+        for index, op in enumerate(ops)
+        if op.kind == "CALL" and op.args[0] == "molt_module_initialization_spec"
+    ]
+    if module_name == "__main__":
+        assert not spec_admissions
+        spec_stores = plain_spec_stores
+    else:
+        assert not plain_spec_stores
+        spec_stores = spec_admissions
     assert len(spec_stores) == 1
     assert enter < spec_stores[0] < locals_set
+    assert (
+        ops[spec_stores[0]].args[1 if module_name != "__main__" else 0]
+        == gen.module_obj
+    )
     assert ops[locals_set].metadata == {"source_module_publication_boundary": True}
     # Metadata must exist before any facade executes its source body. A public
     # ModuleSpec lookup can recurse into a partially initialized machinery.
@@ -3332,6 +3347,19 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
         loader_call = next(op for op in ops if op.result == producer.args[2])
         assert loader_call.kind == "CALL"
         assert loader_call.args == ["molt_importlib_compiled_loader"]
+        location_stores = [
+            op
+            for op in ops
+            if op.kind == "SETATTR_GENERIC_OBJ"
+            and op.args[:2] == [spec_value, "has_location"]
+        ]
+        if module_name == "namespace":
+            assert not location_stores
+        else:
+            assert len(location_stores) == 1
+            location = next(op for op in ops if op.result == location_stores[0].args[2])
+            assert location.kind == "CONST_BOOL"
+            assert location.args == [True]
 
     pre_frame_label = gen.module_pre_frame_exception_label
     attempt_label = gen.function_exception_label

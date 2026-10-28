@@ -265,10 +265,6 @@ pub(crate) mod internals {
     use super::{HashMap, Mutex};
     use crate::{PyToken, runtime_state};
 
-    pub(crate) fn module_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<String, u64>> {
-        &runtime_state(_py).module_cache
-    }
-
     pub(crate) fn exception_type_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<String, u64>> {
         &runtime_state(_py).exception_type_cache
     }

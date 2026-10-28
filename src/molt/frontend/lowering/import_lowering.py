@@ -371,6 +371,32 @@ class ImportLoweringMixin(GeneratorMixinBase):
         normalized_top = normalize_stdlib_module_name(top_level)
         return bool(normalized_top and normalized_top in self.stdlib_allowlist)
 
+    def _emit_import_fromlist(self, names: Sequence[str]) -> MoltValue:
+        items: list[MoltValue] = []
+        for name in names:
+            item = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[name], result=item))
+            items.append(item)
+        value = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=items, result=value))
+        return value
+
+    def _emit_bootstrap_from_import(
+        self, module_name: str, fromlist_names: Sequence[str]
+    ) -> MoltValue:
+        module = self._emit_module_load_with_parents(module_name)
+        name = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name))
+        fromlist = self._emit_import_fromlist(fromlist_names)
+        # Preparation is one stage for the entire fromlist. Every IMPORT_FROM
+        # binding follows it, including when an earlier child loads a later one.
+        self._emit_intrinsic_call(
+            "molt_importlib_prepare_fromlist",
+            [name, module, fromlist],
+            type_hint="None",
+        )
+        return module
+
     def _emit_import_transaction(
         self,
         module_name: str,
@@ -388,13 +414,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         locals_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=locals_val))
 
-        fromlist_items: list[MoltValue] = []
-        for name in fromlist_names:
-            item_val = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[name], result=item_val))
-            fromlist_items.append(item_val)
-        fromlist_val = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=fromlist_items, result=fromlist_val))
+        fromlist_val = self._emit_import_fromlist(fromlist_names)
 
         level_val = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[level], result=level_val))
@@ -439,6 +459,8 @@ class ImportLoweringMixin(GeneratorMixinBase):
         return bound_val
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
+        if self._source_imports_use_transaction():
+            return self._emit_importlib_import_module_leaf(module_name)
         # NOTE: Earlier versions cached loaded_val per function to
         # avoid redundant MODULE_CACHE_GET + conditional-init sequences.  However,
         # the WASM state-machine backend (used for module init functions with
@@ -531,13 +553,17 @@ class ImportLoweringMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset(
-        {"builtins", "_molt_importer"}
-    )
+    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset({"builtins"})
 
     def _source_imports_use_transaction(self) -> bool:
-        return not (
+        bootstrap_body = self._is_module_entry() or (
+            self.current_func_name in self.module_chunk_symbols
+        )
+        bootstrap_module = self.module_source_role == "stdlib" and (
             self.module_name in self._IMPORT_TRANSACTION_BOOTSTRAP_MODULES
             or self.module_name == "importlib"
             or self.module_name.startswith("importlib.")
         )
+        # Only execution of the support module's own body bootstraps the
+        # resolver. Python functions defined there still perform public imports.
+        return not (bootstrap_body and bootstrap_module)

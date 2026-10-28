@@ -152,6 +152,12 @@ def _run_backend_pipeline(
         entry_module=resolved_build_entry.entry_module,
         module_graph=module_graph,
         logical_source_path_by_module=logical_source_path_by_module,
+        module_is_namespace_by_module=(
+            prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.module_is_namespace_by_module
+        ),
+        module_source_role_by_module=(
+            prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.module_source_role_by_module
+        ),
         known_modules=known_modules,
         stdlib_allowlist=stdlib_allowlist,
         integration_state=integration_state,

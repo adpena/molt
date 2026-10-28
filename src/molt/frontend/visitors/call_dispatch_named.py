@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
+
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 
 import ast
@@ -95,9 +97,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
     ) -> Any:
         if imported_from is None:
             return CALL_NOT_HANDLED
-        if imported_from == "builtins" or self._is_intrinsics_module_name(
-            imported_from
-        ):
+        if imported_from == "builtins" or is_compiler_intrinsics_module(imported_from):
             return CALL_NOT_HANDLED
 
         normalized = normalize_stdlib_module_name(imported_from)
@@ -191,7 +191,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             # path (e.g. a `def _require_intrinsic(...)` defined in an except
             # handler) can intercept the call and produce a CALL_BIND on a
             # never-assigned sentinel local.
-            if self._is_intrinsics_module_name(imported_binding) and func_id in {
+            if is_compiler_intrinsics_module(imported_binding) and func_id in {
                 "require_intrinsic",
                 "_require_intrinsic",
             }:
@@ -1357,7 +1357,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             )
             if lowered_intrinsic is not None:
                 return lowered_intrinsic
-            if self._is_intrinsics_module_name(imported_from) and func_id in {
+            if is_compiler_intrinsics_module(imported_from) and func_id in {
                 "require_intrinsic",
                 "_require_intrinsic",
                 "load_intrinsic",

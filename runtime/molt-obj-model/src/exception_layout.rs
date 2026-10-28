@@ -673,6 +673,7 @@ pub struct BuiltinExceptionSpec {
     definition: BuiltinExceptionDefinition,
     minimum_python_minor: u32,
     windows_only: bool,
+    builtin_binding: bool,
     declared_str_slot: Option<ExceptionStrSlot>,
     declares_repr: bool,
     heap_type: bool,
@@ -692,6 +693,7 @@ const fn exception_spec(
         },
         minimum_python_minor: 12,
         windows_only: false,
+        builtin_binding: true,
         declared_str_slot: None,
         declares_repr: false,
         heap_type: false,
@@ -705,6 +707,7 @@ const fn exception_alias(name: &'static str, canonical_name: &'static str) -> Bu
         definition: BuiltinExceptionDefinition::Alias { canonical_name },
         minimum_python_minor: 12,
         windows_only: false,
+        builtin_binding: true,
         declared_str_slot: None,
         declares_repr: false,
         heap_type: false,
@@ -747,7 +750,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         ExceptionBaseSpec::One("BaseException"),
         None,
     )
-    .with_heap_class("asyncio.exceptions"),
+    .with_heap_class("asyncio.exceptions")
+    .without_builtin_binding(),
     exception_spec("ArithmeticError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("AssertionError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec(
@@ -790,6 +794,13 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
     exception_spec("herror", ExceptionBaseSpec::One("OSError"), None).with_heap_class("socket"),
     exception_spec("ReferenceError", ExceptionBaseSpec::One("Exception"), None),
     exception_spec("RuntimeError", ExceptionBaseSpec::One("Exception"), None),
+    exception_spec(
+        "_DeadlockError",
+        ExceptionBaseSpec::One("RuntimeError"),
+        None,
+    )
+    .with_heap_class("_frozen_importlib")
+    .without_builtin_binding(),
     exception_spec(
         "StopIteration",
         ExceptionBaseSpec::One("Exception"),
@@ -888,7 +899,8 @@ const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
         ExceptionBaseSpec::Two("OSError", "ValueError"),
         None,
     )
-    .with_heap_class("_io"),
+    .with_heap_class("_io")
+    .without_builtin_binding(),
     exception_spec(
         "NotImplementedError",
         ExceptionBaseSpec::One("RuntimeError"),
@@ -972,6 +984,11 @@ impl BuiltinExceptionSpec {
         self
     }
 
+    const fn without_builtin_binding(mut self) -> Self {
+        self.builtin_binding = false;
+        self
+    }
+
     /// Origin and publication belong to the canonical row, never its name.
     pub fn is_heap_type(&'static self) -> bool {
         self.canonical().heap_type
@@ -1039,11 +1056,12 @@ impl BuiltinExceptionSpec {
         self.name
     }
 
-    /// Public Python 3 namespace availability, using target rather than host facts.
+    /// Builtins namespace availability, using the explicit binding declaration
+    /// and target rather than host facts. Class origin is a separate fact.
     /// Runtime layout and canonical identity remain available independently of
     /// whether the target Python version and platform expose this binding.
-    pub fn public_name(&self, target_minor: u32, is_windows: bool) -> Option<&'static str> {
-        if self.module != "builtins"
+    pub const fn public_name(&self, target_minor: u32, is_windows: bool) -> Option<&'static str> {
+        if !self.builtin_binding
             || target_minor < self.minimum_python_minor
             || (self.windows_only && !is_windows)
         {
@@ -1138,6 +1156,9 @@ mod tests {
                 assert!(names.contains("EnvironmentError"));
                 assert!(names.contains("IOError"));
                 assert!(names.contains("OSError"));
+                for internal in ["CancelledError", "UnsupportedOperation", "_DeadlockError"] {
+                    assert!(!names.contains(internal));
+                }
                 for spec in builtin_exception_specs() {
                     assert_eq!(builtin_exception_spec(spec.name()), Some(spec));
                     if spec.module() != "builtins" {
@@ -1225,6 +1246,11 @@ mod tests {
             Some(ExceptionLayoutKind::NameError)
         );
         assert_eq!(builtin_exception_spec("UserException"), None);
+        let deadlock = builtin_exception_spec("_DeadlockError").unwrap();
+        assert_eq!(deadlock.bases(), ExceptionBaseSpec::One("RuntimeError"));
+        assert_eq!(deadlock.module(), "_frozen_importlib");
+        assert_eq!(deadlock.layout(), ExceptionLayoutKind::Base);
+        assert!(deadlock.is_heap_type());
         assert_eq!(
             builtin_exception_spec("UnicodeDecodeError").map(|spec| spec.layout_root()),
             Some(ExceptionLayoutRoot::UnicodeDecodeError)
@@ -1370,6 +1396,7 @@ mod tests {
                 ("PicklingError", "_pickle"),
                 ("UnpicklingError", "_pickle"),
                 ("UnsupportedOperation", "_io"),
+                ("_DeadlockError", "_frozen_importlib"),
                 ("gaierror", "socket"),
                 ("herror", "socket"),
             ])

@@ -617,6 +617,7 @@ pub use crate::builtins::json::*;
 #[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]
 pub use crate::builtins::lzma::*;
 pub(crate) use crate::builtins::methods::*;
+pub use crate::builtins::module_table::molt_module_initialization_spec;
 pub use crate::builtins::modules::*;
 pub(crate) use crate::builtins::numbers::{
     ComplexParts, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref,
