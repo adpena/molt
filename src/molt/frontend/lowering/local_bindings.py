@@ -8,6 +8,8 @@ its Python bindings.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+
 import ast
 from contextlib import contextmanager
 from functools import partial
@@ -1122,7 +1124,7 @@ class LocalBindingMixin(GeneratorMixinBase):
         name: str,
         value: MoltValue,
         *,
-        kind: str = "FRAME_HOME_STORE",
+        kind: FrontendOpKind = "FRAME_HOME_STORE",
         slot: int | None = None,
     ) -> MoltValue:
         """Bind ``name`` in its home, which takes ``value``'s reference.
@@ -1218,7 +1220,7 @@ class LocalBindingMixin(GeneratorMixinBase):
 
     def _frame_home_restore_kind(
         self, name: str, bindings: Mapping[str, ComprehensionBinding]
-    ) -> str:
+    ) -> FrontendOpKind:
         """The home store that puts back ``name``'s enclosing binding, which
         ``bindings`` (the enclosing comprehension scopes) may shadow."""
         outer = bindings.get(name)
