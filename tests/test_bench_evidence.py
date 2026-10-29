@@ -381,11 +381,15 @@ def test_nested_external_entry_names_its_exact_captured_source(tmp_path):
     sibling.write_bytes(b"VALUE = 42\n")
     (sibling.parent / "__init__.py").write_bytes(b"")
     with admit_benchmark_workload(
-        source, project_root=project, run_args=["selected"], molt_args=[]
+        source,
+        project_root=project,
+        run_args=["selected"],
+        molt_args=["--capabilities", "fs.read"],
     ) as workload:
         record = workload.record
         assert record["entry"] == source.as_posix()
         assert record["entry_source"] == "inputs/case.py"
+        assert record["molt_args"] == ["--capabilities", "fs.read"]
         assert {row["path"] for row in record["sources"]} == {
             "inputs/case.py",
             "other/__init__.py",

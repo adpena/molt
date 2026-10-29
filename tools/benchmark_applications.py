@@ -65,6 +65,7 @@ class Application:
     data_format: Literal["bytes", "python-literals"]
     oracle: str
     run_args: tuple[str, ...]
+    molt_args: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,7 @@ def _decode_catalog(value: object) -> tuple[Application, ...]:
                 "data_format",
                 "oracle",
                 "run_args",
+                "molt_args",
             },
             where,
         )
@@ -204,6 +206,7 @@ def _decode_catalog(value: object) -> tuple[Application, ...]:
                 data_format=data_format,
                 oracle=_path(plan["oracle"], f"{where}.oracle"),
                 run_args=_strings(plan["run_args"], f"{where}.run_args"),
+                molt_args=_strings(plan["molt_args"], f"{where}.molt_args"),
             )
         )
     return tuple(rows)
