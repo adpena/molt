@@ -477,6 +477,10 @@ register in every function and differs per target.
 **Experiment.** Count TLS accessor calls per runtime entry in HF-198's call
 loop on macOS, pass the context, and count again; wall time must follow.
 
+**Design.** [docs/design/foundation/call_anatomy.md](foundation/call_anatomy.md) measures the
+call, frame, attribute, constructor and raise paths against CPython 3.12 and stages the
+execution context, frame records and compile-time binding with per-stage instruction budgets.
+
 ## K. Runtime ownership and resources
 
 **Problem.** Runtime ownership is convention: arena words retained twice
