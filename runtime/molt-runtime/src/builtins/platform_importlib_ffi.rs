@@ -62,7 +62,7 @@ pub use metadata_spec::{
     molt_importlib_metadata_packages_distributions_payload, molt_importlib_metadata_payload,
     molt_importlib_metadata_record_payload, molt_importlib_module_from_spec,
     molt_importlib_spec_from_file_location, molt_importlib_spec_from_file_location_payload,
-    molt_importlib_spec_from_loader, molt_importlib_stabilize_module_state,
+    molt_importlib_spec_from_loader,
 };
 pub use payloads::{
     molt_importlib_frozen_external_commit, molt_importlib_frozen_external_payload,

@@ -659,7 +659,6 @@ pub(crate) enum WasmRuntimeImport {
     ImportlibSourceHash,
     ImportlibSpecFromFileLocation,
     ImportlibSpecFromLoader,
-    ImportlibStabilizeModuleState,
     ImportlibValidateResourceName,
     ImportlibZipArchivePath,
     ImportlibZipReadEntry,

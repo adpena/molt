@@ -7729,13 +7729,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         python_name: None,
     },
     IntrinsicSpec {
-        name: "molt_importlib_stabilize_module_state",
-        symbol: "molt_importlib_stabilize_module_state",
-        arity: 6,
-        defaults: &[],
-        python_name: None,
-    },
-    IntrinsicSpec {
         name: "molt_copyreg_bootstrap",
         symbol: "molt_copyreg_bootstrap",
         arity: 0,

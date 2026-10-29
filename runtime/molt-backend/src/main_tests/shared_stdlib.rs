@@ -795,7 +795,12 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
     .expect("plan empty stdlib cache");
     assert_eq!(planned.archive_key(), None, "no reuse without a manifest");
     planned
-        .assemble("MOLT_BACKEND(test)", None, |objects, _origins| {
+        .assemble("MOLT_BACKEND(test)", None, |objects, provenance| {
+            assert_eq!(
+                provenance.content_key, None,
+                "uncached assembly must not claim a retained content generation"
+            );
+            assert_eq!(provenance.workers.len(), objects.len());
             crate::backend_process::write_native_archive_objects(&stdlib, objects)
                 .map(|_unpersisted_content| ())
         })

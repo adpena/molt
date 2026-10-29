@@ -55,6 +55,12 @@ const SCRIPT_PACKAGE_PENDING: u8 = 1 << 2;
 const SCRIPT_SPEC_PENDING: u8 = 1 << 3;
 const SCRIPT_METADATA_PENDING: u8 =
     EXECUTION_NAME_PENDING | SCRIPT_FILE_PENDING | SCRIPT_PACKAGE_PENDING | SCRIPT_SPEC_PENDING;
+/// `Loader.exec_module` runs after CPython's `_init_module_attrs` bound
+/// `__path__` to the spec's `submodule_search_locations` object, and it sets
+/// no metadata itself. The compiled package prologue must not replace that
+/// object with its own list.
+const LOADER_PATH_PENDING: u8 = 1 << 4;
+const LOADER_METADATA_PENDING: u8 = SCRIPT_METADATA_PENDING | LOADER_PATH_PENDING;
 
 thread_local! {
     static EXECUTION_STACK: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
@@ -623,6 +629,9 @@ pub(super) fn module_metadata_override_bits(
             (ExecutionMetadata::LoaderNamespace { .. }, "__package__") => {
                 (SCRIPT_PACKAGE_PENDING, MetadataOverride::Existing)
             }
+            (ExecutionMetadata::LoaderNamespace { .. }, "__path__") => {
+                (LOADER_PATH_PENDING, MetadataOverride::Existing)
+            }
             (ExecutionMetadata::LoaderNamespace { .. }, "__spec__") => {
                 (SCRIPT_SPEC_PENDING, MetadataOverride::Existing)
             }
@@ -632,6 +641,12 @@ pub(super) fn module_metadata_override_bits(
             return None;
         }
         ctx.metadata_override_pending &= !bit;
+        if bit == SCRIPT_SPEC_PENDING {
+            // The compiler stores a located package's `__path__` before its
+            // spec admission, and stores none for any other module. Admission
+            // ends that window: a later `__path__` store is the body's own.
+            ctx.metadata_override_pending &= !LOADER_PATH_PENDING;
+        }
         Some(value)
     });
     let Some(metadata_override) = metadata_override else {
@@ -935,7 +950,7 @@ pub(crate) fn execute_compiled_module(
         ExecutionMetadata::ScriptFile(_) => SCRIPT_METADATA_PENDING,
         ExecutionMetadata::ImportContainer(_) => EXECUTION_NAME_PENDING | SCRIPT_PACKAGE_PENDING,
         ExecutionMetadata::Module { .. } => EXECUTION_NAME_PENDING,
-        ExecutionMetadata::LoaderNamespace { .. } => SCRIPT_METADATA_PENDING,
+        ExecutionMetadata::LoaderNamespace { .. } => LOADER_METADATA_PENDING,
     };
     EXECUTION_STACK.with(|stack| {
         stack.borrow_mut().push(ExecutionContext {

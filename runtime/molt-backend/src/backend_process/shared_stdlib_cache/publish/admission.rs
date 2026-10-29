@@ -1,3 +1,5 @@
+use super::StdlibArchiveProvenance;
+#[cfg(test)]
 use crate::backend_process::native_batch::NativeWorkerOrigin;
 use std::{io, path::Path};
 
@@ -60,8 +62,9 @@ pub(crate) fn hydrate_shared_stdlib_cache_archive(
     destination: ArchiveGeneration<'_>,
     partition: &str,
     stdlib_count: usize,
-) -> io::Result<Option<(String, Option<Vec<NativeWorkerOrigin>>)>> {
+) -> io::Result<Option<(String, Option<StdlibArchiveProvenance>)>> {
     super::paths::validate_required_stdlib_output(destination.path, Some(source.path))?;
+    let selected_content_key = super::paths::native_stdlib_archive_content_key(source.path)?;
     let resolved_source = super::paths::resolved_archive_path(source.path)?;
     let source_path = resolved_source.as_path();
     with_shared_stdlib_cache_publish_lock(source_path, || {
@@ -74,6 +77,18 @@ pub(crate) fn hydrate_shared_stdlib_cache_archive(
             return Ok(None);
         };
         let origins = read_stdlib_cache_origins_unlocked(source_path, &digest)?;
+        if let Some(expected) = selected_content_key.or(
+            super::paths::native_stdlib_archive_content_key(source_path)?,
+        ) && origins
+            .as_ref()
+            .and_then(|origin| origin.content_key.as_deref())
+            != Some(expected)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "content archive has no matching original input key",
+            ));
+        }
         let mut mismatched = false;
         let published = super::archive::publish_shared_stdlib_cache_archive(
             destination.path,
@@ -95,7 +110,7 @@ pub(crate) fn hydrate_shared_stdlib_cache_archive(
             destination.key,
             destination.manifest,
             partition,
-            origins.as_deref(),
+            origins.as_ref(),
         );
         let published = match published {
             Ok(published) => published,
@@ -409,6 +424,10 @@ mod tests {
         let source = directory.0.join("source.a");
         let destination = directory.0.join("destination.a");
         let origin = origin_archive(&source, object::BinaryFormat::Elf);
+        let provenance = StdlibArchiveProvenance {
+            content_key: Some("c".repeat(64)),
+            workers: vec![origin.clone()],
+        };
         write_shared_stdlib_cache_sidecars(
             &source,
             1,
@@ -416,11 +435,11 @@ mod tests {
             Some("manifest"),
             "partition",
             None,
-            Some(std::slice::from_ref(&origin)),
+            Some(&provenance),
         )
         .unwrap();
         let retained = read_shared_stdlib_cache_origins(&source).unwrap().unwrap();
-        assert_eq!(retained, vec![origin.clone()]);
+        assert_eq!(retained, provenance);
         let published = hydrate_shared_stdlib_cache_archive(
             ArchiveGeneration {
                 path: &source,
@@ -437,10 +456,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(published.1, Some(vec![origin.clone()]));
+        assert_eq!(published.1, Some(provenance.clone()));
         assert_eq!(
             read_shared_stdlib_cache_origins(&destination).unwrap(),
-            Some(vec![origin])
+            Some(provenance)
         );
         assert_eq!(
             std::fs::read(&source).unwrap(),
@@ -489,6 +508,10 @@ mod tests {
             let directory = TestDirectory::new();
             let path = directory.0.join("stdlib.a");
             let origin = origin_archive(&path, format);
+            let provenance = StdlibArchiveProvenance {
+                content_key: None,
+                workers: vec![origin.clone()],
+            };
             write_shared_stdlib_cache_sidecars(
                 &path,
                 1,
@@ -496,26 +519,47 @@ mod tests {
                 Some("manifest"),
                 "partition",
                 None,
-                Some(std::slice::from_ref(&origin)),
+                Some(&provenance),
             )
             .unwrap();
             assert_eq!(
                 read_shared_stdlib_cache_origins(&path).unwrap(),
-                Some(vec![origin.clone()])
+                Some(provenance.clone())
             );
             let sidecar = path.with_extension("origin.json");
             let original = std::fs::read(&sidecar).unwrap();
-            for mutation in ["archive", "member", "extra-member"] {
+            for mutation in [
+                "archive",
+                "member",
+                "extra-member",
+                "missing-key",
+                "uppercase-key",
+                "short-key",
+                "non-string-key",
+                "unknown-field",
+                "old-schema",
+            ] {
                 let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
                 match mutation {
                     "archive" => record["output"]["sha256"] = serde_json::json!("b".repeat(64)),
                     "member" => {
                         record["workers"][0]["output"]["sha256"] = serde_json::json!("b".repeat(64))
                     }
-                    _ => record["workers"]
+                    "extra-member" => record["workers"]
                         .as_array_mut()
                         .unwrap()
                         .push(serde_json::to_value(&origin).unwrap()),
+                    "missing-key" => {
+                        record.as_object_mut().unwrap().remove("content_key");
+                    }
+                    "uppercase-key" => record["content_key"] = serde_json::json!("A".repeat(64)),
+                    "short-key" => record["content_key"] = serde_json::json!("a".repeat(63)),
+                    "non-string-key" => record["content_key"] = serde_json::json!(42),
+                    "unknown-field" => record["extra"] = serde_json::json!(null),
+                    "old-schema" => {
+                        record["schema"] = serde_json::json!("molt.stdlib-archive-origin.v1")
+                    }
+                    _ => unreachable!(),
                 }
                 std::fs::write(&sidecar, serde_json::to_vec(&record).unwrap()).unwrap();
                 assert!(
@@ -524,5 +568,149 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn content_hydration_keeps_key_through_program_and_build_and_rejects_mismatch() {
+        use super::super::paths::native_stdlib_archive_entry_path;
+        use super::super::sidecars::read_shared_stdlib_cache_origins;
+        let directory = TestDirectory::new();
+        let cache_root = directory.0.join("cache");
+        let key = "d".repeat(64);
+        let source = native_stdlib_archive_entry_path(&cache_root, &key);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let worker = origin_archive(&source, object::BinaryFormat::Elf);
+        let provenance = StdlibArchiveProvenance {
+            content_key: Some(key.clone()),
+            workers: vec![worker],
+        };
+        write_shared_stdlib_cache_sidecars(
+            &source,
+            1,
+            Some(&key),
+            Some("content-manifest"),
+            "partition",
+            None,
+            Some(&provenance),
+        )
+        .unwrap();
+        let program = cache_root
+            .join("shared-stdlib")
+            .join("e".repeat(64))
+            .join("stdlib.a");
+        std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+        let first_build = directory.0.join("first.a");
+        let build = directory.0.join("build.a");
+        let program_key = "e".repeat(64);
+        let hydrated = hydrate_shared_stdlib_cache_archive(
+            ArchiveGeneration {
+                path: &source,
+                key: Some(&key),
+                manifest: Some("content-manifest"),
+            },
+            ArchiveGeneration {
+                path: &first_build,
+                key: Some(&program_key),
+                manifest: Some("program-manifest"),
+            },
+            "partition",
+            1,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(hydrated.1, Some(provenance.clone()));
+        // Cache publication follows required build ownership; hydration must
+        // never turn an evictable program cache entry into required output.
+        super::super::archive::publish_shared_stdlib_cache_archive(
+            &program,
+            |destination| {
+                molt_artifact_publish::copy_file_atomically(&first_build, destination, |_| Ok(()))
+                    .map(|()| Some(hydrated.0.clone()))
+            },
+            1,
+            Some(&program_key),
+            Some("program-manifest"),
+            "partition",
+            hydrated.1.as_ref(),
+        )
+        .unwrap();
+        let hydrated = hydrate_shared_stdlib_cache_archive(
+            ArchiveGeneration {
+                path: &program,
+                key: Some(&program_key),
+                manifest: Some("program-manifest"),
+            },
+            ArchiveGeneration {
+                path: &build,
+                key: Some(&program_key),
+                manifest: Some("program-manifest"),
+            },
+            "partition",
+            1,
+        )
+        .unwrap()
+        .unwrap();
+        for destination in [&first_build, &program, &build] {
+            assert_eq!(hydrated.1, Some(provenance.clone()));
+            assert_eq!(
+                read_shared_stdlib_cache_origins(destination).unwrap(),
+                Some(provenance.clone())
+            );
+            assert_eq!(
+                std::fs::read(&source).unwrap(),
+                std::fs::read(destination).unwrap()
+            );
+        }
+        let sidecar = source.with_extension("origin.json");
+        let original = std::fs::read(&sidecar).unwrap();
+        let retained_build = std::fs::read(&build).unwrap();
+        for wrong_key in [serde_json::json!(null), serde_json::json!("f".repeat(64))] {
+            let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            record["content_key"] = wrong_key;
+            std::fs::write(&sidecar, serde_json::to_vec(&record).unwrap()).unwrap();
+            assert!(
+                hydrate_shared_stdlib_cache_archive(
+                    ArchiveGeneration {
+                        path: &source,
+                        key: Some(&key),
+                        manifest: Some("content-manifest")
+                    },
+                    ArchiveGeneration {
+                        path: &build,
+                        key: Some(&program_key),
+                        manifest: Some("program-manifest")
+                    },
+                    "partition",
+                    1,
+                )
+                .is_err()
+            );
+            assert!(!shared_stdlib_cache_matches(
+                &source,
+                Some(&key),
+                Some("content-manifest"),
+                Some("partition")
+            ));
+            assert_eq!(std::fs::read(&build).unwrap(), retained_build);
+        }
+        std::fs::remove_file(&sidecar).unwrap();
+        assert!(
+            hydrate_shared_stdlib_cache_archive(
+                ArchiveGeneration {
+                    path: &source,
+                    key: Some(&key),
+                    manifest: Some("content-manifest")
+                },
+                ArchiveGeneration {
+                    path: &build,
+                    key: Some(&program_key),
+                    manifest: Some("program-manifest")
+                },
+                "partition",
+                1,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&build).unwrap(), retained_build);
     }
 }

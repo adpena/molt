@@ -415,6 +415,14 @@ unused for a week are deleted, at most once an hour.
 
 ## Limits
 
+An unchanged-command record does not accelerate the first build of a different
+program. The existing native stdlib content archive can serve an identical closed
+job plan across programs. Its producer-owned v2 origin key now selects the exact
+generation for bounded installed-consumer export; the
+[retained-generation contract](../spec/areas/tooling/0001-toolchains.md#original-emission-and-retained-cache-generations)
+owns this transport and its custody. Lowering-row distribution, context-sensitive
+misses and actual installed first-build measurements remain separate obligations.
+
 ### External inputs and Cargo reuse
 
 An input-record miss and a changed runtime identity do not themselves make

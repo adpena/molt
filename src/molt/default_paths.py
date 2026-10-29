@@ -366,23 +366,29 @@ def native_stdlib_object_cache_entry(cache_root: Path, key: str) -> tuple[Path, 
     )
 
 
-def shared_stdlib_archive_cache_root(archive: Path) -> Path | None:
-    if (
-        archive.name != "stdlib.a"
-        or archive.parent.parent.name != SHARED_STDLIB_CACHE_DIRECTORY
-    ):
+def _stdlib_archive_cache_entry(archive: Path) -> tuple[Path, Path] | None:
+    if archive.name != "stdlib.a":
         return None
-    root = archive.parent.parent.parent
-    shared_stdlib_cache_entry(root, archive.parent.name)
-    return root
+    for namespace, select in (
+        (SHARED_STDLIB_CACHE_DIRECTORY, shared_stdlib_cache_entry),
+        (NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY, native_stdlib_archive_cache_entry),
+    ):
+        if archive.parent.parent.name == namespace:
+            return select(archive.parent.parent.parent, archive.parent.name)
+    return None
+
+
+def stdlib_archive_cache_root(archive: Path) -> Path | None:
+    """The owner of a program-keyed or closed-content archive generation."""
+    entry = _stdlib_archive_cache_entry(archive)
+    return None if entry is None else entry[0].parent.parent
 
 
 def shared_stdlib_publish_lock_path(archive: Path) -> Path:
     """Shared entry stripes; standalone explicit archives retain their own lock."""
-    root = shared_stdlib_archive_cache_root(archive)
-    if root is not None:
-        _entry, lock = shared_stdlib_cache_entry(root, archive.parent.name)
-        return lock
+    entry = _stdlib_archive_cache_entry(archive)
+    if entry is not None:
+        return entry[1]
     return archive.with_name(f"{archive.name}.publish.lock")
 
 
@@ -393,11 +399,7 @@ def validate_required_stdlib_output(output: Path, source: Path | None = None) ->
     invalid |= shared_stdlib_publish_lock_path(resolved) != resolved.with_name(
         f"{resolved.name}.publish.lock"
     )
-    root = (
-        shared_stdlib_archive_cache_root(source.resolve())
-        if source is not None
-        else None
-    )
+    root = stdlib_archive_cache_root(source.resolve()) if source is not None else None
     if root is None and os.environ.get("MOLT_CACHE"):
         root = Path(os.environ["MOLT_CACHE"]).resolve()
     if root is not None and resolved.is_relative_to(root):

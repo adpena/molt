@@ -2483,14 +2483,6 @@ def molt_importlib_spec_from_file_location(
     submodule_search_locations: Any = ...,
     machinery: Any = ...,
 ) -> Any: ...
-def molt_importlib_stabilize_module_state(
-    module: Any,
-    loader: Any,
-    origin: str,
-    is_package: Any,
-    module_package: str,
-    package_root: Any,
-) -> None: ...
 def molt_copyreg_bootstrap() -> tuple[
     dict[Any, Any], dict[Any, Any], dict[Any, Any], dict[Any, Any], set[Any]
 ]: ...

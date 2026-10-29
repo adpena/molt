@@ -1177,6 +1177,39 @@ fn importlib_spec_from_file_location_impl(
     }
 }
 
+/// Set loader metadata only where the module lacks it; `None` counts as
+/// missing, as in `_init_module_attrs(override=False)`.
+fn importlib_module_set_missing_core_state(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    loader_bits: u64,
+    origin_bits: u64,
+    module_package_bits: u64,
+) -> Result<(), u64> {
+    for (name, value_bits) in [
+        (b"__loader__".as_slice(), loader_bits),
+        (b"__file__".as_slice(), origin_bits),
+        (b"__cached__".as_slice(), MoltObject::none().bits()),
+        (b"__package__".as_slice(), module_package_bits),
+    ] {
+        let key = intern_runtime_static_name(_py, name);
+        if let Some(existing_bits) =
+            importlib_module_dict_get_optional_owned_bits(_py, module_bits, key)?
+        {
+            dec_ref_bits(_py, existing_bits);
+            continue;
+        }
+        importlib_set_attr(
+            _py,
+            module_bits,
+            runtime_static_name_slot(_py, name),
+            name,
+            value_bits,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn importlib_set_module_state_impl(
     _py: &PyToken<'_>,
     args: ImportlibModuleStateArgs,
@@ -1195,9 +1228,11 @@ pub(super) fn importlib_set_module_state_impl(
     let mut spec_owned = false;
     let mut module_path_bits = MoltObject::none().bits();
     let mut module_path_owned = false;
-    let mut spec_locations_bits = MoltObject::none().bits();
-    let mut spec_locations_owned = false;
 
+    // CPython's Loader.exec_module sets no module metadata and never mutates
+    // the spec: `_init_module_attrs` already ran in module_from_spec. A module
+    // that reaches the loader without metadata gets only the missing values,
+    // as `_init_module_attrs(spec, module, override=False)` would set them.
     let out = (|| -> Result<(), u64> {
         let spec_name = intern_runtime_static_name(_py, b"__spec__");
         if let Some(existing_spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)?
@@ -1207,7 +1242,8 @@ pub(super) fn importlib_set_module_state_impl(
             spec_owned = true;
         }
 
-        if obj_from_bits(spec_bits).is_none() {
+        let created_spec = obj_from_bits(spec_bits).is_none();
+        if created_spec {
             spec_bits = call_callable_positional(
                 _py,
                 module_spec_cls_bits,
@@ -1229,39 +1265,9 @@ pub(super) fn importlib_set_module_state_impl(
                 spec_bits,
             )?;
             spec_owned = true;
-        } else {
-            let module_name_name = intern_runtime_static_name(_py, b"name");
-            let should_fix_name = match getattr_optional_bits(_py, spec_bits, module_name_name)? {
-                Some(bits) => {
-                    let is_str = string_obj_to_owned(obj_from_bits(bits)).is_some();
-                    if !obj_from_bits(bits).is_none() {
-                        dec_ref_bits(_py, bits);
-                    }
-                    !is_str
-                }
-                None => true,
-            };
-            if should_fix_name
-                && importlib_set_attr(
-                    _py,
-                    spec_bits,
-                    runtime_static_name_slot(_py, b"name"),
-                    b"name",
-                    module_name_bits,
-                )
-                .is_err()
-            {
-                clear_exception(_py);
-                return Err(raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "invalid module spec name state",
-                ));
-            }
-            importlib_spec_set_loader_origin(_py, spec_bits, loader_bits, origin_bits)?;
         }
 
-        importlib_module_set_core_state(
+        importlib_module_set_missing_core_state(
             _py,
             module_bits,
             loader_bits,
@@ -1271,41 +1277,32 @@ pub(super) fn importlib_set_module_state_impl(
 
         if is_package {
             importlib_require_package_root_bits(_py, package_root_bits)?;
-            module_path_bits = importlib_single_item_list_bits(_py, package_root_bits)?;
-            module_path_owned = true;
-            importlib_set_attr(
-                _py,
-                module_bits,
-                runtime_static_name_slot(_py, b"__path__"),
-                b"__path__",
-                module_path_bits,
-            )?;
-
-            let locations_name = intern_static_name(
-                _py,
-                runtime_static_name_slot(_py, b"submodule_search_locations"),
-                b"submodule_search_locations",
-            );
-            let should_set_locations = match getattr_optional_bits(_py, spec_bits, locations_name)?
+            let dunder_path_name = intern_runtime_static_name(_py, b"__path__");
+            if let Some(existing_path_bits) =
+                importlib_module_dict_get_optional_owned_bits(_py, module_bits, dunder_path_name)?
             {
-                Some(bits) => {
-                    let is_none = obj_from_bits(bits).is_none();
-                    if !is_none {
-                        dec_ref_bits(_py, bits);
-                    }
-                    is_none
-                }
-                None => true,
-            };
-            if should_set_locations {
-                spec_locations_bits = importlib_single_item_list_bits(_py, package_root_bits)?;
-                spec_locations_owned = true;
+                module_path_bits = existing_path_bits;
+                module_path_owned = true;
+            } else {
+                module_path_bits = importlib_single_item_list_bits(_py, package_root_bits)?;
+                module_path_owned = true;
+                importlib_set_attr(
+                    _py,
+                    module_bits,
+                    runtime_static_name_slot(_py, b"__path__"),
+                    b"__path__",
+                    module_path_bits,
+                )?;
+            }
+
+            if created_spec {
+                // A package spec and its module share one locations object.
                 importlib_set_attr(
                     _py,
                     spec_bits,
                     runtime_static_name_slot(_py, b"submodule_search_locations"),
                     b"submodule_search_locations",
-                    spec_locations_bits,
+                    module_path_bits,
                 )?;
             }
         }
@@ -1313,9 +1310,6 @@ pub(super) fn importlib_set_module_state_impl(
         Ok(())
     })();
 
-    if spec_locations_owned && !obj_from_bits(spec_locations_bits).is_none() {
-        dec_ref_bits(_py, spec_locations_bits);
-    }
     if module_path_owned && !obj_from_bits(module_path_bits).is_none() {
         dec_ref_bits(_py, module_path_bits);
     }
@@ -1383,165 +1377,6 @@ pub(super) fn importlib_module_dict_get_optional_owned_bits(
     // the value came from.
     inc_ref_bits(_py, bits);
     Ok(Some(bits))
-}
-
-pub(super) fn importlib_stabilize_module_state_impl(
-    _py: &PyToken<'_>,
-    module_bits: u64,
-    loader_bits: u64,
-    origin_bits: u64,
-    is_package: bool,
-    module_package_bits: u64,
-    package_root_bits: u64,
-) -> Result<(), u64> {
-    let mut spec_bits = MoltObject::none().bits();
-    let mut spec_owned = false;
-    let mut module_path_bits = MoltObject::none().bits();
-    let mut module_path_owned = false;
-    let out = (|| -> Result<(), u64> {
-        let spec_name = intern_runtime_static_name(_py, b"__spec__");
-        if let Some(existing_spec_bits) = getattr_optional_bits(_py, module_bits, spec_name)?
-            && !obj_from_bits(existing_spec_bits).is_none()
-        {
-            spec_bits = existing_spec_bits;
-            spec_owned = true;
-            importlib_spec_set_loader_origin(_py, spec_bits, loader_bits, origin_bits)?;
-        }
-
-        importlib_module_set_core_state(
-            _py,
-            module_bits,
-            loader_bits,
-            origin_bits,
-            module_package_bits,
-        )?;
-
-        if is_package {
-            importlib_require_package_root_bits(_py, package_root_bits)?;
-            let dunder_path_name = intern_runtime_static_name(_py, b"__path__");
-            if let Some(existing_path_bits) =
-                importlib_module_dict_get_optional_owned_bits(_py, module_bits, dunder_path_name)?
-            {
-                if importlib_is_str_list_bits(existing_path_bits) {
-                    module_path_bits = existing_path_bits;
-                    module_path_owned = true;
-                } else if !obj_from_bits(existing_path_bits).is_none() {
-                    dec_ref_bits(_py, existing_path_bits);
-                }
-            }
-            if obj_from_bits(module_path_bits).is_none() {
-                module_path_bits = importlib_single_item_list_bits(_py, package_root_bits)?;
-                module_path_owned = true;
-                importlib_set_attr(
-                    _py,
-                    module_bits,
-                    runtime_static_name_slot(_py, b"__path__"),
-                    b"__path__",
-                    module_path_bits,
-                )?;
-            }
-
-            if !obj_from_bits(spec_bits).is_none() {
-                let locations_name = intern_static_name(
-                    _py,
-                    runtime_static_name_slot(_py, b"submodule_search_locations"),
-                    b"submodule_search_locations",
-                );
-                let should_set_locations =
-                    match getattr_optional_bits(_py, spec_bits, locations_name)? {
-                        Some(bits) => {
-                            let has_valid_locations = importlib_is_str_list_bits(bits);
-                            if !obj_from_bits(bits).is_none() {
-                                dec_ref_bits(_py, bits);
-                            }
-                            !has_valid_locations
-                        }
-                        None => true,
-                    };
-                if should_set_locations {
-                    let locations_bits =
-                        importlib_list_from_iterable(_py, module_path_bits, "module.__path__")?;
-                    let set_out = importlib_set_attr(
-                        _py,
-                        spec_bits,
-                        runtime_static_name_slot(_py, b"submodule_search_locations"),
-                        b"submodule_search_locations",
-                        locations_bits,
-                    );
-                    if !obj_from_bits(locations_bits).is_none() {
-                        dec_ref_bits(_py, locations_bits);
-                    }
-                    set_out?;
-                }
-            }
-        } else {
-            let dunder_path_name = intern_runtime_static_name(_py, b"__path__");
-            if let Some(module_path_attr_bits) =
-                importlib_module_dict_get_optional_owned_bits(_py, module_bits, dunder_path_name)?
-            {
-                let module_path_attr =
-                    crate::builtins::exceptions::ExceptionValue::adopt(_py, module_path_attr_bits);
-                let module_path_attr_bits = module_path_attr.bits();
-                let should_delete = match obj_from_bits(module_path_attr_bits).as_ptr() {
-                    Some(path_ptr) => unsafe { object_type_id(path_ptr) == TYPE_ID_OBJECT },
-                    None => false,
-                };
-                if should_delete {
-                    let module_dict_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
-                    unsafe { dict_del_in_place(_py, module_dict_ptr, dunder_path_name) }
-                        .map_err(|()| MoltObject::none().bits())?;
-                }
-            }
-        }
-        Ok(())
-    })();
-
-    if module_path_owned && !obj_from_bits(module_path_bits).is_none() {
-        dec_ref_bits(_py, module_path_bits);
-    }
-    if spec_owned && !obj_from_bits(spec_bits).is_none() {
-        dec_ref_bits(_py, spec_bits);
-    }
-    out
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_stabilize_module_state(
-    module_bits: u64,
-    loader_bits: u64,
-    origin_bits: u64,
-    is_package_bits: u64,
-    module_package_bits: u64,
-    package_root_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let _origin = match string_arg_from_bits(_py, origin_bits, "origin") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let _module_package = match string_arg_from_bits(_py, module_package_bits, "module_package")
-        {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let is_package = is_truthy(_py, obj_from_bits(is_package_bits));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-
-        match importlib_stabilize_module_state_impl(
-            _py,
-            module_bits,
-            loader_bits,
-            origin_bits,
-            is_package,
-            module_package_bits,
-            package_root_bits,
-        ) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(err) => err,
-        }
-    })
 }
 
 #[unsafe(no_mangle)]
