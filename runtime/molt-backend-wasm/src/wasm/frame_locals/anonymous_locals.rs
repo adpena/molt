@@ -9,6 +9,8 @@ pub(in crate::wasm) enum WasmFrameAnonymousLocal {
     DispatchBlockMapBase,
     DispatchStateRemapBase,
     DispatchStateRemapValue,
+    /// Destination block of a transfer into another scope-tree node.
+    DispatchRoute,
     ConstIntShift,
     ConstIntMin,
     ConstIntMax,
@@ -21,7 +23,11 @@ pub(in crate::wasm) enum WasmFrameAnonymousLocal {
 
 impl WasmFrameAnonymousLocal {
     fn val_type(self) -> ValType {
-        ValType::I64
+        match self {
+            // Scope selectors shift and mask a block index in i32 arithmetic.
+            Self::DispatchRoute => ValType::I32,
+            _ => ValType::I64,
+        }
     }
 }
 

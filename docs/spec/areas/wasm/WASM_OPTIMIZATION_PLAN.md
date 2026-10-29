@@ -119,8 +119,9 @@ recorded source snapshots, not the current candidate's performance.
   require measurements on the integrated candidate.
 - **No instruction combining**: Adjacent load/store pairs, redundant boxing/unboxing sequences, and constant folding opportunities are not exploited at the WASM level.
 - **Dispatch structure**: Dense dispatch uses `br_table`; sparse remaps use the
-  state-dispatch planner. Further changes require observed state distributions
-  and engine measurements.
+  state-dispatch planner. Functions with deeply overlapping far-targeted
+  scopes route through a bounded scope tree (§1.7). Further changes require
+  observed state distributions and engine measurements.
 - **No peephole optimization**: Patterns like `i64.const 0; i64.eq` (test for zero) could be simplified.
 - **Redundant type checks**: Tag checks for NaN-boxed values are emitted inline at every use site rather than being hoisted or eliminated when type information is available from the IR.
 
@@ -186,6 +187,71 @@ keep one local per name, because the shared CFG does not model dispatch
 re-entry or the index-continue target. The earlier linear coalescer admitted
 only `__tmp`/`__v` spellings. Current frontend and TIR back-conversion output
 does not use those spellings, so frames kept one local per value name.
+
+### 1.7 Bounded Control Nesting
+
+The non-linear control emitter (`wasm/state_dispatch/`, Jumpful and Stateful
+frames) gives every physical block a `block` scope whose `end` precedes it, so
+a forward transfer is one `br`. Most of those scopes are reached only from the
+adjacent block, and an optimizer folds them away. A scope reached from farther
+away stays open from its first such transfer to its block. The Falcon OCR
+driver's largest module body has 16,333 blocks. Its 3,412 exception checks
+enter one LIFO cleanup ladder that releases up to 185 owned locals, so 3,077
+far-targeted scopes overlap. Binaryen 133 `-Oz` rebuilt them as 3,182 nested
+`if`s. `BinaryenIRWriter::visit` recurses once per `if`, and the 544 KiB stack
+of a macOS worker thread overflowed at 2,128 levels (HF-546). The writer walks
+first-position `block` chains iteratively, so the flat chain itself was safe.
+
+**Rule.** The plan measures the overlap of far-targeted scopes from its own
+forward edges and dispatch targets: CFGStackify's minimal nesting for the block
+order. A function keeps the flat layout, and its exact bytes, while at most
+1,024 far scopes overlap (about half the measured overflow depth) and it has at
+most 8,192 blocks (half WABT's 16,384-label reader cap). Otherwise its scopes
+form a radix tree of 128-way nodes (`state_dispatch/scope_tree.rs`). A transfer
+between blocks of one level-1 node keeps its direct `br`. A transfer into
+another node stores the destination's radix digits below the common node in an
+i32 routing local and branches to the end of the destination child's scope;
+each node it enters selects its child with a `br_table` over one digit, and
+only nodes that some transfer enters at a child other than the first emit a
+selector. The root of a dispatching tree loads physical block indices from the
+existing operation map, so backward edges and stateful resumes take the same
+descent; a key outside the map traps. Three levels (387 scopes) cover every
+function body within the JS API's 7,654,321-byte limit.
+`wasm/tests/control_nesting.rs` checks both bounds with oracles computed from
+the emitted bytes, the boundary of each limit, and the executed paths of
+forward-only, dispatching and stateful frames at the production shape and at a
+4-way shape that reaches six levels.
+
+**Sources.** The core specification lets implementations limit "the nesting
+depth of structured control instructions" (Appendix, Implementation
+Limitations). WABT raised that limit from 1,024 to 16,384 because clang output
+exceeded 1,400 (WebAssembly/wabt PR 2170). LLVM's `WebAssemblyCFGStackify`
+places one `block` per forward-branch target and lowers a switch to a
+`br_table` over a nested block chain; Go's wasm backend dispatches through one
+`br_table` over up to 65,536 resume points (`cmd/internal/obj/wasm`). Neither
+bounds depth. Binaryen's `wasm-stack.h` (version_133) handles first-position
+block chains iteratively and recurses through every other structure. Molt
+deviates from the flat layout only past the measured limits above.
+
+**Measured (macOS arm64, Binaryen 133, Node 26, 2026-10-28).** Linked Falcon
+driver; the base module was optimized single-threaded only to compare it;
+timings are medians of nine interleaved processes.
+
+| Layout | `wasm-opt -Oz` | Deepest writer recursion | App functions changed | App code | Linked `-Oz` raw | gzip -9 | `ocr_tokens` 1st / 2nd / 3rd |
+|---|---|---|---|---|---|---|---|
+| Flat (base) | SIGBUS at 25.8 s | 3,182 | — | 13,781,595 | 17,496,022 | 4,664,180 | 69 / 42 / 39 ms |
+| Tree above 512 blocks | 17.9 s | 95 | 254 | +656,863 | +1,488,404 | +568,139 | 77 / 42 / 39 ms |
+| Tree above 1,024 far scopes | 18.0 s | 1,061 | 2 | +39,641 | +84,958 | +42,382 | 69 / 41 / 38 ms |
+
+The deepest writer recursion counts structured levels outside first-position
+block chains in the optimized module. `bench_sum` emits the same bytes as base.
+A 20M-iteration loop inside a 400-statement function, which crosses the far
+scope limit and whose backedge descends one more `br_table`, runs 3.09 -> 3.22
+s (+4.4%). Placing each single-predecessor cleanup pad beside its check does
+not help this shape: on the exact block graph of the largest body it lowers the
+overlap from 3,077 to 2,527, still above the overflow depth, leaves all 3,216
+far targets, and raises the overlap of 4 of the 10 deepest functions. Shorter
+owned live ranges in module bodies would shorten the ladders at their source.
 
 ### 1.3 Missing Features
 

@@ -136,6 +136,17 @@ pub(in crate::wasm::state_dispatch) fn emit_static_dispatch_edge(
         StaticDispatchEdge::Forward { label_depth } => {
             func.instruction(&Instruction::Br(label_depth + selection_depth));
         }
+        StaticDispatchEdge::Routed {
+            label_depth,
+            route_key,
+        } => {
+            let route_local = depth
+                .route_local
+                .expect("routed scope transfer requires the routing local");
+            func.instruction(&Instruction::I32Const(route_key as i32));
+            func.instruction(&Instruction::LocalSet(route_local));
+            func.instruction(&Instruction::Br(label_depth + selection_depth));
+        }
         StaticDispatchEdge::Redispatch { operation } => {
             let locals = locals.expect("canonical backward transfer requires dispatch locals");
             func.instruction(&Instruction::I64Const(operation as i64));
