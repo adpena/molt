@@ -723,6 +723,52 @@ retain their single owning rows even when a shared invariant crosses buckets.
 The dependencies do not require one giant patch or universal new capabilities
 beyond the declared support contract.
 
+### Family dependency order (2026-10-29)
+
+The open rows group into root-cause families: one shared cause or one missing
+authority each. Fix a family's cause, not its instances. An edge X -> Y means
+Y's fix depends on X, or X removes a class of Y's failures. Level 0 holds the
+multipliers; within a level, rank by compounding value per unit of effort. A
+row that needs nothing (for example HF-558, HF-559, HF-519) may start early;
+the level orders closing the whole family. Re-derive this map from the rows
+when it drifts; the rows stay the authority for each defect.
+
+| Family | Shared cause or missing authority | Open rows |
+| --- | --- | --- |
+| A. Typed op and runtime-call ABI | Backends restate op kinds, runtime symbols, ownership and target legality by hand | HF-197, HF-485, HF-384, HF-571, HF-553, HF-560, HF-262, HF-202, V1-26, HF-501, HF-124, HF-125, HF-211, HF-279, HF-287, HF-288 |
+| B. Binding-flow resolution | Worst-case rebinding and spelling-matched names in `python_binding_flow` | HF-203, HF-226, HF-181, HF-140, HF-126, HF-79 |
+| C. Proof cells from the dependency graph | Hand-written selection globs restate the import, Cargo and generator graphs | HF-73, HF-99, HF-565, HF-314, HF-433, HF-210, HF-506, HF-509, HF-37, HF-42, HF-56, HF-63, HF-66, HF-186, HF-484, HF-87, HF-178, HF-533 |
+| D. Verdict truth (executable ledger) | Expected failures and failure classes live in snapshots and prose | HF-563, HF-106, HF-295, HF-215, HF-488, HF-95, HF-530, V1-03, V1-04, HF-388, HF-422, HF-545, HF-577 |
+| E. Performance verdict truth | No armed baseline or deterministic axis | V1-07, HF-222, HF-459, HF-460, HF-245 |
+| F. Artifact and execution identity | Identities keyed by path, name or environment instead of content | V1-01, V1-08, V1-09, V1-15, HF-372, HF-473, HF-244, HF-300, HF-78, HF-385, HF-491, HF-439, HF-522, HF-434, HF-363, HF-238, HF-50, HF-469 |
+| G. Fabricated support surfaces | Surfaces link and claim success where a build-time refusal belongs | HF-273, HF-195, HF-123, HF-268, HF-282, V1-11, V1-17, HF-574, HF-351, HF-120 |
+| H. Import system and stdlib surface | Import-machinery and stdlib API gaps CPython's own tests reach | HF-558, HF-559, HF-383, HF-539, HF-276, HF-297, HF-247, HF-483, HF-569, HF-578, HF-579 |
+| I. Frame, exception and coroutine model | One frame/exception/suspension model per backend | HF-442, HF-477, HF-451, HF-452, HF-213, HF-492, HF-548, HF-261, HF-561, HF-229, HF-235, HF-02, HF-156, HF-157, HF-158 |
+| J. Runtime execution context | Compiled code re-enters the runtime through unchecked names and repeated context lookups | HF-198, HF-205, HF-185, HF-507, HF-206, HF-200, HF-189, HF-490 |
+| K. Runtime ownership and resources | Ownership, retention and charging contracts | V1-05, V1-14, V1-19, V1-20, V1-21, V1-27, V1-29, V1-34, HF-208, HF-06 |
+| L. C-API boundary | Two error channels and two headers | HF-209, HF-174, HF-175, HF-527, HF-283, HF-61, HF-57, HF-12 |
+| M. Codec, text and IO state | Stateful codec and IO protocols | V1-18, V1-30, V1-33, HF-322, HF-329, HF-570 |
+| N. OS, process and network boundary | Host-boundary semantics; HF-519 is a safety defect | HF-519, HF-441, HF-455, HF-518, V1-10, V1-13, V1-36, HF-531, HF-177 |
+| O. Versioned target facts | Facts read from the build host instead of the declared version and target | V1-16, V1-22, V1-23, V1-35, HF-65, HF-122, HF-568, HF-554, HF-567 |
+| P. Mid-end fact soundness and pass firing | Unchecked rewrites, inert passes and a stdlib skip with no stated exit | HF-201, HF-204, HF-214, HF-555, HF-572, HF-573 |
+| Q. User compile and edit latency | No early cutoff on unchanged inputs | HF-250, HF-252, HF-254, HF-266, HF-285, HF-357, HF-516, HF-173, HF-517, HF-26, HF-371, HF-172, HF-263, HF-458, HF-225 |
+| R. Development custody apparatus | Custody records that guess ownership | V1-12, V1-25, HF-379, HF-169, HF-544, HF-551, HF-304, HF-444, HF-07, HF-23, HF-138, HF-387, HF-550, HF-370 |
+| S. Molt self-build and CI throughput | Cost of building and checking Molt itself | HF-10, HF-22, HF-27, HF-190, HF-35, HF-334, HF-373, HF-291, HF-53, HF-93, HF-68, HF-170, HF-96 |
+| T. Installed delivery and witnesses | The installed product and its end-to-end witnesses | V1-02, V1-06, V1-24, V1-28, HF-62, HF-64, HF-454, HF-576, HF-386, HF-04, HF-380, HF-510, HF-575 |
+
+Edges: A -> P (TypeGuard semantics before HF-573), A -> J (inline fast paths
+need the generated runtime-function row), A -> G (stub refusal needs op ->
+runtime function -> feature reachability); B -> Q, B -> J, B -> H (precise
+bindings shrink closures, enable direct calls and drive admission); D -> G
+(refusals need build-failure pins, HF-563); G -> H (test.support reaches stubs);
+F -> Q, F -> E, F -> T (early cutoff, the metric receiver and installed delivery
+need content identity); E -> J and E -> P (an armed baseline removes silent
+performance regressions); K -> M (codec callbacks need reentrant ownership);
+J -> S (HF-206 before the HF-490 split); C -> S and C -> every landing.
+
+Levels: 0 = A, B, C, D, F (multipliers) and I, K, L, N, O, R (no
+prerequisites); 1 = E, G, Q, M; 2 = J, P, H; 3 = S, T.
+
 Verification has a decision boundary. Before dispatch, name the changed
 invariant, the defect an independent oracle would detect, and the result needed
 to proceed. Use the smallest existing proof that resolves that uncertainty.
