@@ -25,6 +25,7 @@ from tools.proof_queue_pkg import (
 from tests.proof_queue_custody_test_support import (
     assert_supervisor_refusal,
     capability_aware_proof_execution,
+    proof_queue_execution_capability as proof_queue_execution_capability,
 )
 
 
@@ -166,6 +167,32 @@ _REAL_REFUSALS = {
 }
 
 
+# How a real-execution test ends on each refused cell (HF-552). macOS declares
+# no pre-entry authority, so its cells are unsupported; Linux holds every
+# authority, so a Yama refusal is a host defect on a qualified cell.
+_REFUSED_CELL_OUTCOMES = {
+    "linux-leaf": (
+        pytest.fail.Exception,
+        "qualified native process-closure backend refused before launch: "
+        "native supervisor prelaunch refused: Yama ptrace_scope=3 forbids ptrace",
+    ),
+    "macos-leaf": (
+        pytest.skip.Exception,
+        "native supervisor prelaunch refused: unsupported process-closure cell "
+        "macos/leaf: backend seatbelt+ptrace lacks pre_entry_exec_authority, "
+        "pre_entry_process_create_authority: macOS leaf closure has no valid "
+        "pre-entry image authority",
+    ),
+    "macos-tree": (
+        pytest.skip.Exception,
+        "native supervisor prelaunch refused: unsupported process-closure cell "
+        "macos/declared-tree: backend seatbelt+ptrace lacks "
+        "pre_entry_exec_authority, recursive_descendant_authority: macOS tree "
+        "closure has no retained pre-entry descendant creation authority",
+    ),
+}
+
+
 @pytest.mark.parametrize("case", sorted(_REAL_REFUSALS))
 def test_ineligible_plan_refuses_before_execution(
     tmp_path: Path,
@@ -174,6 +201,48 @@ def test_ineligible_plan_refuses_before_execution(
     case: str,
 ) -> None:
     """Inject a real backend plan, never an execution or receipt."""
+    request_path, result_path, marker, capability = _refused_plan(
+        tmp_path, monkeypatch, case
+    )
+    returncode = guarded_execution.execute_guarded_request(request_path)
+    assert assert_supervisor_refusal(returncode, result_path)
+    assert not marker.exists()
+    assert (
+        json.loads(result_path.read_text(encoding="utf-8"))["supervisor_capability"]
+        == capability
+    )
+
+
+@pytest.mark.parametrize("case", sorted(_REAL_REFUSALS))
+def test_refused_execution_ends_as_unsupported_cell_or_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cargo_output_implementation_source: Path,
+    proof_queue_execution_capability: None,
+    case: str,
+) -> None:
+    """A verified refusal never passes the execution test it stopped (HF-552)."""
+    request_path, result_path, marker, _ = _refused_plan(tmp_path, monkeypatch, case)
+
+    @capability_aware_proof_execution
+    def execution_test() -> None:
+        guarded_execution.execute_guarded_request(request_path)
+        pytest.fail("a refused launch reached the execution assertions")
+
+    outcome, message = _REFUSED_CELL_OUTCOMES[case]
+    # Catch both outcomes: a skip escaping here would skip this oracle itself.
+    with pytest.raises((pytest.skip.Exception, pytest.fail.Exception)) as ended:
+        execution_test(proof_queue_execution_capability=None)
+    assert type(ended.value) is outcome, ended.value
+    assert str(ended.value).startswith(message)
+    assert not marker.exists()
+    assert json.loads(result_path.read_text(encoding="utf-8"))["phase"] == "failed"
+
+
+def _refused_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> tuple[Path, Path, Path, dict[str, object]]:
+    """Build one guarded request whose native plan is the real refusal."""
     # No compiler starts in this fixture. Ambient cache/wrapper choices must
     # not reject its output plan before the native refusal under test.
     monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
@@ -249,13 +318,7 @@ def test_ineligible_plan_refuses_before_execution(
     monkeypatch.setattr(
         guarded_execution, "_run_supervisor_with_transcripts", forbidden
     )
-    returncode = guarded_execution.execute_guarded_request(request_path)
-    assert assert_supervisor_refusal(returncode, result_path)
-    assert not marker.exists()
-    assert (
-        json.loads(result_path.read_text(encoding="utf-8"))["supervisor_capability"]
-        == capability
-    )
+    return request_path, result_path, marker, capability
 
 
 @pytest.mark.parametrize("required", [{}, {"_NO_DEBUG_HEAP": "1"}])
@@ -285,14 +348,19 @@ def test_refusal_assertions_reject_partial_or_dishonest_execution(
         "recursive_descendant_authority": False,
     }
     refusal_type = supervisor_custody.SupervisorPrelaunchRefused
+    # A backend without the leaf authorities names the unsupported cell.
+    message = (
+        "native supervisor prelaunch refused: unsupported process-closure cell "
+        f"{capability['platform']}/leaf: backend test-native-backend lacks "
+        "pre_entry_exec_authority, pre_entry_process_create_authority: "
+        "kernel process closure unavailable"
+    )
     record = {
         "envelope": command_admission.envelope_for_command(command),
         "phase": "failed",
         "command_started": False,
         "supervisor_capability": capability,
-        "error": f"{refusal_type.__module__}.{refusal_type.__qualname__}"
-        + ": native supervisor prelaunch refused: "
-        + capability["admission"]["reason"],
+        "error": f"{refusal_type.__module__}.{refusal_type.__qualname__}: {message}",
     }
     result_path = tmp_path / "execution.json"
     result_path.write_text(json.dumps(record), encoding="utf-8")
@@ -312,10 +380,7 @@ def test_refusal_assertions_reject_partial_or_dishonest_execution(
     elif mutation == "eligibility":
         capability["admission"] = {"state": "eligible"}
     elif mutation == "short-class":
-        record["error"] = (
-            f"{refusal_type.__name__}: native supervisor prelaunch refused: "
-            + capability["admission"]["reason"]
-        )
+        record["error"] = f"{refusal_type.__name__}: {message}"
     result_path.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises((AssertionError, ValueError)):
         assert_supervisor_refusal(2, result_path)

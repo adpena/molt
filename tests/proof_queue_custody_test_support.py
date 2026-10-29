@@ -18,7 +18,7 @@ import subprocess
 import sqlite3
 import sys
 from types import SimpleNamespace
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 import pytest
 
@@ -50,18 +50,52 @@ from tools.proof_queue_pkg import (
 )
 
 
-class _VerifiedSupervisorRefusal(Exception):
-    """The ineligible branch has proved its complete prelaunch contract."""
+class _VerifiedSupervisorRefusal(BaseException):
+    """The ineligible branch has proved its complete prelaunch contract.
+
+    A ``BaseException`` so that no ``except Exception`` in a test body can
+    swallow it and let the body continue past a launch that never happened.
+    """
+
+    def __init__(
+        self, refusals: tuple[supervisor_custody.SupervisorPrelaunchRefused, ...]
+    ) -> None:
+        super().__init__(refusals)
+        self.refusals = refusals
+
+
+def report_refused_cell(
+    refusals: tuple[supervisor_custody.SupervisorPrelaunchRefused, ...],
+) -> NoReturn:
+    """End a refused real-execution test as skipped or failed, never passed.
+
+    The payload never ran, so a pass would be vacuous (HF-552). The native
+    capability is the one authority for which cells exist: a backend that
+    lacks an authority the mode needs declares an unsupported cell, reported
+    as a skip with the native reason. A refusal from a backend that holds
+    every authority is the host refusing a qualified cell, and fails.
+    """
+    assert refusals, "a refused cell needs a verified refusal"
+    qualified = [
+        str(refusal) for refusal in refusals if not refusal.missing_authorities
+    ]
+    if qualified:
+        pytest.fail(
+            "qualified native process-closure backend refused before launch: "
+            + "; ".join(qualified),
+            pytrace=False,
+        )
+    pytest.skip("; ".join(dict.fromkeys(str(refusal) for refusal in refusals)))
 
 
 def assert_supervisor_refusal(
     returncode: int, result_path: Path, *, queue_terminal: bool = False
-) -> bool:
+) -> supervisor_custody.SupervisorPrelaunchRefused | None:
     """Recognize only a typed native refusal, never unrelated launch failures."""
     record = json.loads(result_path.read_text(encoding="utf-8"))
     capability = record.get("supervisor_capability")
     if capability is None:
-        return False
+        return None
     envelope = record["envelope"]
     mode = (
         "leaf"
@@ -109,14 +143,15 @@ def assert_supervisor_refusal(
     ):
         assert not path.exists(), path
     assert not list(result_path.parent.glob("*.events.*.jsonl"))
-    return True
+    return refusal.value
 
 
 @pytest.fixture
 def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep real execution; adapt only the test's post-call expectation.
+    """Keep real execution; a refusal ends the test through the refused cell.
 
-    Refusal replaces success-only assertions with the shared refusal contract.
+    Refusal replaces success-only assertions with the shared refusal contract,
+    then ``report_refused_cell`` skips or fails the test; it never passes.
     Queue calls finish terminal publication before inspection. No host-name
     selection or successful synthetic execution is involved.
     """
@@ -128,8 +163,11 @@ def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
         returncode = execute(request_path)
         if queue_depth == 0:
             request = json.loads(request_path.read_text(encoding="utf-8"))
-            if assert_supervisor_refusal(returncode, Path(request["result_path"])):
-                raise _VerifiedSupervisorRefusal
+            refusal = assert_supervisor_refusal(
+                returncode, Path(request["result_path"])
+            )
+            if refusal is not None:
+                raise _VerifiedSupervisorRefusal((refusal,))
         return returncode
 
     def queue_call(argv: list[str]) -> int:
@@ -147,25 +185,26 @@ def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
         with sqlite3.connect(database) as connection:
             connection.row_factory = sqlite3.Row
             rows = list(connection.execute("SELECT * FROM proof_runs"))
-        refused = False
+        refusals: list[supervisor_custody.SupervisorPrelaunchRefused] = []
         for row in rows:
             _, result_path = command_identity.execution_record_paths(
                 Path(row["log_path"])
             )
             if not result_path.exists():
                 continue
-            if assert_supervisor_refusal(
+            refusal = assert_supervisor_refusal(
                 row["returncode"], result_path, queue_terminal=True
-            ):
+            )
+            if refusal is not None:
                 assert returncode == 2
                 assert row["status"] == "failed"
                 context = json.loads(row["receipt_context_json"])
                 record = json.loads(result_path.read_text(encoding="utf-8"))
                 assert context == record["receipt_context"]
-                refused = True
-        if refused:
+                refusals.append(refusal)
+        if refusals:
             assert all(row["status"] != "passed" for row in rows)
-            raise _VerifiedSupervisorRefusal
+            raise _VerifiedSupervisorRefusal(tuple(refusals))
         return returncode
 
     monkeypatch.setattr(guarded_execution, "execute_guarded_request", execute_request)
@@ -173,15 +212,15 @@ def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def capability_aware_proof_execution(test: Callable) -> Callable:
-    """Preserve the original body on eligible hosts; prove refusals otherwise."""
+    """Run the original body; a verified refusal is a refused cell, not a pass."""
 
     @wraps(test)
     def run_test(*args: object, **kwargs: object) -> None:
         kwargs.pop("proof_queue_execution_capability")
         try:
             test(*args, **kwargs)
-        except _VerifiedSupervisorRefusal:
-            return
+        except _VerifiedSupervisorRefusal as verified:
+            report_refused_cell(verified.refusals)
 
     signature = inspect.signature(test)
     run_test.__signature__ = signature.replace(
