@@ -151,15 +151,22 @@ _SESSION_ENVIRONMENT: dict[str, str] = {}
 
 
 def _run_context_env_keys() -> tuple[str, ...]:
-    """The ambient run context: hosted custody, request knobs, roots, session."""
+    """The ambient run context: hosted custody, request knobs, roots, session.
+
+    An operator's explicit external artifact roots are run context too: with
+    them, `prefer_external_artifacts` in pyproject.toml moves default roots off
+    the checkout family's custody root.
+    """
     from molt.dx import (
         DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        EXTERNAL_ARTIFACT_ROOTS_ENV,
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
         MOLT_ROOT_ENV_KEYS,
     )
 
     return (
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        EXTERNAL_ARTIFACT_ROOTS_ENV,
         *MOLT_ROOT_ENV_KEYS,
         *DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
         "MOLT_SESSION_ID",
