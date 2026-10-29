@@ -30,10 +30,10 @@ class MidendPipelineMixin(GeneratorMixinBase):
         self._refresh_midend_env_config_if_needed()
         # Dev-profile mid-end gate removed: MISSING-value miscompile fixes
         # (SCCP non-propagation, DCE protection, definite-assignment hardening)
-        # are now in place (ROADMAP TL2).  MOLT_MIDEND_DEV_ENABLE is no longer
+        # are now in place.  MOLT_MIDEND_DEV_ENABLE is no longer
         # required — mid-end runs for both dev and release profiles.
         # Correctness gate: keep stdlib modules out of mid-end canonicalization
-        # until canonicalized stdlib lowering is proven stable (ROADMAP TL2).
+        # until canonicalized stdlib lowering is proven stable (HF-572).
         if self._source_is_stdlib_module:
             self.midend_stats["midend_module_skips"] += 1
             return ops
