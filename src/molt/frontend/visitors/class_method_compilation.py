@@ -8,6 +8,10 @@ layout, namespace, and dataclass construction authority.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+)
+
 from molt.compiler_analysis.python_lexical_scope import (
     function_contains_yield,
 )
@@ -574,7 +578,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                     self._emit_return_value(res)
                 self._emit_return_label()
-            elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
+            elif not (
+                self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret
+            ):
                 # Falling off the end is a return, with the same exception-stack
                 # exit as an explicit one.
                 res = MoltValue(self.next_var(), type_hint="None")

@@ -7,6 +7,8 @@ an inert tag distinguishing them. Arguments are evaluated once after capture.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+
 import ast
 from contextlib import nullcontext
 from typing import Any
@@ -20,12 +22,12 @@ from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 
 # This is an emission map, not a source-type classifier. Admission is exact
 # source-point authority or runtime class identity, never storage tags/hints.
-_SPLIT_OPS = {
+_SPLIT_OPS: dict[str, FrontendOpKind] = {
     "str": "STRING_SPLIT",
     "bytes": "BYTES_SPLIT",
     "bytearray": "BYTEARRAY_SPLIT",
 }
-_SPLIT_MAX_OPS = {
+_SPLIT_MAX_OPS: dict[str, FrontendOpKind] = {
     "str": "STRING_SPLIT_MAX",
     "bytes": "BYTES_SPLIT_MAX",
     "bytearray": "BYTEARRAY_SPLIT_MAX",

@@ -7,6 +7,10 @@ visit_Lambda, and visit_Return. Async function/generator visitor methods live in
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+)
+
 from molt.compiler_analysis.python_lexical_scope import (
     expression_contains_yield,
     function_contains_yield,
@@ -496,7 +500,9 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                     self._emit_return_value(res)
                 self._emit_return_label()
-            elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
+            elif not (
+                self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret
+            ):
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self._emit_return_value(res)

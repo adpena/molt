@@ -8,6 +8,11 @@ It must never import from molt.frontend.__init__ or any mixin (cycle break).
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendOpKind,
+    WireOpKind,
+)
+
 import ast
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -35,6 +40,16 @@ from molt.frontend.exception_kinds_generated import (
 from molt.frontend.module_publication import SourceModulePublication
 from molt.type_facts import normalize_type_hint
 
+_LOADED_METHOD_SELF_NAME_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {
+        "CALLARGS_PUSH_METHOD_RECEIVER",
+        "LOAD_METHOD",
+        "CALL_LOADED_METHOD",
+        "LOAD_SUPER_METHOD",
+    }
+)
+
+
 if TYPE_CHECKING:
     # _TrackedOpsList's `owner` is the assembled generator. Imported under
     # TYPE_CHECKING only: there is no runtime import cycle back into __init__.
@@ -43,6 +58,43 @@ if TYPE_CHECKING:
         StatefulFunctionFramePlan,
         StatefulLocalsLayout,
     )
+
+
+class SimpleIROp(TypedDict):
+    """Serialized operation: closed identity, existing operation-specific payload."""
+
+    kind: WireOpKind
+    args: NotRequired[Any]
+    argument_custody: NotRequired[Any]
+    async_work_poll: NotRequired[Any]
+    bound_local: NotRequired[Any]
+    builtin_name: NotRequired[Any]
+    bytes: NotRequired[Any]
+    class_definition: NotRequired[Any]
+    col_offset: NotRequired[Any]
+    container_type: NotRequired[Any]
+    defines_del: NotRequired[Any]
+    end_col_offset: NotRequired[Any]
+    f_value: NotRequired[Any]
+    native_callable_abi: NotRequired[Any]
+    native_callable_binding: NotRequired[Any]
+    native_callable_export: NotRequired[Any]
+    native_callable_symbol: NotRequired[Any]
+    out: NotRequired[Any]
+    passes_execution_context: NotRequired[Any]
+    runtime_requirement_bits: NotRequired[Any]
+    runtime_symbol: NotRequired[Any]
+    s_value: NotRequired[Any]
+    source_line: NotRequired[Any]
+    source_module_publication_boundary: NotRequired[Any]
+    stack_eligible: NotRequired[Any]
+    arena_eligible: NotRequired[Any]
+    state_targets: NotRequired[Any]
+    task_closure_size: NotRequired[Any]
+    task_kind: NotRequired[Any]
+    type_hint: NotRequired[Any]
+    value: NotRequired[Any]
+    var: NotRequired[Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,7 +343,7 @@ class ComprehensionBinding:
 
 @dataclass
 class MoltOp:
-    kind: str
+    kind: FrontendOpKind
     args: list[Any]
     result: MoltValue
     metadata: dict[str, Any] | None = None
@@ -308,12 +360,7 @@ def loaded_method_self_name(op: MoltOp) -> str:
     The load and its CALL_LOADED_METHOD or CALLARGS_PUSH_METHOD_RECEIVER consumer
     both record it. The nullable word never becomes a frontend object value.
     """
-    if op.kind not in {
-        "LOAD_METHOD",
-        "LOAD_SUPER_METHOD",
-        "CALL_LOADED_METHOD",
-        "CALLARGS_PUSH_METHOD_RECEIVER",
-    }:
+    if op.kind not in _LOADED_METHOD_SELF_NAME_KINDS_1:
         raise AssertionError(f"{op.kind} carries no method pair")
     name = (op.metadata or {}).get("self_or_null")
     if not isinstance(name, str) or not name:
@@ -396,7 +443,7 @@ class LoopBoundFact:
     start: int
     step: int
     bound: int
-    compare_op: str
+    compare_op: FrontendOpKind
     compare_index: int
     compare_result: str
 
