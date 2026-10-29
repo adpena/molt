@@ -72,6 +72,18 @@ schema_version = 1
 # tools/structural_audit.py _SOURCE_ROOTS so the two authorities agree.
 generated_scan_roots = ["runtime", "src", "tools"]
 
+[[generator]]
+tool = "tools/gen_project_version.py"
+outputs = ["src/molt/_version.py"]
+source = "pyproject.toml + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_project_version.py --check"
+toolchains = []
+idempotent = true
+sync_test = "tests/cli/test_cli_version.py"
+closed_domains = []
+discovery_only = false
+
 # ===========================================================================
 # Generators (one row per tools/gen_*.py)
 # ===========================================================================

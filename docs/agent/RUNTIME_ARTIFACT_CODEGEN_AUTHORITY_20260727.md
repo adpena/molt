@@ -44,7 +44,9 @@ artifact selection.
 overrides. `dev-fast` inherits the backend/runtime debug and optimization policy
 from `dev`; `release-fast` changes only its iteration-specific fields. Shipping
 policy flows from `release-output` into `release-size`, whose hot-crate size
-overrides also serve `wasm-release`. `dev-release` retains the release policy
+overrides also serve `wasm-release`, with its measured
+WASM-only LTO/partitioning choices in the [WASM optimization plan](../spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md).
+`dev-release` retains the release policy
 with symbols. Do not copy inherited fields into child profiles: test effective
 policy and preserve target-specific artifact selection instead.
 
@@ -391,8 +393,10 @@ wall by 15.3%, process RSS by 36.9%, tree RSS by 35.6%, and the static archive b
 small wall/RSS improvement under debug=1 did not justify its extra member and
 archive fragmentation once the actual debug-metadata cause was removed.
 
-`release-output`, `release-size`, and `wasm-release` now share that codegen and
-debug policy. Profile scope owns LTO/codegen units; package overrides own only
+`release-output` and `release-size` retain that native codegen and debug policy.
+The later [WASM size measurements](../spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md)
+select fat LTO/one codegen unit for `wasm-release`, with debug still disabled.
+Profile scope owns LTO/codegen units; package overrides own only
 the hot-crate opt level. `dev-release` remains the explicit symbol-bearing
 profile. Invalid WASM output fails closed under the one primary profile; the old
 isolated-target and alternate-profile retry chain is deleted. The combined

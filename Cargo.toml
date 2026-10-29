@@ -207,8 +207,8 @@ lto = "off"
 # lto = "off" (was "thin" until measured 2026-07-09): the daemon bin's
 # cross-crate LTO was still the pass-edit rebuild long pole on the NVMe
 # persistent-target lane. This is a compiler iteration profile, not the shipped
-# runtime artifact profile: release-output and wasm-release retain ThinLTO for
-# user binaries where cross-crate optimization and size matter. MEASURED on
+# runtime artifact profile: release-output retains ThinLTO and wasm-release
+# selects its own measured whole-runtime size policy. MEASURED on
 # this repo:
 #   2026-06-05, M5 Max, touch a molt-backend lib source -> rebuild daemon:
 #   fat LTO : ~137 s  (median of 132/142)
@@ -225,7 +225,8 @@ inherits = "release"
 lto = "off"
 # codegen-units: release-fast is a build-ITERATION profile (the backend daemon
 # + runtime staging), not a ship profile — the shipping native runtime is built with release-output and
-# WASM with wasm-release, both of which keep a bounded 16-unit ThinLTO plan. A high cgu here
+# WASM with wasm-release. Native shipping keeps ThinLTO/16; WASM uses fat LTO/1.
+# A high cgu here
 # parallelizes the incremental recompile of the 342k-LoC molt-runtime hub (cgu=1
 # serialized it into a ~72s one-line-edit rebuild; cgu=256 parallelizes across cores)
 # and avoids paying an LTO merge in every pass/backend edit loop.
@@ -281,7 +282,7 @@ panic = "abort"
 
 # Size-optimized release profile for micro stdlib builds.
 # Uses opt-level "z" (minimize binary size) at profile scope with the same
-# bounded ThinLTO shipping policy as release-output and wasm-release. The four
+# bounded ThinLTO shipping policy as release-output. The four
 # hot runtime crates are re-asserted to opt-"s" below
 # (see the hot-crate opt-level policy block) so they do not silently ride at the
 # opt-3 inherited from `release`.
@@ -312,15 +313,20 @@ panic = "abort"
 [profile.release-size]
 inherits = "release-output"
 
-# WASM-optimized release profile: the same bounded ThinLTO/16-CGU authority as
-# native shipping artifacts. The former fat-LTO/one-CGU primary plus a
+# WASM-optimized release profile: one primary compiler authority. The former
 # thin-LTO/16-CGU retry profile duplicated policy and made invalid output trigger
 # a different compiler configuration. One primary policy now either produces a
 # valid artifact or fails closed.
-# Inherit the complete size policy, including opt-"s" hot runtime crates. This
-# keeps native size and WASM size consumers on one authority, not mirrored rows.
+# WASM whole-runtime size policy. Fat LTO and one codegen unit recover cross-crate
+# specialization/partitioning costs without removing codec or parser tables.
+# All four hot runtime crates keep opt-"s"; wasm-ld compresses relocation
+# padding when the selected final-link policy strips debug information. Native
+# shipping retains its independently measured memory-bound plan.
+# Measurements and tradeoffs: docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md.
 [profile.wasm-release]
 inherits = "release-size"
+lto = "fat"
+codegen-units = 1
 
 [profile.dev-release]
 inherits = "release"
@@ -376,12 +382,12 @@ opt-level = 3
 [profile.release.package.molt-runtime-collections]
 opt-level = 3
 
-# Size profiles (release-size / wasm-release): re-assert opt-"s" on the four hot
+# Shared size policy (also inherited by WASM): re-assert opt-"s" on the four hot
 # runtime crates, overriding the opt-3 inherited from `release` above. "s"
 # (optimize for size, retaining cheap speed wins) gives the full 25.5% wasm size
 # reduction measured above while protecting the faster-than-CPython contract
 # better than "z" would. Codegen partitioning remains profile-owned so every
-# runtime crate follows one target policy instead of package-local exceptions.
+# runtime crate follows one target policy instead of package-local partitioning.
 [profile.release-size.package.molt-runtime]
 opt-level = "s"
 

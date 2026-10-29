@@ -430,7 +430,7 @@ Relocatable `WasmProfile::Auto` cannot use that final serialized-module strip
 phase, so it declares a conservative pre-emission frontier for `wasm-ld` and
 lets linker garbage collection own final reachability. `WasmProfile::Pure`
 remains a compile-time capability profile that omits IO/ASYNC/TIME-style import
-families and emits deterministic traps for unsupported use.
+families and fails closed when retained calls require an unsupported family.
 
 ### 4.2 Optimization Pipeline
 
@@ -544,10 +544,54 @@ cache identity instead of requiring a documentation recipe to stay in sync.
 
 ### 4.5 Size Targets
 
+`Cargo.toml` owns the shipping WASM runtime policy: fat LTO, one codegen unit,
+no debug information and abort semantics. All four hot runtime crates retain
+opt-s. The shared-runtime producer selects wasm-ld `--compress-relocations` only
+when the effective final runtime package strips debug information, including
+package, configuration, environment and explicit rustc overrides. Retained DWARF
+keeps its original offsets. The selected response file enters the captured Cargo
+plan and member identity; response rebinding retains SDK custody and repins the
+resource generation. Native shipping keeps its separately measured ThinLTO/16
+policy. Invalid artifacts fail closed without an alternate-profile retry.
+
+The October 2026 codec correction made Unicode name tables reachable from generic
+named escapes and runtime-selected error handlers. Those semantics and the core
+parser-validation builtin remain supported. Removing either name table without
+reconciling Unicode versions and exact versus loose matching would change behavior.
+The recovery mechanism combines whole-runtime cross-crate optimization with
+removal of relocation LEB padding at the linker. It adds no application-link
+optimizer pass and keeps the shared runtime app-independent and cacheable.
+
+Matched October 23/24 artifacts attribute 835,800 new data bytes to the Unicode
+name arrays and 1,139,456 to generated property pages and version indexes. The
+property page array appeared seven times after that migration. The later main
+artifact contains six copies of the same 152,832 bytes; fat LTO/one unit merges
+them to one, retaining every version index. This recovers 764,160 raw bytes of
+redundant pages while preserving all target-version semantics.
+
+The local macOS arm64 micro coordinate (Rust 1.99.1, WASI SDK 34, Node 26) measured:
+
+| Runtime producer | Raw bytes | Gzip-9 bytes |
+| --- | ---: | ---: |
+| ThinLTO/16, hot crates opt-s | 13,109,858 | 3,621,900 |
+| Fat LTO/1, hot crates opt-s | 11,193,076 | 3,418,228 |
+| Fat LTO/1, opt-s, compressed relocations | 10,525,517 | 3,359,846 |
+
+The final transfer is 3.204 MiB against the unchanged 3.25 MiB budget. A rejected
+hub opt-z candidate reached 2.975 MiB but increased representative runtime-heavy
+CPU time by 23%; the shipping policy retains opt-s. Seven alternating paired
+whole-program Node runs over integer, container and Unicode/codec work matched
+the CPython output oracle on every execution. Median user CPU fell from 3.10 to
+2.83 seconds and process peak RSS from 163,905,536 to 135,168,000 bytes. These
+are local development observations, not release acceptance or qualification of
+other engines, profiles, Python versions or CI-host build memory.
+[Cargo's profile contract](https://doc.rust-lang.org/cargo/reference/profiles.html)
+describes cross-crate LTO and opt-s/opt-z; measurements determine the selection.
+
 | Artifact | Current | Target (v0.1) | Target (v1.0) |
 |---|---|---|---|
 | Minimal hello-world `.wasm` (linked) | ~2 MB | < 500 KB | < 200 KB |
-| Runtime `.wasm` (molt_runtime.wasm) | ~8 MB | < 4 MB | < 2 MB |
+| Runtime `.wasm` (molt_runtime.wasm) | micro: 10.53 MB raw / 3.204 MiB gzip | < 4 MB | < 2 MB |
 | Typical app `.wasm` (linked, stripped) | ~13 MB | < 3 MB | < 1 MB |
 | Compressed (brotli) | N/A | < 1 MB | < 300 KB |
 

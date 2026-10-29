@@ -81,7 +81,7 @@ generic "Rust is slow" folklore.
 | `module_graph` (frontend) | ~99s | every build (cold per process) | ~1 (serial-ish) |
 | `backend_prepare` | ~125s | every build | partial |
 | `backend_subprocess_compile` | ~95s | every build (Molt's OWN wasm codegen of app+stdlib) | partial |
-| runtime cargo compile | historical ~150–230s | **only when a runtime `.rs` changes** | **shipping policy is now ThinLTO/cgu=16/debug=0; see runtime codegen authority evidence** |
+| runtime cargo compile | historical ~150–230s | **only when a runtime `.rs` changes** | **shipping uses measured target policies; see runtime codegen authority and the WASM optimization plan** |
 | wasm-opt + wasm-ld | phase-attested and content-addressed | first artifact/policy identity | dev: no optimizer (2026-10-23) |
 | uv provisioning | ~minutes | cold only | n/a |
 | proof-queue | overhead | per proof | n/a |
@@ -251,9 +251,9 @@ Verified against the worktree tree at `origin/main` HEAD `d4888f7103`:
 
 - **Fast-iteration Cargo profiles — LANDED.** `Cargo.toml` `[profile.dev-fast]`
   `inherits="dev"`, `codegen-units=256`, `lto="off"`; `[profile.release-fast]`
-  (backend-daemon iteration). Ship profiles `[profile.release-output]` and
-  `[profile.wasm-release]` now uses measured ThinLTO, 16 codegen units, debug=0,
-  and `opt-level="z"`.
+  (backend-daemon iteration). Native `[profile.release-output]` retains measured ThinLTO/16;
+  `[profile.wasm-release]` selects its [measured WASM policy](../../spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md).
+  Both keep debug=0 and abort semantics.
 - **Per-package opt-level layering — LANDED.** The historical snapshot had
   mirrored `dev`/`dev-fast` package tables. Current root profiles own dependency
   symbols once through `[profile.dev.package."*"] debug=0`; `dev-fast` inherits
