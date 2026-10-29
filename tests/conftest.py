@@ -175,7 +175,9 @@ def _run_context_env_keys() -> tuple[str, ...]:
 
 
 @pytest.fixture
-def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
+def developer_host_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """Resolve paths as a developer host with no ambient run context does.
 
     A hosted job exports the custody root for the whole job, a workflow may
@@ -187,9 +189,17 @@ def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
     `uv run` calls keep their environment and write nothing into the checkout.
     A child that runs repository tooling on the real checkout needs the
     context back: see `checkout_run_context`.
+
+    Without ``MOLT_CACHE`` a developer host's Molt cache falls back to the
+    user cache base (``molt.default_paths``), so the test gets its own base
+    (``XDG_CACHE_HOME``, or ``LOCALAPPDATA`` on Windows) instead of writing
+    into the developer's real home cache (HF-562). ``HOME`` stays, because
+    Cargo, rustup and uv find their installations through it.
     """
     for key in _run_context_env_keys():
         monkeypatch.delenv(key, raising=False)
+    cache_base = "LOCALAPPDATA" if os.name == "nt" else "XDG_CACHE_HOME"
+    monkeypatch.setenv(cache_base, str(tmp_path_factory.mktemp("user-cache")))
 
 
 @pytest.fixture
