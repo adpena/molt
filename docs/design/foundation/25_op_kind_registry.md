@@ -69,6 +69,61 @@ retired, and record the numbers in HF-197.
 5. Retire the source scrapers in `tools/audit_op_kinds.py` that rustc then
    enforces. The census stays: no type system proves that a variant is built.
 
+**Step 4 runs next, before steps 2 and 3 (decided 2026-10-29).** Steps 2 and 3
+hunt dead kinds by reading source, which is the method that failed in HF-197.
+Once the kind is a closed type, rustc names every consumer of a variant, so the
+wire census and the dead-kind deletions of steps 2 and 3 become variant
+deletions that the compiler checks. Step 1 already landed; the census tool stays.
+
+Baseline on 5dd3e873da: `OpIR.kind` is a `String` (`runtime/molt-ir/src/ir.rs`,
+`#[derive(Deserialize, Default)]`, `deny_unknown_fields`); 536 wire kinds are
+registered; the generator emits 36 `simpleir_kind_is_*(kind: &str) -> bool`
+predicates, which name the strings in one place but do not type them; about
+1,120 Rust sites compare kind strings (molt-passes 263, molt-tir 258,
+molt-backend-native 210, molt-backend-luau 120, molt-ir 115, molt-backend-wasm
+102, molt-backend-rust 23, molt-backend 21, molt-backend-mlir 3); TIR carries
+the source spelling in a `_original_kind` string attribute (496 references);
+Python builds `MoltOp(kind=...)` with `kind: str` (`src/molt/frontend/_types.py`).
+
+**Step 4 specification.**
+- **One closed type per vocabulary.** `tools/gen_op_kinds.py` generates
+  `pub enum OpKind` (wire vocabulary) from `op_kinds.toml`: one variant per
+  registered wire kind, `#[repr(u16)]`, `Copy`, `Eq`, `Hash`, and
+  `#[serde(rename = "<wire name>")]` on each variant. There is no `Other(String)`
+  variant and no wildcard default. Backend-private kinds (Luau's 26) are
+  variants with a generated owner fact, not a second string list.
+- **Parse once, at the wire.** Decoding an unknown spelling is a
+  deserialization error that names the spelling and the input; nothing past the
+  decoder sees a string kind. `OpIR` loses its derived `Default`; constructions
+  name their kind (`OpIR::new(OpKind::Add)` plus struct update).
+- **Facts are exhaustive methods.** Each `simpleir_kind_is_*` predicate becomes
+  a generated `const fn` on `OpKind` whose `match` lists every variant with no
+  `_ =>` arm, so a new kind forces a decision in every fact family.
+- **TIR keeps the type.** The `_original_kind` string attribute becomes a typed
+  field on the TIR operation (`origin: Option<OpKind>`), and `kind_to_opcode`
+  takes `OpKind`.
+- **Backends match variants.** Native (Cranelift and LLVM), WASM, the JIT, Luau,
+  Rust and MLIR match `OpKind` variants. A backend's top-level lowering `match`
+  has no wildcard arm: a kind it does not lower maps to a typed refusal with a
+  diagnostic. This is contract parity for every backend, including the
+  experimental ones; implementation parity is required only for the P0 cells.
+- **Python is checked by `ty`.** The generator also emits
+  `FrontendOpKind = Literal[...]` and `WireOpKind = Literal[...]`;
+  `MoltOp.kind` is a `FrontendOpKind`, and the JSON mapper returns `WireOpKind`.
+- **Delete what the types replace** (step 5): the `&str` predicates and the
+  scraper checks in `tools/audit_op_kinds.py` that rustc and `ty` now enforce.
+
+Cost: decoding matches a short string against a generated table and allocates
+nothing, where the `String` field allocated per operation; each `OpIR` loses a
+24-byte `String` for a 2-byte tag; and kind tests become integer compares. Proof:
+byte-identical SimpleIR and native binaries on the differential corpus before
+and after; every backend crate and the JIT compile and pass their tests; a
+decode test rejects an unknown spelling; a generator test checks that
+`OpKind` and both `Literal` types equal the registry. Prior art: Cranelift's
+meta crate generates `Opcode` and its formats, MLIR ODS generates op classes,
+CPython generates `opcode_ids.h` from `bytecodes.c`, and rustc matches closed
+MIR enums.
+
 ---
 
 ## Fail-closed operation admission
