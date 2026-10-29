@@ -255,3 +255,98 @@ def test_class_star_import_is_rejected_before_synthetic_or_normal_import(
         CompatibilityError, match="import \\* only allowed at module level"
     ):
         _generate(f"class C(metaclass=meta):\n    from {module} import *\n")
+
+
+# Function-level imports (HF-557). CPython executes an import statement in a
+# function body only when the body runs, and resolves a relative one against
+# the function's package anchor. Each body below binds `helper` or `compute`
+# by import and calls it.
+ABSENT_MODULE_CALLERS = {
+    "function": "def f():\n    from absent_mod import helper\n    return helper(1)\n",
+    "generator": "def f():\n    from absent_mod import helper\n    yield helper(1)\n",
+    "coroutine": (
+        "async def f():\n    from absent_mod import helper\n    return helper(1)\n"
+    ),
+    "guarded-global": (
+        "try:\n    from absent_mod import helper\nexcept ImportError:\n"
+        "    helper = None\ndef f():\n    return helper(1)\n"
+    ),
+}
+
+
+def _function_ir(
+    source: str, *, module_name: str, source_path: str
+) -> dict[str, list[dict]]:
+    gen = SimpleTIRGenerator(
+        module_name=module_name,
+        source_path=source_path,
+        module_execution_kind="imported",
+        known_modules={module_name, "helper", "pkg.helper"},
+        direct_call_modules={"helper", "pkg.helper"},
+        known_func_kinds={
+            "helper": {"compute": "sync"},
+            "pkg.helper": {"compute": "sync"},
+        },
+    )
+    gen.visit(ast.parse(source))
+    return {
+        func["name"]: func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] != "molt_main"
+    }
+
+
+@pytest.mark.parametrize("source", ABSENT_MODULE_CALLERS.values(), ids=list)
+def test_call_through_import_from_unadmitted_module_is_an_ordinary_call(
+    source: str,
+) -> None:
+    """The import statement raises ImportError if it runs; the call never refuses."""
+    functions = _function_ir(source, module_name="top", source_path="/x/top.py")
+    ops = [op for body in functions.values() for op in body]
+    calls = [
+        op
+        for op in ops
+        if op["kind"] in {"call_func", "call_bind", "call_indirect", "call_guarded"}
+    ]
+    assert calls, "the call must lower to a runtime call on the bound value"
+    assert not any(
+        op["kind"] == "call_guarded" and "absent_mod" in str(op.get("s_value"))
+        for op in calls
+    )
+
+
+def test_function_relative_import_binds_the_package_child_not_a_top_level_module() -> (
+    None
+):
+    """`.helper` in package `pkg` is `pkg.helper`, never a top-level `helper`."""
+    functions = _function_ir(
+        "def f():\n    from .helper import compute\n    yield compute(1)\n",
+        module_name="pkg",
+        source_path="/x/pkg/__init__.py",
+    )
+    targets = {
+        op.get("s_value")
+        for body in functions.values()
+        for op in body
+        if op["kind"] == "call_guarded"
+    }
+    assert targets == {"pkg_helper__compute"}
+    transactions = [
+        op
+        for body in functions.values()
+        for op in body
+        if op["kind"] == "call" and op["s_value"] == "molt_importlib_import_transaction"
+    ]
+    assert len(transactions) == 1, "the import keeps its runtime package anchor"
+
+
+def test_function_relative_import_without_a_package_anchor_has_no_origin() -> None:
+    """With no parent package the import raises when it runs; `helper` is not it."""
+    functions = _function_ir(
+        "def f():\n    from .helper import compute\n    return compute(1)\n",
+        module_name="top",
+        source_path="/x/top.py",
+    )
+    ops = [op for body in functions.values() for op in body]
+    assert not any(op["kind"] == "call_guarded" for op in ops)
+    assert any(op["kind"] == "call_func" for op in ops)

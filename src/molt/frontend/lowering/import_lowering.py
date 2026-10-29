@@ -15,6 +15,7 @@ from typing import Sequence
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     normalize_stdlib_module_name,
+    resolve_relative_import,
 )
 from molt.frontend._types import MoltOp, MoltValue
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -28,6 +29,20 @@ from molt.frontend.lowering.op_kinds_generated import (
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 _NON_MODULE_PROVENANCE = "<non-module>"
+
+# Anchor errors that only the executing frame can settle: the runtime import
+# protocol raises or resolves them with CPython's own messages and warnings.
+_RUNTIME_RELATIVE_IMPORT_ERRORS = frozenset(
+    {
+        "invalid_package",
+        "unknown_package",
+        "invalid_spec",
+        "unknown_spec",
+        "missing_name",
+        "invalid_name",
+        "unknown_name",
+    }
+)
 
 
 class ImportLoweringMixin(GeneratorMixinBase):
@@ -45,6 +60,38 @@ class ImportLoweringMixin(GeneratorMixinBase):
         return tuple(
             base.with_state(state) for state in self.module_import_flow.states_for(node)
         )
+
+    def _static_relative_import_target(
+        self, node: ast.ImportFrom
+    ) -> tuple[str | None, str | None]:
+        """Resolve a relative import against every possible package anchor.
+
+        Returns ``(module, None)`` when every anchor names the same module
+        without a runtime-only step, ``(None, error)`` when every anchor fails
+        with one relative-import error that lowering may raise directly, and
+        ``(None, None)`` when only the anchor at run time decides.
+        """
+        resolutions = tuple(
+            resolve_relative_import(node.module, node.level, context)
+            for context in self._module_import_contexts(node)
+        )
+        resolved_modules = {
+            resolution.module
+            for resolution in resolutions
+            if resolution.module is not None and not resolution.requires_runtime
+        }
+        error_kinds = {resolution.error for resolution in resolutions}
+        if (
+            any(resolution.requires_runtime for resolution in resolutions)
+            or len(resolved_modules) != 1
+            or not error_kinds.isdisjoint(_RUNTIME_RELATIVE_IMPORT_ERRORS)
+        ):
+            return None, None
+        if error_kinds == {None}:
+            return next(iter(resolved_modules)), None
+        if len(error_kinds) == 1:
+            return None, next(iter(error_kinds))
+        return None, None
 
     def _emit_relative_import_error(self, kind: str | None) -> None:
         if kind == "beyond_top":

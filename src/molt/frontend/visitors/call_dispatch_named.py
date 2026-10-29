@@ -1346,10 +1346,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
             )
             if builtin_result is not CALL_NOT_HANDLED:
                 return builtin_result
-            if imported_from is not None:
-                normalized = normalize_stdlib_module_name(imported_from)
-            else:
-                normalized = None
             lowered_intrinsic = self._try_lower_intrinsic_lookup_call(
                 func_id=func_id,
                 imported_from=imported_from,
@@ -1378,20 +1374,16 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     )
                 )
                 return res
-            if imported_from in {None, "builtins"}:
-                callee = self.visit(node.func)
-                if callee is not None:
-                    return self._emit_dynamic_call(node, callee)
-
-            alternative = (
-                "import from a supported module (see docs/spec/"
-                "areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)"
-            )
-            detail = "The module must be admitted by the compilation import graph."
-            raise FrontendRejection(
-                Diagnostic.IMPORT_RESOLUTION,
-                f"call to non-allowlisted function '{func_id}'",
-                alternative,
-                detail,
-            )
+            # Every other name is an ordinary Python binding, including one
+            # imported from a module outside the compiled graph. The import
+            # statement that bound it runs the import transaction, which
+            # raises ImportError when it executes and its module is absent
+            # from the binary, as CPython's IMPORT_NAME does. A body that
+            # never runs therefore never fails.
+            callee = self.visit(node.func)
+            if callee is None:
+                raise FrontendRejection(
+                    Diagnostic.CALL_TARGET, "Unsupported call target"
+                )
+            return self._emit_dynamic_call(node, callee)
         return CALL_NOT_HANDLED
