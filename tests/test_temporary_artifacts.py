@@ -32,6 +32,21 @@ def _lease(root: Path, number: int = 1, *, storage: str | None = None):
     return lease, env
 
 
+def _plant_link(tmp_path: Path, selected: Path) -> None:
+    """Replace ``selected`` with a real link to its own content.
+
+    A real link exercises every check that reads the path, whichever module
+    binds the predicate; a patched predicate reaches only one binding.
+    """
+    real = tmp_path / f"real-{selected.name}"
+    selected.rename(real)
+    try:
+        selected.symlink_to(real, target_is_directory=real.is_dir())
+    except OSError as exc:
+        real.rename(selected)
+        pytest.skip(f"host does not permit creating symlinks: {exc}")
+
+
 def _read(path: Path):
     return read_exact(path, max_bytes=65536, label="test scratch receipt")
 
@@ -710,11 +725,7 @@ def test_interrupted_success_reclaims_without_consuming_failure_budget(tmp_path)
 
 
 @pytest.mark.parametrize("leaf", ["pending-entry", "generation"])
-def test_indirect_pending_entries_fail_closed_with_diagnostics(
-    tmp_path, monkeypatch, leaf
-):
-    from molt import file_publication
-
+def test_indirect_pending_entries_fail_closed_with_diagnostics(tmp_path, leaf):
     lease, _ = _lease(tmp_path)
     _finish(lease, success=False)
     selected = (
@@ -722,12 +733,7 @@ def test_indirect_pending_entries_fail_closed_with_diagnostics(
         if leaf == "pending-entry"
         else lease.generation
     )
-    original = file_publication.is_link_like
-    monkeypatch.setattr(
-        file_publication,
-        "is_link_like",
-        lambda path: path == selected or original(path),
-    )
+    _plant_link(tmp_path, selected)
     result = scratch.reclaim_terminal_scratch(lease.generation.parent)
     assert result["errors"] and (lease.generation / "payload").is_dir()
 
@@ -801,18 +807,10 @@ def test_existing_generation_is_never_adopted_by_a_new_parent(tmp_path):
 
 
 @pytest.mark.parametrize("leaf", ["owner.json", "terminal.json", "lock"])
-def test_link_like_custody_leaves_are_not_followed(tmp_path, monkeypatch, leaf):
-    from molt import file_publication
-
+def test_link_like_custody_leaves_are_not_followed(tmp_path, leaf):
     lease, _ = _lease(tmp_path)
     _finish(lease, success=False)
-    selected = lease.generation / leaf
-    original = file_publication.is_link_like
-    monkeypatch.setattr(
-        file_publication,
-        "is_link_like",
-        lambda path: path == selected or original(path),
-    )
+    _plant_link(tmp_path, lease.generation / leaf)
     result = scratch.reclaim_terminal_scratch(
         lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
     )
