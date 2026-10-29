@@ -3089,18 +3089,20 @@ def test_a_plan_refuses_an_environment_without_its_name_rule(plan_root):
         replace(plan, environment=MappingProxyType(dict(plan.environment)))
 
 
+@pytest.mark.parametrize("strip_debug", [False, True])
 @pytest.mark.parametrize("simd,freestanding", [(True, False), (False, True)])
 @pytest.mark.parametrize(
     "flag_origin", ["target", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]
 )
 def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
-    plan_root, simd, freestanding, flag_origin, readonly_wasi_sdk
+    plan_root, simd, freestanding, flag_origin, readonly_wasi_sdk, strip_debug
 ):
     from molt.cli import runtime_wasm_build_spec as specs
 
     _config(
         plan_root,
-        '[target.wasm32-wasip1]\nrustflags=["-C","target-feature=-reference-types"]\n',
+        f'[target.wasm32-wasip1]\nrustflags=["-C","target-feature=-reference-types"]\n'
+        f'[profile.dev-fast]\ninherits="dev"\nstrip={str(strip_debug).lower()}\n',
     )
     sdk = readonly_wasi_sdk()
     environment = {
@@ -3162,9 +3164,12 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
     assert shared.cargo_rustflags == reloc.cargo_rustflags
     index = plan.command.index("--crate-type")
     assert plan.command[index : index + 2] == ("--crate-type", "staticlib,cdylib")
-    assert shared.fingerprint_rustflags == shared.cargo_rustflags
+    assert ("link-arg=--compress-relocations" in shared.link_flags) is strip_debug
+    assert shared.fingerprint_rustflags == (*shared.cargo_rustflags, *shared.link_flags)
     assert reloc.fingerprint_rustflags == reloc.cargo_rustflags
     plan.verify()
+    projected = plan.project_link_arguments(plan.partition_command()[1])
+    assert any("@response:sha256=" in token for token in projected) is strip_debug
     # Capture binds the resolved environment before the actual runtime caller
     # constructs its command again. Re-enter that caller, not plan.command
     # (which already contains the resolver's pinned Cargo configuration).
@@ -3185,6 +3190,25 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
     assert repeated_shared.fingerprint_rustflags == shared.fingerprint_rustflags
     assert repeated_reloc.fingerprint_rustflags == reloc.fingerprint_rustflags
     repeated.verify()
+
+    if strip_debug:
+        changed_env = shared.env.updated({"CARGO_PROFILE_DEV_FAST_STRIP": "none"})
+        debug_shared, _debug_reloc = specs._resolve_runtime_wasm_cargo_specs(
+            plan_root,
+            shared._replace(env=changed_env),
+            reloc._replace(env=changed_env),
+            simd_enabled=simd,
+            freestanding=freestanding,
+        )
+        assert "link-arg=--compress-relocations" not in debug_shared.link_flags
+        debug_plan = debug_shared.cargo_plan
+        assert debug_plan is not None
+        for token in debug_plan.command:
+            if token.startswith("link-arg=@"):
+                assert (
+                    "--compress-relocations"
+                    not in Path(token.removeprefix("link-arg=@")).read_text()
+                )
 
 
 @pytest.mark.parametrize(
@@ -3741,6 +3765,68 @@ def test_captured_incrementality_obeys_cargo_precedence(
 
 
 @pytest.mark.parametrize(
+    "configuration,environment,workspace,expected",
+    [
+        ("", {}, True, False),
+        ('[profile.release]\nstrip="symbols"\n', {}, True, True),
+        ('[profile.release]\nstrip="debuginfo"\n', {}, True, True),
+        (
+            '[profile.release]\nstrip="symbols"\n',
+            {"CARGO_PROFILE_RELEASE_STRIP": "none"},
+            True,
+            False,
+        ),
+        (
+            '[profile.release]\nstrip="none"\n[profile.release.package.molt-runtime]\nstrip=true\n',
+            {},
+            True,
+            True,
+        ),
+        (
+            '[profile.release]\nstrip="symbols"\n[profile.release.package.molt-runtime]\nstrip=false\n',
+            {},
+            True,
+            False,
+        ),
+        (
+            '[profile.release]\nstrip="symbols"\n[profile.release.package."*"]\nstrip=false\n',
+            {},
+            True,
+            True,
+        ),
+        (
+            '[profile.release]\nstrip="symbols"\n[profile.release.package."*"]\nstrip=false\n',
+            {},
+            False,
+            False,
+        ),
+    ],
+)
+def test_captured_final_link_strip_policy(
+    plan_root, configuration, environment, workspace, expected
+):
+    _config(plan_root, configuration)
+    plan = _plan(plan_root, env=environment, args=("--profile", "release"))
+    assert (
+        plan.strips_debug_for_profile(
+            "release", package_name="molt-runtime", workspace_package=workspace
+        )
+        is expected
+    )
+
+
+def test_strip_package_id_override_requires_resolved_identity(plan_root):
+    _config(plan_root, '[profile.release.package."molt-runtime@0.1.0"]\nstrip=true\n')
+    plan = _plan(plan_root, args=("--profile", "release"))
+    with pytest.raises(
+        ValueError, match="package-ID override requires resolved package identity"
+    ):
+        plan.strips_debug_for_profile(
+            "release", package_name="molt-runtime", workspace_package=True
+        )
+
+
+@pytest.mark.parametrize(
     "spec",
     [
         "molt-runtime:0.1.0",
@@ -3820,6 +3906,32 @@ def test_global_incrementality_uses_cargo_switch_grammar(plan_root, value, expec
     assert (
         plan.incremental_for_profile(
             "dev", package_name="molt-runtime", workspace_package=True
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize(
+    "flags,final,expected",
+    [
+        (("-C", "strip=none", "-C", "debuginfo=2"), (), False),
+        (("-C", "strip=debuginfo"), (), True),
+        (("-C", "strip=none"), ("-C", "strip=symbols"), True),
+        (("-C", "strip=symbols"), ("-C", "strip=none"), False),
+    ],
+)
+def test_explicit_rustc_strip_overrides_profile(plan_root, flags, final, expected):
+    _config(plan_root, '[profile.release]\nstrip="symbols"\n')
+    plan = _plan(
+        plan_root,
+        env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)},
+        args=("--profile", "release", *(("--", *final) if final else ())),
+    )
+    assert (
+        plan.strips_debug_for_profile(
+            "release",
+            package_name="molt-runtime",
+            workspace_package=True,
         )
         is expected
     )

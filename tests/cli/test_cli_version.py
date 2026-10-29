@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -8,7 +9,6 @@ import pytest
 
 import molt
 import molt.cli as cli
-import molt._version as version_module
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,37 +40,44 @@ def test_cli_version_comes_from_project_metadata(
     assert capsys.readouterr().out == f"molt {_project_version()}\n"
 
 
-def test_version_falls_back_to_installed_metadata_without_source_tree(
+def test_version_works_without_source_tree_or_distribution_metadata(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    version_module.version.cache_clear()
-    monkeypatch.setattr(
-        version_module,
-        "_source_tree_pyproject",
-        lambda: tmp_path / "missing-pyproject.toml",
+    # Exercise the shipped module in an isolated interpreter, with no package
+    # metadata, repository pyproject, site packages or PYTHONPATH to consult.
+    source = (ROOT / "src/molt/_version.py").read_text(encoding="utf-8")
+    module = tmp_path / "shipped_version.py"
+    module.write_text(source, encoding="utf-8")
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-I",
+            "-S",
+            "-c",
+            "import runpy, sys; print(runpy.run_path(sys.argv[1])['version']())",
+            str(module),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    monkeypatch.setattr(
-        version_module.metadata,
-        "version",
-        lambda project_name: "9.8.7" if project_name == "molt" else "unexpected",
-    )
+    assert run.stdout.strip() == _project_version()
 
-    try:
-        assert version_module.version() == "9.8.7"
-    finally:
-        version_module.version.cache_clear()
+
+def test_generated_version_is_in_sync() -> None:
+    from tools.gen_project_version import generated_outputs
+
+    for path, text in generated_outputs().items():
+        assert path.read_text(encoding="utf-8") == text
 
 
 def test_package_init_keeps_host_version_lookup_out_of_compiled_guests() -> None:
     """Compiled guests import ``molt.gpu`` (and tinygrad) through ``molt``.
 
-    The package's module-init imports form part of every such guest's module
-    closure, and its module body runs at guest import time. The version lookup
-    reads package metadata and probes the file system, which a capability-free
-    guest denies ("missing fs.read capability") and which pulls
-    ``importlib.metadata`` and ``contextlib``'s coroutines into Pure guests.
-    It must stay behind the module ``__getattr__``.
+    The static closure includes imports inside lazy functions as well as module
+    initialization. Neither may pull host package metadata into pure guests.
     """
     import ast
 
@@ -80,4 +87,6 @@ def test_package_init_keeps_host_version_lookup_out_of_compiled_guests() -> None
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imports = _collect_imports(tree, "molt", True, import_scan_mode="module_init")
     assert set(imports) <= {"__future__", "__future__.annotations"}
+    version_tree = ast.parse((ROOT / "src/molt/_version.py").read_text())
+    assert not _collect_imports(version_tree, "molt._version", False)
     assert "__version__" in dir(molt)

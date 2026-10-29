@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping, Sequence, cast
+from typing import Callable, Literal, Mapping, Sequence, cast
 
 from molt.flag_strings import FlagStringError, FlagStringRule
 from molt.process_environment import (
@@ -1171,14 +1171,13 @@ class RuntimeCargoPlan:
             environment=self.environment.updated(pinned),
         )
 
-    def with_build_resources(self, resources: CargoResourceCustody) -> RuntimeCargoPlan:
-        """Join an already admitted producer SDK to the same Cargo authority."""
-        # Check the tail before replacing it. The joined result below fences
-        # both captures once before the caller computes its final identity.
+    def _without_pinned_configuration(
+        self,
+        command: tuple[str, ...] | None = None,
+    ) -> tuple[str, ...]:
         self.configuration_arguments()
-        separator = (
-            self.command.index("--") if "--" in self.command else len(self.command)
-        )
+        selected = self.command if command is None else command
+        separator = selected.index("--") if "--" in selected else len(selected)
         pins = cargo_argv._pinned_tool_configurations(
             self.tools,
             self.wrappers,
@@ -1187,13 +1186,69 @@ class RuntimeCargoPlan:
             self.build_directory,
             self.target_directory,
         )
-        # The verified tail consists of the canonical --config/value pairs.
+        return (*selected[: separator - 2 * len(pins)], *selected[separator:])
+
+    def with_final_link_response(
+        self,
+        replacement: Path,
+        *,
+        previous: Path | None,
+    ) -> RuntimeCargoPlan:
+        """Rebind final-link response custody without recapturing the SDK graph.
+
+        The caller owns its response argument language. This operation changes
+        only that response operand, normalizes final-crate target policy, captures
+        every selected response file and repins the resulting resource generation.
+        """
+        self.verify()
+        replacement = Path(os.path.abspath(replacement))
+        argument = "link-arg=@" + os.fspath(replacement)
+        if previous is None:
+            command = (
+                *self.command,
+                *(("--",) if "--" not in self.command else ()),
+                "-C",
+                argument,
+            )
+        else:
+            old = "link-arg=@" + os.fspath(previous)
+            if self.command.count(old) != 1:
+                raise ValueError(
+                    "runtime link response replacement requires one admitted operand"
+                )
+            command = tuple(
+                argument if token == old else token for token in self.command
+            )
+        flags = _resolve_rust_flag_resources(
+            self.rustflags,
+            command,
+            root=self.project_root,
+            env=self.environment,
+            wasi_plan=self.wasi_c_abi,
+        )
+        if (
+            flags.flags != self.rustflags
+            or any(root not in self.rust_resources.roots for root in flags.roots)
+            or flags.dependency_linker is not None
+            and flags.dependency_linker != self.tools.get("linker")
+            or flags.final_linker != self.tools.get("final_linker")
+        ):
+            raise ValueError(
+                "runtime link response changed admitted compiler resources"
+            )
+        result = replace(
+            self,
+            command=self._without_pinned_configuration(flags.command),
+            link_resources=CargoResourceCustody.capture(flags.link_roots),
+        ).with_build_directory()
+        result.verify()
+        return result
+
+    def with_build_resources(self, resources: CargoResourceCustody) -> RuntimeCargoPlan:
+        """Join an already admitted producer SDK to the same Cargo authority."""
         unbound = replace(
             self,
-            command=(
-                *self.command[: separator - 2 * len(pins)],
-                *self.command[separator:],
-            ),
+            command=self._without_pinned_configuration(),
             # Both captures already own each root's exact walk and file bytes.
             # Joining them must not enumerate SDKs again (including Windows,
             # where directory timestamps cannot fence cached listings).
@@ -1634,67 +1689,113 @@ class RuntimeCargoPlan:
             ("build", "incremental"),
             ("CARGO_BUILD_INCREMENTAL",),
         )
-        ancestry = self.profile_ancestry(cargo_profile) if value is None else ()
         if value is None:
+            value = self._profile_package_value(
+                cargo_profile,
+                "incremental",
+                package_name=package_name,
+                workspace_package=workspace_package,
+            )
+        if value is None:
+            return self.profile_ancestry(cargo_profile)[-1] == "dev"
+        if value in (True, "true", "1"):
+            return True
+        if value in (False, "false", "0"):
+            return False
+        raise ValueError(f"runtime Cargo incremental setting is invalid: {value!r}")
+
+    def _profile_package_value(
+        self,
+        cargo_profile: str,
+        setting: Literal["incremental", "strip"],
+        *,
+        package_name: str,
+        workspace_package: bool,
+    ) -> object:
+        """Resolve a package setting from the one captured Cargo configuration."""
+        ancestry = self.profile_ancestry(cargo_profile)
+        value = None
+        for profile in ancestry:
+            overrides = cargo_selected_value(
+                self.profile_configuration,
+                self.cli_configuration,
+                {},
+                ("profile", profile, "package"),
+                (),
+                {},
+            )
+            for spec, settings in _table(overrides, label="profile.package").items():
+                settings = _table(settings, label="profile.package settings")
+                selected_name = _cargo_profile_package_selector_name(spec)
+                if selected_name is not None and selected_name != package_name:
+                    # A version qualification cannot change the named package.
+                    # These sibling settings do not govern this package.
+                    continue
+                if setting in settings and (
+                    not isinstance(spec, str)
+                    or any(character in spec for character in ":/@#")
+                ):
+                    raise ValueError(
+                        f"runtime Cargo {setting} package-ID override requires "
+                        f"resolved package identity: {spec!r}"
+                    )
+        for selector in (package_name,) if workspace_package else (package_name, "*"):
             for profile in ancestry:
-                overrides = cargo_selected_value(
+                value = cargo_selected_value(
                     self.profile_configuration,
                     self.cli_configuration,
                     {},
-                    ("profile", profile, "package"),
+                    ("profile", profile, "package", selector, setting),
                     (),
-                    {},
                 )
-                for spec, settings in _table(
-                    overrides, label="profile.package"
-                ).items():
-                    settings = _table(settings, label="profile.package settings")
-                    selected_name = _cargo_profile_package_selector_name(spec)
-                    if selected_name is not None and selected_name != package_name:
-                        # A version qualification cannot change the named package.
-                        # These sibling settings do not govern this package.
-                        continue
-                    if "incremental" in settings and (
-                        not isinstance(spec, str)
-                        or any(character in spec for character in ":/@#")
-                    ):
-                        raise ValueError(
-                            "runtime Cargo incremental package-ID override requires "
-                            f"resolved package identity: {spec!r}"
-                        )
-            for selector in (
-                (package_name,) if workspace_package else (package_name, "*")
-            ):
-                for profile in ancestry:
-                    value = cargo_selected_value(
-                        self.profile_configuration,
-                        self.cli_configuration,
-                        {},
-                        ("profile", profile, "package", selector, "incremental"),
-                        (),
-                    )
-                    if value is not None:
-                        break
                 if value is not None:
                     break
+            if value is not None:
+                break
         if value is None:
             for profile in ancestry:
                 value = cargo_selected_value(
                     self.profile_configuration,
                     self.cli_configuration,
                     self.environment,
-                    ("profile", profile, "incremental"),
-                    (_profile_environment_prefix(profile) + "INCREMENTAL",),
+                    ("profile", profile, setting),
+                    (_profile_environment_prefix(profile) + setting.upper(),),
                 )
                 if value is not None:
                     break
+        return value
+
+    def strips_debug_for_profile(
+        self,
+        cargo_profile: str,
+        *,
+        package_name: str,
+        workspace_package: bool,
+    ) -> bool:
+        """Whether the final package linker strips all DWARF, even with debug on."""
+        value = None
+        separator = (
+            self.command.index("--") if "--" in self.command else len(self.command)
+        )
+        for tokens in (self.rustflags, self.command[separator + 1 :]):
+            for span in rust_flag_spans(tokens):
+                if (
+                    span.codegen is not None
+                    and span.codegen.partition("=")[0] == "strip"
+                ):
+                    value = span.codegen.partition("=")[2]
         if value is None:
-            return ancestry[-1] == "dev"
-        if value in (True, "true", "1"):
-            return True
-        if value in (False, "false", "0"):
+            value = self._profile_package_value(
+                cargo_profile,
+                "strip",
+                package_name=package_name,
+                workspace_package=workspace_package,
+            )
+        if value is None or value is False or value in ("false", "none"):
             return False
-        raise ValueError(f"runtime Cargo incremental setting is invalid: {value!r}")
+        if value is True or value in ("true", "symbols", "debuginfo"):
+            return True
+        raise ValueError(f"runtime Cargo strip setting is invalid: {value!r}")
 
     def preserve_debug_for_profile(self, cargo_profile: str) -> bool:
         """Resolve Cargo profile inheritance and overrides, never name substrings."""
