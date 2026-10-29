@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edit the v1.0 findings ledger by row: open, close, merge, next-key.
+"""Edit the v1.0 findings ledger by row: open, close, merge, note, next-key.
 
 ``docs/agent/V1_HANDOFF_FINDINGS.md`` owns the burndown. Its protocol moves a
 row, its family in the dependency order and the generated finding identities
@@ -14,6 +14,8 @@ release engineering" [--after HF-587] --defect ... --evidence ... --next ...
     ledger_edit.py close HF-506 --fix ... [--defect ...]
     ledger_edit.py merge HF-477 --into HF-442 [--defect-note ...] \
 [--evidence-note ...] [--next-note ...]
+    ledger_edit.py note HF-185 [--defect-note ...] [--evidence-note ...] \
+[--next-note ...]
 
 Cell text is Markdown; a literal ``|`` must be written ``\\|``.
 """
@@ -136,6 +138,34 @@ def close_row(text: str, args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def _append_notes(
+    lines: list[str], key: str, args: argparse.Namespace, *, trailer: str = ""
+) -> None:
+    """Append the note arguments (and ``trailer``) to open row ``key``'s cells."""
+    index = _row_index(lines, key)
+    cells = finding_status.cells(lines[index])
+    if len(cells) != 4:
+        raise LedgerEditError(f"{key} does not have four cells")
+    cells[1] = " ".join(p for p in (cells[1], args.defect_note, trailer) if p)
+    if args.evidence_note:
+        cells[2] = f"{cells[2]} {args.evidence_note}"
+    if args.next_note:
+        cells[3] = f"{cells[3]} {args.next_note}"
+    lines[index] = _row(cells)
+
+
+def note_row(text: str, args: argparse.Namespace) -> str:
+    if not (args.defect_note or args.evidence_note or args.next_note):
+        raise LedgerEditError(
+            "a note needs --defect-note, --evidence-note or --next-note"
+        )
+    if args.key not in finding_status.project(text).open_keys:
+        raise LedgerEditError(f"{args.key} is not an open row")
+    lines = text.split("\n")
+    _append_notes(lines, args.key, args)
+    return "\n".join(lines)
+
+
 def merge_rows(text: str, args: argparse.Namespace) -> str:
     status = finding_status.project(text)
     open_keys = set(status.open_keys)
@@ -143,18 +173,10 @@ def merge_rows(text: str, args: argparse.Namespace) -> str:
         if key not in open_keys:
             raise LedgerEditError(f"{key} is not an open row")
     lines = text.split("\n")
-    into = _row_index(lines, args.into)
-    cells = finding_status.cells(lines[into])
-    if len(cells) != 4:
-        raise LedgerEditError(f"{args.into} does not have four cells")
     today = args.date or dt.date.today().isoformat()
-    absorbed = f"This row absorbed {args.key} on {today}."
-    cells[1] = " ".join(p for p in (cells[1], args.defect_note, absorbed) if p)
-    if args.evidence_note:
-        cells[2] = f"{cells[2]} {args.evidence_note}"
-    if args.next_note:
-        cells[3] = f"{cells[3]} {args.next_note}"
-    lines[into] = _row(cells)
+    _append_notes(
+        lines, args.into, args, trailer=f"This row absorbed {args.key} on {today}."
+    )
     for letter in _families_holding(status, args.key):
         _edit_family(
             lines,
@@ -209,12 +231,14 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     merged = sub.add_parser("merge")
     merged.add_argument("key")
     merged.add_argument("--into", required=True)
-    merged.add_argument("--defect-note")
-    merged.add_argument("--evidence-note")
-    merged.add_argument("--next-note")
     merged.add_argument(
         "--date", help="ISO date for the absorption note (default today)"
     )
+    noted = sub.add_parser("note")
+    noted.add_argument("key")
+    for command in (merged, noted):
+        for name in ("defect-note", "evidence-note", "next-note"):
+            command.add_argument(f"--{name}")
     args = parser.parse_args(argv)
 
     path = root / LEDGER
@@ -222,7 +246,12 @@ def main(argv: list[str] | None = None, *, root: Path = _REPO_ROOT) -> int:
     if args.command == "next-key":
         print(next_key(text))
         return 0
-    edit = {"open": open_row, "close": close_row, "merge": merge_rows}[args.command]
+    edit = {
+        "open": open_row,
+        "close": close_row,
+        "merge": merge_rows,
+        "note": note_row,
+    }[args.command]
     try:
         updated = edit(text, args)
     except LedgerEditError as exc:

@@ -134,6 +134,28 @@ def test_merge_folds_the_row_into_its_target(tmp_path: Path) -> None:
     assert _family_keys(root) == {"A": ("HF-1",), "B": ()}
 
 
+def test_note_appends_to_an_open_row_and_keeps_its_family(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+
+    status = ledger_edit.main(
+        ["note", "HF-2", "--evidence-note", "Measured.", "--next-note", "Stage 1."],
+        root=root,
+    )
+
+    assert status == 0
+    text = (root / ledger_edit.LEDGER).read_text(encoding="utf-8")
+    assert "| HF-2 | Two. | E2. Measured. | N2. Stage 1. |" in text
+    assert _family_keys(root) == {"A": ("HF-1",), "B": ("HF-2",)}
+
+
+def test_a_note_on_a_fixed_row_or_without_text_writes_nothing(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+
+    assert ledger_edit.main(["note", "HF-0", "--defect-note", "x"], root=root) == 2
+    assert ledger_edit.main(["note", "HF-1"], root=root) == 2
+    assert (root / ledger_edit.LEDGER).read_text(encoding="utf-8") == _LEDGER
+
+
 def test_a_bare_bar_in_a_cell_is_refused(tmp_path: Path) -> None:
     root = _root(tmp_path)
 
