@@ -81,7 +81,9 @@ A new row joins exactly one root-cause family of the family dependency order
 in the change that opens it, and a closed row leaves it; a row that fits no
 family opens a new family, with its edges, level and a section in
 `docs/design/findings_prior_art.md`, before work on it starts.
-`tools/finding_coverage.py --check` enforces both.
+`tools/finding_coverage.py --check` enforces both, and `tools/ledger_edit.py`
+(`open`, `close`, `merge`, `next-key`) makes each row edit with its family and
+identities in one checked step.
 Consult published state before dispatch, reconcile the codebase and this ledger
 in each landing, preserve unrelated work, and harvest and retire completed lanes.
 Completion requires the current candidate's declared E1–E4 and authenticated H0

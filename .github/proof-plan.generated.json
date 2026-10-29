@@ -710,6 +710,7 @@
         "tests/tools/test_hooks_fail_open.py/**",
         "tests/tools/test_hooks_session_digest.py/**",
         "tests/tools/test_install_git_hooks.py/**",
+        "tests/tools/test_ledger_edit.py/**",
         "tests/tools/test_ledger_merge.py/**",
         "tests/tools/test_subagent_contract.py/**"
       ],
@@ -3879,6 +3880,7 @@
         "tests/tools/test_hooks_fail_open.py",
         "tests/tools/test_hooks_session_digest.py",
         "tests/tools/test_install_git_hooks.py",
+        "tests/tools/test_ledger_edit.py",
         "tests/tools/test_ledger_merge.py",
         "tests/tools/test_subagent_contract.py"
       ],
