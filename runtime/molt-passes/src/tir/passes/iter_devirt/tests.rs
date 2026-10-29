@@ -706,7 +706,7 @@ fn no_devirt_dict_with_container_type() {
 fn devirt_list_repeat_mul_build_list() {
     // `for x in [True] * n` should be devirtualized.
     // Source: Mul(BuildList([True]), n) — recognized as a list via
-    // is_list_source tracing through Mul to BuildList.
+    // list-source inference tracing through Mul to BuildList.
     let mut func = TirFunction::new(
         "test_mul_list".into(),
         vec![],
@@ -798,4 +798,95 @@ fn devirt_list_repeat_mul_build_list() {
     );
 
     crate::tir::verify::verify_function(&func).expect("verification should pass");
+}
+
+#[test]
+fn list_source_walk_handles_cycles_and_right_operand_producers() {
+    use super::source::infer_list_container_type;
+
+    let mut func = TirFunction::new(
+        "source_cycles".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let list = func.fresh_value();
+    let count = func.fresh_value();
+    let a = func.fresh_value();
+    let b = func.fresh_value();
+    let add = func.fresh_value();
+    let malformed_mul = func.fresh_value();
+    let entry = func.entry_block;
+    func.blocks.get_mut(&entry).unwrap().ops = vec![
+        make_op(OpCode::BuildList, vec![], vec![list]),
+        make_const_int(count, 2),
+        // Inference must stop the cycle on the left, then discover the list on
+        // the right. These deliberately cyclic definitions exercise its guard.
+        make_op(OpCode::Mul, vec![b, count], vec![a]),
+        make_op(OpCode::Mul, vec![a, list], vec![b]),
+        make_op(OpCode::Add, vec![list, list], vec![add]),
+        make_op(OpCode::Mul, vec![list, count, count], vec![malformed_mul]),
+    ];
+
+    assert_eq!(
+        infer_list_container_type(&func, a, &[entry]).as_deref(),
+        Some("list")
+    );
+    assert_eq!(infer_list_container_type(&func, add, &[entry]), None);
+    assert_eq!(
+        infer_list_container_type(&func, malformed_mul, &[entry]),
+        None
+    );
+
+    func.blocks.get_mut(&entry).unwrap().ops[3].operands[1] = count;
+    assert_eq!(infer_list_container_type(&func, a, &[entry]), None);
+
+    // A function-owned type fact takes precedence even for an opaque producer.
+    func.value_types
+        .insert(add, TirType::List(Box::new(TirType::DynBox)));
+    assert_eq!(
+        infer_list_container_type(&func, add, &[entry]).as_deref(),
+        Some("list")
+    );
+}
+
+#[test]
+fn hundred_thousand_repeat_operands_fit_two_mib_stack() {
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            use super::source::infer_list_container_type;
+
+            const TERMS: usize = 100_000;
+            let mut func = TirFunction::new(
+                "long_list_repeat".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let list = func.fresh_value();
+            let count = func.fresh_value();
+            let mut ops = Vec::with_capacity(TERMS + 2);
+            ops.push(make_op(OpCode::BuildList, vec![], vec![list]));
+            ops.push(make_const_int(count, 1));
+            let mut value = list;
+            for _ in 0..TERMS {
+                let result = func.fresh_value();
+                ops.push(make_op(OpCode::Mul, vec![value, count], vec![result]));
+                value = result;
+            }
+            let entry = func.entry_block;
+            func.blocks.get_mut(&entry).unwrap().ops = ops;
+            assert_eq!(
+                infer_list_container_type(&func, value, &[entry]).as_deref(),
+                Some("list")
+            );
+
+            // The same depth with no list producer must finish conservatively.
+            func.blocks.get_mut(&entry).unwrap().ops[0] = make_const_int(list, 0);
+            assert_eq!(infer_list_container_type(&func, value, &[entry]), None);
+        })
+        .expect("spawn 2 MiB iterator-source thread")
+        .join()
+        .expect("iterator-source walk must not depend on operand-chain depth");
 }

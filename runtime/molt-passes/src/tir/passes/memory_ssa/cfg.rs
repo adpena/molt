@@ -7,7 +7,10 @@ use crate::tir::function::TirFunction;
 /// Reverse postorder of the `reachable` blocks, entry first. A block's
 /// terminator successors come before its implicit exception successors (the
 /// full-CFG edge set of the S1 dominator analyses, in memory-SSA's own visit
-/// order, which numbers its phis). The shared iterative traversal keeps native
+/// order, which numbers its phis). This differs intentionally from canonical
+/// exception-first CFG order: exchanging two independent exception joins changes
+/// their phi version identities (see the two-join regression). The shared
+/// iterative traversal keeps native
 /// stack depth independent of function size.
 pub(super) fn reverse_postorder(func: &TirFunction, reachable: &HashSet<BlockId>) -> Vec<BlockId> {
     let label_to_block = dominators::exception_label_to_block(func);

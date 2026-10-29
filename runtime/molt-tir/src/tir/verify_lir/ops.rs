@@ -12,12 +12,12 @@ use super::super::ops::AttrValue;
 use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::terminators::verify_use_dominates;
-use super::{DominatorInfo, LirVerifyError, ValueDef};
+use super::{DominatorTree, LirVerifyError, ValueDef};
 
 pub(super) fn verify_ops(
     func: &LirFunction,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &DominatorInfo,
+    dominators: &DominatorTree,
     errors: &mut Vec<LirVerifyError>,
 ) {
     for (bid, block) in &func.blocks {

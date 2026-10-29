@@ -11,12 +11,12 @@ use super::super::values::ValueId;
 use super::signature::{
     signature_type_accepts_type, signature_value_accepts_repr, signature_value_accepts_type,
 };
-use super::{DominatorInfo, LirVerifyError, ValueDef};
+use super::{DominatorTree, LirVerifyError, ValueDef};
 
 pub(super) fn verify_terminators(
     func: &LirFunction,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &DominatorInfo,
+    dominators: &DominatorTree,
     errors: &mut Vec<LirVerifyError>,
 ) {
     for (bid, block) in &func.blocks {
@@ -201,7 +201,7 @@ fn verify_branch_args(
     args: &[ValueId],
     func: &LirFunction,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &DominatorInfo,
+    dominators: &DominatorTree,
     errors: &mut Vec<LirVerifyError>,
 ) {
     let Some(target_block) = func.blocks.get(&target) else {
@@ -263,7 +263,7 @@ pub(super) fn verify_use_dominates(
     use_index: usize,
     value_id: ValueId,
     values: &HashMap<ValueId, ValueDef>,
-    dominators: &DominatorInfo,
+    dominators: &DominatorTree,
     errors: &mut Vec<LirVerifyError>,
     context: &str,
 ) {
@@ -287,7 +287,7 @@ fn definition_dominates(
     def: &ValueDef,
     use_block: BlockId,
     use_index: usize,
-    dominators: &DominatorInfo,
+    dominators: &DominatorTree,
 ) -> bool {
     if def.block == use_block {
         match def.op_index {
