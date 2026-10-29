@@ -275,6 +275,12 @@ loader runs an older body (V1-15).
   hash that a checked loader compares. Cargo's unstable `-Zchecksum-freshness`
   replaces mtimes with checksums. Sources: https://peps.python.org/pep-0552/,
   https://doc.rust-lang.org/cargo/reference/unstable.html#checksum-freshness.
+- *Test-consumed executables.* [F] Cargo builds each binary target before an
+  integration test and passes its path in `CARGO_BIN_EXE_<name>`; Bazel builds
+  a test's `data` dependencies and exposes them through runfiles. A test never
+  finds an executable by probing a path. Sources:
+  https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates,
+  https://bazel.build/reference/be/common-definitions#typical.data.
 
 **Adopt.** [I] One identity type: the digest of declared inputs, with tools
 identified by content, as Go does, not by `PATH` text (HF-385). Store
@@ -383,7 +389,7 @@ compiled. Count subpackages that reach their test cases (0 of 20 today).
 
 ## I. Frame, exception and coroutine model
 
-**Problem.** Native recursion has no stack guard (HF-442, HF-477). Native code
+**Problem.** Recursion has no stack guard on native or WASM (HF-442). Native code
 calls the runtime per statement to track lines (HF-261). A user raise and
 catch is about 150 times slower than CPython (HF-561). Suspended frames box
 every live value (HF-229).

@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+)
+
+
 from typing import Any, NoReturn
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -17,9 +23,59 @@ from molt.frontend.lowering.try_regions import try_region_id
 from molt.frontend.lowering.midend_dataflow import current_unique_result_definitions
 
 
+_CAN_TAIL_MERGE_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {
+        "RAISE",
+        "JUMP",
+        "LOOP_END",
+        "STATE_LABEL",
+        "LOOP_BREAK",
+        "LOOP_BREAK_IF_TRUE",
+        "ret",
+        "LABEL",
+        "END_IF",
+        "LOOP_BREAK_IF_FALSE",
+        "IF",
+        "LOOP_CONTINUE",
+        "LOOP_START",
+        "TRY_START",
+        "TRY_END",
+        "ret_void",
+        "ELSE",
+    }
+)
+_REWRITE_LOOP_EDGE_THREADING_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"LOOP_BREAK_IF_FALSE", "LOOP_BREAK_IF_TRUE"}
+)
+_ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"IF", "LOOP_START"}
+)
+_ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {"LOOP_CONTINUE", "LOOP_BREAK", "LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
+)
+_ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_3: frozenset[FrontendOpKind] = frozenset(
+    {"STATE_LABEL", "LABEL"}
+)
+_ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_4: frozenset[FrontendOpKind] = frozenset(
+    {"JUMP", "TRY_END", "TRY_START", "CHECK_EXCEPTION"}
+)
+_REWRITE_LOOP_EDGE_THREADING_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {"TRY_START", "TRY_END"}
+)
+_REWRITE_LOOP_EDGE_THREADING_KINDS_3: frozenset[FrontendOpKind] = frozenset(
+    {"LOOP_END", "LOOP_START"}
+)
+_ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_5: frozenset[FrontendOpKind] = frozenset(
+    {"ret_void", "ret"}
+)
+_NORMALIZE_TRY_EXCEPT_JOIN_LABELS_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"JUMP", "CHECK_EXCEPTION"}
+)
+
+
 class MidendCFGMixin(GeneratorMixinBase):
     def _guard_signature(self, op: MoltOp) -> tuple[Any, ...] | None:
-        if op.kind != "GUARD_TAG":
+        if op.kind != FrontendKinds.GUARD_TAG:
             return None
         if op.result.name != "none":
             return None
@@ -42,25 +98,7 @@ class MidendCFGMixin(GeneratorMixinBase):
     def _can_tail_merge_op(self, op: MoltOp) -> bool:
         if op.result.name != "none":
             return False
-        if op.kind in {
-            "IF",
-            "ELSE",
-            "END_IF",
-            "LOOP_START",
-            "LOOP_END",
-            "LOOP_BREAK",
-            "LOOP_BREAK_IF_TRUE",
-            "LOOP_BREAK_IF_FALSE",
-            "LOOP_CONTINUE",
-            "TRY_START",
-            "TRY_END",
-            "JUMP",
-            "ret",
-            "ret_void",
-            "RAISE",
-            "LABEL",
-            "STATE_LABEL",
-        }:
+        if op.kind in _CAN_TAIL_MERGE_OP_KINDS_1:
             return False
         return True
 
@@ -82,7 +120,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             i = start
             while i < end:
                 op = ops[i]
-                if op.kind != "IF" or i not in if_to_end:
+                if op.kind != FrontendKinds.IF or i not in if_to_end:
                     out.append(op)
                     i += 1
                     continue
@@ -189,7 +227,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             i = start
             while i < end:
                 op = ops[i]
-                if op.kind == "IF" and i in if_to_end:
+                if op.kind == FrontendKinds.IF and i in if_to_end:
                     else_idx = if_to_else.get(i)
                     end_if_idx = if_to_end[i]
                     then_start = i + 1
@@ -224,7 +262,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                     out.append(ops[end_if_idx])
                     i = end_if_idx + 1
                     continue
-                if op.kind == "LOOP_START" and i in loop_start_to_end:
+                if op.kind == FrontendKinds.LOOP_START and i in loop_start_to_end:
                     loop_end = loop_start_to_end[i]
                     body = rewrite_range(i + 1, loop_end)
                     # An empty body does not prove termination. The backedge
@@ -266,7 +304,7 @@ class MidendCFGMixin(GeneratorMixinBase):
         region_labels = {
             str(region_id)
             for op in ops
-            if op.kind in {"TRY_START", "TRY_END"}
+            if op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_2
             if (region_id := try_region_id(op)) is not None
         }
 
@@ -274,15 +312,15 @@ class MidendCFGMixin(GeneratorMixinBase):
             def alias_target_from_body(body_ops: list[MoltOp]) -> str | None:
                 if (
                     len(body_ops) == 1
-                    and body_ops[0].kind == "JUMP"
+                    and body_ops[0].kind == FrontendKinds.JUMP
                     and body_ops[0].args
                 ):
                     return self._control_label_key(body_ops[0].args[0])
                 if (
                     len(body_ops) == 2
-                    and body_ops[0].kind == "CHECK_EXCEPTION"
+                    and body_ops[0].kind == FrontendKinds.CHECK_EXCEPTION
                     and body_ops[0].args
-                    and body_ops[1].kind == "JUMP"
+                    and body_ops[1].kind == FrontendKinds.JUMP
                     and body_ops[1].args
                 ):
                     check_key = self._control_label_key(body_ops[0].args[0])
@@ -295,7 +333,10 @@ class MidendCFGMixin(GeneratorMixinBase):
                 if block.start >= block.end:
                     continue
                 head = ops[block.start]
-                if head.kind not in {"LABEL", "STATE_LABEL"} or not head.args:
+                if (
+                    head.kind not in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_3
+                    or not head.args
+                ):
                     continue
                 head_key = self._control_label_key(head.args[0])
                 if head_key is None or head_key in region_labels:
@@ -303,7 +344,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                 body_ops = [
                     ops[idx]
                     for idx in range(block.start + 1, block.end)
-                    if ops[idx].kind != "LINE"
+                    if ops[idx].kind != FrontendKinds.LINE
                 ]
                 target_key = alias_target_from_body(body_ops)
                 if target_key is None and not body_ops:
@@ -313,7 +354,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                         succ_body = [
                             ops[idx]
                             for idx in range(succ_block.start, succ_block.end)
-                            if ops[idx].kind != "LINE"
+                            if ops[idx].kind != FrontendKinds.LINE
                         ]
                         target_key = alias_target_from_body(succ_body)
                 if target_key is None or target_key == head_key:
@@ -342,13 +383,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             # anywhere in the loop body. Restricting this to only currently
             # executable blocks can invalidate structure after later rewrites.
             body_has_dynamic_loop_control = any(
-                ops[idx].kind
-                in {
-                    "LOOP_BREAK",
-                    "LOOP_BREAK_IF_TRUE",
-                    "LOOP_BREAK_IF_FALSE",
-                    "LOOP_CONTINUE",
-                }
+                ops[idx].kind in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_2
                 for idx in range(loop_start + 1, loop_end)
             )
             if body_has_dynamic_loop_control:
@@ -372,7 +407,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             )
 
         for idx, op in enumerate(ops):
-            if op.kind == "CHECK_EXCEPTION":
+            if op.kind == FrontendKinds.CHECK_EXCEPTION:
                 if op.args:
                     original_key = self._control_label_key(op.args[0])
                     if original_key is not None:
@@ -393,10 +428,13 @@ class MidendCFGMixin(GeneratorMixinBase):
                             )
                             check_exception_threads += 1
                             continue
-            if idx in loop_remove_markers and op.kind in {"LOOP_START", "LOOP_END"}:
+            if (
+                idx in loop_remove_markers
+                and op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_3
+            ):
                 loop_marker_prunes += 1
                 continue
-            if op.kind == "LOOP_END":
+            if op.kind == FrontendKinds.LOOP_END:
                 block_id = cfg.op_blocks[idx]
                 chosen = single_exec_succ_by_block.get(block_id)
                 succs = cfg.successors.get(block_id, [])
@@ -456,7 +494,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                             )
                         )
                         continue
-            if op.kind in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}:
+            if op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_1:
                 break_taken = loop_break_choice_by_index.get(idx)
                 if break_taken is None:
                     block_id = cfg.op_blocks[idx]
@@ -561,7 +599,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             for idx in range(start, end + 1):
                 keep[idx] = False
 
-        structural_keep = {
+        structural_keep: set[FrontendOpKind] = {
             "IF",
             "ELSE",
             "END_IF",
@@ -628,7 +666,7 @@ class MidendCFGMixin(GeneratorMixinBase):
         if not ops:
             return ops, 0
 
-        close_for_open = {
+        close_for_open: dict[FrontendOpKind, FrontendOpKind] = {
             "IF": "END_IF",
             "LOOP_START": "LOOP_END",
         }
@@ -637,7 +675,7 @@ class MidendCFGMixin(GeneratorMixinBase):
         # path-local custody transitions: several alternative TRY_END markers
         # may occur inside still-live IF/LOOP bodies. Preserve all of them for
         # the shared CFG exception authority, without synthesizing other closes.
-        control_stack: list[tuple[str, Any]] = []
+        control_stack: list[tuple[FrontendOpKind, Any]] = []
         rewritten: list[MoltOp] = []
         rewrites = 0
 
@@ -648,7 +686,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                 f"{self._active_midend_function_name}: {message}"
             )
 
-        def synthetic_close(open_kind: str) -> MoltOp:
+        def synthetic_close(open_kind: FrontendOpKind) -> MoltOp:
             nonlocal rewrites
             close_kind = close_for_open[open_kind]
             rewrites += 1
@@ -662,13 +700,13 @@ class MidendCFGMixin(GeneratorMixinBase):
                 },
             )
 
-        def append_synthetic_close(open_kind: str) -> None:
+        def append_synthetic_close(open_kind: FrontendOpKind) -> None:
             rewritten.append(synthetic_close(open_kind))
 
         for idx, op in enumerate(ops):
             kind = op.kind
-            if kind in {"IF", "LOOP_START"}:
-                if kind == "IF":
+            if kind in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_1:
+                if kind == FrontendKinds.IF:
                     aux: Any = False  # seen_else
                 else:
                     aux = None
@@ -676,23 +714,23 @@ class MidendCFGMixin(GeneratorMixinBase):
                 rewritten.append(op)
                 continue
 
-            if kind == "ELSE":
+            if kind == FrontendKinds.ELSE:
                 if_indices = [
                     i
                     for i, (open_kind, _seen_else) in enumerate(control_stack)
-                    if open_kind == "IF"
+                    if open_kind == FrontendKinds.IF
                 ]
                 if not if_indices:
                     rewrites += 1
                     continue
-                while control_stack and control_stack[-1][0] != "IF":
+                while control_stack and control_stack[-1][0] != FrontendKinds.IF:
                     dangling_kind, _ = control_stack.pop()
                     append_synthetic_close(dangling_kind)
                 if not control_stack:
                     rewrites += 1
                     continue
                 open_kind, seen_else = control_stack[-1]
-                if open_kind != "IF":
+                if open_kind != FrontendKinds.IF:
                     rewrites += 1
                     continue
                 if seen_else:
@@ -720,13 +758,11 @@ class MidendCFGMixin(GeneratorMixinBase):
                 rewritten.append(op)
                 continue
 
-            if kind in {
-                "LOOP_BREAK",
-                "LOOP_BREAK_IF_TRUE",
-                "LOOP_BREAK_IF_FALSE",
-                "LOOP_CONTINUE",
-            }:
-                if not any(open_kind == "LOOP_START" for open_kind, _ in control_stack):
+            if kind in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_2:
+                if not any(
+                    open_kind == FrontendKinds.LOOP_START
+                    for open_kind, _ in control_stack
+                ):
                     # Structural repairs should be fail-closed for malformed
                     # labels/targets, but loop-control ops outside loop scope
                     # can be safely elided as no-ops to keep IR canonical.
@@ -749,18 +785,21 @@ class MidendCFGMixin(GeneratorMixinBase):
             # appear unterminated and, more importantly, placed executable
             # control markers on no reachable function-exit path.
             terminal_start = len(rewritten)
-            if rewritten and rewritten[-1].kind in {"ret", "ret_void"}:
+            if (
+                rewritten
+                and rewritten[-1].kind in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_5
+            ):
                 terminal_start -= 1
                 if (
                     terminal_start > 0
-                    and rewritten[terminal_start - 1].kind == "TRACE_EXIT"
+                    and rewritten[terminal_start - 1].kind == FrontendKinds.TRACE_EXIT
                 ):
                     terminal_start -= 1
             rewritten[terminal_start:terminal_start] = trailing_closes
 
         labels: dict[str, int] = {}
         for idx, op in enumerate(rewritten):
-            if op.kind not in {"LABEL", "STATE_LABEL"}:
+            if op.kind not in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_3:
                 continue
             if not op.args:
                 fail(f"{op.kind} at op index {idx} is missing label argument")
@@ -777,11 +816,11 @@ class MidendCFGMixin(GeneratorMixinBase):
             labels[label_key] = idx
 
         for idx, op in enumerate(rewritten):
-            if op.kind in {"TRY_START", "TRY_END"} and not op.args:
+            if op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_2 and not op.args:
                 # Anonymous IR regions have no named target. All source-level
                 # scopes carry explicit labels, including every path-local end.
                 continue
-            if op.kind not in {"JUMP", "CHECK_EXCEPTION", "TRY_START", "TRY_END"}:
+            if op.kind not in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_4:
                 continue
             if not op.args:
                 fail(f"{op.kind} at op index {idx} is missing target label")
@@ -810,22 +849,22 @@ class MidendCFGMixin(GeneratorMixinBase):
             region_labels = {
                 str(region_id)
                 for op in local_ops
-                if op.kind in {"TRY_START", "TRY_END"}
+                if op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_2
                 if (region_id := try_region_id(op)) is not None
             }
 
             def extract_alias_target(body_ops: list[MoltOp]) -> str | None:
                 if (
                     len(body_ops) == 1
-                    and body_ops[0].kind == "JUMP"
+                    and body_ops[0].kind == FrontendKinds.JUMP
                     and body_ops[0].args
                 ):
                     return self._control_label_key(body_ops[0].args[0])
                 if (
                     len(body_ops) == 2
-                    and body_ops[0].kind == "CHECK_EXCEPTION"
+                    and body_ops[0].kind == FrontendKinds.CHECK_EXCEPTION
                     and body_ops[0].args
-                    and body_ops[1].kind == "JUMP"
+                    and body_ops[1].kind == FrontendKinds.JUMP
                     and body_ops[1].args
                 ):
                     exc_target = self._control_label_key(body_ops[0].args[0])
@@ -838,7 +877,10 @@ class MidendCFGMixin(GeneratorMixinBase):
                 if block.start >= block.end:
                     continue
                 head = local_ops[block.start]
-                if head.kind not in {"LABEL", "STATE_LABEL"} or not head.args:
+                if (
+                    head.kind not in _ENSURE_STRUCTURAL_CFG_VALIDITY_KINDS_3
+                    or not head.args
+                ):
                     continue
                 label_key = self._control_label_key(head.args[0])
                 if label_key is None or label_key in region_labels:
@@ -847,7 +889,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                 body_ops = [
                     local_ops[idx]
                     for idx in range(block.start + 1, block.end)
-                    if local_ops[idx].kind != "LINE"
+                    if local_ops[idx].kind != FrontendKinds.LINE
                 ]
                 target_key = extract_alias_target(body_ops)
                 if target_key is None and not body_ops:
@@ -857,7 +899,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                         succ_body = [
                             local_ops[idx]
                             for idx in range(succ_block.start, succ_block.end)
-                            if local_ops[idx].kind != "LINE"
+                            if local_ops[idx].kind != FrontendKinds.LINE
                         ]
                         target_key = extract_alias_target(succ_body)
                 if target_key is None or target_key == label_key:
@@ -893,7 +935,7 @@ class MidendCFGMixin(GeneratorMixinBase):
                     continue
                 op = current[i]
                 rewritten = op
-                if op.kind in {"JUMP", "CHECK_EXCEPTION"} and op.args:
+                if op.kind in _NORMALIZE_TRY_EXCEPT_JOIN_LABELS_KINDS_1 and op.args:
                     first = op.args[0]
                     label_key = self._control_label_key(first)
                     if label_key is not None:
@@ -908,15 +950,17 @@ class MidendCFGMixin(GeneratorMixinBase):
                             )
                             round_rewrites += 1
 
-                if rewritten.kind == "CHECK_EXCEPTION" and rewritten.args:
+                if rewritten.kind == FrontendKinds.CHECK_EXCEPTION and rewritten.args:
                     check_target_key = self._control_label_key(rewritten.args[0])
                     if check_target_key is not None:
                         j = i + 1
-                        while j < len(current) and current[j].kind == "LINE":
+                        while (
+                            j < len(current) and current[j].kind == FrontendKinds.LINE
+                        ):
                             j += 1
                         if (
                             j < len(current)
-                            and current[j].kind == "JUMP"
+                            and current[j].kind == FrontendKinds.JUMP
                             and current[j].args
                         ):
                             jump_target_key = self._control_label_key(
@@ -969,14 +1013,14 @@ class MidendCFGMixin(GeneratorMixinBase):
             i = 0
             while i < len(current):
                 op = current[i]
-                if op.kind == "JUMP" and op.args:
+                if op.kind == FrontendKinds.JUMP and op.args:
                     target = str(op.args[0])
                     j = i + 1
-                    while j < len(current) and current[j].kind == "LINE":
+                    while j < len(current) and current[j].kind == FrontendKinds.LINE:
                         j += 1
                     if (
                         j < len(current)
-                        and current[j].kind == "LABEL"
+                        and current[j].kind == FrontendKinds.LABEL
                         and current[j].args
                         and str(current[j].args[0]) == target
                     ):
@@ -988,9 +1032,9 @@ class MidendCFGMixin(GeneratorMixinBase):
 
             referenced_labels: set[str] = set()
             for op in no_noop_jumps:
-                if op.kind in {"JUMP", "CHECK_EXCEPTION"} and op.args:
+                if op.kind in _NORMALIZE_TRY_EXCEPT_JOIN_LABELS_KINDS_1 and op.args:
                     referenced_labels.add(str(op.args[0]))
-                elif op.kind in {"TRY_START", "TRY_END"}:
+                elif op.kind in _REWRITE_LOOP_EDGE_THREADING_KINDS_2:
                     region = try_region_id(op)
                     if region is not None:
                         referenced_labels.add(str(region))
@@ -998,7 +1042,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             label_prunes = 0
             cleaned: list[MoltOp] = []
             for idx, op in enumerate(no_noop_jumps):
-                if op.kind == "LABEL" and op.args:
+                if op.kind == FrontendKinds.LABEL and op.args:
                     name = str(op.args[0])
                     if name not in referenced_labels:
                         label_prunes += 1

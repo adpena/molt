@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+    frontend_wire_kind,
+)
+
 
 from molt.frontend._types import (
     BuiltinClass,
@@ -10,13 +15,24 @@ from molt.frontend._types import (
     MoltValue,
     loaded_method_self_name,
 )
-from molt.frontend.lowering.serialization_context import SerializationContext
+from molt.frontend.lowering.serialization_context import (
+    SerializationContext,
+    SimpleIROp,
+)
 from molt.frontend._mixin_base import GeneratorMixinBase
+
+
+_SERIALIZE_OBJECT_ATTR_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"LOAD_METHOD", "LOAD_SUPER_METHOD"}
+)
+_SERIALIZE_OBJECT_ATTR_OP_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {"BOX", "WIDEN", "CAST", "UNBOX"}
+)
 
 
 class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
     def _serialize_object_attr_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
-        if op.kind == "DATACLASS_NEW":
+        if op.kind == FrontendKinds.DATACLASS_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "dataclass_new",
@@ -24,7 +40,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DATACLASS_NEW_VALUES":
+        elif op.kind == FrontendKinds.DATACLASS_NEW_VALUES:
             ctx.json_ops.append(
                 {
                     "kind": "dataclass_new_values",
@@ -32,7 +48,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SETATTR":
+        elif op.kind == FrontendKinds.SETATTR:
             obj, attr, val, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             # Metaclass __init__ receives `cls` which is a TYPE object,
@@ -71,7 +87,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "value": offset,
                     }
                 )
-        elif op.kind == "GUARDED_SETATTR":
+        elif op.kind == FrontendKinds.GUARDED_SETATTR:
             obj, expected_version, attr, val, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             if offset is None:
@@ -104,7 +120,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "out": op.result.name,
                     }
                 )
-        elif op.kind == "SETATTR_GENERIC_PTR":
+        elif op.kind == FrontendKinds.SETATTR_GENERIC_PTR:
             ctx.json_ops.append(
                 {
                     "kind": "set_attr_generic_ptr",
@@ -113,7 +129,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SETATTR_GENERIC_OBJ":
+        elif op.kind == FrontendKinds.SETATTR_GENERIC_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "set_attr_generic_obj",
@@ -122,7 +138,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DELATTR_GENERIC_PTR":
+        elif op.kind == FrontendKinds.DELATTR_GENERIC_PTR:
             ctx.json_ops.append(
                 {
                     "kind": "del_attr_generic_ptr",
@@ -131,7 +147,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DELATTR_GENERIC_OBJ":
+        elif op.kind == FrontendKinds.DELATTR_GENERIC_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "del_attr_generic_obj",
@@ -140,7 +156,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DATACLASS_GET":
+        elif op.kind == FrontendKinds.DATACLASS_GET:
             ctx.json_ops.append(
                 {
                     "kind": "dataclass_get",
@@ -148,7 +164,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DATACLASS_SET":
+        elif op.kind == FrontendKinds.DATACLASS_SET:
             ctx.json_ops.append(
                 {
                     "kind": "dataclass_set",
@@ -156,7 +172,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DATACLASS_SET_CLASS":
+        elif op.kind == FrontendKinds.DATACLASS_SET_CLASS:
             ctx.json_ops.append(
                 {
                     "kind": "dataclass_set_class",
@@ -164,7 +180,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "GETATTR":
+        elif op.kind == FrontendKinds.GETATTR:
             obj, attr, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             # Metaclass methods operate on TYPE objects, not instances.
@@ -201,7 +217,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "out": op.result.name,
                     }
                 )
-        elif op.kind == "GUARDED_GETATTR":
+        elif op.kind == FrontendKinds.GUARDED_GETATTR:
             obj, expected_version, attr, expected_class = op.args
             offset = self._serialization_field_offset(expected_class, attr)
             if offset is None:
@@ -234,16 +250,16 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "out": op.result.name,
                     }
                 )
-        elif op.kind == "GETATTR_GENERIC_PTR":
-            ptr_entry: dict[str, Any] = {
+        elif op.kind == FrontendKinds.GETATTR_GENERIC_PTR:
+            ptr_entry: SimpleIROp = {
                 "kind": "get_attr_generic_ptr",
                 "args": [op.args[0].name],
                 "s_value": op.args[1],
                 "out": op.result.name,
             }
             ctx.json_ops.append(ptr_entry)
-        elif op.kind == "GETATTR_GENERIC_OBJ":
-            entry = {
+        elif op.kind == FrontendKinds.GETATTR_GENERIC_OBJ:
+            entry: SimpleIROp = {
                 "kind": "get_attr_generic_obj",
                 "args": [op.args[0].name],
                 "s_value": op.args[1],
@@ -257,7 +273,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind in {"LOAD_METHOD", "LOAD_SUPER_METHOD"}:
+        elif op.kind in _SERIALIZE_OBJECT_ATTR_OP_KINDS_1:
             # One frontend value names the pair; the wire op defines both
             # results: `var` the callable, `out` the self-or-null word.
             *operands, attr = op.args
@@ -265,7 +281,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 {
                     "kind": (
                         "load_method"
-                        if op.kind == "LOAD_METHOD"
+                        if op.kind == FrontendKinds.LOAD_METHOD
                         else "load_super_method"
                     ),
                     "args": [operand.name for operand in operands],
@@ -274,7 +290,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": loaded_method_self_name(op),
                 }
             )
-        elif op.kind == "GETATTR_SPECIAL_OBJ":
+        elif op.kind == FrontendKinds.GETATTR_SPECIAL_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "get_attr_special_obj",
@@ -283,8 +299,8 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "GETATTR_NAME_DEFAULT":
-            entry = {
+        elif op.kind == FrontendKinds.GETATTR_NAME_DEFAULT:
+            entry: SimpleIROp = {
                 "kind": "get_attr_name_default",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -297,7 +313,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind == "HASATTR_NAME":
+        elif op.kind == FrontendKinds.HASATTR_NAME:
             ctx.json_ops.append(
                 {
                     "kind": "has_attr_name",
@@ -305,7 +321,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SETATTR_NAME":
+        elif op.kind == FrontendKinds.SETATTR_NAME:
             ctx.json_ops.append(
                 {
                     "kind": "set_attr_name",
@@ -313,7 +329,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DELATTR_NAME":
+        elif op.kind == FrontendKinds.DELATTR_NAME:
             ctx.json_ops.append(
                 {
                     "kind": "del_attr_name",
@@ -321,15 +337,15 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "GUARD_TAG":
-            guard = {
-                "kind": op.kind.lower(),
+        elif op.kind == FrontendKinds.GUARD_TAG:
+            guard: SimpleIROp = {
+                "kind": frontend_wire_kind(op.kind),
                 "args": [arg.name for arg in op.args],
             }
             if op.result.name != "none":
                 guard["out"] = op.result.name
             ctx.json_ops.append(guard)
-        elif op.kind == "INC_REF":
+        elif op.kind == FrontendKinds.INC_REF:
             ctx.json_ops.append(
                 {
                     "kind": "inc_ref",
@@ -337,7 +353,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "DEC_REF":
+        elif op.kind == FrontendKinds.DEC_REF:
             ctx.json_ops.append(
                 {
                     "kind": "dec_ref",
@@ -345,7 +361,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BORROW":
+        elif op.kind == FrontendKinds.BORROW:
             ctx.json_ops.append(
                 {
                     "kind": "inc_ref",
@@ -353,7 +369,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "RELEASE":
+        elif op.kind == FrontendKinds.RELEASE:
             ctx.json_ops.append(
                 {
                     "kind": "dec_ref",
@@ -361,12 +377,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind in {
-            "BOX",
-            "UNBOX",
-            "CAST",
-            "WIDEN",
-        }:
+        elif op.kind in _SERIALIZE_OBJECT_ATTR_OP_KINDS_2:
             if (
                 op.args
                 and isinstance(op.args[0], MoltValue)
@@ -385,7 +396,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "out": op.result.name,
                     }
                 )
-        elif op.kind == "IDENTITY_ALIAS":
+        elif op.kind == FrontendKinds.IDENTITY_ALIAS:
             if (
                 op.args
                 and isinstance(op.args[0], MoltValue)
@@ -398,7 +409,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                         "out": op.result.name,
                     }
                 )
-        elif op.kind == "BINDING_ALIAS":
+        elif op.kind == FrontendKinds.BINDING_ALIAS:
             if (
                 op.args
                 and isinstance(op.args[0], MoltValue)

@@ -1,8 +1,8 @@
-<!-- Design doc (task #57). Rust wire contract updated for step 4a, 2026-10-29. Historical audit observations are explicitly labeled below. -->
+<!-- Design doc (task #57). Rust and Python identity contracts updated for steps 4a/4b, 2026-10-29. Historical audit observations are explicitly labeled below. -->
 
 # Op-Kind Single-Source-of-Truth Registry
 
-**Status:** The registry generates the closed Rust wire type and exhaustive facts. Python producer and serializer census checks remain in `tools/op_kinds/census.py` and `tools/audit_op_kinds.py`; normalized runtime ABI checks remain independent. Python `Literal` types belong to step 4b. Current V1 qualification and burndown belong to [the V1 ledger](../../agent/V1_HANDOFF_FINDINGS.md).
+**Status:** The registry generates the closed Rust wire type, Python `FrontendOpKind`/`WireOpKind` Literal types, and their typed facts. Step 4b is implemented on `lane/opkind-step4b-python`; local qualification and integration are distinct. The producer census remains in `tools/op_kinds/census.py`; `tools/audit_op_kinds.py` retains normalized runtime ABI checks. Python membership source scrapers are retired in favor of `ty`. Current V1 qualification and burndown belong to [the V1 ledger](../../agent/V1_HANDOFF_FINDINGS.md).
 
 **Bug class killed:** cross-component op-"kind"-string drift — molt's most prolific silent-miscompile family (5 proven instances; see "Motivation").
 
@@ -37,11 +37,12 @@ comprehension or a generated `*_OP_KIND` table; or a call whose every `return`
 resolves. Anything else is unresolved, and the check names the site and the
 reason. Kinds are therefore spelled out, never computed: f-strings, `+=` and
 `.upper()` on kind names are rejected. `tests/test_frontend_op_kind_registry.py`
-requires that every kind expression resolves, that every produced kind is
-registered, and that no registered kind is spelled anywhere in the compiler's
+requires that every kind expression resolves and that no registered kind is
+referenced anywhere in the compiler's
 Python (`src/molt/frontend`, `src/molt/debug`, `tools/op_kinds`) unless it is
-produced: a comparison, set member, table key or registry override for a dead
-kind fails the check.
+produced: a comparison, set member, table key, generated named constant or
+registry override for a dead kind fails the check. `ty` independently checks
+producer membership through `MoltOp.kind: FrontendOpKind`.
 
 **Deleting a consumer is not deleting an optimization.** A consumer of a kind
 nothing produces is dead code and removing it changes no behaviour. The
@@ -124,6 +125,51 @@ diagnostics. Private-owner, shape, payload, symbol and target-support admission
 remain separate obligations. The producer census remains authoritative for
 proving that registrations have producers.
 
+**Step 4b implementation (2026-10-29).** `tools/gen_op_kinds.py` projects both
+Literal domains from the same registration authorities as Rust `OpKind`.
+`MoltOp.kind`, producer helper parameters/returns, binary/augmented-assignment
+maps, CFG projections and optimizer kind tables keep `FrontendOpKind`.
+Async liveness consumes the generated frontend trailing-result projection
+instead of lowercasing a frontend kind to query a wire fact.
+The serializer's `SimpleIROp` TypedDict requires `kind: WireOpKind`; every
+handler, scalarization/fusion rewrite and CLI-authored operation preserves that
+field type. Its remaining payload fields retain their existing dynamic shapes.
+JSON and MessagePack carry the same string spellings.
+
+`frontend_wire_kind` returns `WireOpKind` through the generated
+`FRONTEND_WIRE_KIND` table, including declared alternative frontend spellings.
+It replaces runtime case conversion; absent direct lowering has no invented
+fallback. Existing bytes, field roles, semantic lowering and admission checks
+remain unchanged. No cast, ignore or open string producer replaces a typed site.
+
+Python permits equality between unrelated strings even with a Literal-typed
+operand. Generated `FrontendKinds`/`WireKinds` Final constants therefore name
+scalar kind comparisons; a misspelled member fails attribute resolution in `ty`.
+Membership groups and lookup keys/values are typed closed-domain tables.
+Repeated membership groups are stored once at module scope, preserving the
+constant-set hot path instead of building sets of named constants per operation.
+These are generated/plain string constants, not a second runtime enum or registry.
+The census counts named frontend constants as consumers as well as literal
+references, so this migration does not hide dead registrations.
+
+**Retired by types.** The Python emitter AST resolver in
+`tools/audit_op_kinds.py` (`FrontendKinds`, `extract_frontend_kinds`, guard/name/
+call-site resolution, `unregistered_frontend_wire` and `unresolved_frontend`)
+and its synthetic scraper-mutation tests are removed. The frontend-produced
+membership and serialized-dictionary membership source tests are removed;
+closed Literal/TypedDict fields now enforce those obligations. The old empty
+audit-baseline comparison test is removed. Generator synchronization, registry
+versus both Literal domains/Rust enum, actual JSON/MessagePack mapping, runtime
+rejection, and producer reachability remain separate tests. The generator
+manifest records all three operation types as closed domains. The retained
+proof-plan audit command continues to check normalized runtime ABI/export
+facts, which `ty` and rustc cannot establish from spelling membership.
+
+Step 4b does not retire the producer census, normalized ABI checks, shape and
+payload validation, backend-private admission or target support checks. It does
+not close wire producer census/variant retirement in steps 2 and 3. The Claude
+integrator owns ledger disposition, landing and lane retirement.
+
 Cost: decoding matches a short string against a generated table and allocates
 nothing, where the `String` field allocated per operation; each `OpIR` loses a
 24-byte `String` for a 2-byte tag; and kind tests become integer compares. Proof:
@@ -131,9 +177,14 @@ byte-identical SimpleIR and native binaries on the differential corpus before
 and after; every backend crate and the JIT compile and pass their tests; a
 decode test rejects an unknown spelling; a generator test checks that
 `OpKind` and both `Literal` types equal the registry. Prior art: Cranelift's
-meta crate generates `Opcode` and its formats, MLIR ODS generates op classes,
-CPython generates `opcode_ids.h` from `bytecodes.c`, and rustc matches closed
-MIR enums.
+[meta crate generates `Opcode` and its formats](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/codegen/meta/src/gen_inst.rs),
+[MLIR ODS generates operation classes](https://mlir.llvm.org/docs/DefiningDialects/Operations/),
+and CPython generates both
+[`opcode_ids.h`](https://github.com/python/cpython/blob/main/Include/opcode_ids.h)
+and [`Lib/_opcode_metadata.py`](https://github.com/python/cpython/blob/main/Lib/_opcode_metadata.py)
+from `Python/bytecodes.c`. These precedents project language identities and
+consumer metadata from one declarative authority. Molt uses Literal types for
+Python so ordinary string wire transport needs no enum conversion.
 
 ---
 
@@ -694,7 +745,7 @@ authorities and native/WASM differential execution.
 The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is ONE arc; intermediate commits are allowed only if each is itself a complete, byte-identical piece.
 
 1. **Closed:** mirror current reality into `op_kinds.toml`, generate `op_kinds_generated.rs` + `op_kinds_generated.py`, and route `kind_to_opcode`/classifier/effect/operand-ownership/result-validity facts through generated tables.
-2. **Closed:** add `tests/test_gen_op_kinds.py` and keep `audit_op_kinds.py --check` green against `op_kinds_baseline.json`.
+2. **Closed:** generated-file/type-domain synchronization lives in `tests/test_gen_op_kinds.py`; `audit_op_kinds.py --check` directly checks normalized runtime ABI facts. The historical spelling-baseline comparison is retired by steps 4a/4b.
 3. **Dangerous-cell fixes, each a SEPARATE reviewed commit** (NOT folded into the migration):
    - (a) canonical `floordiv` spelling is closed: `lower_to_simple` emits `floordiv` and the generated mapper accepts `floordiv | floor_div`. Remaining cleanup, if scheduled, is deleting the explicit `floor_div` alias once no serialized or round-trip artifact can produce it.
    - (b) closed: `loop_index_*` is derived from `[[simpleir_control_kind]].pre_ssa_rewritten`, and the LLVM identity arms for `cast`/`widen`/`copy_var` are closed in the current audit.
@@ -728,7 +779,14 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 
 ## 7. CI seed
 
-`tools/audit_op_kinds.py --check` exits non-zero on both **new** current findings and **stale** baseline-only findings in any category relative to committed `tools/op_kinds_baseline.json`. The comparison records changes in observations as well as bug preconditions. Diagnose the reported category against its source authority before changing mappings, ownership, routing, or the baseline; frontend dormancy alone does not justify adding or removing an opcode.
+`ty check src tests/findings` checks the generated closed Python operation
+identities at their producers and typed consumers. Rust checks closed wire
+identities and exhaustive fact/dispatch matches. `tools/audit_op_kinds.py --check`
+exits nonzero on normalized boxed runtime ABI/export mismatches directly; no
+spelling baseline admits them. Diagnose a reported mismatch against its ABI
+source authority. `tests/test_frontend_op_kind_registry.py` retains the
+independent producer census: frontend dormancy alone does not justify adding
+or removing an opcode, and type membership does not prove a producer exists.
 
 ### 7.1 Current LLVM runtime ABI adjunct gate
 

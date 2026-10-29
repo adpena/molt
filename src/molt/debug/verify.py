@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 import json
@@ -81,7 +83,7 @@ class VerificationFinding:
 
 # Each frontend op kind and the backend lane its serialization must emit.
 # Checked by serializing the op, so a refactor that keeps the lowering passes.
-FRONTEND_LOWERING_LANES: Mapping[str, str] = MappingProxyType(
+FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
     {
         "CALL_INDIRECT": "call_indirect",
         "GUARD_TAG": "guard_tag",
@@ -98,54 +100,60 @@ FRONTEND_LOWERING_LANES: Mapping[str, str] = MappingProxyType(
     }
 )
 
+# Bridge until HF-485 moves these op-to-runtime facts into the generated
+# runtime-call contract and retires these source regexes.
 NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     SemanticAssertion(
         scope="native",
         description="call_func keeps dedicated native lane",
-        pattern=(r'"call_func"\s*=>'),
+        pattern=(r"OpKind::CallFunc\s*=>"),
     ),
     SemanticAssertion(
         scope="native",
         description="invoke_ffi uses dedicated invoke_ffi_ic bridge/deopt lane",
         pattern=(
-            r'"invoke_ffi"\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?box_bool\(if bridge_lane \{ 1 \} else \{ 0 \}\)[\s\S]*?"molt_invoke_ffi_ic"'
+            r'OpKind::InvokeFfi\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?box_bool\(if bridge_lane \{ 1 \} else \{ 0 \}\)[\s\S]*?"molt_invoke_ffi_ic"'
         ),
     ),
     SemanticAssertion(
         scope="native",
         description="call_bind/call_indirect keep distinct call-site labels + dedicated imports",
         pattern=(
-            r'"call_bind"\s*\|\s*"call_indirect"\s*=>[\s\S]*?"molt_call_indirect_ic"[\s\S]*?"molt_call_bind_ic"[\s\S]*?if op\.kind == "call_indirect"'
+            r'OpKind::CallBind\s*\|\s*OpKind::CallIndirect\s*=>[\s\S]*?"molt_call_indirect_ic"[\s\S]*?"molt_call_bind_ic"[\s\S]*?if op\.kind == OpKind::CallIndirect\s*\{\s*"call_indirect"\s*\}\s*else\s*\{\s*"call_bind"'
         ),
     ),
     SemanticAssertion(
         scope="native",
         description="guard_tag uses molt_guard_type runtime guard",
-        pattern=(r'"guard_type"\s*\|\s*"guard_tag"\s*=>[\s\S]*?"molt_guard_type"'),
+        pattern=(
+            r'OpKind::GuardType\s*\|\s*OpKind::GuardTag\s*=>[\s\S]*?"molt_guard_type"'
+        ),
     ),
     SemanticAssertion(
         scope="native",
         description="guard_layout uses molt_guard_layout runtime guard",
-        pattern=(r'"guard_layout"\s*=>[\s\S]*?"molt_guard_layout"'),
+        pattern=(r'OpKind::GuardLayout\s*=>[\s\S]*?"molt_guard_layout"'),
     ),
     SemanticAssertion(
         scope="native",
         description="inc_ref/borrow call local_inc_ref_obj",
         pattern=(
-            r'"inc_ref"\s*\|\s*"borrow"\s*=>[\s\S]*?emit_inc_ref_obj\(.*local_inc_ref_obj'
+            r"OpKind::IncRef\s*\|\s*OpKind::Borrow\s*=>[\s\S]*?emit_inc_ref_obj\(.*local_inc_ref_obj"
         ),
     ),
     SemanticAssertion(
         scope="native",
         description="dec_ref/release call local_dec_ref_obj and write None on out",
         pattern=(
-            r'"dec_ref"\s*\|\s*"release"\s*=>[\s\S]*?local_dec_ref_obj[\s\S]*?box_none\(\)'
+            r"OpKind::DecRef\s*\|\s*OpKind::Release\s*=>[\s\S]*?local_dec_ref_obj[\s\S]*?box_none\(\)"
         ),
     ),
     SemanticAssertion(
         scope="native",
         description="box/unbox/cast/widen stay explicit conversion lanes",
-        pattern=(r'"box"\s*\|\s*"unbox"\s*\|\s*"cast"\s*\|\s*"widen"\s*=>'),
+        pattern=(
+            r"OpKind::Box\s*\|\s*OpKind::Unbox\s*\|\s*OpKind::Cast\s*\|\s*OpKind::Widen\s*=>"
+        ),
     ),
 )
 
@@ -159,44 +167,46 @@ WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
         scope="wasm",
         description="call_func/invoke_ffi keep dedicated labels and invoke_ffi import",
         pattern=(
-            r'"invoke_ffi"\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?WasmRuntimeImport::InvokeFfiIc'
+            r'molt_ir::OpKind::InvokeFfi\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?WasmRuntimeImport::InvokeFfiIc'
         ),
     ),
     SemanticAssertion(
         scope="wasm",
         description="call_bind/call_indirect keep distinct labels and dedicated import lanes",
         pattern=(
-            r'"call_bind"\s*\|\s*"call_indirect"\s*=>[\s\S]*?if op\.kind == "call_indirect"[\s\S]*?"call_indirect"[\s\S]*?"call_bind"[\s\S]*?WasmRuntimeImport::CallIndirectIc[\s\S]*?WasmRuntimeImport::CallBindIc'
+            r'molt_ir::OpKind::CallBind\s*\|\s*molt_ir::OpKind::CallIndirect\s*=>[\s\S]*?if op\.kind == molt_ir::OpKind::CallIndirect[\s\S]*?"call_indirect"[\s\S]*?"call_bind"[\s\S]*?WasmRuntimeImport::CallIndirectIc[\s\S]*?WasmRuntimeImport::CallBindIc'
         ),
     ),
     SemanticAssertion(
         scope="wasm",
         description="guard_tag lowering remains explicit",
-        pattern=r'"guard_tag"\s*=>\s*Some\([\s\S]*?WasmRuntimeImport::GuardType',
+        pattern=r"molt_ir::OpKind::GuardTag\s*=>\s*Some\([\s\S]*?WasmRuntimeImport::GuardType",
     ),
     SemanticAssertion(
         scope="wasm",
         description="guard_layout lowering remains explicit",
-        pattern=r'"guard_layout"[\s\S]*?WasmRuntimeImport::GuardLayout',
+        pattern=r"if op\.kind != molt_ir::OpKind::GuardLayout[\s\S]*?WasmRuntimeImport::GuardLayout",
     ),
     SemanticAssertion(
         scope="wasm",
         description="inc_ref/borrow call inc_ref_obj import",
         pattern=(
-            r'"inc_ref"\s*\|\s*"borrow"\s*=>[\s\S]*?emit_inc_ref_like[\s\S]*?WasmRuntimeImport::IncRefObj'
+            r"molt_ir::OpKind::IncRef\s*\|\s*molt_ir::OpKind::Borrow\s*=>[\s\S]*?emit_inc_ref_like[\s\S]*?WasmRuntimeImport::IncRefObj"
         ),
     ),
     SemanticAssertion(
         scope="wasm",
         description="dec_ref/release/del_boundary call dec_ref_obj import and write None on out",
         pattern=(
-            r'"dec_ref"\s*\|\s*"release"\s*\|\s*"del_boundary"\s*=>[\s\S]*?emit_dec_ref_like[\s\S]*?WasmRuntimeImport::DecRefObj[\s\S]*?emit_none'
+            r"molt_ir::OpKind::DecRef\s*\|\s*molt_ir::OpKind::Release\s*\|\s*molt_ir::OpKind::DelBoundary\s*=>[\s\S]*?emit_dec_ref_like[\s\S]*?WasmRuntimeImport::DecRefObj[\s\S]*?emit_none"
         ),
     ),
     SemanticAssertion(
         scope="wasm",
         description="box/unbox/cast/widen stay explicit conversion lanes",
-        pattern=(r'"box"\s*\|\s*"unbox"\s*\|\s*"cast"\s*\|\s*"widen"\s*=>'),
+        pattern=(
+            r"molt_ir::OpKind::Box\s*\|\s*molt_ir::OpKind::Unbox\s*\|\s*molt_ir::OpKind::Cast\s*\|\s*molt_ir::OpKind::Widen\s*=>"
+        ),
     ),
 )
 
@@ -305,8 +315,14 @@ def _parse_spec_ops(spec_text: str) -> list[str]:
 
 def _scan_backend_kinds(backend_text: str) -> set[str]:
     kinds: set[str] = set()
-    for pattern in re.finditer(r'((?:"[a-z0-9_]+"(?:\s*\|\s*)?)+)\s*=>', backend_text):
-        kinds.update(re.findall(r'"([a-z0-9_]+)"', pattern.group(1)))
+    for arm in re.finditer(
+        r"((?:(?:molt_ir::)?OpKind::[A-Za-z0-9_]+(?:\s*\|\s*)?)+)\s*=>",
+        backend_text,
+    ):
+        kinds.update(
+            _camel_to_upper_snake(variant).lower()
+            for variant in re.findall(r"OpKind::([A-Za-z0-9_]+)", arm.group(1))
+        )
     return kinds
 
 
@@ -348,7 +364,7 @@ def check_ir_inventory(
     return failures
 
 
-def _serialized_frontend_kinds(kind: str) -> list[str]:
+def _serialized_frontend_kinds(kind: FrontendOpKind) -> list[str]:
     from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 
     op = MoltOp(
@@ -361,7 +377,7 @@ def _serialized_frontend_kinds(kind: str) -> list[str]:
 
 
 def check_frontend_lowering_lanes(
-    serialize: Callable[[str], list[str]] = _serialized_frontend_kinds,
+    serialize: Callable[[FrontendOpKind], list[str]] = _serialized_frontend_kinds,
 ) -> list[str]:
     """Serialize each op kind and compare the emitted lane with its contract."""
 
