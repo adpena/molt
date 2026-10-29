@@ -755,7 +755,7 @@ its process is down.
 **Experiment.** Time `molt build` on an unchanged program with only the
 launcher check; count `stat` calls. Compare with today's 34 s.
 
-[I] Five rows are not early cutoff: first-link cost of a new program (HF-26,
+[I] Six rows are not early cutoff: first-link cost of a new program (HF-26,
 HF-371, HF-172), per-command guard overhead (HF-517), compiler PGO (HF-458)
 and daemon admission (HF-225).
 
