@@ -17,7 +17,7 @@ Landing checks execute the generator and authority inputs captured from the exac
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 13 |
 | Hashed executable authority inputs | 1 | 438 |
-| Local path rules | 35 | 105 |
+| Local path rules | 35 | 81 |
 | Unique local commands | 73 | 81 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
@@ -363,28 +363,20 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `build-output-identity` | 6 | 0 |
 | `backend-environment-contract` | 22 | 0 |
 | `stdlib-intrinsic-contracts` | 7 | 1 |
-| `heap-kind-lifetime-authority` | 6 | 0 |
 | `host-capability-authority` | 12 | 0 |
 | `runtime-profile-schema-authority` | 6 | 0 |
 | `op-kind-registry` | 20 | 1 |
-| `frontend-diagnostics` | 6 | 0 |
-| `wasm-abi-registry` | 13 | 0 |
 | `tinygrad-op-contract` | 9 | 2 |
 | `intrinsic-registry` | 15 | 0 |
-| `codec-tables` | 8 | 0 |
-| `stringprep-tables` | 3 | 0 |
 | `llvm-runtime-abi` | 8 | 1 |
 | `source-extension-package-sets` | 44 | 0 |
 | `source-extension-proof-policy` | 58 | 0 |
-| `native-link-benchmark-tests` | 1 | 0 |
 | `suite-honesty` | 4 | 2 |
 | `ecosystem-compat` | 2 | 1 |
-| `tinygrad-upat-static-exec-registry` | 2 | 0 |
 | `docs-architecture` | 4 | 1 |
 | `dev-tooling` | 27 | 0 |
 | `checkout-maintenance` | 16 | 0 |
 | `process-forwarding-custody` | 11 | 0 |
-| `changed-clippy-selection` | 11 | 0 |
 | `cargo-source-closure` | 2 | 0 |
 | `committed-gate-policy` | 1 | 0 |
 | `managed-git-hooks` | 8 | 0 |
@@ -394,42 +386,26 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `host-capacity` | 15 | 0 |
 | `guard-marker-custody` | 10 | 0 |
 | `process-environment-consumers` | 9 | 0 |
-| `build-control-paths` | 6 | 0 |
 | `repository-scan-records` | 4 | 0 |
-| `subprocess-guard-coverage` | 2 | 0 |
 | `guard-wiring-source-observation` | 3 | 0 |
-| `environment-registry-audit` | 2 | 0 |
-| `cpython-coverage-generation` | 2 | 0 |
-| `unicode-source-facts` | 1 | 0 |
-| `structural-audit` | 8 | 0 |
 | `rust-source-scan-consumers` | 5 | 0 |
-| `rust-source-scan` | 1 | 0 |
-| `structural-audit-records` | 6 | 0 |
-| `generator-manifest` | 9 | 0 |
-| `host-fact-test-isolation` | 2 | 0 |
 | `backend-daemon-custody` | 11 | 0 |
-| `encoding-diagnostics` | 2 | 0 |
 | `build-early-cutoff` | 9 | 0 |
 | `runtime-cargo-input-custody` | 56 | 0 |
-| `native-test-failure-diagnostics` | 5 | 0 |
 | `rust-toolchain` | 11 | 1 |
 | `table-drift` | 20 | 1 |
 | `target-python-extension-release-identity` | 5 | 0 |
-| `findings-registry` | 4 | 0 |
 | `memory-graph` | 4 | 1 |
 | `native-toolchain-transfer` | 38 | 0 |
 | `proof-plan-tests` | 1 | 0 |
 | `ci-wiring` | 53 | 0 |
 | `apparatus-hooks` | 11 | 2 |
 | `apparatus-learning-protection` | 6 | 1 |
-| `timing-ratio-authority` | 2 | 0 |
 | `performance-measurement` | 36 | 1 |
 | `apparatus-a11` | 10 | 4 |
 | `apparatus-a8-a12-disk-reclaim` | 14 | 2 |
-| `linux-vm-apparatus` | 3 | 0 |
 | `import-symbol-gate` | 2 | 1 |
 | `phase-exit-manifest` | 7 | 1 |
-| `git-process-policy` | 3 | 0 |
 | `public-contract` | 27 | 1 |
 | `installed-compiler-distribution` | 18 | 0 |
 | `edgebox-typescript` | 4 | 1 |
