@@ -366,7 +366,7 @@ Local commands declare Cargo target access independently of toolchain availabili
 | `heap-kind-lifetime-authority` | 6 | 0 |
 | `host-capability-authority` | 12 | 0 |
 | `runtime-profile-schema-authority` | 6 | 0 |
-| `op-kind-registry` | 18 | 1 |
+| `op-kind-registry` | 20 | 1 |
 | `frontend-diagnostics` | 6 | 0 |
 | `wasm-abi-registry` | 13 | 0 |
 | `tinygrad-op-contract` | 9 | 2 |
