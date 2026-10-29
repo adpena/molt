@@ -1,9 +1,9 @@
 use std::{io, path::Path};
 
+use super::StdlibArchiveProvenance;
 use super::cleanup::remove_shared_stdlib_derived_sidecars;
 use super::read::{MAX_ORIGIN_BYTES, StdlibArchiveOrigin};
 use crate::backend_process::input::ContentIdentity;
-use crate::backend_process::native_batch::NativeWorkerOrigin;
 use molt_artifact_publish::write_text_atomically;
 
 use super::super::files::sha256_file_hex;
@@ -23,7 +23,7 @@ pub(crate) fn write_shared_stdlib_cache_sidecars(
     cache_manifest: Option<&str>,
     partition_manifest: &str,
     archive_digest: Option<&str>,
-    origins: Option<&[NativeWorkerOrigin]>,
+    origins: Option<&StdlibArchiveProvenance>,
 ) -> io::Result<String> {
     // No projection of the replaced generation retains custody. Regeneration
     // is lazy; deletion failures abort publication through the owning caller.
@@ -51,13 +51,13 @@ pub(crate) fn write_shared_stdlib_cache_sidecars(
     )?;
     let origin_path = stdlib_cache_origin_sidecar_path(stdlib_path);
     let encoded = origins
-        .map(|workers| {
+        .map(|provenance| {
             let record = StdlibArchiveOrigin::new(
                 ContentIdentity {
                     sha256: archive_digest.clone(),
                     size: std::fs::metadata(stdlib_path)?.len(),
                 },
-                workers,
+                provenance,
             )?;
             let encoded = serde_json::to_string(&record).map_err(io::Error::other)?;
             if encoded.len() as u64 > MAX_ORIGIN_BYTES {

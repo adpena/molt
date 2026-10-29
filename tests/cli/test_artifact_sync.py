@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from molt.cli.backend_artifact_contract import (
 from molt.toolchain_identity import stable_regular_file_identity
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.native_artifact_fixtures import native_relocatable_object
-from tests.process_guard_common import install_module_view
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 
 def _receipt_payload(source_key: str) -> dict[str, object]:
@@ -1138,10 +1139,31 @@ def test_admission_cache_export_keeps_only_consumed_original_scope(
 
 
 @pytest.mark.parametrize(
-    "defect", [None, "escape", "symlink", "other-key", "other-origin"]
+    "defect,with_content",
+    [(None, False), (None, True)]
+    + [
+        (defect, True)
+        for defect in (
+            "escape",
+            "symlink",
+            "other-key",
+            "other-origin",
+            "content-missing",
+            "content-symlink",
+            "content-bytes",
+            "content-origin",
+            "content-key",
+            "content-sidecar-missing",
+            "content-key-uppercase",
+            "content-key-integer",
+            "content-key-absent",
+            "content-old-schema",
+            "content-unknown-field",
+        )
+    ],
 )
 def test_admission_cache_export_fences_consumed_stdlib_generation(
-    tmp_path, monkeypatch, defect
+    tmp_path, monkeypatch, defect, with_content
 ):
     _stub_external_inspectors(monkeypatch)
     root = (tmp_path / "cache").resolve()
@@ -1165,7 +1187,8 @@ def test_admission_cache_export_fences_consumed_stdlib_generation(
         "output": {"sha256": hashlib.sha256(obj).hexdigest(), "size": len(obj)},
     }
     stdlib_payload = {
-        "schema": "molt.stdlib-archive-origin.v1",
+        "schema": "molt.stdlib-archive-origin.v2",
+        "content_key": "f" * 64 if with_content else None,
         "output": {
             "sha256": hashlib.sha256(archive_bytes).hexdigest(),
             "size": len(archive_bytes),
@@ -1175,11 +1198,44 @@ def test_admission_cache_export_fences_consumed_stdlib_generation(
     stdlib = BackendStdlibOrigin.from_payload(stdlib_payload)
     key = "c" * 64
     archive = root / "shared-stdlib" / key / "stdlib.a"
-    archive.parent.mkdir(parents=True)
-    archive.write_bytes(archive_bytes)
-    archive.with_suffix(".origin.json").write_text(
-        json.dumps(stdlib_payload), encoding="utf-8"
-    )
+    expected = set()
+
+    def write_generation(path, generation_key):
+        path.parent.mkdir(parents=True)
+        path.write_bytes(archive_bytes)
+        expected.add(path)
+        for suffix, data in {
+            ".count": "1",
+            ".key": generation_key,
+            ".manifest.json": json.dumps(
+                {
+                    "schema": "stdlib-manifest-v2-archive",
+                    "artifact_kind": "archive",
+                    "cache_key": generation_key,
+                    "cache_variant": "native",
+                    "compiler_fingerprint": "producer",
+                    "target_triple": contract.target_triple,
+                }
+            ),
+            ".partition.json": json.dumps(
+                {
+                    "schema": "stdlib-partition-v2-exact-linkage-abi",
+                    "body_hash": hashlib.sha256(b"body").hexdigest(),
+                    "function_count": 1,
+                    "functions": ["molt_main"],
+                }
+            ),
+            ".sha256": hashlib.sha256(archive_bytes).hexdigest(),
+            ".origin.json": json.dumps(stdlib_payload),
+        }.items():
+            sidecar = path.with_suffix(suffix)
+            sidecar.write_text(data, encoding="utf-8")
+            expected.add(sidecar)
+
+    write_generation(archive, key)
+    content = root / "native-stdlib-archives-v1" / ("f" * 64) / "stdlib.a"
+    if with_content:
+        write_generation(content, "f" * 64)
     app = root / (
         "d" * 64 + ".artifact-" + contract.cache_identity + ".stdlib-" + key + ".a"
     )
@@ -1206,6 +1262,43 @@ def test_admission_cache_export_fences_consumed_stdlib_generation(
         archive.with_suffix(".origin.json").write_text(
             json.dumps(stdlib_payload), encoding="utf-8"
         )
+    elif defect == "content-missing":
+        content.unlink()
+    elif defect == "content-symlink":
+        content.unlink()
+        content.symlink_to(archive)
+    elif defect == "content-bytes":
+        content.write_bytes(archive_bytes + b"corruption")
+    elif defect == "content-origin":
+        replacement = dict(stdlib_payload, content_key="e" * 64)
+        content.with_suffix(".origin.json").write_text(
+            json.dumps(replacement), encoding="utf-8"
+        )
+    elif defect == "content-key":
+        content.with_suffix(".key").write_text("e" * 64, encoding="utf-8")
+    elif defect == "content-sidecar-missing":
+        content.with_suffix(".partition.json").unlink()
+    elif defect in {
+        "content-key-uppercase",
+        "content-key-integer",
+        "content-key-absent",
+        "content-old-schema",
+        "content-unknown-field",
+    }:
+        replacement = dict(stdlib_payload)
+        if defect == "content-key-uppercase":
+            replacement["content_key"] = "F" * 64
+        elif defect == "content-key-integer":
+            replacement["content_key"] = 1
+        elif defect == "content-key-absent":
+            del replacement["content_key"]
+        elif defect == "content-old-schema":
+            replacement["schema"] = "molt.stdlib-archive-origin.v1"
+        else:
+            replacement["unknown"] = None
+        content.with_suffix(".origin.json").write_text(
+            json.dumps(replacement), encoding="utf-8"
+        )
     context = cache.compilation_cache_export_paths(
         root,
         cache={"compiler": str(app), "stdlib": str(coordinate)},
@@ -1214,17 +1307,38 @@ def test_admission_cache_export_fences_consumed_stdlib_generation(
         artifact_contract=contract,
     )
     if defect:
-        with pytest.raises(ValueError):
+        with pytest.raises((ValueError, OSError)):
             with context:
                 raise AssertionError("unrelated stdlib generation exported")
     else:
+
+        def probe_content_lock():
+            result = run_guarded_test_process(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; import sys; "
+                    "from molt.file_locks import _try_acquire_file_lock, _release_file_lock; "
+                    "handle = _try_acquire_file_lock(Path(sys.argv[1])); "
+                    "print('held' if handle is None else 'free'); "
+                    "_release_file_lock(handle) if handle is not None else None",
+                    str(root / "locks" / "native-stdlib-archive.ff.lock"),
+                ],
+                timeout=10,
+                check=True,
+            )
+            return result.stdout
+
         with context as selected:
             assert set(selected) == {
                 app,
                 backend_cache_sync_receipt_path(app),
-                archive,
-                archive.with_suffix(".origin.json"),
+                *expected,
             }
+            if with_content:
+                assert probe_content_lock() == "held\n"
+        if with_content:
+            assert probe_content_lock() == "free\n"
         assert stdlib.workers[0].scope == "b" * 64
     assert archive.read_bytes() == archive_bytes
 

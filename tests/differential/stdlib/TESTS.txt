@@ -1187,6 +1187,7 @@ tests/differential/stdlib/importlib_extension_exec_tagged_init_shim_intrinsic.py
 tests/differential/stdlib/importlib_extension_exec_zip_shim_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_bytecode_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_cache_key_sensitivity_intrinsic.py
+tests/differential/stdlib/importlib_find_spec_empty_meta_path_warning.py
 tests/differential/stdlib/importlib_find_spec_extension_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_invalidate_caches_intrinsic.py
 tests/differential/stdlib/importlib_find_spec_meta_path_intrinsic.py
@@ -1222,6 +1223,11 @@ tests/differential/stdlib/importlib_module_from_spec.py
 tests/differential/stdlib/importlib_module_reload.py
 tests/differential/stdlib/importlib_module_spec.py
 tests/differential/stdlib/importlib_optional_import_intrinsic.py
+tests/differential/stdlib/importlib_package_path_identity.py
+tests/differential/stdlib/importlib_path_identity_ns/child.py
+tests/differential/stdlib/importlib_path_identity_pkg/__init__.py
+tests/differential/stdlib/importlib_path_identity_pkg/loaded/__init__.py
+tests/differential/stdlib/importlib_path_identity_pkg/plain.py
 tests/differential/stdlib/importlib_public_api_validation.py
 tests/differential/stdlib/importlib_relative_import_from_package.py
 tests/differential/stdlib/importlib_reload_invalidate_intrinsic.py

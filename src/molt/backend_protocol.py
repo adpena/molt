@@ -244,29 +244,38 @@ class BackendStdlibOrigin:
     output_sha256: str
     output_size: int
     workers: tuple[BackendNativeWorkerOrigin, ...]
+    content_key: str | None
 
     @classmethod
     def from_payload(cls, value: object) -> BackendStdlibOrigin:
         if (
             not isinstance(value, dict)
-            or set(value) != {"schema", "output", "workers"}
-            or value["schema"] != "molt.stdlib-archive-origin.v1"
+            or set(value) != {"schema", "output", "workers", "content_key"}
+            or value["schema"] != "molt.stdlib-archive-origin.v2"
             or not isinstance(value["workers"], list)
             or not 0 < len(value["workers"]) <= 16384
         ):
             raise ValueError("stdlib archive origin schema is invalid")
+        content_key = value["content_key"]
+        if content_key is not None and (
+            not isinstance(content_key, str)
+            or re.fullmatch(r"[0-9a-f]{64}", content_key) is None
+        ):
+            raise ValueError("stdlib archive content key is invalid")
         return cls(
             *_content(value["output"], "stdlib output"),
             tuple(
                 BackendNativeWorkerOrigin.from_payload(row) for row in value["workers"]
             ),
+            content_key,
         )
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema": "molt.stdlib-archive-origin.v1",
+            "schema": "molt.stdlib-archive-origin.v2",
             "output": {"sha256": self.output_sha256, "size": self.output_size},
             "workers": [worker.payload() for worker in self.workers],
+            "content_key": self.content_key,
         }
 
     def verify_output(self, path: Path) -> None:
