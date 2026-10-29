@@ -745,7 +745,7 @@ mod tests {
     /// Helper to create an `OpIR` with just a `kind`.
     fn op(kind: crate::OpKind) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             ..crate::OpIR::new(kind)
         }
     }
@@ -753,7 +753,7 @@ mod tests {
     /// Helper to create an `OpIR` with `kind` and `value`.
     fn op_val(kind: crate::OpKind, value: i64) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             value: Some(value),
             ..crate::OpIR::new(kind)
         }
@@ -762,7 +762,7 @@ mod tests {
     /// Helper to create an `OpIR` with `kind` and `args`.
     fn op_args(kind: crate::OpKind, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             args: Some(args.iter().map(|s| s.to_string()).collect()),
             ..crate::OpIR::new(kind)
         }
@@ -771,7 +771,7 @@ mod tests {
     /// Helper to create an `OpIR` with `kind`, `args`, and `value`.
     fn op_args_val(kind: crate::OpKind, args: &[&str], value: i64) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             args: Some(args.iter().map(|s| s.to_string()).collect()),
             value: Some(value),
             ..crate::OpIR::new(kind)

@@ -4,11 +4,11 @@ use super::*;
 fn normalized_boundary_rejects_pre_ssa_transport_with_source_identity() {
     for kind in [crate::OpKind::LoopIndexStart, crate::OpKind::LoopIndexNext] {
         let carrier = OpIR {
-            kind: kind.into(),
+            kind,
             args: Some(vec!["seed".into()]),
             out: Some("index".into()),
             source_op_idx: Some(73),
-            ..crate::OpIR::new(kind.into())
+            ..crate::OpIR::new(kind)
         };
         // This is legal authored transport; only the normalized boundary rejects it.
         validate_simple_op_shape(&carrier).expect("frontend carrier remains admitted");
@@ -45,8 +45,8 @@ fn normalized_boundary_keeps_executable_structured_and_value_operations() {
     ]
     .into_iter()
     .map(|kind| OpIR {
-        kind: kind.into(),
-        ..crate::OpIR::new(kind.into())
+        kind,
+        ..crate::OpIR::new(kind)
     })
     .collect();
     // The boundary is a read-only normal-form check, not a second shape or CFG validator.

@@ -18,7 +18,7 @@ fn function(name: &str, ops: Vec<OpIR>) -> FunctionIR {
 
 fn op(kind: crate::OpKind) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         ..crate::OpIR::new(kind)
     }
 }

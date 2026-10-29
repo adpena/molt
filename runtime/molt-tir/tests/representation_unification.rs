@@ -133,7 +133,7 @@ fn int_ops() -> Vec<IntOp> {
 
 fn op(kind: molt_ir::OpKind, out: Option<&str>, var: Option<&str>, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         out: out.map(str::to_string),
         var: var.map(str::to_string),
         args: (!args.is_empty()).then(|| args.iter().map(|a| a.to_string()).collect()),

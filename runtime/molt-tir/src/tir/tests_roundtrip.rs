@@ -50,14 +50,14 @@ mod tests {
 
     fn op(kind: molt_ir::OpKind) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             ..OpIR::new(kind)
         }
     }
 
     fn op_val(kind: molt_ir::OpKind, value: i64) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             value: Some(value),
             ..OpIR::new(kind)
         }
@@ -65,7 +65,7 @@ mod tests {
 
     fn op_out(kind: molt_ir::OpKind, out: &str) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             out: Some(out.to_string()),
             ..OpIR::new(kind)
         }
@@ -100,7 +100,7 @@ mod tests {
 
     fn op_args(kind: molt_ir::OpKind, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             args: Some(args.iter().map(|s| s.to_string()).collect()),
             ..OpIR::new(kind)
         }
@@ -108,7 +108,7 @@ mod tests {
 
     fn op_out_args(kind: molt_ir::OpKind, out: &str, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             out: Some(out.to_string()),
             args: Some(args.iter().map(|s| s.to_string()).collect()),
             ..OpIR::new(kind)

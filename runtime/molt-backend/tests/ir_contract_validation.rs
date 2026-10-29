@@ -28,7 +28,7 @@ fn operation_shape_fixture(
     let mut function = test_func(
         "operation_shape_fixture",
         vec![OpIR {
-            kind: shape.kind.into(),
+            kind: shape.kind,
             args: Some(params.clone()),
             value,
             s_value: match shape.kind {
@@ -44,7 +44,7 @@ fn operation_shape_fixture(
                 .carries_class_definition()
                 .then(|| "class:fixture:Owner".into()),
             out: (shape.kind == molt_ir::OpKind::ModuleSlot).then(|| "module_id".into()),
-            ..OpIR::new(shape.kind.into())
+            ..OpIR::new(shape.kind)
         }],
     );
     function.params = params;

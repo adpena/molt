@@ -739,9 +739,9 @@ mod tests {
                     ..OpIR::new(molt_ir::OpKind::Call)
                 },
                 OpIR {
-                    kind: FINALLY_PENDING_OBSERVER.into(),
+                    kind: FINALLY_PENDING_OBSERVER,
                     out: Some("cleanup_pending".into()),
-                    ..OpIR::new(FINALLY_PENDING_OBSERVER.into())
+                    ..OpIR::new(FINALLY_PENDING_OBSERVER)
                 },
                 OpIR {
                     kind: molt_ir::OpKind::ConstNone,

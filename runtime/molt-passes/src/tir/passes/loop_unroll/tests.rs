@@ -1501,11 +1501,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                     opcode: OpCode::Copy,
                     operands: vec![acc_next, slot],
                     results: vec![],
-                    attrs: {
-                        let m = AttrDict::new();
-
-                        m
-                    },
+                    attrs: { AttrDict::new() },
                     source_span: None,
                 },
                 add_op(iv_view, step_val, iv_next),

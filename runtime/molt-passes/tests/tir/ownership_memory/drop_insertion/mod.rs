@@ -332,9 +332,7 @@ fn home_access(op: &TirOp) -> Option<HomeAccess> {
     if op.opcode != OpCode::Copy {
         return None;
     }
-    let Some(kind) = op.origin else {
-        return None;
-    };
+    let kind = op.origin?;
     match kind {
         molt_ir::OpKind::FrameHomeStore
         | molt_ir::OpKind::FrameHomeCell

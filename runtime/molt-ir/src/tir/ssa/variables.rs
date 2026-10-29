@@ -101,11 +101,11 @@ mod tests {
     fn local_binding_and_snapshot_share_one_ssa_result() {
         for kind in [crate::OpKind::StoreVar, crate::OpKind::StoreFast] {
             let op = OpIR {
-                kind: kind.into(),
+                kind,
                 var: Some("local".into()),
                 out: Some("snapshot".into()),
                 args: Some(vec!["source".into()]),
-                ..crate::OpIR::new(kind.into())
+                ..crate::OpIR::new(kind)
             };
             let mut definitions = Vec::new();
             visit_simple_ir_ssa_definitions(&op, |name, index| definitions.push((name, index)));
@@ -144,10 +144,10 @@ mod tests {
                     (discard, discard, vec![]),
                 ] {
                     let op = OpIR {
-                        kind: kind.into(),
+                        kind,
                         var: var.map(str::to_string),
                         out: out.map(str::to_string),
-                        ..crate::OpIR::new(kind.into())
+                        ..crate::OpIR::new(kind)
                     };
                     let mut definitions = Vec::new();
                     visit_simple_ir_ssa_definitions(&op, |name, index| {

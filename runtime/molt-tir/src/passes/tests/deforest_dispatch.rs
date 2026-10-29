@@ -2,7 +2,7 @@ use super::*;
 
 fn op_with(kind: molt_ir::OpKind, out: Option<&str>, s_value: Option<&str>, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         out: out.map(str::to_string),
         s_value: s_value.map(str::to_string),
         args: if args.is_empty() {

@@ -66,7 +66,7 @@ fn lower_functions_to_tir_module_skips_externs_and_aligns_idx() {
 /// Helper to create an `OpIR` with just a `kind`.
 fn op(kind: molt_ir::OpKind) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         ..OpIR::new(kind)
     }
 }
@@ -74,7 +74,7 @@ fn op(kind: molt_ir::OpKind) -> OpIR {
 /// Helper to create an `OpIR` with `kind`, `value`, and `out`.
 fn op_val_out(kind: molt_ir::OpKind, value: i64, out: &str) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         value: Some(value),
         out: Some(out.to_string()),
         ..OpIR::new(kind)
@@ -84,7 +84,7 @@ fn op_val_out(kind: molt_ir::OpKind, value: i64, out: &str) -> OpIR {
 /// Helper to create an `OpIR` with `kind`, `args`, and `out`.
 fn op_args_out(kind: molt_ir::OpKind, args: &[&str], out: &str) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         out: Some(out.to_string()),
         ..OpIR::new(kind)
@@ -94,7 +94,7 @@ fn op_args_out(kind: molt_ir::OpKind, args: &[&str], out: &str) -> OpIR {
 /// Helper to create an `OpIR` with `kind` and `args`.
 fn op_args(kind: molt_ir::OpKind, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         ..OpIR::new(kind)
     }
@@ -219,11 +219,11 @@ fn loop_normalization_reuses_unchanged_owned_allocation() {
 #[test]
 fn loop_normalization_keeps_nested_initializers_outside_their_own_latches() {
     let marked = |kind: molt_ir::OpKind, args: &[&str], out: Option<&str>, origin| OpIR {
-        kind: kind,
+        kind,
         args: Some(args.iter().map(|arg| (*arg).into()).collect()),
         out: out.map(str::to_string),
         source_op_idx: Some(origin),
-        ..OpIR::new(kind.into())
+        ..OpIR::new(kind)
     };
     let ops = normalize_loop_indices(
         "nested",
@@ -402,11 +402,11 @@ fn loop_normalization_preserves_outer_update_and_explicit_outer_continue() {
 #[test]
 fn loop_normalization_rejects_orphan_and_malformed_carriers() {
     let carrier = |kind: molt_ir::OpKind, args: Option<Vec<&str>>, out: Option<&str>| OpIR {
-        kind: kind,
+        kind,
         args: args.map(|args| args.into_iter().map(str::to_string).collect()),
         out: out.map(str::to_string),
         source_op_idx: Some(73),
-        ..OpIR::new(kind.into())
+        ..OpIR::new(kind)
     };
     let start = || {
         carrier(

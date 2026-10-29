@@ -1393,7 +1393,7 @@ fn split_nonisolated_local_entry_refuses_without_mutating_source_or_names() {
         shared_label.ops.insert(
             3,
             OpIR {
-                kind: kind,
+                kind,
                 value: Some(0),
                 ..OpIR::new(kind)
             },

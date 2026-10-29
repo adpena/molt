@@ -349,7 +349,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                     producer,
                     releases: Vec::new(),
                     release_facts: Vec::new(),
-                    source_kind: source_kind,
+                    source_kind,
                 },
             );
             continue;
@@ -395,7 +395,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                     producer,
                     releases: Vec::new(),
                     release_facts: Vec::new(),
-                    source_kind: source_kind,
+                    source_kind,
                 },
             );
             continue;
@@ -470,7 +470,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 producer,
                 releases,
                 release_facts: release_facts.into_iter().collect(),
-                source_kind: source_kind,
+                source_kind,
             },
         );
     }

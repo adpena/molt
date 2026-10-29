@@ -750,10 +750,10 @@ mod tests {
             ("state_dispatch", 2),
         ] {
             let operation = |kind: molt_ir::OpKind, args: &[&str], out: Option<&str>| OpIR {
-                kind: kind,
+                kind,
                 args: Some(args.iter().map(|name| (*name).into()).collect()),
                 out: out.map(str::to_string),
-                ..OpIR::new(kind.into())
+                ..OpIR::new(kind)
             };
             let mut constructor =
                 operation(molt_ir::OpKind::ExceptionNewBuiltinEmpty, &[], Some("exc"));

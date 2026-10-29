@@ -71,7 +71,7 @@ fn literal_operands_preserve_payloads_and_output_after_linker_data_shift() {
             let op = OpIR {
                 out: Some("result".into()),
                 bytes: Some(bytes.clone()),
-                ..OpIR::new((*kind).into())
+                ..OpIR::new(*kind)
             };
             let policy = WasmConstOpPolicy::for_op(&op).unwrap();
             let mut function = Function::new([(1, ValType::I64)]);

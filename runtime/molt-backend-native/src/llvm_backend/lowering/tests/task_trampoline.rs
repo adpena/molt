@@ -33,14 +33,11 @@ fn task_factory(
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
-        origin: Some(
-            if has_closure {
-                OpKind::FuncNewClosure
-            } else {
-                OpKind::FuncNew
-            }
-            .into(),
-        ),
+        origin: Some(if has_closure {
+            OpKind::FuncNewClosure
+        } else {
+            OpKind::FuncNew
+        }),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: if has_closure {

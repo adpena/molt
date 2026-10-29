@@ -44,20 +44,19 @@ fn removable_copy_source(op: &TirOp) -> Option<ValueId> {
         return None;
     }
     for (key, value) in &op.attrs {
-        let provenance = match (key.as_str(), value) {
+        let provenance = matches!(
+            (key.as_str(), value),
             (
                 "_simple_out" | "_simple_result_0" | crate::tir::ops::SOURCE_FILE_ATTR,
                 AttrValue::Str(_),
-            ) => true,
-            (
+            ) | (
                 crate::tir::ops::SOURCE_LINE_ATTR
-                | crate::tir::ops::SOURCE_COL_ATTR
-                | crate::tir::ops::SOURCE_END_COL_ATTR
-                | crate::tir::ops::SOURCE_OP_INDEX_ATTR,
+                    | crate::tir::ops::SOURCE_COL_ATTR
+                    | crate::tir::ops::SOURCE_END_COL_ATTR
+                    | crate::tir::ops::SOURCE_OP_INDEX_ATTR,
                 AttrValue::Int(_),
-            ) => true,
-            _ => false,
-        };
+            )
+        );
         if !provenance {
             return None;
         }

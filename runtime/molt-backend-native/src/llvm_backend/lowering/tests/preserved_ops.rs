@@ -26,14 +26,11 @@ fn runtime_call_shape_function(
         const_none_def(argument)
     });
     entry.ops.push(TirOp {
-        origin: Some(
-            if opcode == OpCode::Call {
-                OpKind::Call
-            } else {
-                kind
-            }
-            .into(),
-        ),
+        origin: Some(if opcode == OpCode::Call {
+            OpKind::Call
+        } else {
+            kind
+        }),
         dialect: Dialect::Molt,
         opcode,
         operands: vec![argument; arity],
@@ -1428,11 +1425,7 @@ fn lower_preserved_len_uses_tir_tuple_fact() {
         opcode: OpCode::Copy,
         operands: vec![obj],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1634,11 +1627,7 @@ fn lower_preserved_list_append_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![list_bits, item_bits],
         results: vec![],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1789,11 +1778,7 @@ fn lower_preserved_tuple_from_list_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![list_bits],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1828,11 +1813,7 @@ fn lower_preserved_set_add_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![set_bits, item_bits],
         results: vec![],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1866,11 +1847,7 @@ fn lower_preserved_list_extend_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![list_bits, other_bits],
         results: vec![],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1901,11 +1878,7 @@ fn lower_preserved_aiter_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![obj_bits],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1940,11 +1913,7 @@ fn lower_preserved_gen_send_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![gen_bits, send_bits],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1981,11 +1950,7 @@ fn lower_preserved_context_exit_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![ctx_bits, exc_bits],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {

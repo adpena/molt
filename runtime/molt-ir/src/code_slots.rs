@@ -182,11 +182,11 @@ mod tests {
             let mut function = FunctionIR {
                 name: "owner".into(),
                 ops: vec![crate::OpIR {
-                    kind: kind.into(),
+                    kind,
                     s_value: Some("owner".into()),
                     args: (kind == crate::OpKind::CodeSlotSet)
                         .then(|| vec!["code".into(), "globals".into()]),
-                    ..crate::OpIR::new(kind.into())
+                    ..crate::OpIR::new(kind)
                 }],
                 ..Default::default()
             };
@@ -207,9 +207,9 @@ mod tests {
             let mut function = FunctionIR {
                 name: "owner".into(),
                 ops: vec![crate::OpIR {
-                    kind: kind.into(),
+                    kind,
                     class_definition: Some("owner".into()),
-                    ..crate::OpIR::new(kind.into())
+                    ..crate::OpIR::new(kind)
                 }],
                 ..Default::default()
             };

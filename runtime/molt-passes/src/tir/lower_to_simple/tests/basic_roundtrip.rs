@@ -113,10 +113,10 @@ fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
     let mut cases: Vec<OpIR> = byte_cases
         .into_iter()
         .map(|(kind, bytes)| OpIR {
-            kind: kind,
+            kind,
             bytes: Some(bytes),
             out: Some("v0".into()),
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         })
         .collect();
     cases.extend(
@@ -126,10 +126,10 @@ fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
         ]
         .into_iter()
         .map(|(kind, text)| OpIR {
-            kind: kind,
+            kind,
             s_value: Some(text.into()),
             out: Some("v0".into()),
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         }),
     );
     for literal in cases {
@@ -508,13 +508,13 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
             _ => vec!["module".into(), "name".into()],
         };
         ops.push(OpIR {
-            kind: (*kind).into(),
+            kind: (*kind),
             args: Some(args),
             out: Some(format!("result_{index}")),
             s_value: (*kind == molt_ir::OpKind::GetAttrGenericObj).then(|| "_getframe".into()),
             value: (*kind == molt_ir::OpKind::BuiltinFunc).then_some(1),
             runtime_requirement_bits: all_requirements,
-            ..OpIR::new((*kind).into())
+            ..OpIR::new(*kind)
         });
     }
     ops.push(OpIR {
@@ -546,11 +546,11 @@ fn every_runtime_symbol_carrier_survives_tir_roundtrip() {
         .iter()
         .enumerate()
         .map(|(index, kind)| OpIR {
-            kind: (*kind).into(),
+            kind: (*kind),
             args: Some(vec!["module".into(), "name".into()]),
             out: Some(format!("result_{index}")),
             runtime_symbol: Some("molt_getframe".into()),
-            ..OpIR::new((*kind).into())
+            ..OpIR::new(*kind)
         })
         .collect::<Vec<_>>();
     ops.push(OpIR {

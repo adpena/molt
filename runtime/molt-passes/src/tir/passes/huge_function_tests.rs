@@ -19,18 +19,18 @@ const DEFAULT_THREAD_STACK: usize = 2 << 20;
 
 fn marked(kind: molt_ir::OpKind, value: i64) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         value: Some(value),
-        ..OpIR::new(kind.into())
+        ..OpIR::new(kind)
     }
 }
 
 fn op(kind: molt_ir::OpKind, args: &[&str], out: Option<String>) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(args.iter().map(|arg| arg.to_string()).collect()),
         out,
-        ..OpIR::new(kind.into())
+        ..OpIR::new(kind)
     }
 }
 

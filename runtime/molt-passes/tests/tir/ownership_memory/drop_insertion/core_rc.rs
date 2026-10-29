@@ -207,7 +207,7 @@ fn loop_slot_accumulator_no_double_drop() {
               args: Vec<&str>,
               val: Option<i64>,
               sval: Option<&str>| OpIR {
-        kind: kind,
+        kind,
         out: out.map(|s| s.to_string()),
         var: var.map(|s| s.to_string()),
         args: if args.is_empty() {
@@ -217,7 +217,7 @@ fn loop_slot_accumulator_no_double_drop() {
         },
         value: val,
         s_value: sval.map(|s| s.to_string()),
-        ..OpIR::new(kind.into())
+        ..OpIR::new(kind)
     };
     // Shape from tmp/.../native/final_ir/bigint_accumulator__accumulate.txt:
     // total = 1<<60 ; i=0 ; while i<n: total=total+1; total=total-1; total=total+1; i=i+1 ; return total

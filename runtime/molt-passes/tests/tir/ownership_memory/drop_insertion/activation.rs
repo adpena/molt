@@ -83,7 +83,7 @@ fn activation_dispatch_transport_preserves_alias_states_and_rejects_bad_targets(
             .iter_mut()
             .find(|op| op.kind == molt_ir::OpKind::StateSwitch)
             .unwrap();
-        switch.kind = kind.into();
+        switch.kind = kind;
         switch.state_targets = Some(targets);
         assert!(
             molt_ir::ir_schema::validate_state_dispatch(&malformed)
