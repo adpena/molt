@@ -32,6 +32,7 @@ from tools.structural_audit_rust import (
     generated_kind_table,
     kind_pattern_names,
     op_kind_wire_names,
+    runtime_call_pattern_names,
 )
 
 
@@ -368,10 +369,35 @@ def _dispatch_projection(
     if arms is None or _block(body, "match op.kind", depth=0) is None:
         return
     names = op_kind_wire_names(generated) or {}
-    typed_arms = [(arm, kind_pattern_names(arm.pattern, names)) for arm in arms]
+    runtime_kinds = runtime_call_pattern_names(generated)
+    typed_arms = [
+        (
+            arm,
+            runtime_kinds
+            if _same(arm.pattern, "molt_ir::runtime_call_op_kinds!()")
+            else kind_pattern_names(arm.pattern, names),
+        )
+        for arm in arms
+    ]
     if any(kinds is None for _, kinds in typed_arms):
         return
     possible = set(domain.possible)
+    # Target admission already excludes these operations. Bind that fact to
+    # the generated selector before excluding the earlier typed dispatch; an
+    # unfamiliar or broadened selector retains every refusal obligation.
+    runtime_dispatch = _block(
+        body,
+        "if let Some(call) = molt_ir::runtime_calls::RuntimeCall::from_op(op.kind)",
+        depth=0,
+    )
+    if (
+        runtime_kinds is not None
+        and runtime_dispatch is not None
+        and runtime_dispatch[1] <= arms[0].start
+        and runtime_kinds.isdisjoint(possible)
+    ):
+        projection.dispatch.append(runtime_dispatch)
+        projection.add("emit_op", runtime_dispatch)
     # The helper consumes Some and Err and returns false only for Ok(None).
     # Prove its exact protocol; the rhs arms can still contain refusal edges.
     first = _block(
