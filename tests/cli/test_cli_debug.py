@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,19 +36,9 @@ def _base_env() -> ProcessEnvironment:
     return ProcessEnvironment(env)
 
 
-def _python_executable() -> str:
-    exe = sys.executable
-    if exe and os.path.exists(exe) and os.access(exe, os.X_OK):
-        return exe
-    fallback = shutil.which("python3") or shutil.which("python")
-    if fallback:
-        return fallback
-    return exe
-
-
 def _run_cli(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return run_cli_test_process(
-        [_python_executable(), "-m", "molt.cli", *args],
+        [sys.executable, "-m", "molt.cli", *args],
         cwd=cwd,
         env=_base_env(),
         capture_output=True,
@@ -118,7 +107,7 @@ def _write_perf_inputs(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _build_eval_command(python_code: str) -> str:
-    return shlex.join([_python_executable(), "-c", python_code])
+    return shlex.join([sys.executable, "-c", python_code])
 
 
 def test_debug_help_lists_canonical_subcommands(tmp_path: Path) -> None:
