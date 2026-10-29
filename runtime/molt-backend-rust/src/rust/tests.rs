@@ -1,5 +1,6 @@
 use super::*;
 use crate::{FunctionIR, OpIR, SimpleIR};
+use molt_ir::tir::target_info::TargetKind;
 
 mod cargo_test_artifacts {
     include!(concat!(
@@ -2351,13 +2352,13 @@ mod preview_source {
 
 #[test]
 fn generated_runtime_call_agreement_preserves_rust_target_refusals() {
-    use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization, RuntimeCallTarget};
+    use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization};
     for (&call, &kind) in RuntimeCall::ALL
         .iter()
         .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
     {
         assert_eq!(
-            call.realization(RuntimeCallTarget::Rust),
+            call.realization(TargetKind::Rust),
             RuntimeCallRealization::Unsupported
         );
         let abi = call.function().boxed_abi();

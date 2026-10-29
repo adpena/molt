@@ -6,6 +6,7 @@ use super::lowering::op_definition_vars;
 use super::runtime_surface::runtime_value_call_for_kind;
 use super::{RustBackend, rust_ident};
 use crate::OpIR;
+use molt_ir::tir::target_info::TargetKind;
 use std::collections::BTreeSet;
 
 mod builtins;
@@ -42,9 +43,9 @@ impl RustBackend {
         }
 
         if let Some(call) = molt_ir::runtime_calls::RuntimeCall::from_op(op.kind) {
-            use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization, RuntimeCallTarget};
+            use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization};
             assert_eq!(
-                call.realization(RuntimeCallTarget::Rust),
+                call.realization(TargetKind::Rust),
                 RuntimeCallRealization::Unsupported
             );
             match call {

@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::tir::target_info::TargetKind;
 
 impl LuauBackend {
     pub(super) fn emit_contract_runtime_call(
@@ -6,12 +7,12 @@ impl LuauBackend {
         op: &OpIR,
         call: molt_ir::runtime_calls::RuntimeCall,
     ) {
-        use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization, RuntimeCallTarget};
+        use molt_ir::runtime_calls::{RuntimeCall, RuntimeCallRealization};
         let mut numeric_type = "";
         match call {
             RuntimeCall::Iter => {
                 assert_eq!(
-                    call.realization(RuntimeCallTarget::Luau),
+                    call.realization(TargetKind::Luau),
                     RuntimeCallRealization::LuauIterCarriers
                 );
                 let source = op
@@ -32,7 +33,7 @@ impl LuauBackend {
             }
             RuntimeCall::DictSet => {
                 assert_eq!(
-                    call.realization(RuntimeCallTarget::Luau),
+                    call.realization(TargetKind::Luau),
                     RuntimeCallRealization::LuauDictStorage
                 );
                 // molt_dict_require checks exact deterministic storage before touching it.

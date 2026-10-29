@@ -1,7 +1,6 @@
 use crate::runtime_boxed_abi_generated::{RuntimeBoxedReturn, RuntimeFn};
-use crate::runtime_calls::{
-    RuntimeArgumentOwnership, RuntimeCall, RuntimeCallRealization, RuntimeCallTarget,
-};
+use crate::runtime_calls::{RuntimeArgumentOwnership, RuntimeCall, RuntimeCallRealization};
+use crate::tir::target_info::TargetKind;
 
 #[test]
 fn runtime_call_contract_preserves_python_meaning_and_result_custody() {
@@ -37,15 +36,14 @@ fn runtime_call_contract_preserves_python_meaning_and_result_custody() {
         assert!(!call.effects().nothrow);
         assert!(call.effects().may_call_python);
         for target in [
-            RuntimeCallTarget::Native,
-            RuntimeCallTarget::Jit,
-            RuntimeCallTarget::Llvm,
-            RuntimeCallTarget::Wasm,
+            TargetKind::NativeCranelift,
+            TargetKind::Llvm,
+            TargetKind::Wasm,
         ] {
             assert_eq!(call.realization(target), RuntimeCallRealization::Runtime);
         }
         assert_eq!(
-            call.realization(RuntimeCallTarget::Rust),
+            call.realization(TargetKind::Rust),
             RuntimeCallRealization::Unsupported
         );
     }

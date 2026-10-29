@@ -96,6 +96,10 @@ dict. CPython 3.12.11 anchors are `Objects/abstract.c:PyObject_GetIter`,
 iteration invokes the iteration protocol and raises a type-specific error;
 the dict insertion primitive bypasses subclass `__setitem__`.
 
+Target legality uses the existing `TargetKind` and generated target profiles.
+JIT shares the native Cranelift target plan; Rust and MLIR retain their existing
+runtime-protocol refusals. There is no separate runtime-call target vocabulary.
+
 The generators produce closed `RuntimeFn` and staged `RuntimeCall` identities,
 function signatures and custody, and the op-to-call mapping. Every backend
 dispatches the staged enum exhaustively. Backend realizations consume the
