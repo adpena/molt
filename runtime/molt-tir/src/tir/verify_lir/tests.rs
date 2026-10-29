@@ -508,6 +508,7 @@ fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
     let entry = tir.blocks.get_mut(&tir.entry_block).unwrap();
     entry.ops = vec![
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -516,6 +517,7 @@ fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
             source_span: None,
         },
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -526,6 +528,7 @@ fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
     ];
     entry.terminator = Terminator::Return { values: vec![] };
     tir.blocks.get_mut(&handler).unwrap().ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![result, result],

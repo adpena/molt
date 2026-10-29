@@ -224,7 +224,7 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
 
     let mut next_j = op(molt_ir::OpKind::LoopIndexNext);
     next_j.args = Some(vec!["j_inc".to_string()]);
-    next_j.out = Some("j_inc".to_string());
+    next_j.out = Some("j".to_string());
     ops.push(next_j);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));
@@ -237,7 +237,7 @@ fn nested_loop_carried_values_with_inner_if_phi_compile() {
 
     let mut next_i = op(molt_ir::OpKind::LoopIndexNext);
     next_i.args = Some(vec!["i_inc".to_string()]);
-    next_i.out = Some("i_inc".to_string());
+    next_i.out = Some("i".to_string());
     ops.push(next_i);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));
@@ -332,7 +332,7 @@ fn loop_body_if_join_then_continue_compiles() {
 
     let mut next_idx = op(molt_ir::OpKind::LoopIndexNext);
     next_idx.args = Some(vec!["joined_next".to_string()]);
-    next_idx.out = Some("joined_next".to_string());
+    next_idx.out = Some("idx".to_string());
     ops.push(next_idx);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));
@@ -427,7 +427,7 @@ fn tir_roundtrip_loop_body_if_return_then_continue_compiles() {
 
     let mut loop_index_next = op(molt_ir::OpKind::LoopIndexNext);
     loop_index_next.args = Some(vec!["idx_next".to_string()]);
-    loop_index_next.out = Some("idx_next".to_string());
+    loop_index_next.out = Some("idx".to_string());
     ops.push(loop_index_next);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));
@@ -574,7 +574,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
 
     let mut next_j = op(molt_ir::OpKind::LoopIndexNext);
     next_j.args = Some(vec!["j_inc".to_string()]);
-    next_j.out = Some("j_inc".to_string());
+    next_j.out = Some("j".to_string());
     ops.push(next_j);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));
@@ -587,7 +587,7 @@ fn nested_loop_if_phi_survives_tir_pipeline_without_fallback() {
 
     let mut next_i = op(molt_ir::OpKind::LoopIndexNext);
     next_i.args = Some(vec!["i_inc".to_string()]);
-    next_i.out = Some("i_inc".to_string());
+    next_i.out = Some("i".to_string());
     ops.push(next_i);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));

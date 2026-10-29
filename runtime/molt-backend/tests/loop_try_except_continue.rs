@@ -123,7 +123,7 @@ fn loop_start_in_reachable_code_still_works() {
         op_args_out(molt_ir::OpKind::LoopBreakIfFalse, &["v4"], "none"),
         // Increment and continue.
         op_args_out(molt_ir::OpKind::Add, &["v3", "v2"], "v5"),
-        op_args_out(molt_ir::OpKind::LoopIndexNext, &["v5"], "v5"),
+        op_args_out(molt_ir::OpKind::LoopIndexNext, &["v5"], "v3"),
         op(molt_ir::OpKind::LoopContinue),
         op(molt_ir::OpKind::LoopEnd),
         op(molt_ir::OpKind::RetVoid),

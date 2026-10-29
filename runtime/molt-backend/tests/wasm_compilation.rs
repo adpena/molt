@@ -17,6 +17,13 @@ fn op(kind: molt_ir::OpKind) -> OpIR {
     OpIR::new(kind)
 }
 
+fn labelled_op(kind: molt_ir::OpKind, label: i64) -> OpIR {
+    OpIR {
+        value: Some(label),
+        ..OpIR::new(kind)
+    }
+}
+
 fn compile_ir(ir: SimpleIR) -> Vec<u8> {
     WasmBackend::new().compile(ir)
 }
@@ -871,26 +878,8 @@ fn class_def_uses_guarded_class_def_import() {
 
 #[test]
 fn class_def_pins_spilled_refs_across_guarded_helper() {
-    let mut class_name = op(molt_ir::OpKind::ConstStr);
-    class_name.s_value = Some("Huge".to_string());
-    class_name.out = Some("v_name".to_string());
-
-    let mut attr_name_a = op(molt_ir::OpKind::ConstStr);
-    attr_name_a.s_value = Some("a".to_string());
-    attr_name_a.out = Some("v_attr_a".to_string());
-
-    let mut attr_name_b = op(molt_ir::OpKind::ConstStr);
-    attr_name_b.s_value = Some("b".to_string());
-    attr_name_b.out = Some("v_attr_b".to_string());
-
-    let mut attr_value_a = op(molt_ir::OpKind::Const);
-    attr_value_a.value = Some(1);
-    attr_value_a.out = Some("v_value_a".to_string());
-
-    let mut attr_value_b = op(molt_ir::OpKind::Const);
-    attr_value_b.value = Some(2);
-    attr_value_b.out = Some("v_value_b".to_string());
-
+    // Dynamic boxed inputs isolate the five helper pins from unrelated
+    // constant-string anchor retains, which may be adjacent in the call stream.
     let mut class_def = op(molt_ir::OpKind::ClassDef);
     class_def.args = Some(vec![
         "v_name".to_string(),
@@ -903,16 +892,8 @@ fn class_def_pins_spilled_refs_across_guarded_helper() {
     class_def.out = Some("v_cls".to_string());
 
     let wasm = compile_single_function(
-        vec![
-            class_name,
-            attr_name_a,
-            attr_name_b,
-            attr_value_a,
-            attr_value_b,
-            class_def,
-            ret_value("v_cls"),
-        ],
-        &[],
+        vec![class_def, ret_value("v_cls")],
+        &["v_name", "v_attr_a", "v_value_a", "v_attr_b", "v_value_b"],
     );
     validate_wasm(&wasm).expect("class_def cleanup must preserve the helper result stack");
     let calls = import_call_sequence(&wasm);
@@ -1015,15 +996,19 @@ fn try_block_compiles() {
 
     let wasm = compile_single_function(
         vec![
-            op(molt_ir::OpKind::TryStart),
+            labelled_op(molt_ir::OpKind::TryStart, 10),
             dict_new,
-            op(molt_ir::OpKind::CheckException),
-            op(molt_ir::OpKind::TryEnd),
+            labelled_op(molt_ir::OpKind::CheckException, 10),
+            labelled_op(molt_ir::OpKind::TryEnd, 10),
+            op(molt_ir::OpKind::RetVoid),
+            labelled_op(molt_ir::OpKind::Label, 10),
+            op(molt_ir::OpKind::ExceptionClear),
             op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );
     assert!(wasm.len() > 8);
+    validate_wasm(&wasm).expect("labelled try region should produce valid wasm");
 }
 
 #[test]
@@ -1038,19 +1023,27 @@ fn nested_try_blocks_compile() {
 
     let wasm = compile_single_function(
         vec![
-            op(molt_ir::OpKind::TryStart),
+            labelled_op(molt_ir::OpKind::TryStart, 10),
             dict1,
-            op(molt_ir::OpKind::CheckException),
-            op(molt_ir::OpKind::TryStart),
+            labelled_op(molt_ir::OpKind::CheckException, 10),
+            labelled_op(molt_ir::OpKind::TryStart, 20),
             dict2,
-            op(molt_ir::OpKind::CheckException),
-            op(molt_ir::OpKind::TryEnd),
-            op(molt_ir::OpKind::TryEnd),
+            labelled_op(molt_ir::OpKind::CheckException, 20),
+            labelled_op(molt_ir::OpKind::TryEnd, 20),
+            labelled_op(molt_ir::OpKind::Jump, 30),
+            labelled_op(molt_ir::OpKind::Label, 20),
+            op(molt_ir::OpKind::ExceptionClear),
+            labelled_op(molt_ir::OpKind::Label, 30),
+            labelled_op(molt_ir::OpKind::TryEnd, 10),
+            op(molt_ir::OpKind::RetVoid),
+            labelled_op(molt_ir::OpKind::Label, 10),
+            op(molt_ir::OpKind::ExceptionClear),
             op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );
     assert!(wasm.len() > 8);
+    validate_wasm(&wasm).expect("nested labelled try regions should produce valid wasm");
 }
 
 // -----------------------------------------------------------------------
@@ -1132,22 +1125,27 @@ fn build_list_compiles_using_word_range_constructor() {
 }
 
 #[test]
-fn iter_next_unboxed_compiles_using_iter_next_and_index_imports() {
+fn iter_next_unboxed_uses_out_word_import_without_tuple_unpacking() {
     let mut iter_next = op(molt_ir::OpKind::IterNextUnboxed);
     iter_next.args = Some(vec!["p0".to_string()]);
     iter_next.var = Some("value".to_string());
     iter_next.out = Some("done".to_string());
 
     let wasm = compile_single_function(vec![iter_next, ret_value("done")], &["p0"]);
+    validate_wasm(&wasm).expect("out-word iterator step should produce valid wasm");
     let calls = import_call_counts(&wasm);
-    assert!(
-        count_import(&calls, "iter_next") > 0,
-        "iter_next_unboxed should lower through iter_next on wasm"
+    assert_eq!(
+        count_import(&calls, "iter_next_unboxed"),
+        1,
+        "one iterator step uses the direct out-word helper"
     );
-    assert!(
-        count_import(&calls, "index") > 0,
-        "iter_next_unboxed should extract value/done via index on wasm"
-    );
+    for retired in ["iter_next", "index"] {
+        assert_eq!(
+            count_import(&calls, retired),
+            0,
+            "the direct step must not allocate or unpack a (value, done) tuple via {retired}"
+        );
+    }
 }
 
 #[test]
@@ -1187,10 +1185,16 @@ fn alloc_task_generator_keeps_task_new_import() {
                 execution_context: Default::default(),
             },
             FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Void,
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "__main_____f_poll".to_string(),
                 params: vec!["self".to_string()],
-                ops: vec![op(molt_ir::OpKind::RetVoid)],
+                ops: vec![
+                    OpIR {
+                        out: Some("poll_result".to_string()),
+                        ..OpIR::new(molt_ir::OpKind::ConstNone)
+                    },
+                    ret_value("poll_result"),
+                ],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1201,6 +1205,7 @@ fn alloc_task_generator_keeps_task_new_import() {
         ],
         profile: None,
     });
+    validate_wasm(&wasm).expect("generator task with a value-returning poll must validate");
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "task_new") > 0,
@@ -1232,10 +1237,16 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
                 execution_context: Default::default(),
             },
             FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Void,
+                return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "__main_____future_poll".to_string(),
                 params: vec!["self".to_string()],
-                ops: vec![op(molt_ir::OpKind::RetVoid)],
+                ops: vec![
+                    OpIR {
+                        out: Some("poll_result".to_string()),
+                        ..OpIR::new(molt_ir::OpKind::ConstNone)
+                    },
+                    ret_value("poll_result"),
+                ],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1250,8 +1261,8 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
 }
 
 #[test]
-#[should_panic(expected = "call_async targets molt_async_sleep, expected *_poll")]
-fn call_async_rejects_non_poll_table_target() {
+#[should_panic(expected = "call_async targets molt_async_sleep, expected task ABI (i64) -> i64")]
+fn call_async_rejects_non_task_table_target() {
     let mut call_async = op(molt_ir::OpKind::CallAsync);
     call_async.s_value = Some("molt_async_sleep".to_string());
     call_async.args = Some(vec!["p0".to_string(), "p1".to_string()]);
@@ -1364,13 +1375,13 @@ fn list_from_intrinsic_list_survives_tir_roundtrip() {
     let wasm = compile_single_function(
         vec![
             require_intrinsic,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             callargs_new,
             call_indirect,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             list_new,
             iter,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             none_a,
             none_b,
             is_op,
@@ -1379,25 +1390,28 @@ fn list_from_intrinsic_list_survives_tir_roundtrip() {
             err_type,
             err_args,
             err_obj,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             raise_op,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             op(molt_ir::OpKind::EndIf),
             zero,
             one,
             op(molt_ir::OpKind::LoopStart),
             iter_next,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             done_index,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             loop_break,
             value_index,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             list_append,
-            op(molt_ir::OpKind::CheckException),
+            labelled_op(molt_ir::OpKind::CheckException, 99),
             op(molt_ir::OpKind::LoopContinue),
             op(molt_ir::OpKind::LoopEnd),
             ret_value("v3"),
+            // Preserve pending exceptions on the shared error exit.
+            labelled_op(molt_ir::OpKind::Label, 99),
+            op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );
