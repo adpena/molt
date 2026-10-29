@@ -1555,8 +1555,10 @@ The design extends `molt.checkout_state`; it adds no second authority.
    under every scope root's `tmp`, expired scratch retirements, terminal
    agent evidence under every checkout's `logs/agents` (item 2) and
    integration receipts. Each family's walks rotate across the whole scope,
-   and each family gets its own 30 seconds of walk time per pass, so one
-   family cannot spend another's budget. Each caller passes its own walk:
+   and each family gets its own 180 seconds of walk time per pass, so one
+   family cannot spend another's budget. The daily pass runs detached and
+   pressure reclaim never uses this rotation, so the budget is sized to hold
+   the slowest root's plan and recheck walks, cold (HF-537). Each caller passes its own walk:
    `disk_guard._scratch_inventory`, `disk_guard._receipt_inventory`, and,
    for evidence, `coordination_records._evidence_inventory` and the task's
    text checks (decoding and object-store queries); every bounded step of
@@ -1599,8 +1601,14 @@ The design extends `molt.checkout_state`; it adds no second authority.
    were never evaluated. An applied pass retires a walked root only when
    its plan and recheck walks fit one pass, so the six roots between 15 and
    30 seconds (10.1 GiB) and the seven over 30 seconds stay kept and
-   reported. A 150-second budget would admit every measured root; the
-   budget stays 30 seconds until the owner accepts that cost.
+   reported. A 150-second budget would admit every measured root. The
+   integrator accepted that cost under the owner's standing authority on
+   2026-10-29 (HF-537): the budget is 180 seconds, about 20% over the
+   slowest cold plan-and-recheck pair. A warm re-measurement that day walked
+   1,624 entries in 537 seconds; the slowest took 48 seconds (14.5 GiB), four
+   exceeded 30 seconds and none exceeded 60. A root that still exceeds the
+   budget stays reported and kept. Stamped roots need no walk, so once the
+   legacy roots are retired the daily pass stays short.
 
    Cost: a stamped root's decision costs 100 metadata calls whatever its
    size (52 `lstat`, 43 `stat`, three bounded record and lock opens and two
@@ -1608,9 +1616,10 @@ The design extends `molt.checkout_state`; it adds no second authority.
    the scratch container. A walked root costs one listing per directory and
    one `lstat` per entry, plus a constant about 150 calls (1,755 calls with
    1,600 files). Byte estimates of other classes keep one 30-second
-   deadline, and a partial estimate decides nothing. So a pass walks for at
-   most 4 x 30 seconds plus that deadline and constant work per entry,
-   against one shared 30 seconds before: the named price of a progress
+   deadline, and a partial estimate decides nothing. So a detached daily
+   pass walks for at most 4 x 180 seconds plus that deadline and constant
+   work per entry (about 12.5 minutes while legacy roots remain), against
+   one shared 30 seconds before: the named price of a progress
    guarantee for each family. Families with nothing to walk cost nothing;
    on 2026-10-28 the internal root's 1,125 evidence entries took 6.3
    seconds of evidence walks and 3.0 seconds of receipt walks in one dry

@@ -37,6 +37,7 @@ def _load_module(name, path_text):
     return module
 
 
+_load_module("_warnings", {str(STDLIB_ROOT / "_warnings.py")!r})
 _warnings_mod = _load_module("warnings", {str(STDLIB_ROOT / "warnings.py")!r})
 _py_warnings = _load_module("_py_warnings", {str(STDLIB_ROOT / "_py_warnings.py")!r})
 

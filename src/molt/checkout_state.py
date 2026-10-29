@@ -1520,9 +1520,13 @@ def read_soft_retirement(record: Path, owning_root: Path) -> SoftRetirement | No
         return None
 
 
-# Walk time that one family of complete walks may spend in one daily pass:
-# the earlier shared 30-second inventory budget, for each family (HF-528).
-WALK_BUDGET_S = 30.0
+# Walk time that one family of complete walks may spend in one daily pass. The
+# daily collection runs detached, so it may walk longer than pressure reclaim,
+# which never uses this rotation. The budget must hold a root's plan walk and
+# its recheck walk: the slowest external scratch root walked in 75 s cold
+# (2026-10-28) and 48 s warm (2026-10-29), so a pair needs about 150 s; 30 s
+# left 13 roots (47.8 GiB) unreclaimable every cycle (HF-537).
+WALK_BUDGET_S = 180.0
 # Where the next applied pass resumes each family: one small record in the
 # disk guard's stable interlock directory. It grants no deletion authority.
 WALK_ROTATION_RECORD = ("target", ".disk_guard", "walk-rotation.json")

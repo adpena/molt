@@ -2,11 +2,12 @@
 //!
 //! One authority owns the warning policy. The runtime state holds the filter
 //! list, the once registry, the default action and the filters version, as
-//! CPython's per-interpreter `WarningsState` does, and the `warnings` module
-//! aliases those objects. While the module is loaded, its `filters`,
-//! `onceregistry` and `defaultaction` attributes are the policy and the state
-//! follows them, so `catch_warnings` (which rebinds `warnings.filters`) and the
-//! native engine always read one list.
+//! CPython's per-interpreter `WarningsState` does. The `_warnings` module
+//! exposes those objects and `warnings` imports them from it, as in CPython.
+//! While `warnings` is loaded, its `filters`, `onceregistry` and
+//! `defaultaction` attributes are the policy and the state follows them, so
+//! `catch_warnings` (which rebinds `warnings.filters`) and the native engine
+//! always read one list.
 
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
@@ -515,7 +516,7 @@ fn update_registry(
 
 // ─── warning location (CPython 3.12 `setup_context`) ─────────────────────────
 
-/// The number of Python frames `warnings.warn` itself adds above its caller:
+/// The number of Python frames `_warnings.warn` itself adds above its caller:
 /// the shim calls `molt_warnings_warn` from its own body. CPython's C `warn`
 /// has no frame, so the location walk starts below this one.
 const WARN_ENTRY_FRAMES: usize = 1;
@@ -1078,7 +1079,7 @@ pub(crate) fn emit_warning_object(
 
 // ─── public intrinsics ───────────────────────────────────────────────────────
 
-/// `warnings.warn`: validate the category, attribute the warning
+/// `_warnings.warn`: validate the category, attribute the warning
 /// `stacklevel` frames above the shim's caller, then emit it.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_warnings_warn(
@@ -1105,7 +1106,7 @@ pub extern "C" fn molt_warnings_warn(
     })
 }
 
-/// `warnings.warn_explicit` with CPython's argument checks. The shim names an
+/// `_warnings.warn_explicit` with CPython's argument checks. The shim names an
 /// omitted `module` after `filename`; an explicit `None` ignores the warning.
 /// `module_globals` must be a dictionary or `None`; sources are read by file
 /// name, so its loader is not consulted.
