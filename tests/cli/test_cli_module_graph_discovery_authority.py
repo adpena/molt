@@ -1786,6 +1786,7 @@ def test_class_mapping_call_keeps_source_candidates_without_module_universe(
         "globals()['callback']",
         "globals().get('callback')",
         "globals().__getitem__('callback')",
+        "globals().pop('callback')",
     ],
 )
 def test_current_namespace_read_keeps_imported_callable_source(
@@ -1797,10 +1798,12 @@ def test_current_namespace_read_keeps_imported_callable_source(
     sources = {
         "entry": "import holder\n",
         "holder": "from actions import action\nglobals()['callback'] = action\n"
+        "def unused():\n    import unused_namespace_leaf\n"
         + read
         + "()\n",
         "actions": "def action():\n    import namespace_callback_leaf\n",
         "namespace_callback_leaf": "VALUE = 1\n",
+        "unused_namespace_leaf": "VALUE = 1\n",
     }
     for name, source in sources.items():
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
@@ -1811,14 +1814,15 @@ def test_current_namespace_read_keeps_imported_callable_source(
             "-B",
             "-c",
             "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
-            "print(json.dumps('namespace_callback_leaf' in sys.modules))\n",
+            "print(json.dumps(['namespace_callback_leaf' in sys.modules,\n"
+            "                  'unused_namespace_leaf' in sys.modules]))\n",
             str(tmp_path),
         ],
         check=True,
         capture_output=True,
         text=True,
     )
-    assert json.loads(observed.stdout) is True
+    assert json.loads(observed.stdout) == [True, False]
     monkeypatch.setattr(
         module_graph_cache,
         "_frontend_semantic_tooling_fingerprint",
@@ -1835,6 +1839,69 @@ def test_current_namespace_read_keeps_imported_callable_source(
             full_scan_roots=True,
         )
         assert "namespace_callback_leaf" in result.graph
+        assert "unused_namespace_leaf" not in result.graph
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize("reader", ["globals()", "locals()", "vars()"])
+@pytest.mark.parametrize(
+    ("use", "escaped"),
+    [
+        ("{reader}", False),
+        ("{reader}.get('missing')", False),
+        ("{reader}.pop('missing', None)", False),
+        ("consume({reader})", True),
+        ("globals()['self'] = {reader}\nconsume(globals()['self'])", True),
+    ],
+)
+def test_namespace_call_result_read_is_not_namespace_escape(
+    tmp_path, monkeypatch, reader, use, escaped
+):
+    import json
+    import sys
+
+    sources = {
+        "entry": "import holder\n",
+        "holder": "from consumer import consume\n"
+        "def unused():\n    import unused_namespace_leaf\n"
+        + use.format(reader=reader)
+        + "\n",
+        "consumer": "def consume(namespace):\n    namespace['unused']()\n",
+        "unused_namespace_leaf": "VALUE = 1\n",
+    }
+    for name, source in sources.items():
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    observed = run_guarded_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys\nsys.path.insert(0,sys.argv[1])\nimport entry\n"
+            "print(json.dumps('unused_namespace_leaf' in sys.modules))\n",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(observed.stdout) is escaped
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "namespace-read",
+    )
+    for _warm in (False, True):
+        result = module_graph_discovery._discover_module_graph_from_paths(
+            (tmp_path / "entry.py",),
+            [tmp_path],
+            [tmp_path],
+            tmp_path / "stdlib",
+            tmp_path,
+            set(),
+            full_scan_roots=True,
+        )
+        assert ("unused_namespace_leaf" in result.graph) is escaped
 
 
 @pytest.mark.usefixtures("isolated_molt_cache")

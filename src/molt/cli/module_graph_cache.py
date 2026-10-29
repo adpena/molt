@@ -758,7 +758,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 38
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 39
 
 
 def _import_scan_cache_key(
