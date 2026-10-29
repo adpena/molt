@@ -17,6 +17,7 @@ from molt.process_environment import ProcessEnvironment
 from molt import host_capacity
 from tools.molt_dev_gates import display
 from tools.molt_dev_policy import GateConfig
+from tools.proof_plan import CargoTargetAccess
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMITTED_GATES = REPO_ROOT / "tools" / "proof_plan.toml"
@@ -39,6 +40,12 @@ def test_committed_gate_manifest_is_valid():
 # The deps landing of 2026-10-22 changed one CI command and nothing else in
 # the plan (security.python.audit -> security.lock-audit).
 CI_COMMAND_EDIT = frozenset({("command", "security.lock-audit")})
+
+
+# This oracle names the producers below as selection inputs. The dependency
+# graph derives their selection from their own imports, so an edit to one of
+# them selects this file as well (tools/test_dependency_graph.py).
+POLICY_ORACLE = "tests/test_committed_gate_policy.py"
 
 
 def _plan_changes(paths, changes):
@@ -65,6 +72,7 @@ def test_clippy_selector_edits_do_not_run_landing_simulations(path):
     assert _selected_pytest_targets(cfg, [path]) == {
         "tests/tools/test_import_file.py",
         "tests/tools/test_check_changed_clippy.py",
+        *([POLICY_ORACLE] if path.startswith("tools/") else []),
     }
     gates, _ = cfg.select([path])
     assert {gate.command for gate in gates} >= set(cfg.always)
@@ -111,7 +119,9 @@ def test_cargo_source_projection_selects_both_consumer_oracles():
         "tests/cli/test_cli_cache_fingerprint.py::test_compiler_lock_dependency_identity_fails_closed",
         "tests/cli/test_compiler_identity.py::test_lock_projection_is_mandatory_without_raw_lock_in_source_paths",
     }
-    assert "tests/test_molt_dev.py" not in selected
+    # The driver reaches the projection through its imports, so the graph
+    # selects its suite; the old exclusion was a selection gap.
+    assert "tests/test_molt_dev.py" in selected
 
 
 def test_source_closure_test_edits_do_not_compile_compression_providers():
@@ -171,6 +181,20 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
         # tools/structural_audit.py is a parser producer for these consumers.
         "tests/test_rust_source_scan.py",
         "tests/tools/test_gen_luau_support_matrix.py",
+        # Tests that import the audits or read the design document.
+        POLICY_ORACLE,
+        "tests/test_agent_coordination.py",
+        "tests/test_check_docs_architecture.py",
+        "tests/test_executable_test_support.py",
+        "tests/test_memory_guard_wiring.py",
+        "tests/test_proof_plan.py",
+        "tests/tools/test_check_memory_guard_wiring.py",
+        "tests/tools/test_dev_py.py",
+        "tests/tools/test_phase_exit_manifest.py",
+        "tests/tools/test_release_criterion_receipt.py",
+        "tests/tools/test_release_exit_gate.py",
+        "tests/tools/test_subprocess_guard_coverage.py",
+        "tests/tools/test_verified_subset.py",
     }
     gates, _ = cfg.select(paths)
     # Narrowing the consumer run must retain every independent always gate.
@@ -178,49 +202,100 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
     assert "python tools/check_docs_architecture.py" in {gate.command for gate in gates}
 
 
+# The tests besides the owner that import each scanner (or a tool that does).
+_GUARD_AUDIT_READERS = {
+    "tests/cli/test_cli_package.py",
+    "tests/cli/test_cli_setup_validate.py",
+    "tests/cli/test_compiler_source_root.py",
+    "tests/cli/test_installed_toolchain_rules.py",
+    "tests/test_memory_guard_wiring.py",
+    "tests/tools/test_check_memory_guard_wiring.py",
+    "tests/tools/test_dev_py.py",
+}
+
+
 @pytest.mark.parametrize(
-    "source,owner",
+    "source,owner,readers",
     [
-        ("tools/encoding_gate.py", "tests/tools/test_encoding_gate.py"),
-        ("tools/check_ratio_direction.py", "tests/tools/test_signed_ratio.py"),
+        (
+            "tools/encoding_gate.py",
+            "tests/tools/test_encoding_gate.py",
+            {"tests/tools/test_check_gate_liveness.py"},
+        ),
+        ("tools/check_ratio_direction.py", "tests/tools/test_signed_ratio.py", set()),
         (
             "tools/check_subprocess_guard_coverage.py",
             "tests/tools/test_subprocess_guard_coverage.py",
+            _GUARD_AUDIT_READERS
+            | {
+                "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
+                "tests/test_agent_coordination.py",
+                "tests/test_molt_dev_lanes.py",
+                "tests/test_proof_plan.py",
+                "tests/tools/test_install_git_hooks.py",
+                "tests/tools/test_new_agent_task.py",
+            },
         ),
         (
             "tools/check_environment_registry.py",
             "tests/tools/test_check_environment_registry.py",
+            set(),
         ),
-        ("tools/gen_cpython_coverage.py", "tests/tools/test_gen_cpython_coverage.py"),
-        ("tools/gen_stringprep_tables.py", "tests/test_gen_stringprep_tables.py"),
-        ("tools/check_generator_manifest.py", "tests/test_generator_manifest.py"),
+        (
+            "tools/gen_cpython_coverage.py",
+            "tests/tools/test_gen_cpython_coverage.py",
+            set(),
+        ),
+        (
+            "tools/gen_stringprep_tables.py",
+            "tests/test_gen_stringprep_tables.py",
+            set(),
+        ),
+        (
+            "tools/check_generator_manifest.py",
+            "tests/test_generator_manifest.py",
+            {
+                "tests/test_agent_coordination.py",
+                "tests/test_memory_guard_wiring.py",
+                "tests/test_proof_plan.py",
+                "tests/tools/test_check_memory_guard_wiring.py",
+                "tests/tools/test_dev_py.py",
+                "tests/tools/test_subprocess_guard_coverage.py",
+            },
+        ),
     ],
 )
-def test_scanner_leaf_source_and_test_select_their_owner(source, owner):
+def test_scanner_leaf_source_and_test_select_their_owner(source, owner, readers):
     cfg = GateConfig.load(COMMITTED_GATES)
-    for path in (source, owner):
-        expected = {"tests/tools/test_import_file.py", owner}
-        if path == "tools/check_subprocess_guard_coverage.py":
-            expected.update(
-                {
-                    "tests/tools/test_check_memory_guard_wiring.py",
-                    "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
-                }
-            )
-        assert _selected_pytest_targets(cfg, [path]) == expected
+    # A source edit selects its owner and every test that reads it; a test
+    # edit selects only itself (and the host-entrypoint import check).
+    assert _selected_pytest_targets(cfg, [source]) == {
+        "tests/tools/test_import_file.py",
+        owner,
+        POLICY_ORACLE,
+        *readers,
+    }
+    assert _selected_pytest_targets(cfg, [owner]) == {
+        "tests/tools/test_import_file.py",
+        owner,
+    }
 
 
 def test_guard_wiring_audit_changes_select_their_direct_consumers():
     cfg = GateConfig.load(COMMITTED_GATES)
-    for path in (
-        "tools/check_memory_guard_wiring.py",
+    direct = {
+        "tests/tools/test_import_file.py",
         "tests/tools/test_check_memory_guard_wiring.py",
-    ):
-        assert _selected_pytest_targets(cfg, [path]) == {
-            "tests/tools/test_import_file.py",
-            "tests/tools/test_check_memory_guard_wiring.py",
-            "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
-        }
+        "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
+    }
+    assert (
+        _selected_pytest_targets(cfg, ["tests/tools/test_check_memory_guard_wiring.py"])
+        == direct
+    )
+    # The audit's importers read it as well.
+    assert _selected_pytest_targets(cfg, ["tools/check_memory_guard_wiring.py"]) == (
+        direct | _GUARD_AUDIT_READERS | {POLICY_ORACLE}
+    )
 
 
 @pytest.mark.parametrize(
@@ -265,6 +340,9 @@ def test_unicode_source_facts_select_their_complete_pinned_source_owner():
     assert _selected_pytest_targets(cfg, ["tools/gen_unicode_width.py"]) == {
         "tests/tools/test_import_file.py",
         "tests/test_runtime_build_python.py",
+        # The manifest's meta-gate test runs every registered generator.
+        "tests/test_generator_manifest.py",
+        POLICY_ORACLE,
     }
 
 
@@ -330,6 +408,10 @@ def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(source):
     }
 
 
+# tests/test_proof_plan.py runs whole under its own pre-push cell's toolchains.
+TOOLING_CELL_TOOLCHAINS = ("python", "uv", "rustc", "cargo", "rustfmt")
+
+
 def test_proof_plan_test_leaf_runs_complete_file_without_production_consumers():
     cfg = GateConfig.load(COMMITTED_GATES)
     target = "tests/test_proof_plan.py"
@@ -353,9 +435,8 @@ def test_proof_plan_test_leaf_runs_complete_file_without_production_consumers():
         for gate in gates
         if isinstance(gate.command, tuple) and target in gate.command
     ]
-    assert cohort.command[-1:] == (target,)
     assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
-    assert cohort.toolchains == ("python", "uv", "cargo")
+    assert cohort.toolchains == TOOLING_CELL_TOOLCHAINS
     assert {gate.command for gate in gates} >= set(cfg.always)
 
 
@@ -369,9 +450,8 @@ def test_combined_proof_plan_leaf_and_ci_share_one_complete_cargo_cohort():
         for gate in gates
         if isinstance(gate.command, tuple) and target in gate.command
     ]
-    assert cohort.command[-1:] == (target,)
     assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
-    assert cohort.toolchains == ("python", "uv", "cargo")
+    assert cohort.toolchains == TOOLING_CELL_TOOLCHAINS
     assert _selected_pytest_targets(cfg, [target, ".github/workflows/ci.yml"]) >= {
         target,
         "tests/test_ci_workflow_topology.py",
@@ -396,9 +476,8 @@ def test_proof_plan_producers_keep_complete_cargo_and_extension_consumer_union(
         if isinstance(gate.command, tuple)
         and "tests/test_proof_plan.py" in gate.command
     ]
-    assert cohort.command[-1:] == ("tests/test_proof_plan.py",)
     assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
-    assert cohort.toolchains == ("python", "uv", "cargo")
+    assert cohort.toolchains == TOOLING_CELL_TOOLCHAINS
     assert _selected_pytest_targets(cfg, [producer]) >= {
         "tests/test_ci_workflow_topology.py",
         "tests/cli/test_source_extension_link_inputs.py",
@@ -814,70 +893,28 @@ def test_committed_gate_manifest_selects_backend_native_llvm():
     assert "python tools/audit_op_kinds.py --check" in gates
 
 
-def test_committed_gate_manifest_selects_codec_table_registry():
+@pytest.mark.parametrize(
+    "path",
+    [
+        "runtime/molt-stdlib-text/src/codec_registry.rs",
+        "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
+        "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
+        "runtime/molt-runtime/src/object/ops_encoding.rs",
+        "src/molt/stdlib/encodings/cp1252.py",
+        "config/codec_aliases.toml",
+        "tools/gen_codecs.py",
+    ],
+)
+def test_codec_table_inputs_select_their_generator_oracle(path):
+    # tests/test_gen_codecs.py reads every one of these through the generator
+    # it imports; the dependency graph selects it once, with no hand rule.
     cfg = GateConfig.load(COMMITTED_GATES)
-    gates, matched = cfg.select(["runtime/molt-stdlib-text/src/codec_registry.rs"])
+    gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
-
-    assert [r.name for r in matched] == [
-        "codec-tables",
-        "rust-clippy-changed",
-    ]
+    assert "codec-tables" not in {rule.name for rule in cfg.rules}
+    assert ("rust-clippy-changed" in {r.name for r in matched}) == path.endswith(".rs")
     assert gates.count("python tools/generators.py check") == 1
     assert "python tools/gen_codecs.py --check" not in gates
-    assert (
-        sum(
-            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
-            for gate in gates
-        )
-        == 1
-    )
-
-    gates, matched = cfg.select(["src/molt/stdlib/encodings/cp1252.py"])
-    gates = [gate.command for gate in gates]
-    assert "codec-tables" in {r.name for r in matched}
-    assert gates.count("python tools/generators.py check") == 1
-    assert "python tools/gen_codecs.py --check" not in gates
-
-    gates, matched = cfg.select(
-        ["runtime/molt-stdlib-text/src/codec_aliases_generated.rs"]
-    )
-    gates = [gate.command for gate in gates]
-    assert [r.name for r in matched] == [
-        "codec-tables",
-        "rust-clippy-changed",
-    ]
-    assert gates.count("python tools/generators.py check") == 1
-    assert "python tools/gen_codecs.py --check" not in gates
-
-    gates, matched = cfg.select(
-        ["runtime/molt-stdlib-text/src/charmap_codecs_generated.rs"]
-    )
-    gates = [gate.command for gate in gates]
-    assert [r.name for r in matched] == [
-        "codec-tables",
-        "rust-clippy-changed",
-    ]
-    assert gates.count("python tools/generators.py check") == 1
-    assert "python tools/gen_codecs.py --check" not in gates
-
-    gates, matched = cfg.select(["runtime/molt-runtime/src/object/ops_encoding.rs"])
-    gates = [gate.command for gate in gates]
-    assert "codec-tables" in {r.name for r in matched}
-    assert gates.count("python tools/generators.py check") == 1
-    assert "python tools/gen_codecs.py --check" not in gates
-    assert (
-        sum(
-            isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
-            for gate in gates
-        )
-        == 1
-    )
-
-    gates, matched = cfg.select(["config/codec_aliases.toml"])
-    gates = [gate.command for gate in gates]
-    assert "codec-tables" in {r.name for r in matched}
-    assert gates.count("python tools/generators.py check") == 1
     assert (
         sum(
             isinstance(gate, tuple) and "tests/test_gen_codecs.py" in gate
@@ -951,7 +988,14 @@ def test_transitive_cargo_metadata_availability_adds_no_build_requirement():
         gate.toolchains: GateEnvironment(ProcessEnvironment({}), None, False)
         for gate in gates
     }
-    assert cfg.cargo_outputs(environments, gates) == {}
+    # The policy gates reach Cargo only through toolchain closure; none writes.
+    policy_gates = [gate for gate in gates if not gate.pytest]
+    assert cfg.cargo_outputs(environments, policy_gates) == {}
+    # The ledger's readers run in their cells, and only a cell that declares
+    # Cargo carries Cargo's target effect.
+    for gate in gates:
+        if gate.pytest and gate.cargo_target_access is not CargoTargetAccess.NONE:
+            assert "cargo" in gate.toolchains
 
 
 def test_a_ci_command_edit_skips_the_driver_and_source_extension_suites():
