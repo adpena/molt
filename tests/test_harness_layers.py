@@ -89,7 +89,7 @@ def test_size_uses_compiler_target_profile_and_archive_authorities(
 
 
 def test_run_cmd_uses_harness_memory_guard(
-    monkeypatch, tmp_path: Path, generous_host_memory
+    monkeypatch, tmp_path: Path, generous_host_memory, developer_host_context
 ):
     import molt.harness_layers as harness_layers
 
@@ -111,8 +111,11 @@ def test_run_cmd_uses_harness_memory_guard(
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
-    # The DX authority keeps an explicit caller TMPDIR; this test proves the
-    # canonical default, so the caller must not supply one.
+    # The DX authority keeps an explicit caller TMPDIR and CARGO_TARGET_DIR;
+    # this test proves the canonical defaults, so the caller must supply
+    # neither. A landing gate exports its own session-scoped target, which
+    # an xdist worker keeps under a generated session of its own
+    # (developer_host_context drops that run context).
     for name in ("TMPDIR", "TMP", "TEMP"):
         monkeypatch.delenv(name, raising=False)
 
@@ -148,6 +151,21 @@ def test_run_cmd_uses_harness_memory_guard(
             create=False,
         )
     )
+
+    # A caller's explicit target wins, whatever session id rides beside it:
+    # the landing gate's session-scoped target under a worker's generated id.
+    gate_target = (tmp_path / "sessions" / "devtool").resolve()
+    harness_layers._run_cmd(
+        ["python3", "--version"],
+        cwd=tmp_path,
+        timeout_s=12,
+        env={
+            "CARGO_TARGET_DIR": str(gate_target),
+            "MOLT_SESSION_ID": "pytest-xdist-gw0",
+            "MOLT_SESSION_ID_GENERATED": "1",
+        },
+    )
+    assert calls[1]["env"]["CARGO_TARGET_DIR"] == str(gate_target)
 
 
 @pytest.mark.parametrize("child_returncode", [0, 1])
