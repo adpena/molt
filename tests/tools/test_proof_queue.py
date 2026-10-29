@@ -6431,7 +6431,11 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     provision_target = Path(
         context["process_supervisor"]["provision_telemetry"]["build_target_dir"]
     )
-    assert provision_target.parent.parent == artifact_root / "proof-supervisor"
+    # A declared Cargo output root (the CI portability cells declare one) owns
+    # the supervisor store; otherwise the artifact root does (HF-521).
+    declared = _real_cargo_output_root()
+    store_root = artifact_root if declared is None else Path(declared)
+    assert provision_target.parent.parent == store_root / "proof-supervisor"
     assert not provision_target.is_relative_to(repo)
     assert "tools/proof_supervisor/target" not in provision_target.as_posix()
     roots = {
