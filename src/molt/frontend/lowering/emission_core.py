@@ -8,6 +8,15 @@ unsupported-feature diagnostic conversion.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    CHECK_EXCEPTION_SKIP_KINDS,
+    FRONTEND_ARBITRARY_HEAP_EFFECT,
+    FRONTEND_REPOLL_KINDS,
+    FrontendKinds,
+    FrontendOpKind,
+    RAISING_KIND_NAMES,
+)
+
 import ast
 from contextlib import contextmanager
 from typing import Any
@@ -21,13 +30,10 @@ from molt.frontend._types import (
     MoltValue,
 )
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
-from molt.frontend.lowering.op_kinds_generated import (
-    CHECK_EXCEPTION_SKIP_KINDS,
-    FRONTEND_ARBITRARY_HEAP_EFFECT,
-    FRONTEND_REPOLL_KINDS,
-    RAISING_KIND_NAMES,
-)
 from molt.frontend._mixin_base import GeneratorMixinBase
+
+
+_EMIT_KINDS_1: frozenset[FrontendOpKind] = frozenset({"COPY", "PHI", "IDENTITY_ALIAS"})
 
 
 class EmissionCoreMixin(GeneratorMixinBase):
@@ -119,7 +125,7 @@ class EmissionCoreMixin(GeneratorMixinBase):
                         )
 
     def emit(self, op: MoltOp) -> None:
-        if op.kind in {"COPY", "IDENTITY_ALIAS", "PHI"} and op.result is not None:
+        if op.kind in _EMIT_KINDS_1 and op.result is not None:
             op.result.borrows_binding |= any(
                 isinstance(value, MoltValue) and value.borrows_binding
                 for value in op.args
@@ -136,7 +142,7 @@ class EmissionCoreMixin(GeneratorMixinBase):
         ):
             op.col_offset, op.end_col_offset = expr_col
         if (
-            op.kind == "CONST"
+            op.kind == FrontendKinds.CONST
             and op.result
             and isinstance(op.args[0], int)
             and not isinstance(op.args[0], bool)
@@ -151,7 +157,7 @@ class EmissionCoreMixin(GeneratorMixinBase):
             # closed instead of creating a second handwritten effect registry.
             self._expire_exact_class_facts()
         if self.python_frame_context_active and (
-            op.kind == "STATE_LABEL" or op.kind in FRONTEND_REPOLL_KINDS
+            op.kind == FrontendKinds.STATE_LABEL or op.kind in FRONTEND_REPOLL_KINDS
         ):
             # Explicit states and implicit post-await continuations re-enter
             # fresh runtime frames before any resumed Python callback.

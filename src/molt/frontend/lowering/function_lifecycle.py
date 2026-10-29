@@ -8,6 +8,12 @@ exit emission shared by function, async, module, and control-flow visitors.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+)
+
+
 import ast
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,6 +30,11 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
+
+_ENDS_WITH_RETURN_JUMP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"ret_void", "ret"}
+)
+
 
 if TYPE_CHECKING:
     from molt.frontend.sema.funcmeta import StatefulFunctionFramePlan
@@ -581,7 +592,7 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
                 self._emit_return_value(none_val)
             self._emit_return_label()
-        elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
+        elif not (self.current_ops and self.current_ops[-1].kind == FrontendKinds.ret):
             none_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
             self._emit_normal_return_terminator(none_val)
@@ -614,18 +625,23 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
     def _emit_void_return_terminator(self) -> None:
         self._emit_return_terminator("ret_void", [])
 
-    def _emit_return_terminator(self, kind: str, args: list[MoltValue]) -> None:
+    def _emit_return_terminator(
+        self, kind: FrontendOpKind, args: list[MoltValue]
+    ) -> None:
         function = self.funcs_map[self.current_func_name]
-        if kind == "ret" and function["return_abi"] != "value":
+        if kind == FrontendKinds.ret and function["return_abi"] != "value":
             raise ValueError("a void function ABI cannot return a value")
         plan = function.get("stateful_frame_plan")
-        if kind == "ret" and plan is not None and plan.include_gen_control:
+        if kind == FrontendKinds.ret and plan is not None and plan.include_gen_control:
             # A generator body's normal return reports completion through its
             # resume label; the poll returns the value itself, as a yield does
             # (no ``(value, done)`` tuple). Every completion passes this one
             # boundary, after any ``finally`` that may still yield, and the
             # report precedes the frame exit that must stay adjacent to ``ret``.
-            if self.current_ops and self.current_ops[-1].kind == "TRACE_EXIT":
+            if (
+                self.current_ops
+                and self.current_ops[-1].kind == FrontendKinds.TRACE_EXIT
+            ):
                 raise ValueError(
                     "a generator return reports completion before TRACE_EXIT"
                 )
@@ -637,7 +653,8 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
                 )
             )
         if self._function_needs_frame_trace() and (
-            not self.current_ops or self.current_ops[-1].kind != "TRACE_EXIT"
+            not self.current_ops
+            or self.current_ops[-1].kind != FrontendKinds.TRACE_EXIT
         ):
             self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind=kind, args=args, result=MoltValue("none")))
@@ -757,10 +774,10 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         if not self.current_ops:
             return False
         last = self.current_ops[-1]
-        if last.kind in {"ret", "ret_void"}:
+        if last.kind in _ENDS_WITH_RETURN_JUMP_KINDS_1:
             return True
         if (
-            last.kind == "JUMP"
+            last.kind == FrontendKinds.JUMP
             and self.return_label is not None
             and last.args
             and last.args[0] == self.return_label

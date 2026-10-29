@@ -7,6 +7,11 @@ file.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    AUGASSIGN_OP_KIND,
+    FrontendOpKind,
+)
+
 import ast
 from typing import cast
 
@@ -16,7 +21,6 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
-from molt.frontend.lowering.op_kinds_generated import AUGASSIGN_OP_KIND
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
@@ -914,7 +918,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         self.unbound_check_names.add(name)
         return
 
-    def _augassign_op_kind(self, op: ast.operator) -> str:
+    def _augassign_op_kind(self, op: ast.operator) -> FrontendOpKind:
         # Every augmented assignment lowers to a dedicated INPLACE_* kind so the
         # runtime tries the in-place dunder (__iadd__/__ifloordiv__/__ipow__/...)
         # BEFORE the binary fallback, matching CPython. The boxed runtime symbol

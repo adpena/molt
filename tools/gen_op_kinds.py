@@ -22,7 +22,9 @@ ONE table into every consumer so the tables can never drift:
     until it is given an explicit effect classification in the table — the
     structural kill for the ``matches!``-default-false trap.
   - ``src/molt/frontend/lowering/op_kinds_generated.py`` — the canonical wire
-    spellings the frontend emitter (``map_ops_to_json``) uses, plus the
+    spellings, closed ``FrontendOpKind``/``WireOpKind`` Literal types, named
+    comparison constants and typed lowering map the frontend emitter
+    (``map_ops_to_json``) uses, plus the
     frontend pre-serialization raising/skip/binop/effect tables consumed by the
     emitter and midend optimizer.
 
