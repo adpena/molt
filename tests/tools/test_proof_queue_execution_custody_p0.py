@@ -21,8 +21,10 @@ from tests.process_guard_common import (
 
 from tools.proof_queue_pkg import (
     execution_custody,
+    process_image_capture,
     python_child_custody,
     supervisor_custody,
+    toolchain_capture,
     windows_createprocess,
 )
 
@@ -2710,6 +2712,70 @@ def test_watch_custody_retains_ancestor_alias_and_deleted_entry(
     (replacement / "tool").write_bytes(tool.read_bytes())
     alias.symlink_to(replacement, target_is_directory=True)
     assert alias_spec.owns(alias), "same-byte alias retarget still changes selection"
+
+
+@pytest.mark.parametrize("located_release", [True, False])
+def test_uv_minor_version_link_selector_is_armed_through_canonical_entries(
+    tmp_path: Path, located_release: bool
+) -> None:
+    # HF-541: a venv made through uv's minor-version link keeps the link
+    # spelling in its base selector and interpreter-alias image, while the
+    # locator resolves its broad roots and every watch root is canonical.
+    from tests.proof_queue_custody_test_support import uv_minor_version_link
+    from tests.python_environment_test_support import environment_location_manifest
+
+    source = tmp_path / "source"
+    source.mkdir()
+    release = tmp_path / "python" / "cpython-3.12.15-host"
+    base = release / "bin" / "python3.12"
+    base.parent.mkdir(parents=True)
+    base.write_bytes(b"base interpreter image")
+    try:
+        link = uv_minor_version_link(tmp_path / "python" / "cpython-3.12-host", release)
+    except OSError as exc:
+        pytest.skip(f"directory alias capability unavailable: {exc}")
+    selector = link / "bin" / base.name
+    image = {
+        "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
+        "role": "interpreter-alias:base-selector",
+        "path": str(selector),
+        "sha256": hashlib.sha256(base.read_bytes()).hexdigest(),
+        "size_bytes": base.stat().st_size,
+        "path_kind": "selection",
+    }
+    location = environment_location_manifest(
+        prefix=release,
+        selected_executable=base,
+        base_executable=base,
+        base_executable_selector=selector,
+        roots=[release],
+        external_roots=[],
+        file_paths=[base],
+    )
+    specs = execution_custody.watch_specs(
+        source_root=source,
+        tracked_paths=[],
+        identities=[location, [image]],
+        broad_roots=[release] if located_release else [],
+    )
+    # A watch selects only entries it can own. An alias spelling beneath a
+    # canonical root is a selection that no reported event can match.
+    for spec in specs:
+        for selected in spec.paths or ():
+            assert spec.owns(Path(selected)), (spec.root, selected)
+    frozen = [Path(row.path) for row in toolchain_capture.frozen_files([image])]
+    assert frozen == [process_image_capture.custody_path(selector)]
+    # Ownership stays lexical: no canonical root lies above the link spelling.
+    assert not any(spec.owns(selector) for spec in specs)
+    assert execution_custody.unarmed_paths(specs, frozen) == []
+    # The link entry (a retarget) and the release file (its bytes) each arm it.
+    link_watches = [spec for spec in specs if spec.owns(link)]
+    content_watches = [spec for spec in specs if spec.owns(base)]
+    assert link_watches and content_watches
+    assert not any(spec in content_watches for spec in link_watches)
+    for unwatched in (link_watches, content_watches):
+        remaining = [spec for spec in specs if spec not in unwatched]
+        assert execution_custody.unarmed_paths(remaining, frozen) == [str(frozen[0])]
 
 
 def test_popen_announcement_covers_only_its_own_createprocess() -> None:

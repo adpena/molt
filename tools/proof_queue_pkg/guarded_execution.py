@@ -859,11 +859,9 @@ def execute_guarded_request(request_path: Path) -> int:
                 "environment_executables": environment_executables_pre,
             }
         )
-        uncovered = [
-            row.path
-            for row in frozen
-            if not any(spec.owns(Path(row.path)) for spec in live_watch_specs)
-        ]
+        uncovered = execution_custody.unarmed_paths(
+            live_watch_specs, [Path(row.path) for row in frozen]
+        )
         if uncovered:
             raise ValueError(
                 "toolchain capture contains paths outside armed custody: "

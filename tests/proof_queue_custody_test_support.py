@@ -12,6 +12,7 @@ from functools import partial, wraps
 import inspect
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sqlite3
@@ -24,6 +25,7 @@ import pytest
 from molt.exact_json import canonical_json_sha256
 from molt.cli.cargo_environment_inputs import CargoEnvironmentInputs
 from molt.process_environment import ProcessEnvironment
+from tests.process_guard_common import run_guarded_test_process
 from tests.python_environment_test_support import (
     environment_location_manifest,
     realized_environment_manifest,
@@ -191,6 +193,45 @@ def capability_aware_proof_execution(test: Callable) -> Callable:
         ]
     )
     return run_test
+
+
+def uv_minor_version_link(link: Path, release: Path) -> Path:
+    """Link a minor version to its patch release the way uv does (HF-541).
+
+    uv installs ``cpython-3.12.15-<platform>`` and links
+    ``cpython-3.12-<platform>`` to it: a directory symlink on POSIX and a
+    junction on Windows. A venv made through the link keeps that spelling in
+    ``pyvenv.cfg`` and in its interpreter's base selector.
+    """
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(release), str(link))
+    else:
+        link.symlink_to(release, target_is_directory=True)
+    return link
+
+
+def create_minor_version_link_venv(root: Path) -> Path:
+    """Create a venv whose base selector runs through a uv minor-version link.
+
+    The link names this interpreter's own resolved installation, so the
+    fixture copies and writes no installation bytes. Returns the launcher.
+    """
+    release = Path(sys.base_prefix).resolve(strict=True)
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    link = uv_minor_version_link(root / "python" / f"cpython-{version}-host", release)
+    base = Path(getattr(sys, "_base_executable", None) or sys.executable)
+    selector = link / base.resolve(strict=True).relative_to(release)
+    environment = root / "venv"
+    completed = run_guarded_test_process(
+        [str(selector), "-I", "-B", "-m", "venv", "--without-pip", str(environment)],
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"minor-version link venv failed: {completed.stderr}")
+    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 class ReceiptCustodyFactory(Protocol):

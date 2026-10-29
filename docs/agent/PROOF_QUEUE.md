@@ -269,6 +269,17 @@ their nearest existing ancestor's coordinate; an unresolved event (including a
 vanished ambiguous 8.3 spelling) records a custody error and invalidates the
 receipt. Uncertainty never establishes that an input is covered before launch.
 
+Watch roots are canonical directories, so a lexical spelling through a symlink
+or junction lies beneath none of them. uv's minor-version link
+(`cpython-3.12-<platform>` -> `cpython-3.12.15-<platform>`) is the common case:
+a venv made through it keeps the link spelling in its base selector and in the
+`interpreter-alias:base-selector` process image. One projection,
+`execution_custody.WatchCoordinates`, maps each spelling to the canonical
+entries that select it: every alias entry on the path, the path's own entry,
+and its resolved target. Watch selection arms exactly those entries. Before
+launch, `unarmed_paths` refuses a frozen row unless a live watch owns each of
+them. Ownership itself stays lexical.
+
 Admitted environment overrides participate in output validation, capacity
 admission and DX environment resolution before tool capture. Applying them only
 to the resolved child environment is too late: cache opt-outs must prevent
