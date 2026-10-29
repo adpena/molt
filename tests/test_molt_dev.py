@@ -48,7 +48,6 @@ from molt.python_environment_location import environment_bytecode_arguments
 
 import json
 import tarfile
-import tempfile
 import hashlib
 import re
 import shlex
@@ -177,16 +176,6 @@ def _writing_gate(outcomes):
 @pytest.fixture
 def drv():
     return molt_dev
-
-
-@pytest.fixture
-def short_cargo_cache():
-    from molt.dx import artifact_root
-
-    parent = artifact_root(REPO_ROOT) / "tmp"
-    parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="cenv-", dir=parent) as raw:
-        yield Path(raw) / "cache"
 
 
 @pytest.mark.parametrize("command", ["fix", "difftest", "probe", "detached-run"])
@@ -9650,6 +9639,126 @@ def _storage_legacy_roots(tmp_path, monkeypatch):
 
 @pytest.mark.usefixtures("developer_host_context", "_storage_legacy_roots")
 class TestStorageAuthority:
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    def test_deep_sccache_clients_publish_one_placement(
+        self, tmp_path, short_cargo_cache
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+        from molt.dx import sccache_server_temp_path, DxConfigError
+
+        cache = tmp_path / ("deep" * 30) / "cache"
+        roots = [short_cargo_cache.parent / str(index) for index in range(2)]
+        for root in roots:
+            root.mkdir()
+
+        def assign(root):
+            return sccache_server_temp_path(
+                REPO_ROOT,
+                cache,
+                {"MOLT_EXT_ROOT": str(root)},
+                maximum_path_bytes=80,
+                create=True,
+                server_is_live=lambda: False,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            selected = list(pool.map(assign, roots))
+        assert selected[0] == selected[1]
+        assert sum(len(list(root.glob("sct/*"))) for root in roots) == 1
+        binding = cache.with_name(cache.name + ".molt-server-temp.json")
+        record = json.loads(binding.read_text(encoding="utf-8"))
+        record["temporary"] = str(tmp_path / "unassigned")
+        binding.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(DxConfigError, match="invalid sccache temp placement"):
+            assign(roots[1])
+        assert selected[0].is_dir()
+
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    def test_deep_sccache_temp_binding_survives_changed_client_context(
+        self, tmp_path, short_cargo_cache
+    ):
+        from molt.dx import sccache_server_temp_path
+
+        cache = tmp_path / ("deep" * 30) / "cache"
+        first, second = short_cargo_cache.parent / "a", short_cargo_cache.parent / "b"
+        first.mkdir()
+        second.mkdir()
+        selected = sccache_server_temp_path(
+            REPO_ROOT,
+            cache,
+            {"MOLT_EXT_ROOT": str(first)},
+            maximum_path_bytes=80,
+            create=True,
+            server_is_live=lambda: False,
+        )
+        assert selected.is_relative_to(first)
+        cache.mkdir()
+        (cache / "provider-object").write_bytes(b"native cache signal")
+        assert (
+            sccache_server_temp_path(
+                REPO_ROOT,
+                cache,
+                {"MOLT_EXT_ROOT": str(second)},
+                maximum_path_bytes=80,
+                create=True,
+                server_is_live=lambda: pytest.fail(
+                    "an assigned cache is not reassigned"
+                ),
+            )
+            == selected
+        )
+        assert (cache / "provider-object").read_bytes() == b"native cache signal"
+
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    @pytest.mark.parametrize("preimage", ["cache", "temporary", "live-server"])
+    def test_deep_sccache_assignment_preserves_unassigned_state(
+        self, tmp_path, short_cargo_cache, preimage
+    ):
+        from molt.dx import sccache_server_temp_path, DxConfigError
+
+        cache = tmp_path / ("deep" * 30) / "cache"
+        env = {"MOLT_EXT_ROOT": str(short_cargo_cache.parent)}
+        planned = sccache_server_temp_path(REPO_ROOT, cache, env, maximum_path_bytes=80)
+        source = cache if preimage == "cache" else planned
+        if preimage != "live-server":
+            source.mkdir(parents=True)
+            (source / "signal").write_bytes(b"preserve")
+        with pytest.raises(DxConfigError, match="explicit reconciliation"):
+            sccache_server_temp_path(
+                REPO_ROOT,
+                cache,
+                env,
+                maximum_path_bytes=80,
+                create=True,
+                server_is_live=lambda: preimage == "live-server",
+            )
+        assert not cache.with_name(cache.name + ".molt-server-temp.json").exists()
+        if preimage != "live-server":
+            assert (source / "signal").read_bytes() == b"preserve"
+
+    @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
+    def test_deep_sccache_assignment_observes_real_live_server(
+        self, tmp_path, short_cargo_cache
+    ):
+        import socket
+        from molt.cargo_execution_policy import sccache_server_temp_dir
+        from molt.dx import DxConfigError
+
+        endpoint = short_cargo_cache.parent / "server.sock"
+        cache = tmp_path / ("deep" * 30) / "cache"
+        env = {
+            "MOLT_EXT_ROOT": str(short_cargo_cache.parent),
+            "SCCACHE_DIR": str(cache),
+            "SCCACHE_SERVER_UDS": str(endpoint),
+        }
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(endpoint))
+            server.listen()
+            with pytest.raises(DxConfigError, match="explicit reconciliation"):
+                sccache_server_temp_dir(env, create=True)
+        selected = sccache_server_temp_dir(env, create=True)
+        assert selected.is_relative_to(short_cargo_cache.parent)
+
     def test_retirement_archives_ignored_signal_and_keeps_a_surviving_index(
         self, tmp_path, monkeypatch
     ):
@@ -9761,6 +9870,37 @@ class TestStorageAuthority:
         _storage_git(repo, "init", "-q", "--separate-git-dir", str(common))
         set_artifact_root_binding(repo, artifact, {})
         assert controllers_root(common).is_relative_to(artifact)
+
+    def test_isolated_linked_coordination_locks_stay_inside_common_git(self, tmp_path):
+        from molt.checkout_state import checkout_state_lock_paths
+
+        repo, common, linked = (
+            tmp_path / "source",
+            tmp_path / "metadata/git",
+            tmp_path / "linked",
+        )
+        repo.mkdir()
+        common.parent.mkdir()
+        _storage_git(repo, "init", "-q", "--separate-git-dir", str(common))
+        _storage_git(
+            repo,
+            "-c",
+            "user.name=Storage",
+            "-c",
+            "user.email=storage@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        )
+        _storage_git(repo, "worktree", "add", "-qb", "linked", str(linked))
+        registry = linked / "logs/agents"
+        locks = checkout_state_lock_paths(registry)
+        assert locks and all(path.is_relative_to(common / "molt") for path in locks)
+        with checkout_state_use(((registry, None),), publish=False):
+            assert all(path.is_file() for path in locks)
+        assert not (common.parent / "target").exists()
+        assert not (linked / "target").exists()
 
     def test_compaction_preserves_binary_signal_and_an_independent_recovery_index(
         self, tmp_path

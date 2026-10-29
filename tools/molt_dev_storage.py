@@ -67,16 +67,20 @@ def inventory(repo: Path, environment: Mapping[str, str]) -> list[dict[str, obje
     for kind in storage_classes():
         rule = storage_rule(kind)
         path = storage_path(repo, kind, environment)
-        rows.append(
-            {
-                "class": kind,
-                "path": str(path),
-                "volume": rule.volume,
-                "owner": rule.owner,
-                "retention": asdict(rule.retention),
-                "durable": isinstance(rule.retention, DurableEvidence),
-            }
-        )
+        row: dict[str, object] = {
+            "class": kind,
+            "path": str(path),
+            "volume": rule.volume,
+            "owner": rule.owner,
+            "retention": asdict(rule.retention),
+            "durable": isinstance(rule.retention, DurableEvidence),
+        }
+        if kind == "sccache":
+            from molt.cargo_execution_policy import sccache_server_temp_dir
+
+            temporary = sccache_server_temp_dir(environment)
+            row["server_temp"] = None if temporary is None else str(temporary)
+        rows.append(row)
     return rows
 
 

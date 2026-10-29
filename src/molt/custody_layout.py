@@ -221,14 +221,14 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 "artifact",
                 "controller-source",
                 ("molt-state", "controllers"),
-                Regenerable(86400.0, 2 * gib, 4),
+                Regenerable(86400.0, None, 4),
             )
         case "landing-sandbox":
             return StorageRule(
                 "artifact",
                 "landing-queue",
                 ("worktrees",),
-                Regenerable(86400.0, 2 * gib, 1),
+                Regenerable(86400.0, None, 1),
             )
         case "lane-evidence":
             return StorageRule(
@@ -261,7 +261,7 @@ def storage_rule(kind: StorageClass) -> StorageRule:
             )
         case "backend-sockets":
             return StorageRule(
-                "checkout", "backend-daemon", (), Regenerable(7200, 1024 * 1024)
+                "checkout", "backend-daemon", (), Regenerable(7200, None)
             )
         case "coordination":
             return StorageRule(
@@ -406,7 +406,7 @@ def coordination_state_root(source: Path) -> Path:
     """The existing coordination lock namespace must outlive linked source.
 
     Named families already have an external custody root. An unconfigured
-    linked checkout borrows its primary's custody instead of materializing
+    linked checkout uses its common Git custody instead of materializing
     control files inside the checkout that retirement is removing.
     """
     selected = custody_root(source)
@@ -416,7 +416,7 @@ def coordination_state_root(source: Path) -> Path:
         except (OSError, ValueError, RuntimeError):
             directories = None
         if directories is not None and directories[0] != directories[1]:
-            selected = custody_root(directories[1].parent)
+            selected = directories[1] / "molt"
     return selected
 
 

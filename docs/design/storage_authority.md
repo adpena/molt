@@ -65,7 +65,8 @@ exists, and publishes a recovery index in the surviving common Git directory.
 Raw source stays until Git removal succeeds. No test applies a migration to
 the running repository.
 Coordination lifetime locks for a linked checkout live in the surviving family
-root rather than creating state inside a checkout being removed. Package
+root, or its common Git directory for an isolated checkout, rather than
+creating state inside a checkout being removed. Package
 environments use the same checkout-state lock namespace and descriptor handoff
 as Python environments.
 
@@ -74,6 +75,15 @@ retains the existing executable-toolchain, user-installation and short host
 socket selectors; moving outputs never silently reassigns those owners.
 Existing build-output age/pressure policies keep their own execution mechanism;
 an absent byte limit is explicit, rather than an unenforced invented budget.
+Controllers and the single queue sandbox use version/lifetime limits rather
+than an invented byte cap. Native sccache owns its cache and per-probe temp
+cleanup. Its shared server outlives run scratch, so startup temp stays beside
+its cache when the socket fits. A new deep cache records its short artifact-root
+placement once in a durable cache-adjacent index, under an OS lock. Later
+clients read that same assignment even when their run context changes.
+Unassigned existing cache/temp payload and live or uncertain native endpoints
+block assignment; the operator reconciles those preimages explicitly. This
+record assigns placement and never authorizes deleting native provider data.
 
 ## Toolchain volume decision
 
@@ -126,7 +136,7 @@ the dry-run projection does not create them.
 * [Go's build cache](https://go.dev/src/cmd/go/internal/cache/cache.go) coarsens
   read-use timestamp updates and trims periodically. Molt retains its existing
   one-hour stamps and two-hour grace; old creation time alone is not last use.
-* [Bazel 7.4 disk-cache GC](https://bazel.build/versions/7.4.0/remote/caching#disk-cache)
+* [Bazel disk-cache GC](https://bazel.build/remote/caching#disk-cache)
   combines disk-cache size and age limits. Molt budgets regenerable payload
   while keeping current/live roots; durable evidence has no deletion budget.
 * [uv cache safety and pruning](https://docs.astral.sh/uv/concepts/cache/#clearing-the-cache)
