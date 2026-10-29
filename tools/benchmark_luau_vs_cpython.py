@@ -52,9 +52,9 @@ from molt.dx import development_artifact_env  # noqa: E402
 
 
 def _results_root() -> Path:
-    from tools.bench_evidence import benchmark_evidence_root
+    from molt.dx import storage_path
 
-    return benchmark_evidence_root(REPO_ROOT, os.environ)
+    return storage_path(REPO_ROOT, "benchmark-evidence", os.environ)
 
 
 GENERATOR_SOURCE = """\
