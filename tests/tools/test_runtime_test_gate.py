@@ -819,6 +819,25 @@ def test_cargo_build_timeout_keeps_real_partial_streams(monkeypatch, tmp_path):
         stop_test_processes_carrying(marker)
 
 
+def _assert_checkout_scratch_run(run: Path, *, container: Path, checkout: Path) -> None:
+    """A direct run's evidence sits in its checkout's owned scratch root.
+
+    The artifact root's ``tmp`` holds one scratch root per checkout, bound to
+    it by an owner record (HF-435); that root holds only the gate's runs.
+    """
+    from molt import checkout_state
+
+    runs = run.parent
+    scratch = runs.parent
+    assert runs.name == "runtime-gate-runs"
+    assert scratch.parent == container
+    assert checkout_state.read_checkout_owner(scratch) == checkout_state.CheckoutOwner(
+        checkout.resolve(), "scratch"
+    )
+    assert list(runs.iterdir()) == [run]
+    assert [path for path in container.iterdir()] == [scratch]
+
+
 @pytest.mark.parametrize("policy", ["semantic", "allocation-observer"])
 @pytest.mark.parametrize(
     "output_owner", ["explicit", "queue", "default", "external", "relative-external"]
@@ -859,7 +878,9 @@ def test_default_profile_is_shipping_before_build(
             "MOLT_EXT_ROOT",
             str(external) if output_owner == "external" else "../external artifacts",
         )
-        expected_root = external / "tmp/runtime-gate-runs"
+        # The artifact root's tmp holds one scratch root per checkout
+        # (HF-435); the gate's runs live in this checkout's.
+        expected_root = external / "tmp"
     else:
         # No Git fixture claims a family layout here. DX owns the default's
         # opaque namespace; the public contract is retained output outside ROOT.
@@ -903,6 +924,8 @@ def test_default_profile_is_shipping_before_build(
     assert not run.resolve().is_relative_to(source.resolve())
     if expected_root is None:
         assert run.parent.name == "runtime-gate-runs"
+    elif output_owner in {"external", "relative-external"}:
+        _assert_checkout_scratch_run(run, container=expected_root, checkout=source)
     else:
         # Explicit roots retain their independent exact-path/precedence oracles.
         assert run.parent == expected_root
@@ -958,7 +981,7 @@ def test_policy_receipts_use_external_scratch_without_checkout_outputs(
     monkeypatch.setattr(gate, dispatcher, stop_before_build)
     assert gate.main(["--policy", policy]) == 1
     (run,) = observed
-    assert run.parent == external / "tmp/runtime-gate-runs"
+    _assert_checkout_scratch_run(run, container=external / "tmp", checkout=source)
     import json
 
     receipt = json.loads((run / "aggregate.json").read_text(encoding="utf-8"))

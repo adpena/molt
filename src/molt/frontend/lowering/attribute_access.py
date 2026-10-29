@@ -9,6 +9,12 @@ visitors.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendOpKind,
+    SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,
+    SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS,
+)
+
 import ast
 
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
@@ -25,10 +31,6 @@ from molt.frontend._types import (
     MoltValue,
     ReceiverKind,
     TypeHint,
-)
-from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_RUNTIME_PROTECTED_ATTRIBUTE_REQUIREMENTS,
-    SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,
 )
 
 # Data descriptors every user class reaches through ``object`` and ``type``:
@@ -977,7 +979,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         self,
         obj: MoltValue,
         attr: str,
-        kind: str,
+        kind: FrontendOpKind,
         *,
         method_load: bool,
         type_hint: TypeHint = "Unknown",

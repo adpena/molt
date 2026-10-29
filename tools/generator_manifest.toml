@@ -346,9 +346,9 @@ check_command = "tools/gen_op_kinds.py --check"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_op_kinds.py"
-# The two Rust enums this generator renders as EXHAUSTIVE (no-wildcard) matches.
-# A new variant fails to compile until it is classified in op_kinds.toml.
-closed_domains = ["OpCode", "Terminator"]
+# Rust matches and Python Literal types close operation identity under rustc/ty.
+# Producer reachability remains the independent census obligation.
+closed_domains = ["OpCode", "Terminator", "OpKind", "FrontendOpKind", "WireOpKind"]
 discovery_only = false
 
 [[generator]]

@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+    RAISING_KIND_NAMES,
+)
+
+
 from molt.opcode_literal_payloads import integer_literal_value
 
 from collections import deque
@@ -24,15 +31,27 @@ from molt.frontend._types import (
     _SCCP_UNKNOWN,
     build_cfg,
 )
-from molt.frontend.lowering.op_kinds_generated import (
-    RAISING_KIND_NAMES,
+
+_VERIFY_DEFINITE_ASSIGNMENT_IN_OPS_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"CALL", "CALL_INDIRECT"}
+)
+_EVAL_LATTICE_VALUE_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"MUL", "SUB", "ADD"}
+)
+_EVAL_LATTICE_VALUE_KINDS_2: frozenset[FrontendOpKind] = frozenset({"AND", "OR"})
+_EVAL_LATTICE_VALUE_KINDS_3: frozenset[FrontendOpKind] = frozenset(
+    {"GE", "EQ", "LT", "LE", "NE", "GT"}
+)
+_COMPUTE_SCCP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"LOOP_BREAK_IF_FALSE", "LOOP_BREAK_IF_TRUE"}
 )
 
-_PRIMITIVE_CONST_KINDS: frozenset[str] = frozenset(
+
+_PRIMITIVE_CONST_KINDS: frozenset[FrontendOpKind] = frozenset(
     {"CONST", "CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT"}
 )
 
-_SCCP_PROVEN_NOTHROW_CURATED: frozenset[str] = frozenset(
+_SCCP_PROVEN_NOTHROW_CURATED: frozenset[FrontendOpKind] = frozenset(
     {
         "LINE",
         "IF",
@@ -146,11 +165,11 @@ def primitive_const_values(definitions: dict[str, MoltOp]) -> dict[str, Any]:
         if type(value) not in (bool, int, float, str, bytes):
             continue
         try:
-            if op.kind == "CONST_BIGINT":
+            if op.kind == FrontendKinds.CONST_BIGINT:
                 value = integer_literal_value(value)
-            elif op.kind == "CONST_BOOL":
+            elif op.kind == FrontendKinds.CONST_BOOL:
                 value = bool(value)
-            elif op.kind == "CONST_FLOAT":
+            elif op.kind == FrontendKinds.CONST_FLOAT:
                 value = float(value)
         except (TypeError, ValueError, OverflowError):
             continue
@@ -215,7 +234,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
         # verify they haven't been eliminated by a prior pass.
         missing_value_defs: set[str] = set()
         for op in ops:
-            if op.kind == "MISSING" and op.result.name != "none":
+            if op.kind == FrontendKinds.MISSING and op.result.name != "none":
                 missing_value_defs.add(op.result.name)
 
         # Propagate MISSING taint transitively through PHI nodes: if every
@@ -227,7 +246,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
         while _phi_changed:
             _phi_changed = False
             for op in ops:
-                if op.kind != "PHI" or not op.args:
+                if op.kind != FrontendKinds.PHI or not op.args:
                     continue
                 out_name = op.result.name
                 if out_name == "none" or out_name in missing_tainted:
@@ -297,7 +316,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
         # Collect which value names are consumed by GETATTR/CALL/LOOKUP ops
         # as default or sentinel arguments — these are the critical consumers
         # of MISSING sentinels.
-        _missing_sentinel_consumer_ops = {
+        _missing_sentinel_consumer_ops: set[FrontendOpKind] = {
             "GETATTR_NAME_DEFAULT",
             "CALL",
             "CALL_INDIRECT",
@@ -348,7 +367,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 # arg is MISSING-tainted through a PHI collapse (not a direct
                 # MISSING def), that means an uninitialized variable leaked
                 # into a call site after branch pruning.
-                if op.kind in {"CALL", "CALL_INDIRECT"}:
+                if op.kind in _VERIFY_DEFINITE_ASSIGNMENT_IN_OPS_KINDS_1:
                     for arg in op.args:
                         if isinstance(arg, MoltValue) and (
                             arg.name in missing_tainted
@@ -458,7 +477,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                         # depend on — never eliminate them.
                         if (
                             out_name not in preserve_anchor_results
-                            and op.kind != "MISSING"
+                            and op.kind != FrontendKinds.MISSING
                             and self._op_instance_cannot_raise(op, const_by_name)
                         ):
                             removable_indices.add(idx)
@@ -491,7 +510,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
             func_stats["dce_pure_op_rejected"] += max(0, pure_attempted - pure_removed)
             return out
 
-    def _op_may_raise_for_sccp(self, op_kind: str) -> bool:
+    def _op_may_raise_for_sccp(self, op_kind: FrontendOpKind) -> bool:
         if op_kind in RAISING_KIND_NAMES:
             return True
         if op_kind in _SCCP_PROVEN_NOTHROW_KINDS:
@@ -619,27 +638,27 @@ class MidendDataflowMixin(GeneratorMixinBase):
             # MISSING ops produce runtime sentinel values that must never be
             # constant-folded or propagated.  Return _SCCP_MISSING so that
             # any downstream consumer goes to overdefined via merge_lattice.
-            if op.kind == "MISSING":
+            if op.kind == FrontendKinds.MISSING:
                 return _SCCP_MISSING
-            if op.kind == "CONST":
+            if op.kind == FrontendKinds.CONST:
                 return op.args[0]
-            if op.kind == "CONST_BOOL":
+            if op.kind == FrontendKinds.CONST_BOOL:
                 return bool(op.args[0])
-            if op.kind == "CONST_BIGINT":
+            if op.kind == FrontendKinds.CONST_BIGINT:
                 return integer_literal_value(op.args[0])
-            if op.kind == "CONST_FLOAT":
+            if op.kind == FrontendKinds.CONST_FLOAT:
                 return float(op.args[0])
-            if op.kind == "CONST_STR":
+            if op.kind == FrontendKinds.CONST_STR:
                 return str(op.args[0])
-            if op.kind == "CONST_BYTES":
+            if op.kind == FrontendKinds.CONST_BYTES:
                 return bytes(op.args[0])
-            if op.kind == "CONST_NONE":
+            if op.kind == FrontendKinds.CONST_NONE:
                 return None
-            if op.kind == "CONST_NOT_IMPLEMENTED":
+            if op.kind == FrontendKinds.CONST_NOT_IMPLEMENTED:
                 return NotImplemented
-            if op.kind == "CONST_ELLIPSIS":
+            if op.kind == FrontendKinds.CONST_ELLIPSIS:
                 return Ellipsis
-            if op.kind == "GUARD_TAG" and len(op.args) == 2:
+            if op.kind == FrontendKinds.GUARD_TAG and len(op.args) == 2:
                 # Runtime guards return the source unchanged, even on mismatch.
                 # They observe profiling and reject invalid tags; neither fact
                 # establishes the source's type or traps this block on mismatch.
@@ -647,7 +666,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if isinstance(source, MoltValue):
                     return value_lattice(source.name, known)
                 return _SCCP_OVERDEFINED
-            if op.kind == "PHI" and op.args:
+            if op.kind == FrontendKinds.PHI and op.args:
                 block_id = cfg.op_blocks[op_index]
                 block_preds = cfg.predecessors.get(block_id, [])
                 if len(block_preds) == len(op.args):
@@ -673,7 +692,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     if is_overdefined(merged):
                         return _SCCP_OVERDEFINED
                 return merged
-            if op.kind in {"ADD", "SUB", "MUL"} and len(op.args) == 2:
+            if op.kind in _EVAL_LATTICE_VALUE_KINDS_1 and len(op.args) == 2:
                 lhs = op.args[0]
                 rhs = op.args[1]
                 if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
@@ -693,13 +712,13 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     and isinstance(rhs_value, int)
                     and not isinstance(rhs_value, bool)
                 ):
-                    if op.kind == "ADD":
+                    if op.kind == FrontendKinds.ADD:
                         return lhs_value + rhs_value
-                    if op.kind == "SUB":
+                    if op.kind == FrontendKinds.SUB:
                         return lhs_value - rhs_value
                     return lhs_value * rhs_value
                 return _SCCP_OVERDEFINED
-            if op.kind == "NOT" and len(op.args) == 1:
+            if op.kind == FrontendKinds.NOT and len(op.args) == 1:
                 arg = op.args[0]
                 if not isinstance(arg, MoltValue):
                     return _SCCP_OVERDEFINED
@@ -711,7 +730,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if isinstance(arg_value, bool):
                     return not arg_value
                 return _SCCP_OVERDEFINED
-            if op.kind == "ABS" and len(op.args) == 1:
+            if op.kind == FrontendKinds.ABS and len(op.args) == 1:
                 arg = op.args[0]
                 if not isinstance(arg, MoltValue):
                     return _SCCP_OVERDEFINED
@@ -723,7 +742,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if isinstance(arg_value, (int, float)):
                     return abs(arg_value)
                 return _SCCP_OVERDEFINED
-            if op.kind in {"AND", "OR"} and len(op.args) == 2:
+            if op.kind in _EVAL_LATTICE_VALUE_KINDS_2 and len(op.args) == 2:
                 lhs = op.args[0]
                 rhs = op.args[1]
                 if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
@@ -738,11 +757,11 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if is_missing_sentinel(lhs_value) or is_missing_sentinel(rhs_value):
                     return _SCCP_OVERDEFINED
                 if isinstance(lhs_value, bool) and isinstance(rhs_value, bool):
-                    if op.kind == "AND":
+                    if op.kind == FrontendKinds.AND:
                         return lhs_value and rhs_value
                     return lhs_value or rhs_value
                 return _SCCP_OVERDEFINED
-            if op.kind == "IS" and len(op.args) == 2:
+            if op.kind == FrontendKinds.IS and len(op.args) == 2:
                 lhs = op.args[0]
                 rhs = op.args[1]
                 if not isinstance(lhs, MoltValue) or not isinstance(rhs, MoltValue):
@@ -770,7 +789,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if lhs_value is Ellipsis or lhs_value is NotImplemented:
                     return lhs_value is rhs_value
                 return _SCCP_OVERDEFINED
-            if op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE"} and len(op.args) == 2:
+            if op.kind in _EVAL_LATTICE_VALUE_KINDS_3 and len(op.args) == 2:
                 proven_static = loop_compare_truth.get(op_index)
                 if isinstance(proven_static, bool):
                     return proven_static
@@ -796,20 +815,20 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 ):
                     return _SCCP_OVERDEFINED
                 try:
-                    if op.kind == "EQ":
+                    if op.kind == FrontendKinds.EQ:
                         return lhs_value == rhs_value
-                    if op.kind == "NE":
+                    if op.kind == FrontendKinds.NE:
                         return lhs_value != rhs_value
-                    if op.kind == "LT":
+                    if op.kind == FrontendKinds.LT:
                         return lhs_value < rhs_value
-                    if op.kind == "LE":
+                    if op.kind == FrontendKinds.LE:
                         return lhs_value <= rhs_value
-                    if op.kind == "GT":
+                    if op.kind == FrontendKinds.GT:
                         return lhs_value > rhs_value
                     return lhs_value >= rhs_value
                 except Exception:
                     return _SCCP_OVERDEFINED
-            if op.kind == "TYPE_OF" and len(op.args) == 1:
+            if op.kind == FrontendKinds.TYPE_OF and len(op.args) == 1:
                 arg = op.args[0]
                 if not isinstance(arg, MoltValue):
                     return _SCCP_OVERDEFINED
@@ -822,7 +841,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if is_overdefined(arg_value):
                     return _SCCP_OVERDEFINED
                 return _SCCP_OVERDEFINED
-            if op.kind == "ISINSTANCE" and len(op.args) == 2:
+            if op.kind == FrontendKinds.ISINSTANCE and len(op.args) == 2:
                 obj = op.args[0]
                 classinfo = op.args[1]
                 if not isinstance(obj, MoltValue) or not isinstance(
@@ -844,7 +863,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 ):
                     return obj_tag in class_value
                 return _SCCP_OVERDEFINED
-            if op.kind == "LEN" and len(op.args) == 1:
+            if op.kind == FrontendKinds.LEN and len(op.args) == 1:
                 arg = op.args[0]
                 if not isinstance(arg, MoltValue):
                     return _SCCP_OVERDEFINED
@@ -856,7 +875,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if isinstance(arg_value, (str, bytes, tuple, frozenset, range)):
                     return len(arg_value)
                 return _SCCP_OVERDEFINED
-            if op.kind == "CONTAINS" and len(op.args) == 2:
+            if op.kind == FrontendKinds.CONTAINS and len(op.args) == 2:
                 container = op.args[0]
                 item = op.args[1]
                 if not isinstance(container, MoltValue) or not isinstance(
@@ -878,7 +897,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     return item_value in container_value
                 except Exception:
                     return _SCCP_OVERDEFINED
-            if op.kind == "INDEX" and len(op.args) == 2:
+            if op.kind == FrontendKinds.INDEX and len(op.args) == 2:
                 container = op.args[0]
                 index = op.args[1]
                 if not isinstance(container, MoltValue) or not isinstance(
@@ -1026,7 +1045,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 if tag is not None:
                     known[type_fact_key(out_name)] = tag
                 if (
-                    op.kind == "ISINSTANCE"
+                    op.kind == FrontendKinds.ISINSTANCE
                     and lattice_value is True
                     and len(op.args) == 2
                 ):
@@ -1055,7 +1074,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
             if block.start < block.end:
                 terminator_idx = block.end - 1
                 terminator = ops[terminator_idx]
-                if terminator.kind == "IF" and len(terminator.args) == 1:
+                if terminator.kind == FrontendKinds.IF and len(terminator.args) == 1:
                     cond = terminator.args[0]
                     cond_value: Any = _SCCP_UNKNOWN
                     if isinstance(cond, MoltValue):
@@ -1069,7 +1088,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     else:
                         branch_choice_by_if_index.pop(terminator_idx, None)
                 elif (
-                    terminator.kind in {"LOOP_BREAK_IF_TRUE", "LOOP_BREAK_IF_FALSE"}
+                    terminator.kind in _COMPUTE_SCCP_KINDS_1
                     and len(terminator.args) == 1
                 ):
                     cond = terminator.args[0]
@@ -1077,7 +1096,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                     if isinstance(cond, MoltValue):
                         cond_value = known.get(cond.name, _SCCP_UNKNOWN)
                     if isinstance(cond_value, bool) and len(succs) >= 2:
-                        if terminator.kind == "LOOP_BREAK_IF_TRUE":
+                        if terminator.kind == FrontendKinds.LOOP_BREAK_IF_TRUE:
                             break_taken = bool(cond_value)
                         else:
                             break_taken = not bool(cond_value)
@@ -1085,7 +1104,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                         chosen_succs = [succs[1] if break_taken else succs[0]]
                     else:
                         loop_break_choice_by_index.pop(terminator_idx, None)
-                elif terminator.kind == "LOOP_END" and len(succs) >= 2:
+                elif terminator.kind == FrontendKinds.LOOP_END and len(succs) >= 2:
                     loop_start_idx = cfg.control.loop_end_to_start.get(terminator_idx)
                     back_succ = (
                         None
@@ -1168,7 +1187,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
                 if (
-                    op.kind == "PHI"
+                    op.kind == FrontendKinds.PHI
                     and op.args
                     and len(op.args) == len(effective_preds)
                     and len(effective_preds) > 1
@@ -1221,7 +1240,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
             expected = len(effective_preds)
             for op_idx in range(block.start, block.end):
                 op = ops[op_idx]
-                if op.kind != "PHI" or not op.args:
+                if op.kind != FrontendKinds.PHI or not op.args:
                     out.append(op)
                     continue
                 if expected == 0:

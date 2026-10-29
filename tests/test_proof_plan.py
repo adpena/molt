@@ -764,6 +764,16 @@ def test_local_selector_projection_preserves_command_and_owned_prerequisites() -
     )
 
 
+def _rule_only(config, rule):
+    """One local rule's own selection: no always gates, no dependency graph.
+
+    The graph is a separate selection source; tests/tools/
+    test_test_dependency_graph.py proves that the full selection keeps every
+    test and cohort each rule selects on its own.
+    """
+    return replace(config, rules=[rule], always=[], dependency_graph=None)
+
+
 def test_explicit_unfiltered_pytest_cohort_keeps_full_scope_and_cargo_custody():
     from tools import molt_dev_policy
 
@@ -1924,7 +1934,7 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(r for r in config.rules if r.name == "installed-compiler-distribution")
-    gates, matched = replace(config, rules=[rule], always=[]).select([changed])
+    gates, matched = _rule_only(config, rule).select([changed])
     assert [r.name for r in matched] == [rule.name]
     assert gates and all(gate.pytest for gate in gates)
     targets = [
@@ -1940,9 +1950,10 @@ def test_installed_product_changes_select_complete_distribution_consumers(change
         "tests/tools/test_release_supply_chain.py",
     }
     assert all(gate.toolchains == ("python",) for gate in gates)
-    assert replace(config, rules=[rule], always=[]).select(
-        ["runtime/molt-wasm-facts/src/main.rs"]
-    ) == ([], [])
+    assert _rule_only(config, rule).select(["runtime/molt-wasm-facts/src/main.rs"]) == (
+        [],
+        [],
+    )
 
 
 @pytest.mark.parametrize(
@@ -1959,7 +1970,7 @@ def test_host_tool_identity_changes_select_measurement_consumers(changed) -> Non
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(r for r in config.rules if r.name == "performance-measurement")
-    gates, matched = replace(config, rules=[rule], always=[]).select([changed])
+    gates, matched = _rule_only(config, rule).select([changed])
     assert [r.name for r in matched] == [rule.name]
     assert len(gates) == 2
     assert gates[0].command == "python tools/perf_methodology.py --check"
@@ -8926,7 +8937,7 @@ def test_native_import_collection_fixtures_declare_compilers_for_each_execution_
         # must not supply the compilers these real native fixtures require.
         config = molt_dev_policy.GateConfig.load(PLAN.path)
         rule = next(rule for rule in config.rules if rule.name == owner[6:])
-        isolated = replace(config, rules=[rule], always=[])
+        isolated = _rule_only(config, rule)
         selected, matched = isolated.select(["src/molt/cli/backend_daemon_logs.py"])
         assert [rule.name for rule in matched] == ["backend-environment-contract"]
         selector = next(gate for gate in selected if "-k" in gate.command)
@@ -8971,7 +8982,7 @@ def test_luau_lowering_changes_select_owning_library_without_native_codegen(
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == "backend-luau")
-    isolated = replace(config, rules=[rule], always=[])
+    isolated = _rule_only(config, rule)
     gates, matched = isolated.select([path])
     assert [selected.name for selected in matched] == ["backend-luau"]
     (gate,) = gates
@@ -8999,7 +9010,7 @@ def test_rust_emitter_changes_execute_source_without_native_codegen(path: str) -
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == "backend-rust")
-    isolated = replace(config, rules=[rule], always=[])
+    isolated = _rule_only(config, rule)
     gates, matched = isolated.select([path])
     assert [selected.name for selected in matched] == ["backend-rust"]
     (gate,) = gates
@@ -9032,7 +9043,7 @@ def test_local_wasm_libtest_declares_its_actual_guest_tools(rule_name: str) -> N
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == rule_name)
-    isolated = replace(config, rules=[rule], always=[])
+    isolated = _rule_only(config, rule)
     gates, matched = isolated.select(
         ["runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs"]
     )
@@ -9060,7 +9071,7 @@ def test_native_execution_helper_selects_all_compiled_consumers(rule_name: str) 
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == rule_name)
-    gates, matched = replace(config, rules=[rule], always=[]).select(
+    gates, matched = _rule_only(config, rule).select(
         ["runtime/test_support/native_object_execution.rs"]
     )
     assert [rule.name for rule in matched] == [rule_name]
@@ -9883,7 +9894,8 @@ def test_benchmark_fixture_and_producer_have_distinct_proof_obligations(producer
             "tests/tools/test_proof_queue.py",
         } <= selected
     else:
-        assert "native-link-benchmark-tests" in names
+        # The dependency graph selects an edited test file itself; no rule
+        # restates that, and no producer's proof boundary joins it.
         assert not extension_rules & names
         assert selected == {
             "tests/tools/test_native_link_benchmark.py",
@@ -9915,12 +9927,37 @@ def test_native_transfer_leaves_keep_consumers_without_ci_topology(path):
         for arg in gate.command
         if arg.startswith("tests/")
     }
-    assert selected == {
+    owners = {
         "tests/cli/test_native_toolchain_transfer.py",
         "tests/tools/test_nightly_runtime_bundle.py",
         "tests/tools/test_nightly_prepare.py",
         "tests/tools/test_import_file.py",
     }
+    # The dependency graph adds the tests that read each source; a test or
+    # helper edit adds only tests that name it.
+    readers = {
+        "tools/nightly_runtime_bundle.py": {
+            "tests/test_proof_plan.py",
+            "tests/tools/test_cpython_regrtest_sharding.py",
+            "tests/tools/test_nightly_profile_feedback.py",
+            "tests/tools/test_nightly_shard_profile.py",
+            "tests/tools/test_nightly_sharding.py",
+        },
+        "tests/cli/native_toolchain_test_support.py": {"tests/test_proof_plan.py"},
+    }
+    if path == "src/molt/cli/native_toolchain_transfer.py":
+        # Its importers span the CLI, release and proof tooling; all must run,
+        # and nothing outside the rule's owners and the graph's readers does.
+        graph = molt_dev_policy.GateConfig.load(PLAN.path).graph_selection([path])
+        assert owners < selected <= owners | set(graph.run)
+        assert {
+            "tests/cli/test_installed_compiler.py",
+            "tests/cli/test_compiler_identity.py",
+            "tests/test_ci_workflow_topology.py",
+            "tests/tools/test_release_installed_distribution.py",
+        } <= selected
+    else:
+        assert selected == owners | readers.get(path, set())
 
 
 @pytest.mark.parametrize(
@@ -10584,7 +10621,7 @@ def test_browser_simd_changes_have_a_standalone_source_build_proof(
     # protect local pin/config changes from leaving the shipped module stale.
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == "browser-simd")
-    gates, matched = replace(config, rules=[rule], always=[]).select([path])
+    gates, matched = _rule_only(config, rule).select([path])
     assert [row.name for row in matched] == ["browser-simd"]
     (gate,) = gates
     assert {
@@ -10622,7 +10659,7 @@ def test_edgebox_sources_select_the_actual_locked_typescript_check(path: str) ->
 
     config = molt_dev_policy.GateConfig.load(PLAN.path)
     rule = next(rule for rule in config.rules if rule.name == "edgebox-typescript")
-    isolated = replace(config, rules=[rule], always=[])
+    isolated = _rule_only(config, rule)
     gates, matched = isolated.select([path])
     assert [selected.name for selected in matched] == ["edgebox-typescript"]
     (gate,) = gates
@@ -11728,7 +11765,7 @@ def test_build_early_cutoff_owns_producers_and_fixture_consumers(changed):
 
     config = GateConfig.load(PLAN.path)
     owner = next(rule for rule in config.rules if rule.name == "build-early-cutoff")
-    gates, matched = replace(config, rules=[owner], always=[]).select([changed])
+    gates, matched = _rule_only(config, owner).select([changed])
     assert matched == [owner]
     assert len(gates) == 1
     gate = gates[0]
