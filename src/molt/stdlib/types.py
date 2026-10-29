@@ -88,7 +88,7 @@ __all__ = [
 #   lower to Rust intrinsics and raise on missing intrinsic support.
 # - `DynamicClassAttribute` descriptor behavior (clone/getter/setter/deleter and
 #   argument validation/error mapping) is implemented in the runtime descriptor path.
-# Remaining stdlib `types` gaps are tracked in STATUS/ROADMAP.
+# Remaining stdlib `types` gaps are tracked in docs/spec/STATUS.md.
 
 
 class _GeneratorWrapper:
