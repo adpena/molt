@@ -30,7 +30,7 @@ LOG="$WITNESS_SCRATCH_SHELL/cycle.log"
 export MOLT_MEMORY_GUARD_POLL_SEC="${MOLT_MEMORY_GUARD_POLL_SEC:-2.0}"
 export MOLT_STDLIB_PROFILE=full
 export MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"
-SCIENTIFIC_WITNESS_ROOTS="$(PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c 'import os; from molt.scientific_stack_versions import validate_scientific_extension_seals; print(os.pathsep.join(str(root) for root in validate_scientific_extension_seals("wasm").payload_roots))')"
+SCIENTIFIC_WITNESS_ROOTS="$(PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -B -c 'import os; from molt.scientific_stack_versions import validate_scientific_extension_seals; print(os.pathsep.join(str(root) for root in validate_scientific_extension_seals("wasm").payload_roots))')"
 if [ -z "$SCIENTIFIC_WITNESS_ROOTS" ]; then
   echo "canonical scientific witness seals are missing or invalid" >&2
   echo "produce each with: molt extension produce-set --package <numpy|scipy> --module-set pact-witness --source <verified-checkout> --build-root <fresh-build-root>" >&2
@@ -58,7 +58,7 @@ if [ "$MODE" = "build" ] || [ "$MODE" = "cycle" ]; then
     *) ENTRY_FOR_PYTHON="$ROOT/$ENTRY" ;;
   esac
   mkdir -p "$(dirname "$LOG")"
-  PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -m molt build "$ENTRY_FOR_PYTHON" --target wasm \
+  PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -B -m molt build "$ENTRY_FOR_PYTHON" --target wasm \
     --profile browser --wasm-profile auto --split-runtime $REBUILD \
     --out-dir "$OUT" >"$LOG" 2>&1
   rc=$?

@@ -100,7 +100,7 @@ def test_build_scope_owns_cached_managed_target_and_control(tmp_path, monkeypatc
 
 
 def test_build_scope_retains_initial_maintenance_choice_as_guard_default_drifts(
-    tmp_path, monkeypatch, developer_host_context
+    tmp_path, monkeypatch, developer_host_context, unbound_checkout_family
 ):
     import os
     from molt import dx
