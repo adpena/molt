@@ -1350,7 +1350,9 @@ export default {
     }
     # Substitute only the original template: policy strings remain data even
     # when their bytes spell another template token.
-    return re.sub(r"__MOLT_[A-Z0-9_]+__", lambda match: substitutions[match[0]], worker_js)
+    return re.sub(
+        r"__MOLT_[A-Z0-9_]+__", lambda match: substitutions[match[0]], worker_js
+    )
 
 
 # A deliberate deployment contract version, not the build wall clock. Bump only
