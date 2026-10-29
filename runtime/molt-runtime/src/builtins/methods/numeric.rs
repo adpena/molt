@@ -395,6 +395,12 @@ crate::builtins::methods::native_method_table!(float_class_method_bits, publish_
             fn_addr!(molt_float_fromhex),
             2,
         )),
+        "__getformat__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).float, "__getformat__").with_text_signature("($type, typestr, /)"),
+            fn_addr!(molt_float_getformat),
+            2,
+        )),
         "from_number" if runtime_python_at_least(_py, 3, 14)  => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, builtin_classes(_py).float, "from_number"),

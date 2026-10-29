@@ -718,8 +718,10 @@ def _rust_source(relative: str) -> str:
 
 def test_defined_function_consumers_use_generated_authority() -> None:
     source = _rust_source("runtime/molt-tir/src/passes/dead_functions.rs")
-    assert "simpleir_kind_references_defined_function(&op.kind)" in source
-    assert "match op.kind.as_str()" not in source
+    # The closed OpKind carries the generated fact; no consumer matches a
+    # wire spelling.
+    assert ".references_defined_function()" in source
+    assert "as_str()" not in source
     assert FR.SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS is (
         SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS
     )

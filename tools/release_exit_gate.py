@@ -5,9 +5,9 @@ The bundle also joins the findings ledger at its source revision. The gate
 reads the ledger blob and the `pyproject.toml` blob that `source_sha` names. It
 records every open finding (`tools/finding_status.py`) and the project version
 (`tools/release/release_model.py`). Status is PASS only when every typed receipt
-passes and, for a version that claims the v1 public stable contract (major
-version 1 or later), no finding is open. A v0.x bundle records and reports its
-open findings, but they do not hold it at FAIL.
+passes and no finding is open. Every public release, the first one (v0.0.1)
+included, is held to the v1.0 quality contract; the version number never
+relaxes it.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ _ROOT_KEYS = frozenset(
         "findings",
     }
 )
-_FINDINGS_KEYS = frozenset({"ledger", "ledger_blob", "open", "version", "v1_contract"})
+_FINDINGS_KEYS = frozenset({"ledger", "ledger_blob", "open", "version"})
 PYPROJECT_PATH = PurePosixPath("pyproject.toml")
 _EVIDENCE_KEYS = frozenset({"role", "path", "sha256", "size"})
 _REGISTRY_KEYS = frozenset({"target", "variant", "packages"})
@@ -128,10 +128,6 @@ class ReleaseGateReport:
     # The project version at source_sha; None when the verifier cannot read it.
     version: str | None
 
-    @property
-    def claims_v1_contract(self) -> bool:
-        return self.version is not None and release_model.stable_release(self.version)
-
 
 @dataclass(frozen=True, slots=True)
 class SourceFindings:
@@ -142,13 +138,9 @@ class SourceFindings:
     version: str
 
     @property
-    def claims_v1_contract(self) -> bool:
-        return release_model.stable_release(self.version)
-
-    @property
     def holding_findings(self) -> tuple[str, ...]:
-        """The open findings that hold a release at FAIL."""
-        return self.status.open_keys if self.claims_v1_contract else ()
+        """The open findings that hold a release at FAIL: every one of them."""
+        return self.status.open_keys
 
 
 def _load_json(path: Path, *, label: str) -> Mapping[str, Any]:
@@ -243,7 +235,6 @@ def _findings_record(findings: SourceFindings) -> dict[str, Any]:
         "ledger_blob": findings.ledger_blob,
         "open": list(findings.status.open_keys),
         "version": findings.version,
-        "v1_contract": findings.claims_v1_contract,
     }
 
 
@@ -258,11 +249,6 @@ def _validate_findings_record(value: object) -> tuple[tuple[str, ...], list[str]
     version = value.get("version")
     if not isinstance(version, str) or not release_model.VERSION_RE.fullmatch(version):
         problems.append("manifest findings.version must be a release version")
-    elif value.get("v1_contract") is not release_model.stable_release(version):
-        problems.append(
-            "manifest findings.v1_contract must state whether the version "
-            "claims the v1 contract"
-        )
     if value.get("ledger") != finding_status.LEDGER_PATH.as_posix():
         problems.append(
             f"manifest findings.ledger must be {finding_status.LEDGER_PATH.as_posix()}"
@@ -1364,16 +1350,14 @@ def _print_report(report: ReleaseGateReport) -> None:
         for problem in report.problems:
             print(f"[release-exit] {problem}")
     if report.version is not None:
-        claim = "claims" if report.claims_v1_contract else "does not claim"
         print(
-            f"[release-exit] version {report.version} {claim} the v1 public "
-            "stable contract"
+            f"[release-exit] version {report.version} is held to the v1.0 quality "
+            "contract"
         )
     if report.open_findings:
-        effect = "hold" if report.claims_v1_contract else "do not hold"
         print(
             f"[release-exit] open findings ({len(report.open_findings)}, "
-            f"{effect} this release): " + ", ".join(report.open_findings)
+            "hold this release): " + ", ".join(report.open_findings)
         )
     if report.passed:
         print(

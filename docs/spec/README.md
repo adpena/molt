@@ -192,7 +192,6 @@ authoritative when a design claim drifts.
 - 0962 Mock Investor Slide: [docs/spec/areas/business/0962_MOCK_INVESTOR_SLIDE.md](areas/business/0962_MOCK_INVESTOR_SLIDE.md)
 
 ## Process And Addenda
-- 0006 Roadmap: [docs/spec/areas/process/0006-roadmap.md](areas/process/0006-roadmap.md)
 - 0099 Repo Review 2026 01 07: [docs/spec/areas/process/0099_REPO_REVIEW_2026-01-07.md](areas/process/0099_REPO_REVIEW_2026-01-07.md)
 - 0290 Architecture Backend Decision: [docs/spec/areas/process/0290_ARCHITECTURE_BACKEND_DECISION.md](areas/process/0290_ARCHITECTURE_BACKEND_DECISION.md)
 - 0291 Introspective Rapid Iteration: [docs/spec/areas/process/0291_INTROSPECTIVE_RAPID_ITERATION.md](areas/process/0291_INTROSPECTIVE_RAPID_ITERATION.md)

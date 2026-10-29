@@ -1,7 +1,7 @@
 # Optimization Progress Log
 
 Last updated: 2026-03-19
-Canonical plan: `OPTIMIZATIONS_PLAN.md`
+Canonical authority: `tools/PERF_AUTHORITY.md`
 
 ## Purpose
 - Track optimization-program execution progress separately from planning scope.

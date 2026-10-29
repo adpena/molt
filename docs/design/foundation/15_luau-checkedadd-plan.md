@@ -212,5 +212,5 @@ Per the PLAN doc's warning and the MEMORY.md lesson from import-error parity wor
 - `runtime/molt-ir/src/tir/target_info.rs` — Luau has explicit target info;
   avoid target-gating portable TIR transforms when a backend semantic helper can
   preserve the operation contract.
-- `runtime/molt-backend/src/ir.rs` — `OpIR.out` + `OpIR.var` are the two-result
+- `runtime/molt-ir/src/ir.rs` — `OpIR.out` + `OpIR.var` are the two-result
   transport fields; no new SimpleIR field is required.

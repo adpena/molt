@@ -1374,7 +1374,8 @@
           "status": "fail",
           "finding": "HF-559",
           "root_cause": "The binary runs and fails: cannot import name '_get_sourcefile' from importlib._bootstrap_external.",
-          "evidence": "2026-10-29 lane/hf556-env-bytes and lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources): the binary runs and fails the same way after HF-557's fix."
+          "evidence": "2026-10-29 lane/test-support-import-closure (macOS arm64, CPython 3.12.15 sources, MOLT_CAPABILITY_TIER=full, run 20261029_132145): test.support imports; test_import still stops at this import.",
+          "failure": "molt rc=1: ImportError: cannot import name '_get_sourcefile' from 'importlib._bootstrap_external' (/__molt__/stdlib/importlib/_bootstrap_external.py)"
         }
       }
     },
@@ -1382,9 +1383,10 @@
       "dimensions": {
         "native@3.12": {
           "status": "fail",
-          "finding": "HF-273",
-          "root_cause": "The binary runs: test.support calls check_sanitizer() at import, which reads sysconfig.get_config_var (Lib/test/support/__init__.py:405), and Molt's sysconfig is a generated stub that raises RuntimeError.",
-          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources): the regrtest shim now admits CPython's test package (MOLT_EXTERNAL_STATIC_PACKAGES=test), because an external root admits only the entry's direct imports; test.support then compiles and the binary fails at the sysconfig stub (run 20261029_112940, through the shim)."
+          "finding": "HF-578",
+          "root_cause": "The package runs; unittest's loader.discover imports its 20 test subpackages by computed name at run time, and none was compiled into the binary.",
+          "evidence": "2026-10-29 lane/test-support-import-closure (macOS arm64, CPython 3.12.15 sources, MOLT_CAPABILITY_TIER=full, run 20261029_132145): test.support imports; all 20 errors are \"module ... has no compiler-emitted body in this binary\".",
+          "failure": "molt rc=1: FAILED (errors=20)"
         }
       }
     },
@@ -1392,9 +1394,10 @@
       "dimensions": {
         "native@3.12": {
           "status": "fail",
-          "finding": "HF-273",
-          "root_cause": "The binary runs: test.support calls check_sanitizer() at import, which reads sysconfig.get_config_var (Lib/test/support/__init__.py:405), and Molt's sysconfig is a generated stub that raises RuntimeError.",
-          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources, run 20261029_105241): after HF-557's fix, test.support compiles."
+          "finding": "HF-559",
+          "root_cause": "test.support.import_helper reads _imp._override_frozen_modules_for_tests, a private CPython helper Molt's _imp lacks.",
+          "evidence": "2026-10-29 lane/test-support-import-closure (macOS arm64, CPython 3.12.15 sources, MOLT_CAPABILITY_TIER=full, run 20261029_132145): test.support imports; test_pkgutil stops here.",
+          "failure": "molt rc=1: AttributeError: module '_imp' has no attribute '_override_frozen_modules_for_tests'"
         }
       }
     },
@@ -1402,9 +1405,10 @@
       "dimensions": {
         "native@3.12": {
           "status": "fail",
-          "finding": "HF-273",
-          "root_cause": "The binary runs: test.support calls check_sanitizer() at import, which reads sysconfig.get_config_var (Lib/test/support/__init__.py:405), and Molt's sysconfig is a generated stub that raises RuntimeError.",
-          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources, run 20261029_105241): after HF-557's fix, test.support compiles."
+          "finding": "HF-579",
+          "root_cause": "Something serializes a code object as JSON while the test builds or loads its archives; the cause is not yet located.",
+          "evidence": "2026-10-29 lane/test-support-import-closure (macOS arm64, CPython 3.12.15 sources, MOLT_CAPABILITY_TIER=full, run 20261029_132145): test.support imports; test_zipimport stops here.",
+          "failure": "molt rc=1: TypeError: Object of type code is not JSON serializable"
         }
       }
     }

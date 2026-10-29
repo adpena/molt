@@ -102,8 +102,15 @@ This is compiler/development analysis and adds no work to the emitted binary.
 Native current-globals dictionary selection uses the binding authority's current
 module slots. A literal-key read does not inherit access to the whole dictionary;
 actual stored self-references retain that access. Native mutation methods share
-the existing namespace-store transfer. Unknown writes invalidate actual module
-bindings, including undeclared global/builtin reads, independently of the future
+the existing namespace-store transfer. The source worklist reads every evaluated
+call result to transport arguments, including discarded results. Acquiring a
+namespace through that read does not expose its members: key-limited operations
+retain only their selected values, while publication and protocol consumers keep
+their existing namespace demands. Discarding a namespace result also grants no
+write premise in the syntax summary. A raise retains exception normalization and
+operand callbacks; it is not an implicit namespace escape through traceback
+frames (spec 0216). Unknown writes invalidate actual module bindings,
+including undeclared global/builtin reads, independently of the future
 callback domain. The binding state and history joins retain unmodeled namespace
 contents so a later read cannot lose aliases or custom-key callbacks. Unknown
 owners, escaping namespaces and unproved activation mappings remain conservative.

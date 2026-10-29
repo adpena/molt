@@ -229,8 +229,9 @@ def test_regrtest_expectations_name_a_finding_for_one_pinned_source() -> None:
         "tests": {},
         "regrtest": {
             "test.test_importlib.test_api::ImportModuleTests::test_module_import": _dimension(
-                finding=OPEN_ID
+                finding=OPEN_ID, failure="molt rc=1"
             ),
+            "test.test_importlib.test_util": _dimension(finding=OPEN_ID),
             "test.test_importlib.test_lazy": _dimension(tracking="#3"),
             "test_importlib.test_api.Class.method": _dimension(finding=OPEN_ID),
             "test.test_zipimport": {
@@ -248,6 +249,10 @@ def test_regrtest_expectations_name_a_finding_for_one_pinned_source() -> None:
     problems = check_suite_honesty.validate_manifest(manifest, frozenset())
 
     assert not [p for p in problems if "test_module_import" in p]
+    # An owned regrtest failure names the exact reason the run reports.
+    assert any(
+        "test.test_importlib.test_util" in p and "`failure`" in p for p in problems
+    )
     assert any("test_lazy" in p and "never free-text" in p for p in problems)
     assert any(
         "test_importlib.test_api.Class.method" in p
@@ -340,10 +345,17 @@ def _outcome(status: str, reason: str = "") -> ItemOutcome:
 
 
 def test_regrtest_runs_are_strict_in_both_directions() -> None:
-    entry = {"status": "fail", "finding": OPEN_ID, "root_cause": "r", "evidence": "e"}
+    entry = {
+        "status": "fail",
+        "finding": OPEN_ID,
+        "root_cause": "r",
+        "evidence": "e",
+        "failure": "molt rc=1",
+    }
     manifest = {
         "regrtest": {
             "test.test_owned": {"dimensions": {"native@3.12": entry}},
+            "test.test_moved": {"dimensions": {"native@3.12": entry}},
             "test.test_fixed": {"dimensions": {"native@3.12": entry}},
             "test.test_skipped": {"dimensions": {"native@3.12": entry}},
             "test.test_absent": {"dimensions": {"native@3.12": entry}},
@@ -354,6 +366,8 @@ def test_regrtest_runs_are_strict_in_both_directions() -> None:
     }
     outcomes = {
         "test_owned": _outcome("failed", "molt rc=1"),
+        # An owned test that now fails another way is a new defect.
+        "test_moved": _outcome("failed", "molt rc=143"),
         "test_fixed": _outcome("passed"),
         "test_skipped": _outcome("skipped", "resource denied"),
         "test_new": _outcome("failed", "MOLT_COMPAT_ERROR: x"),
@@ -370,6 +384,7 @@ def test_regrtest_runs_are_strict_in_both_directions() -> None:
     assert report.expected == {"test.test_owned": OPEN_ID}
     assert set(report.unexpected_failures) == {
         "test.test_new",
+        "test.test_moved",
         "test.test_cases",
         "test.test_other_dimension",
     }
@@ -384,10 +399,16 @@ def test_regrtest_runs_are_strict_in_both_directions() -> None:
 
 
 def test_regrtest_run_with_only_owned_failures_passes() -> None:
-    entry = {"status": "fail", "finding": OPEN_ID, "root_cause": "r", "evidence": "e"}
+    entry = {
+        "status": "fail",
+        "finding": OPEN_ID,
+        "root_cause": "r",
+        "evidence": "e",
+        "failure": "molt rc=1",
+    }
     manifest = {"regrtest": {"test.test_owned": {"dimensions": {"native@3.12": entry}}}}
     report = regrtest_expectations.classify(
-        {"test_owned": _outcome("failed"), "test_ok": _outcome("passed")},
+        {"test_owned": _outcome("failed", "molt rc=1"), "test_ok": _outcome("passed")},
         manifest,
         dimension="native@3.12",
         selected=["test_owned", "test_ok"],
@@ -415,3 +436,65 @@ def test_an_explicit_regrtest_selection_is_never_inverted_by_the_skip_list(
         whole_suite, tmp_path / "regrtest.py", ["test_ftplib"], ["py"]
     )
     assert command[command.index("-x") + 1] == "test_ftplib"
+
+
+_DAG_LEDGER = """# Ledger
+
+## Release dependency and landing order
+
+### Family dependency order (2026-10-29)
+
+| Family | Shared cause or missing authority | Open rows |
+| --- | --- | --- |
+| A. Typed ABI | Hand tables | HF-1, HF-2 |
+| B. Binding flow | Worst-case rebinding | {b_rows} |
+
+## Open: correctness and release blockers
+
+| ID | Defect | Evidence | Next |
+|----|--------|----------|------|
+| HF-1 | d | e | n |
+| HF-2 | d | e | n |
+| HF-3 | d | e | n |
+
+## Fixed after the handoff
+
+| ID | Defect | Fix |
+|----|--------|-----|
+| HF-4 | d | fixed by x |
+"""
+_PRIOR_ART = "# Prior art\n\n## A. Typed ABI\n\ntext\n\n## B. Binding flow\n\ntext\n"
+
+
+def test_every_open_finding_sits_in_one_dependency_family_with_prior_art() -> None:
+    from tools import finding_status
+
+    complete = finding_status.project(_DAG_LEDGER.format(b_rows="HF-3"))
+    assert [family.title for family in complete.dependency_families] == [
+        "A. Typed ABI",
+        "B. Binding flow",
+    ]
+    assert finding_coverage.dependency_order_problems(complete, _PRIOR_ART) == []
+
+    # A new open row outside the DAG, a closed row listed, and a row placed twice.
+    for b_rows, expected in (
+        ("", "open finding HF-3 is in no dependency family"),
+        ("HF-3, HF-4", "lists HF-4, which is not an open finding"),
+        ("HF-3, HF-1", "open finding HF-1 sits in families A, B"),
+    ):
+        status = finding_status.project(_DAG_LEDGER.format(b_rows=b_rows))
+        problems = finding_coverage.dependency_order_problems(status, _PRIOR_ART)
+        assert any(expected in problem for problem in problems), problems
+
+    # A family without its prior-art section, and a ledger without the table.
+    problems = finding_coverage.dependency_order_problems(
+        complete, "# Prior art\n\n## A. Typed ABI\n"
+    )
+    assert problems == [
+        "dependency family B. Binding flow has no section in "
+        "docs/design/findings_prior_art.md"
+    ]
+    bare = finding_status.project("## Open:" + _DAG_LEDGER.split("## Open:", 1)[1])
+    assert finding_coverage.dependency_order_problems(bare, _PRIOR_ART) == [
+        "the ledger has no family dependency order table"
+    ]

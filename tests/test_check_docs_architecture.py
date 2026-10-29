@@ -4,13 +4,31 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import check_docs_architecture as module
 from tools import finding_status
+
+
+REAL_REPOSITORY_PATHS = module._repository_paths
 
 
 def _write_file(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _fixture_tree_paths() -> list[str]:
+    # A fixture tree has no Git index or ignore rules, so Git would report
+    # every file as untracked and unignored: exactly this listing.
+    root = module.ROOT
+    return sorted(
+        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
+    )
+
+
+@pytest.fixture(autouse=True)
+def _list_fixture_tree_without_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "_repository_paths", _fixture_tree_paths)
 
 
 def _seed_valid_repo(root: Path) -> None:
@@ -33,7 +51,7 @@ def _seed_valid_repo(root: Path) -> None:
                 "# Canonicals",
                 "",
                 "- [manifest](design/foundation/authority_manifest.toml)",
-                "- [51](design/foundation/51_ten_year_roadmap.md)",
+                "- [century](design/CENTURY_SYSTEMS_PLAN.md)",
                 "- [52](design/foundation/52_autonomous_operating_charter.md)",
                 "",
             ]
@@ -46,7 +64,7 @@ def _seed_valid_repo(root: Path) -> None:
                 "# Index",
                 "",
                 "- [manifest](design/foundation/authority_manifest.toml)",
-                "- [51](design/foundation/51_ten_year_roadmap.md)",
+                "- [century](design/CENTURY_SYSTEMS_PLAN.md)",
                 "- [52](design/foundation/52_autonomous_operating_charter.md)",
                 "",
             ]
@@ -79,7 +97,6 @@ def _seed_valid_repo(root: Path) -> None:
         "Pointer doc. See docs/spec/STATUS.md and docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md.\n",
     )
     _write_file(root / "docs/BENCHMARKING.md", "# Benchmarking\n")
-    _write_file(root / "docs/ROADMAP_90_DAYS.md", "# 90 Day Roadmap\n")
     _write_file(
         root / "docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md", "# Proof Workflow\n"
     )
@@ -106,13 +123,12 @@ def _seed_valid_repo(root: Path) -> None:
                 "]",
                 "",
                 "[[authority]]",
-                'path = "docs/design/foundation/51_ten_year_roadmap.md"',
-                'index_ref = "design/foundation/51_ten_year_roadmap.md"',
-                'canonicals_ref = "design/foundation/51_ten_year_roadmap.md"',
+                'path = "docs/design/CENTURY_SYSTEMS_PLAN.md"',
+                'index_ref = "design/CENTURY_SYSTEMS_PLAN.md"',
+                'canonicals_ref = "design/CENTURY_SYSTEMS_PLAN.md"',
                 "required_markers = [",
-                '  "Status: NORTH STAR",',
-                '  "Faster than CPython",',
-                '  "SEMANTIC FACT PLANE",',
+                '  "Status: canonical long-horizon engineering plan",',
+                '  "phase_green :=",',
                 "]",
                 "",
                 "[[authority]]",
@@ -129,16 +145,14 @@ def _seed_valid_repo(root: Path) -> None:
         ),
     )
     _write_file(
-        root / "docs/design/foundation/51_ten_year_roadmap.md",
+        root / "docs/design/CENTURY_SYSTEMS_PLAN.md",
         "\n".join(
             [
-                "# 51 — Ten-year roadmap",
+                "# Century Systems Plan",
                 "",
-                "Status: NORTH STAR",
+                "Status: canonical long-horizon engineering plan.",
                 "",
-                "Faster than CPython.",
-                "",
-                "SEMANTIC FACT PLANE",
+                "phase_green := schema_valid",
                 "",
             ]
         ),
@@ -232,7 +246,7 @@ def test_checker_flags_stale_readme_and_supported_contract_patterns(
     assert any("--update-readme" in error for error in errors)
 
 
-def test_checker_flags_old_sync_language_in_agents_and_90_day_plan(
+def test_checker_flags_old_sync_language_in_agents(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -241,20 +255,12 @@ def test_checker_flags_old_sync_language_in_agents_and_90_day_plan(
         tmp_path / "AGENTS.md",
         "README and [ROADMAP.md](ROADMAP.md) are kept in sync.\n",
     )
-    _write_file(
-        tmp_path / "docs/ROADMAP_90_DAYS.md",
-        "This plan must stay aligned with both docs/spec/STATUS.md and ROADMAP.md.\n",
-    )
     monkeypatch.setattr(module, "ROOT", tmp_path)
 
     errors = module.check_repo()
 
     assert any(
         "AGENTS.md" in error and "README and [ROADMAP.md]" in error for error in errors
-    )
-    assert any(
-        "docs/ROADMAP_90_DAYS.md" in error and "stay aligned with both" in error
-        for error in errors
     )
 
 
@@ -273,7 +279,7 @@ def test_checker_requires_long_horizon_routing_and_authority_markers(
     errors = module.check_repo()
 
     assert any(
-        "docs/INDEX.md" in error and "51_ten_year_roadmap.md" in error
+        "docs/INDEX.md" in error and "CENTURY_SYSTEMS_PLAN.md" in error
         for error in errors
     )
     assert any(
@@ -656,4 +662,113 @@ def test_projection_names_open_and_fixed_resurrections() -> None:
         "give each finding one row",
         "HF-120 is open, but a fixed row says it was HF-120; remove the resurrected "
         'row, or write "(was part of HF-120)" when the fix was partial',
+    )
+
+
+@pytest.mark.parametrize(
+    ("rel_path", "refusal"),
+    [
+        (
+            "docs/superpowers/plans/2026-04-14-gpu.md",
+            module.PlanningDocumentRefusal.SESSION_PLAN_TREE,
+        ),
+        (
+            "docs/superpowers/notes.txt",
+            module.PlanningDocumentRefusal.SESSION_PLAN_TREE,
+        ),
+        (
+            "docs/design/2026-10-29-cache-plan.md",
+            module.PlanningDocumentRefusal.DATED_PLAN,
+        ),
+        (
+            "docs/design/2026-10-29-Execution-PLAN.md",
+            module.PlanningDocumentRefusal.DATED_PLAN,
+        ),
+        ("docs/ROADMAP.md", module.PlanningDocumentRefusal.SECOND_ROADMAP),
+        ("docs/ROADMAP_90_DAYS.md", module.PlanningDocumentRefusal.SECOND_ROADMAP),
+        (
+            "docs/architecture/ocr-engine-roadmap.md",
+            module.PlanningDocumentRefusal.SECOND_ROADMAP,
+        ),
+        ("Roadmap.md", module.PlanningDocumentRefusal.SECOND_ROADMAP),
+        ("ROADMAP.md", None),
+        # A dated research note is not a plan; an undated design authority whose
+        # name says "plan" is not a dated session document.
+        ("docs/research/2026-04-14-tiered-kv-caching.md", None),
+        ("docs/design/foundation/native_link_plan.md", None),
+        # Code is not a planning document.
+        ("tools/roadmap_links.py", None),
+    ],
+)
+def test_planning_document_refusal_classifies_paths(
+    rel_path: str, refusal: module.PlanningDocumentRefusal | None
+) -> None:
+    assert module.planning_document_refusal(rel_path) is refusal
+
+
+def test_checker_refuses_session_plans_dated_plans_and_second_roadmaps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_valid_repo(tmp_path)
+    _write_file(tmp_path / "docs/superpowers/specs/2026-03-28-vision.md", "# Spec\n")
+    _write_file(tmp_path / "docs/plans/2026-10-29-cache-plan.md", "# Plan\n")
+    _write_file(tmp_path / "docs/ROADMAP_90_DAYS.md", "# 90 Day Roadmap\n")
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+
+    errors = module.check_repo()
+
+    assert errors == [
+        "docs/ROADMAP_90_DAYS.md: "
+        + module.PlanningDocumentRefusal.SECOND_ROADMAP.value,
+        "docs/plans/2026-10-29-cache-plan.md: "
+        + module.PlanningDocumentRefusal.DATED_PLAN.value,
+        "docs/superpowers/specs/2026-03-28-vision.md: "
+        + module.PlanningDocumentRefusal.SESSION_PLAN_TREE.value,
+    ]
+
+
+def test_checker_lists_tracked_and_untracked_paths_through_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_valid_repo(tmp_path)
+    _write_file(tmp_path / ".gitignore", "scratch/\n")
+    _write_file(tmp_path / "docs/archive-roadmap.md", "# Tracked roadmap\n")
+    _write_file(tmp_path / "docs/superpowers/plans/x.md", "# Untracked plan\n")
+    _write_file(tmp_path / "scratch/notes-roadmap.md", "# Ignored notes\n")
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "add", "--", "docs/archive-roadmap.md"],
+    ):
+        run_guarded_test_process(argv, cwd=tmp_path, check=True)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "_repository_paths", REAL_REPOSITORY_PATHS)
+
+    errors = module.check_repo()
+
+    # Git owns the boundary: tracked and untracked paths are checked, ignored
+    # paths are not.
+    assert errors == [
+        "docs/archive-roadmap.md: "
+        + module.PlanningDocumentRefusal.SECOND_ROADMAP.value,
+        "docs/superpowers/plans/x.md: "
+        + module.PlanningDocumentRefusal.SESSION_PLAN_TREE.value,
+    ]
+
+
+def test_checker_fails_closed_when_git_cannot_list_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_valid_repo(tmp_path)
+    # The fixture tree is not a Git repository, so Git refuses to list it.
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "_repository_paths", REAL_REPOSITORY_PATHS)
+
+    errors = module.check_repo()
+
+    assert any(
+        error.startswith("cannot list repository paths through Git:")
+        for error in errors
     )

@@ -13,9 +13,9 @@
 - **Enforcement:** use `molt.capabilities` to check or require capability tokens in stdlib shims.
 - **Implementation statuses (spec 0016):** a compiled binary may import any implemented stdlib module: `intrinsic-backed`, `intrinsic-partial`, `intrinsic-support`, or `python-compiled` (Molt compiles the module's own Python source; no host interpreter runs). A `stub` raises the canonical gap error on any attribute until lowered. Intrinsic status counts only intrinsics a module reads; see `stdlib_intrinsics_audit.generated.md`.
 - **Import-only stubs (tooling-only):** stubs may be used for dependency tracking in tooling, but are forbidden in compiled binaries.
-- **CPython union coverage:** Molt must include one top-level stdlib module/package for each CPython stdlib entry and one `.py` submodule/subpackage for each CPython stdlib submodule entry in the 3.12/3.13/3.14 union baseline (`tools/stdlib_module_union.py`), enforced by `tools/check_stdlib_intrinsics.py`. Update process: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md).
+- **CPython union coverage:** Molt must include one top-level stdlib module/package for each CPython stdlib entry and one `.py` submodule/subpackage for each CPython stdlib submodule entry in the 3.12/3.13/3.14 union baseline (`tools/stdlib_module_union.py`), enforced by `tools/check_stdlib_intrinsics.py`. Update process: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](stdlib_union_baseline.md).
 - **Status ratchet:** the `intrinsic-partial` and `stub` counts must remain at or below `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`, `max_stub`), enforced by `tools/check_stdlib_intrinsics.py`.
-- **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
+- **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](../../plans/stdlib_lowering_plan.md).
 
 ## 0.1 Call and execution policy
 - **Binding and effects:** direct-call specialization requires the current compiler's binding, mutation and effect proofs. Otherwise supported calls retain runtime dispatch; this matrix is not an identity proof or a blanket exemption from observable mutation.
@@ -52,7 +52,7 @@
 
 ## 3. Compatibility Matrix
 Program sequencing for full Rust lowering (core first, then stdlib) is tracked
-in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
+in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](../../plans/stdlib_lowering_plan.md).
 
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -102,7 +102,7 @@ in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat
 | signal | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Intrinsic-backed signal handling uses the generated exact operation authority: `signal.signal`, `signal.raise`, `signal.alarm`, `signal.pause`, and `signal.set_wakeup_fd`; POSIX operations are independently target-gated and unsupported cells fail closed. Core signal constants (`SIG_DFL`, `SIG_IGN`, `SIGABRT`, `SIGFPE`, `SIGILL`, `SIGINT`, `SIGSEGV`, `SIGTERM`, `SIGHUP`, `SIGQUIT`, `SIGALRM`, `SIGPIPE`, `SIGUSR1`, `SIGUSR2`, `SIGCHLD`, `SIGCONT`, `SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`) plus 12 new constant intrinsics (`SIGBUS` through `SIGSYS`) and core functions (`signal`, `getsignal`, `raise_signal`, `alarm`, `pause`, `set_wakeup_fd`, `valid_signals`, `Signals`, `Handlers`, `Sigmasks`). POSIX function intrinsics include `strsignal`, `pthread_sigmask`, `pthread_kill`, `sigpending`, and `sigwait`. Remaining: full platform-specific signal parity. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close remaining signal platform-specific parity.) |
 | select | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | `select.select` plus selector-object backends (`poll`/`epoll`/`kqueue`/`devpoll`) are Rust-intrinsic-backed via runtime selector registries (`molt_select_selector_*`) and readiness polling; Python shims now only normalize signatures/events and platform-gate exported constructors. Remaining gaps: full OS-flag/error fidelity and broader non-socket fd/device parity. |
 | site | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; path config gated via `env.read`/`fs.read`. |
-| sysconfig | Capability-gated | Planned | P3 | SL3 | stdlib | Import-only allowlist stub; host/path data gated via `env.read`/`fs.read`. |
+| sysconfig | Capability-gated | Partial | P3 | SL3 | stdlib | Port of CPython 3.14's `sysconfig` with 3.12-3.15 version gates: schemes, paths, `get_platform`, `get_config_vars` and `is_python_build` follow CPython. Build values come from the binary's runtime authorities (ABI flags, target Python version, `_imp.extension_suffixes()`, target architecture); a Makefile variable Molt has no value for returns `None`. Host reads go through `os` (`env.read`, `fs.read`, `os.uname`). `_sysconfig` (3.13+) and `_osx_support` are lowered with it; `sysconfig.__main__` is still a stub. Design: [sysconfig_build_values.md](../../../../../design/sysconfig_build_values.md). |
 | subprocess | Capability-gated | Partial | P3 | SL3 | stdlib/runtime | Intrinsic-backed process spawn via `molt_process_spawn_ex` Rust intrinsic with expanded `Popen` surface: `start_new_session`, `process_group` params, `pid` property, `send_signal` method, `wait`/`communicate`/`poll`/`returncode`. Convenience functions `check_call`, `getstatusoutput`, `getoutput` are intrinsic-backed. `proc.spawn` capability gating enforced. Remaining: full Popen stdin/stdout/stderr pipe lifecycle, `check_output`, `DEVNULL`/`PIPE`/`STDOUT` constant fidelity, and broader platform parity. (TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P2, status:partial): close remaining subprocess Popen/pipe lifecycle parity.) |
 | socket | Capability-gated | Partial | P2 | SL3 | stdlib/runtime | Runtime-backed socket API (AF_INET/AF_INET6/AF_UNIX, connect/bind/listen/accept/send/recv, socketpair, shutdown/half-close, sendall, recv_into/peek, `sendmsg`/`recvmsg`/`recvmsg_into`, getaddrinfo/nameinfo/hostby*/fqdn, dup/fromfd, makefile, inet_pton/ntop, UDP echo/truncation, nonblocking connect SO_ERROR, dualstack, websocket handshakes) is claimed for Unix-family native targets plus the WASM host ABI. `dup` uses runtime socket-handle cloning and default-timeout validation is CPython-shaped. Unix ancillary control-plane coverage is now intrinsic-backed for `cmsghdr` tuple encode/decode (including `SCM_RIGHTS` fd-passing lane). WASM host ABI now carries ancillary payloads + `msg_flags` end-to-end for `sendmsg`/`recvmsg`/`recvmsg_into`, including ancillary transport on wasm-managed stream peer paths (for example `socketpair`); unsupported non-Unix host routes still return `EOPNOTSUPP` for non-empty ancillary control messages. Windows native `stdlib_net` is explicitly target-gated through no-net intrinsics until a coherent WinSock ABI authority lands for constants, sockaddr storage, resolver calls, socket ownership, SSL, and the async poller. Advanced options/full constant table, SSL, and Node/WASI/browser parity pending (wasmtime host implemented). |
 | ssl | Capability-gated | Planned | P3 | SL3 | stdlib | TLS primitives. Current native fd-wrapping TLS support is tied to the Unix-family socket ABI; Windows native SSL remains gated with the Windows socket ABI gap. |
@@ -392,7 +392,7 @@ Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib
 - Acceptance: Parity for supported features; deterministic runtime.
 
 ### 3.2 Cross-cutting Requirements
-- Update [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) and [docs/ROADMAP.md](docs/ROADMAP.md) as each module lands.
+- Update this matrix as each module lands.
 - TODO(docs, owner:docs, milestone:SL1, priority:P3, status:planned): add `TODO(stdlib-compat, ...)` markers for interim gaps.
 - Ensure capability gating for I/O-adjacent pieces (if introduced).
 - Add differential tests in `tests/differential/` as required.
@@ -427,7 +427,7 @@ Shared sorting costs O(n log n) comparisons and O(n) retained
 storage; no independent JSON comparator or performance improvement is claimed.
 This mechanism does not qualify the remaining JSON parity matrix.
 
-## 6. TODOs (tracked in ROADMAP.md)
+## 6. TODOs
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `itertools` + `operator` core-adjacent intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill out remaining `math` intrinsics (determinism policy).

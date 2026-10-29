@@ -621,7 +621,7 @@ Key controls:
   identity stay reproducible across resumes.
 - Keep `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` for diff runs so Cargo artifacts are reused instead of split across ad-hoc roots.
 
-Build-throughput roadmap lanes are tracked in [ROADMAP.md](../ROADMAP.md) under the tooling throughput section (daemon hardening, function-level cache, batch diff compile server, smarter diff scheduling, and distributed cache strategy).
+Build-throughput design lives in [56 DX/build speed](design/foundation/56_dx_buildspeed_tooling.md) and the [backend compile daemon](design/backend_compile_daemon.md). Open build-speed findings, such as test-suite time (HF-263), live in the [findings ledger](agent/V1_HANDOFF_FINDINGS.md).
 
 ## Key Concepts
 

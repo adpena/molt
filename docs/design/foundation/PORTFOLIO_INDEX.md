@@ -25,7 +25,7 @@ second owner before routing can drift.
 
 ## The nodes
 - **Doctrine:** [DESIGN_DOCTRINE](DESIGN_DOCTRINE.md) — governs all.
-- **Decomposition (the god-file spine):** [21a](21a_function_compiler_function_split_PLAN.md) function-split · [21b](21b_crate_graph_blueprint.md) crate-graph (molt-ir←molt-passes←molt-lower, per-backend crates, codegen-abi) · [21f](21f_crate_graph_smove_execution_specs.md) per-S-move crate execution specs · [21c](21c_frontend_mixin_decomposition_PLAN.md) frontend mixins · [21d](21d_cli_package_decomposition_PLAN.md) cli/ package · [21e](21e_runtime_satellite_dedup_PLAN.md) runtime satellite dedup.
+- **Decomposition (the god-file spine):** [21](21_decomposition_program.md) program record · [21b](21b_crate_graph_blueprint.md) crate-graph (molt-ir←molt-passes←molt-lower, per-backend crates, codegen-abi) · [21f](21f_crate_graph_smove_execution_specs.md) per-S-move crate execution specs. The function-compiler split (21a), frontend mixins (21c), `cli/` package (21d) and runtime satellite dedup (21e) are complete; their plans were retired.
 - **Infra (Lane C):** [64](64_perf_scoreboards_and_harness.md) perf scoreboards+harness · [59](59_semantic_fact_plane.md) semantic fact-plane · [69](69_benchmark_corpus_union_and_dynamic_calibration.md) benchmark-corpus union + dynamic calibration.
 - **Perf frontier (Lane B):** [65](65_perf_compression_ladder.md) compression-ladder (9 rungs) · [68](68_shapefacts_rung4_class_layout.md) ShapeFacts class layout (Rung 4) · [63](63_deforestation_fusion.md) deforestation/fusion · [60](60_tree_shaking_whole_program_dce.md) tree-shaking · [61](61_binary_size_and_output_optimization.md) binary-size · [62](62_startup_cold_start.md) startup/cold-start.
 - **Safety (Lane A, P0):** [55](55_memory_safety_ownership_lattice.md) ownership-lattice.
@@ -49,15 +49,15 @@ DESIGN_DOCTRINE ─ governs ─▶ everything
 60 tree-shaking ─▶ 61 binary-size (Size = 6th projection over 64) ─▶ 62 startup (smaller cold tail)
 55 ownership-lattice ─▶ 54 throughput (GIL-free safety) + 65 Rung 1 + 63 K3 (escape)
 59 fact-plane ─▶ 66 parity (one registry authority; backends lower, never decide) + every generated fact
-21b crate-graph ─▶ DX incremental builds (56) ; 21a/c/d/e ─▶ god-file ownership-collision kills
+21b crate-graph ─▶ DX incremental builds (56) ; 21a/c/d/e (complete) ─▶ god-file ownership-collision kills
 66 parity + 67 ML + 65 perf + 54 throughput + 56 DX ─▶ 58 killer demos
 ```
 
 ## Execution order (council three-lane; A blocks B only on memory-unsafety)
-1. **Lane A — P0 safety FIRST where unsafe:** 21e **R.0** (the satellite parity guard is RED — reconcile before its R.2/R.3); 55 ownership-lattice (rung-1→2 bridge; the resurrection/finalizer SIGSEGV outranks all perf).
+1. **Lane A — P0 safety FIRST where unsafe:** 55 ownership-lattice (rung-1→2 bridge; the resurrection/finalizer SIGSEGV outranks all perf).
 2. **Lane C — infra, concurrent from day one:** 64 scoreboards (wire the perf gate into CI — the named gap) + 59 fact-plane generators (op_kinds/protocol, gen-X --check). These are the substrate every B arc steers by. 59 also fixes the structural_audit god_files metric so it credits cohesive decomposition products (not re-pin).
 3. **Lane B — perf frontier, rung-ordered:** 65 Rung 1 (←55) ‖ Rung 0 (64) → Rung 2 → Rung 3 Repr → **[68 Rung 4 ShapeFacts](68_shapefacts_rung4_class_layout.md) (build the typed fact)** → Rung 5 SIMD → Rung 6 (63) → Rung 7 parity → Rung 8 (60→61→62 footprint).
-4. **Decomposition spine — continuous (the swarm is here):** 21a families → 21b/21f S1–S8 crate splits (S1 molt-ir first, the gate) → 21c/21d/21e. Each split is a green move-only commit; the structural_audit ratchet only goes down.
+4. **Decomposition spine — continuous (the swarm is here):** 21b/21f S1–S8 crate splits (S1 molt-ir first, the gate); the 21a/21c/21d/21e moves are complete. Each split is a green move-only commit; the structural_audit ratchet only goes down.
 5. **Compat + product, on the substrate:** 66 parity (the differential oracle, all 4 backends) + 67 tinygrad/DFlash (exact fidelity) → 54 throughput → 56 DX / 57 UX → 58 demos (the switch-makers).
 
 ## Invariant for every arc + PR (from the doctrine)

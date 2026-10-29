@@ -16,7 +16,11 @@ This tool reads all three and reports, per finding and per family
 burn-down measure. `--check` fails when an expectation names a finding that is
 not open, when a member of an enforced family has no expectation, or when the
 family's local proof lane (`findings.<family>.native` in tools/proof_plan.toml)
-does not run exactly the family's finding programs.
+does not run exactly the family's finding programs. It also fails unless every
+open finding sits in exactly one root-cause family of the ledger's family
+dependency order and every such family has its section in
+docs/design/findings_prior_art.md, so a new row is placed in the DAG and its
+family's prior art exists before work starts.
 
 Usage:
     python tools/finding_coverage.py                 # per-family report
@@ -29,6 +33,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import re
 import sys
 import tomllib
 from collections.abc import Iterable, Iterator, Mapping
@@ -47,6 +52,7 @@ ROOT = bind_repository_imports(__file__)
 from tests import findings  # noqa: E402
 from tests.findings.families import FAMILY_FINDINGS  # noqa: E402
 from tests.findings.finding_ids import OPEN_FINDING_IDS  # noqa: E402
+from tools import finding_status  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
 
 Channel = Literal["pytest", "program", "manifest"]
@@ -248,19 +254,65 @@ def render(coverage: Coverage) -> str:
     return "\n".join(lines)
 
 
+PRIOR_ART_PATH = Path("docs/design/findings_prior_art.md")
+_PRIOR_ART_HEADING_RE = re.compile(r"^## (?P<title>[A-Z]\. \S.*?)\s*$", re.MULTILINE)
+
+
+def dependency_order_problems(
+    status: finding_status.FindingStatus, prior_art: str
+) -> list[str]:
+    """Each open row sits in exactly one family, and each family has prior art."""
+    families = status.dependency_families
+    if not families:
+        return ["the ledger has no family dependency order table"]
+    problems: list[str] = []
+    open_keys = set(status.open_keys)
+    placed: dict[str, list[str]] = {}
+    for family in families:
+        for key in family.keys:
+            placed.setdefault(key, []).append(family.letter)
+            if key not in open_keys:
+                problems.append(
+                    f"dependency family {family.title} lists {key}, which is not "
+                    "an open finding"
+                )
+    problems.extend(
+        f"open finding {key} sits in families {', '.join(letters)}; place it in one"
+        for key, letters in sorted(placed.items())
+        if len(letters) > 1
+    )
+    problems.extend(
+        f"open finding {key} is in no dependency family; place it in the ledger's "
+        "family dependency order"
+        for key in status.open_keys
+        if key not in placed
+    )
+    headings = set(_PRIOR_ART_HEADING_RE.findall(prior_art))
+    problems.extend(
+        f"dependency family {family.title} has no section in {PRIOR_ART_PATH}"
+        for family in families
+        if family.title not in headings
+    )
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--check", action="store_true", help="enforce coverage")
     parser.add_argument("--json", action="store_true", help="emit JSON")
     args = parser.parse_args(argv)
     coverage = project(citations(), lanes=lane_cases())
+    dag_problems = dependency_order_problems(
+        finding_status.read_ledger(ROOT),
+        (ROOT / PRIOR_ART_PATH).read_text(encoding="utf-8"),
+    )
     if args.json:
         print(
             json.dumps(
                 {
                     "families": [asdict(family) for family in coverage.families],
                     "citations": [asdict(citation) for citation in coverage.citations],
-                    "problems": list(coverage.problems),
+                    "problems": [*coverage.problems, *dag_problems],
                 },
                 indent=2,
                 sort_keys=True,
@@ -268,7 +320,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print(render(coverage))
-    return 1 if args.check and coverage.problems else 0
+        for problem in dag_problems:
+            print(f"problem: {problem}")
+    return 1 if args.check and (coverage.problems or dag_problems) else 0
 
 
 if __name__ == "__main__":

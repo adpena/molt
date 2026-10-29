@@ -177,7 +177,7 @@
 | SSL recv/send/sendall flags | ssl.py | MEDIUM | /src/molt/stdlib/ssl.py:~1100, ~1150, ~1200 | NotImplementedError on MSG_* flags (MSG_PEEK, MSG_OOB, etc.) |
 | Regex advanced features | re.py | MEDIUM | native engine | Lookahead, named groups, flag scoping, backreferences all raise NotImplementedError; host fallback disabled |
 | doctest eval/exec blocked | doctest.py | MEDIUM | /src/molt/stdlib/doctest.py:~260 | MOLT_COMPAT_ERROR: eval/exec/compile unsupported; module unusable |
-| asyncio runtime-heavy wasm blocked | asyncio/ | MEDIUM | /docs/ROADMAP.md:171 | 4/5 runtime-heavy tests fail; event-loop policy, table-ref trap, zipimport gap, thread unavailable |
+| asyncio runtime-heavy wasm blocked | asyncio/ | MEDIUM | retired `docs/ROADMAP.md` line 171 | 4/5 runtime-heavy tests fail; event-loop policy, table-ref trap, zipimport gap, thread unavailable |
 | zoneinfo stubs not implemented | zoneinfo/ | LOW-MEDIUM | /src/molt/stdlib/zoneinfo/{_zoneinfo,_tzpath,_common}.py | All marked TODO(SL3, planned); currently import-smoke stubs |
 | socket ancillary data (partial) | socket.py, _socket.py | LOW | /src/molt/stdlib/_socket.py:~450 | wasm streams OK; non-Unix routes return EOPNOTSUPP for non-empty control messages |
 | Compression methods unsupported | zipfile.py | LOW | /src/molt/stdlib/zipfile/__init__.py:~1100, ~1200 | Some compression formats raise NotImplementedError (zstandard, etc.) |
@@ -361,7 +361,7 @@ contract; PENDING for F1/F2/F4/F5 algorithmic DFlash fidelity.
 | **1** | os.walk returns eager list (OOM hazard) | CRITICAL | Iterator protocol, generator semantics | High | /runtime/molt-runtime/src/builtins/os_ext.rs:218-358 | Blocked on generator fusion (the keystone arc) |
 | **2** | Generator/async generator protocol incomplete | CRITICAL | Language semantics (yield, yield from, async gen) | Very High | scattered + lowering | Blocked (TC2 pending; CoroElide/generator-fusion = Tier-3 of foundation program) |
 | **3** | dir_fd parameter unsupported across os.* | HIGH | POSIX compliance | Medium | /src/molt/stdlib/os.py:1387-1410 | Needs intrinsic variants design |
-| **4** | asyncio runtime-heavy wasm blocked (4/5 fail) | HIGH | Async correctness in browser | High | ROADMAP.md:171 claims | Event-loop policy, table-ref trap, zipimport gap, no threads |
+| **4** | asyncio runtime-heavy wasm blocked (4/5 fail) | HIGH | Async correctness in browser | High | retired roadmap line 171 | Event-loop policy, table-ref trap, zipimport gap, no threads |
 | **5** | Regex advanced features (lookahead, named groups, backrefs) | MEDIUM | Text processing parity | Medium | native regex engine | NotImplementedError; host fallback disabled |
 | **6** | Socket/SSL MSG_* flags unsupported | MEDIUM | Network edge cases | Low-Medium | ssl.py ~1100-1200 | Incremental |
 | **7** | doctest eval/exec blocked | MEDIUM | Testing framework | Low (policy) | doctest.py ~260 | Policy-deferred by design (no dynamic exec) |
