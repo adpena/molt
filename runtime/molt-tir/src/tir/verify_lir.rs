@@ -17,9 +17,8 @@
 //! - [`ops`]: per-op surface and representation-rule checks;
 //! - [`terminators`]: terminator, branch-argument, and use-dominance checks.
 
-use std::collections::HashMap;
-
 use super::blocks::BlockId;
+use super::dominators::DominatorTree;
 use super::lir::{LirFunction, LirValue};
 
 mod dom;
@@ -96,29 +95,4 @@ pub(super) struct ValueDef {
     pub(super) value: LirValue,
     pub(super) block: BlockId,
     pub(super) op_index: Option<usize>,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct DominatorInfo {
-    pub(super) preorder: HashMap<BlockId, usize>,
-    pub(super) postorder: HashMap<BlockId, usize>,
-}
-
-impl DominatorInfo {
-    pub(super) fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        if a == b {
-            return true;
-        }
-        match (
-            self.preorder.get(&a),
-            self.preorder.get(&b),
-            self.postorder.get(&a),
-            self.postorder.get(&b),
-        ) {
-            (Some(&a_pre), Some(&b_pre), Some(&a_post), Some(&b_post)) => {
-                a_pre <= b_pre && b_post <= a_post
-            }
-            _ => false,
-        }
-    }
 }
