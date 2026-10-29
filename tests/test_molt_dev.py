@@ -9905,6 +9905,33 @@ class TestStorageAuthority:
                     pass
         assert not (artifact / "new-private-cache").exists()
 
+    def test_namespace_cleanup_does_not_follow_a_symlink_target(self, tmp_path):
+        from molt.dx import StorageWriteClaim
+
+        repo, artifact = tmp_path / "source", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        environment = {"MOLT_EXT_ROOT": str(artifact)}
+        admitted = tmp_path / "admitted"
+        admitted.mkdir()
+        external = tmp_path / "external"
+        external.write_bytes(b"host interpreter stand-in")
+        link = admitted / "python"
+        link.symlink_to(external)
+        claim = StorageWriteClaim("scratch", admitted)
+        with storage_write_check(repo, environment, molt_only=False, outputs=(claim,)):
+            renamed = admitted / "python3"
+            link.rename(renamed)
+            renamed.unlink()
+        assert external.read_bytes() == b"host interpreter stand-in"
+        link.symlink_to(external)
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, environment, molt_only=False, outputs=(claim,)
+            ):
+                link.write_bytes(b"must be refused")
+        assert external.read_bytes() == b"host interpreter stand-in"
+
     def test_heavy_repository_state_projects_to_artifact_volume(self, tmp_path):
         repo, artifact = tmp_path / "molt-src", tmp_path / "data"
         repo.mkdir()
@@ -10010,6 +10037,18 @@ class TestStorageAuthority:
             molt_dev_storage.retire_regenerable(
                 [source], kind="lane-evidence", now=time.time(), apply=True
             )
+
+    @pytest.mark.parametrize("kind", ["scratch-evidence", "sccache-server-evidence"])
+    def test_failure_evidence_cannot_enter_regenerable_retirement(self, tmp_path, kind):
+        payload = tmp_path / "provider-failure"
+        payload.mkdir()
+        signal = payload / "crash.bin"
+        signal.write_bytes(b"unique crash signal")
+        with pytest.raises(ValueError, match="durable"):
+            molt_dev_storage.retire_regenerable(
+                [payload], kind=kind, now=time.time(), apply=True
+            )
+        assert signal.read_bytes() == b"unique crash signal"
 
     def test_last_use_budget_never_retires_a_held_cache(self, tmp_path):
         from molt.checkout_state import materialize_provider_cache, _state_metadata_root
