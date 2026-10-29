@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -9,6 +8,7 @@ import pytest
 
 import molt
 import molt.cli as cli
+from tests.process_guard_common import run_guarded_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,7 +48,7 @@ def test_version_works_without_source_tree_or_distribution_metadata(
     source = (ROOT / "src/molt/_version.py").read_text(encoding="utf-8")
     module = tmp_path / "shipped_version.py"
     module.write_text(source, encoding="utf-8")
-    run = subprocess.run(
+    run = run_guarded_test_process(
         [
             sys.executable,
             "-B",
@@ -59,10 +59,9 @@ def test_version_works_without_source_tree_or_distribution_metadata(
             str(module),
         ],
         cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=True,
+        timeout=60,
     )
+    assert run.returncode == 0, run.stderr
     assert run.stdout.strip() == _project_version()
 
 
