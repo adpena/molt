@@ -77,6 +77,11 @@ Minimize the wall clock to that outcome through complete typed authority
 migrations, measured structural simplification and focused independent proof.
 Small user-program cold builds, edits and unchanged rebuilds must be fast;
 additional compiler/distribution build work is preferable to repeated user work.
+A new row joins exactly one root-cause family of the family dependency order
+in the change that opens it, and a closed row leaves it; a row that fits no
+family opens a new family, with its edges, level and a section in
+`docs/design/findings_prior_art.md`, before work on it starts.
+`tools/finding_coverage.py --check` enforces both.
 Consult published state before dispatch, reconcile the codebase and this ledger
 in each landing, preserve unrelated work, and harvest and retire completed lanes.
 Completion requires the current candidate's declared E1–E4 and authenticated H0
