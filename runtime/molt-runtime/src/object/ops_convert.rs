@@ -811,7 +811,7 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
 }
 
 /// `float.__getformat__(typestr)` names the storage layout of the C `double`
-/// or `float` type; CPython 3.12 to 3.15 keep the same contract. Rust's `f64`
+/// or `float` type; every supported CPython keeps the same contract. Rust's `f64`
 /// and `f32` are IEEE 754 binary64 and binary32 on every target, so only the
 /// target's byte order varies. Argument Clinic admits a str (subclasses too),
 /// exports it as strict UTF-8 and rejects an embedded NUL before it compares
