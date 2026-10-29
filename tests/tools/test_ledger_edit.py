@@ -85,7 +85,10 @@ def test_open_inserts_the_row_joins_its_family_and_projects_it(tmp_path: Path) -
     assert _status(root).open_keys == ("HF-1", "HF-2", "HF-3")
     assert _family_keys(root) == {"A": ("HF-1",), "B": ("HF-2", "HF-3")}
     assert '"HF-3",' in _identities(root).split("FixedFindingId")[0]
-    assert ledger_edit.next_key((root / ledger_edit.LEDGER).read_text()) == "HF-4"
+    assert (
+        ledger_edit.next_key((root / ledger_edit.LEDGER).read_text(encoding="utf-8"))
+        == "HF-4"
+    )
 
 
 def test_close_moves_the_row_to_fixed_and_leaves_its_family(tmp_path: Path) -> None:
