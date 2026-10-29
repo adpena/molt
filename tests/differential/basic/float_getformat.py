@@ -1,4 +1,3 @@
-# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-566 expect_molt_returncode=1 expect_molt_stdout_sha256=2c5eace3de858a572921e2d9261296e89282e65a4ecaf573336fcf5836b5f814
 """Purpose: differential coverage for float.__getformat__ (HF-566).
 
 CPython's `Lib/test/support/__init__.py` calls `float.__getformat__("double")`
