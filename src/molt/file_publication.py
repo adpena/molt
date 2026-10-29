@@ -83,7 +83,7 @@ def is_link_like(path: Path) -> bool:
     return metadata_is_link_like(metadata)
 
 
-def _is_system_link(path: Path, metadata: os.stat_result) -> bool:
+def _is_system_link(path: Path) -> bool:
     """Whether a POSIX symlink belongs to the operating system.
 
     macOS ships ``/var``, ``/tmp`` and ``/etc`` as root-owned links into
@@ -92,11 +92,14 @@ def _is_system_link(path: Path, metadata: os.stat_result) -> bool:
     or other user may write; a link anyone else can plant stays refused. This
     is OpenSSH's StrictModes ownership rule for path components (``safe_path``).
     """
-    if os.name == "nt" or not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0:
+    if os.name == "nt":
         return False
     try:
+        metadata = path.lstat()
         parent = path.parent.lstat()
     except OSError:
+        return False
+    if not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0:
         return False
     return (
         stat.S_ISDIR(parent.st_mode)
@@ -121,11 +124,7 @@ def resolve_owned_path(path: Path) -> Path:
     cursor = Path(lexical.anchor)
     for part in lexical.parts[1:]:
         cursor /= part
-        try:
-            metadata = cursor.lstat()
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        if metadata_is_link_like(metadata) and not _is_system_link(cursor, metadata):
+        if is_link_like(cursor) and not _is_system_link(cursor):
             raise ValueError(f"owned path traverses a link or junction: {cursor}")
     resolved = lexical.resolve()
     if os.name == "nt":
