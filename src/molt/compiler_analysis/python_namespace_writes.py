@@ -49,7 +49,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 4
+SUMMARY_SCHEMA: Final = 5
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -774,6 +774,9 @@ class _NamespaceWriteCollector:
         """Classify one use of a namespace mapping: (writes, literal name)."""
 
         value, parent, grandparent = self._consumer(site)
+        if isinstance(parent, ast.Expr):
+            # Discarding the mapping neither publishes it nor writes a name.
+            return False, None
         if isinstance(parent, ast.Subscript) and parent.value is value:
             if isinstance(parent.ctx, ast.Load):
                 return False, None
