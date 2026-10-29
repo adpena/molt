@@ -52,9 +52,23 @@ def test_run_context_env_exports_short_backend_daemon_socket_dir() -> None:
 
 @pytest.mark.parametrize("pinned_session", [None, "throughput-pinned"])
 def test_run_context_env_prefers_external_artifact_root(
+    tmp_path: Path,
     pinned_session: str | None,
 ) -> None:
     external_root = Path("/tmp") / f"molt-throughput-env-{uuid4().hex}" / "Molt"
+    # Candidate selection applies only to a checkout family with no durable
+    # artifact-root binding. The child reads the binding from disk, so select
+    # an unbound plain clone instead of this checkout, which a developer host
+    # may have bound.
+    checkout = tmp_path / "clone"
+    init = run_native_test_process(
+        ["git", "init", "-q", "-b", "main", str(checkout)],
+        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert init.returncode == 0, init.stderr
     env = dict(os.environ)
     for key in (
         "MOLT_EXT_ROOT",
@@ -94,6 +108,8 @@ def test_run_context_env_prefers_external_artifact_root(
             "--format",
             "posix",
             "--prefer-external-artifacts",
+            "--root",
+            str(checkout),
         ],
         cwd=REPO_ROOT,
         env=env,
@@ -109,7 +125,7 @@ def test_run_context_env_prefers_external_artifact_root(
     assert session_id
     # Each checkout gets its own stable target under the shared root (HF-45).
     expected_target = (
-        external_root.resolve() / "target" / "checkouts" / checkout_component(REPO_ROOT)
+        external_root.resolve() / "target" / "checkouts" / checkout_component(checkout)
     )
     if pinned_session is not None:
         expected_target = expected_target / "sessions" / pinned_session
