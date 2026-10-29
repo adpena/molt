@@ -341,3 +341,84 @@ def test_committed_selection_reports_deferred_build_cells():
         ).selected
         == selection.selected
     )
+
+
+def _pytest_requests(gates) -> set[tuple[tuple[str, ...], str]]:
+    """(pytest selector, target) for every target the selected cohorts run."""
+    requests = set()
+    for gate in gates:
+        if not (gate.pytest and isinstance(gate.command, tuple)):
+            continue
+        argv = gate.command
+        start = next(
+            index + 1
+            for index, argument in enumerate(argv)
+            if argument.startswith("--molt-worker-memory-gb")
+        )
+        first = next(
+            index
+            for index, argument in enumerate(argv)
+            if index >= start and argument.startswith("tests/")
+        )
+        selector = tuple(argv[start:first])
+        requests.update((selector, target) for target in argv[first:])
+    return requests
+
+
+def _covers(full, selector, target) -> bool:
+    path = target.partition("::")[0]
+    return any(
+        (have == target and scope in {(), selector})
+        or (have == path and (scope == () or (scope == selector and path == target)))
+        for scope, have in full
+    )
+
+
+def test_the_graph_never_drops_what_a_rule_selects():
+    # For one tracked path per rule glob, the full landing selection keeps
+    # every gate and every pytest target (at the same or a wider scope) that
+    # the rules select on their own.
+    from dataclasses import replace
+    from fnmatch import fnmatchcase
+
+    from tools.dirty_tree_policy import is_ignored
+
+    cfg = GateConfig.load(COMMITTED_GATES)
+    rules_only = replace(cfg, dependency_graph=None)
+    tracked = sorted(cfg.dependency_graph().tree.blobs)
+    paths: set[str] = set()
+    for rule in cfg.rules:
+        for glob in rule.globs:
+            if not any(character in glob for character in "*?["):
+                if glob in cfg.dependency_graph().tree.blobs:
+                    paths.add(glob)
+                continue
+            match = next(
+                (
+                    path
+                    for path in tracked
+                    if fnmatchcase(path, glob) and is_ignored(path, (glob,))
+                ),
+                None,
+            )
+            if match is not None:
+                paths.add(match)
+    paths.discard("tools/proof_plan.toml")
+    assert len(paths) > 300
+    dropped = []
+    for path in sorted(paths):
+        before, _ = rules_only.select([path])
+        after, _ = cfg.select([path])
+        commands = {gate.command for gate in after}
+        dropped.extend(
+            (path, gate.command)
+            for gate in before
+            if not gate.pytest and gate.command not in commands
+        )
+        full = _pytest_requests(after)
+        dropped.extend(
+            (path, selector, target)
+            for selector, target in _pytest_requests(before)
+            if not _covers(full, selector, target)
+        )
+    assert dropped == []

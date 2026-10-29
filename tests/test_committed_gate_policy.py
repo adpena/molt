@@ -408,10 +408,6 @@ def test_shared_generator_and_ci_inputs_retain_ci_consumer_closure(source):
     }
 
 
-# tests/test_proof_plan.py runs whole under its own pre-push cell's toolchains.
-TOOLING_CELL_TOOLCHAINS = ("python", "uv", "rustc", "cargo", "rustfmt")
-
-
 def test_proof_plan_test_leaf_runs_complete_file_without_production_consumers():
     cfg = GateConfig.load(COMMITTED_GATES)
     target = "tests/test_proof_plan.py"
@@ -435,8 +431,9 @@ def test_proof_plan_test_leaf_runs_complete_file_without_production_consumers():
         for gate in gates
         if isinstance(gate.command, tuple) and target in gate.command
     ]
+    assert cohort.command[-1:] == (target,)
     assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
-    assert cohort.toolchains == TOOLING_CELL_TOOLCHAINS
+    assert cohort.toolchains == ("python", "uv", "cargo")
     assert {gate.command for gate in gates} >= set(cfg.always)
 
 
@@ -450,8 +447,9 @@ def test_combined_proof_plan_leaf_and_ci_share_one_complete_cargo_cohort():
         for gate in gates
         if isinstance(gate.command, tuple) and target in gate.command
     ]
+    assert cohort.command[-1:] == (target,)
     assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
-    assert cohort.toolchains == TOOLING_CELL_TOOLCHAINS
+    assert cohort.toolchains == ("python", "uv", "cargo")
     assert _selected_pytest_targets(cfg, [target, ".github/workflows/ci.yml"]) >= {
         target,
         "tests/test_ci_workflow_topology.py",
@@ -476,8 +474,9 @@ def test_proof_plan_producers_keep_complete_cargo_and_extension_consumer_union(
         if isinstance(gate.command, tuple)
         and "tests/test_proof_plan.py" in gate.command
     ]
+    assert cohort.command[-1:] == ("tests/test_proof_plan.py",)
     assert "-k" not in cohort.command and "-m" not in cohort.command[3:]
-    assert cohort.toolchains == TOOLING_CELL_TOOLCHAINS
+    assert cohort.toolchains == ("python", "uv", "cargo")
     assert _selected_pytest_targets(cfg, [producer]) >= {
         "tests/test_ci_workflow_topology.py",
         "tests/cli/test_source_extension_link_inputs.py",

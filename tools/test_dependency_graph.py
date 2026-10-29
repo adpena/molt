@@ -19,8 +19,9 @@ relation is derived from the tracked sources, never restated by hand:
 * The pytest harness. A test depends on the ``conftest.py`` files above it: on
   their module-level code, their hooks, their autouse fixtures and the fixtures
   the test requests by name, closed over fixture parameters and the module
-  functions those bodies reference. It also depends on the plugins that
-  ``pyproject.toml`` loads with ``-p``.
+  functions those bodies reference. It also depends on ``pyproject.toml``,
+  whose pytest configuration every run reads, and on the plugins it loads
+  with ``-p``.
 * Generator provenance (``tools/generator_manifest.toml``). A generator's
   ``sync_test`` executes the generator. The always gate ``tools/generators.py
   check`` re-renders every reproducible check-mode generator, so a committed
@@ -1053,6 +1054,7 @@ def _test_inputs(
     chain: tuple[str, ...],
     facts: Mapping[str, Mapping],
     plugins: tuple[str, ...],
+    configuration: frozenset[str],
 ) -> TestInputs:
     # The test module and the tests/ helpers it executes form its own side.
     side: set[str] = set()
@@ -1113,6 +1115,9 @@ def _test_inputs(
         roots |= requested_inputs.execs
         files |= requested_inputs.files
         directories |= requested_inputs.directories
+    # pytest reads its configuration (addopts, plugins, markers, import
+    # mode) for every test it runs.
+    files |= configuration
     for plugin in plugins:
         roots.update(resolver.module_targets(plugin))
     # The test module itself runs as a member of its packages.
@@ -1171,6 +1176,9 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
             current.execs | frozenset(tools), current.files, current.directories
         )
     plugins = _pytest_plugins(configuration.get(PYPROJECT))
+    pytest_configuration = frozenset(
+        path for path in (PYPROJECT,) if path in configuration
+    )
     tests = tuple(sorted(path for path in python if is_test_file(path)))
     conftests: dict[str, tuple[str, ...]] = {}
     inputs: dict[str, TestInputs] = {}
@@ -1181,7 +1189,9 @@ def build_graph(tree: RepositoryTree, *, cache: Path | None) -> DependencyGraph:
             if (candidate := f"{parent}/conftest.py".removeprefix("./")) in facts
         )
         conftests[test] = chain
-        inputs[test] = _test_inputs(resolver, test, nodes, chain, facts, plugins)
+        inputs[test] = _test_inputs(
+            resolver, test, nodes, chain, facts, plugins, pytest_configuration
+        )
     stats["graph_seconds"] = round(time.perf_counter() - started, 4)
     stats["tests"] = len(tests)
     return DependencyGraph(
@@ -1206,12 +1216,15 @@ class LandingEnvelope:
 
     It is the test's own proof cell: the ``pre-push`` plan commands that name
     the file (whole, or as nodes) and need no compiler build. Their
-    toolchains are the test's declared prerequisites.
+    toolchains are the test's declared prerequisites, and their pytest
+    selector (``-m "not slow"``) bounds what runs: the landing runs what the
+    cell runs. Cells that disagree on a selector run the file unfiltered.
     """
 
     targets: tuple[str, ...]
     toolchains: tuple[str, ...]
     owners: tuple[str, ...]
+    select: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1222,6 +1235,22 @@ class GraphSelection:
     run: Mapping[str, LandingEnvelope]
     # Selected tests whose proof cells need builds, or that no cell owns.
     deferred: Mapping[str, tuple[str, ...]]
+
+
+_SELECTOR_OPTIONS = frozenset({"-k", "-m"})
+
+
+def cell_selector(command: Mapping) -> tuple[str, ...]:
+    """The ``-k``/``-m`` options a plan command passes to pytest itself."""
+    argv = [str(part) for part in command.get("argv", ())]
+    if "pytest" not in argv:
+        return ()
+    options = argv[argv.index("pytest") + 1 :]
+    selector: list[str] = []
+    for index, option in enumerate(options[:-1]):
+        if option in _SELECTOR_OPTIONS:
+            selector.extend((option, options[index + 1]))
+    return tuple(selector)
 
 
 def landing_envelopes(
@@ -1252,12 +1281,14 @@ def landing_envelopes(
         else:
             owners = [command for _target, command in nodes[path]]
             targets = tuple(dict.fromkeys(target for target, _ in nodes[path]))
+        selectors = {cell_selector(owner) for owner in owners}
         envelopes[path] = LandingEnvelope(
             targets,
             tuple(
                 dict.fromkeys(tool for owner in owners for tool in owner["toolchains"])
             ),
             tuple(dict.fromkeys(str(owner["id"]) for owner in owners)),
+            next(iter(selectors)) if len(selectors) == 1 else (),
         )
     return envelopes, {path: tuple(dict.fromkeys(ids)) for path, ids in others.items()}
 
@@ -1282,7 +1313,9 @@ def graph_selection(
         if owner is not None:
             envelope = envelopes[owner]
             run[test] = (
-                LandingEnvelope((test,), envelope.toolchains, envelope.owners)
+                LandingEnvelope(
+                    (test,), envelope.toolchains, envelope.owners, envelope.select
+                )
                 if owner != test
                 else envelope
             )
