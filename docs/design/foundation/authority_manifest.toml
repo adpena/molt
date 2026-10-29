@@ -20,13 +20,22 @@ required_markers = [
 ]
 
 [[authority]]
-path = "docs/design/foundation/51_ten_year_roadmap.md"
-index_ref = "design/foundation/51_ten_year_roadmap.md"
-canonicals_ref = "design/foundation/51_ten_year_roadmap.md"
+path = "ROADMAP.md"
 required_markers = [
-  "Status: NORTH STAR",
-  "Faster than CPython",
-  "SEMANTIC FACT PLANE",
+  "Version 1.0 is Molt's first public release",
+  "String-literal identity is absolute poison",
+  "typed refusal",
+  "No import-system redesign lands unless the `test_importlib` cell",
+]
+
+[[authority]]
+path = "docs/design/CENTURY_SYSTEMS_PLAN.md"
+index_ref = "design/CENTURY_SYSTEMS_PLAN.md"
+canonicals_ref = "design/CENTURY_SYSTEMS_PLAN.md"
+required_markers = [
+  "Status: canonical long-horizon engineering plan",
+  "one typed authority per semantic fact",
+  "phase_green :=",
 ]
 
 [[authority]]

@@ -182,7 +182,7 @@ release obligations.
 - [ ] [tests/differential/INDEX.md](../../../../tests/differential/INDEX.md) updated after diff runs (date, host python, totals, failures, RSS notes).
 
 ## Related Docs
-- [docs/ROADMAP_90_DAYS.md](../../../ROADMAP_90_DAYS.md)
+- [docs/agent/V1_HANDOFF_FINDINGS.md](../../../agent/V1_HANDOFF_FINDINGS.md)
 - [docs/spec/areas/testing/0007-testing.md](0007-testing.md)
 - [docs/OPERATIONS.md](../../../OPERATIONS.md)
 - [docs/ops/MULTI_AGENT_COORDINATION.md](../../../ops/MULTI_AGENT_COORDINATION.md)

@@ -405,19 +405,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     the frontend emitter.
 - Tracking policy:
   - Treat this spec as the contract; implementation status remains canonical in
-    `docs/spec/STATUS.md` and `ROADMAP.md`.
-
-## Month 1 Sign-off Readiness
-- Status: Draft ready for alignment review (2026-02-11) per `docs/ROADMAP_90_DAYS.md`.
-- Criteria:
-  1. IR stack and instruction categories stay aligned with emitted ops in
-     `src/molt/frontend/__init__.py`.
-  2. Any intentional gaps (for example HIR/LIR split and RC-lowering stage) are
-     reflected in `docs/spec/STATUS.md` and `ROADMAP.md`.
-  3. Differential/semantic gate ownership remains tied to
-     `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`.
-  4. Compiler/runtime owners review and acknowledge this spec revision.
-- Sign-off date: pending explicit owner approval (candidate baseline: 2026-02-11).
+    `docs/spec/STATUS.md`; open gaps live in the findings ledger.
 
 ## Example (TIR sketch)
 ```

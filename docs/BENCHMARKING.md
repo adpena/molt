@@ -801,8 +801,8 @@ gate bundle (no exceptions):
   - `python3 tools/check_core_lane_lowering.py`
 - documentation sync evidence:
   - same-change updates for optimization status docs
-    (`docs/spec/STATUS.md`, `ROADMAP.md`,
-    `OPTIMIZATIONS_PLAN.md`, `docs/benchmarks/optimization_progress.md`)
+    (`docs/spec/STATUS.md`, `tools/PERF_AUTHORITY.md`,
+    `docs/benchmarks/optimization_progress.md`)
 
 ## How to Interpret Results
 
@@ -1134,7 +1134,11 @@ performance claims.
 
 ## Optimization Plan
 
-Long-term or complex optimizations that require research are tracked in `OPTIMIZATIONS_PLAN.md`. If your change is a major architectural shift, please update that plan first.
+Long-term or complex optimizations belong in their owning design: the
+[performance compression ladder](design/foundation/65_perf_compression_ladder.md)
+and its linked rung designs. Measured claims belong in the
+[performance authority](../tools/PERF_AUTHORITY.md). Open findings belong in the
+[findings ledger](agent/V1_HANDOFF_FINDINGS.md).
 
 ### Scoreboard WASM execution and artifact lifetime
 
