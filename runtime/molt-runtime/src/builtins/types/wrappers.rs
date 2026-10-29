@@ -5,6 +5,7 @@
 //! subclasses keep ordinary Python method lookup and construction semantics.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::attr::clear_attribute_error_if_pending;
 use crate::builtins::native_arguments::{NamedBinding, NativeArguments, NativeKeywords};
 use crate::object::layout::{
@@ -89,7 +90,7 @@ fn wrapper_receiver(
         kind.name(),
         type_name(py, obj_from_bits(bits)),
     );
-    raise_exception::<Option<*mut u8>>(py, "TypeError", &message)
+    raise_exception::<Option<*mut u8>>(py, BuiltinExc::TypeError, &message)
 }
 
 fn wrapper_allocate(py: &PyToken<'_>, kind: WrapperKind, class: Option<u64>) -> u64 {
@@ -205,14 +206,14 @@ fn wrapper_initialize(
     if !keywords.is_empty() {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{}() takes no keyword arguments", kind.name()),
         );
     }
     if args.len() != 1 {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{} expected 1 argument, got {}", kind.name(), args.len()),
         );
     }
@@ -238,7 +239,7 @@ fn wrapper_storage_failure(py: &PyToken<'_>) -> u64 {
     if !exception_pending(py) {
         return raise_exception::<_>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "invalid native wrapper storage or raw-zero reference",
         );
     }
@@ -366,7 +367,7 @@ pub(crate) unsafe fn wrapper_get(
                 if crate::builtins::methods::is_missing_bits(py, target) {
                     raise_exception::<()>(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         &format!("uninitialized {} object", kind.name()),
                     );
                     return Err(());
@@ -448,7 +449,7 @@ unsafe fn property_missing_accessor(
             (_, Some(class)) => format!("property of {class} object has no {accessor}"),
             _ => format!("property has no {accessor}"),
         };
-        raise_exception::<_>(py, "AttributeError", &message)
+        raise_exception::<_>(py, BuiltinExc::AttributeError, &message)
     }
 }
 
@@ -589,7 +590,7 @@ fn wrapper_method(
     let Some((&receiver, args)) = args.split_first() else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "descriptor '{method}' of '{}' object needs an argument",
                 kind.name()
@@ -608,7 +609,11 @@ fn wrapper_method(
         if crate::builtins::methods::is_missing_bits(py, target) {
             // CPython 3.12 dereferences NULL here. Molt's verified domain
             // excludes that crash; never call the missing sentinel as code.
-            return raise_exception::<_>(py, "RuntimeError", "uninitialized staticmethod object");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::RuntimeError,
+                "uninitialized staticmethod object",
+            );
         }
         let _target = WrapperInputs::new(py, [target]);
         return call_with_kwargs(py, target, args, kwargs_bits);
@@ -621,7 +626,7 @@ fn wrapper_method(
         };
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{prefix}{method}() takes no keyword arguments"),
         );
     }
@@ -660,7 +665,7 @@ fn wrapper_method(
                 args.len()
             )
         };
-        return raise_exception::<_>(py, "TypeError", &message);
+        return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
     }
     unsafe {
         match operation {
@@ -671,7 +676,11 @@ fn wrapper_method(
                     .copied()
                     .filter(|value| !obj_from_bits(*value).is_none());
                 if instance.is_none() && owner.is_none() {
-                    return raise_exception::<_>(py, "TypeError", "__get__(None, None) is invalid");
+                    return raise_exception::<_>(
+                        py,
+                        BuiltinExc::TypeError,
+                        "__get__(None, None) is invalid",
+                    );
                 }
                 wrapper_get(py, receiver, instance, owner)
                     .unwrap_or_else(|()| MoltObject::none().bits())

@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -71,7 +72,7 @@ fn asyncio_event_loop_get_current_impl(_py: &PyToken<'_>) -> u64 {
     }
     raise_exception(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "There is no current event loop in thread 'MainThread'.",
     )
 }

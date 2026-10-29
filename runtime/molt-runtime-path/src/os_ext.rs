@@ -41,7 +41,7 @@ fn require_str(_py: &CoreGilToken, bits: u64, label: &str) -> Result<String, u64
         Some(s) => Ok(s),
         None => Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} must be str"),
         )),
     }
@@ -142,7 +142,7 @@ pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
             dec_ref_bits(_py, *e);
         }
         if list_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -208,7 +208,7 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
                         for t in &tuples {
                             dec_ref_bits(_py, *t);
                         }
-                        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                        return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
                     }
                     tuples.push(MoltObject::from_ptr(tup_ptr).bits());
                 }
@@ -225,7 +225,7 @@ pub extern "C" fn molt_os_scandir(path_bits: u64) -> u64 {
             dec_ref_bits(_py, *t);
         }
         if list_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -279,7 +279,7 @@ pub extern "C" fn molt_os_walk(top_bits: u64, topdown_bits: u64, followlinks_bit
                 for t in &triplets {
                     dec_ref_bits(_py, *t);
                 }
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             triplets.push(MoltObject::from_ptr(tup_ptr).bits());
         }
@@ -288,7 +288,7 @@ pub extern "C" fn molt_os_walk(top_bits: u64, topdown_bits: u64, followlinks_bit
             dec_ref_bits(_py, *t);
         }
         if list_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -478,7 +478,7 @@ pub extern "C" fn molt_os_access(path_bits: u64, mode_bits: u64) -> u64 {
             Err(error) => return error,
         };
         if path.as_os_str().as_encoded_bytes().contains(&0) {
-            return raise_exception::<u64>(py, "ValueError", "embedded null byte");
+            return raise_exception::<u64>(py, BuiltinExc::ValueError, "embedded null byte");
         }
         let mode = match index_c_int_from_obj(py, mode_bits) {
             Some(mode) => mode,
@@ -708,7 +708,7 @@ pub extern "C" fn molt_os_getppid() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         raise_exception::<u64>(
             _py,
-            "OSError",
+            BuiltinExc::OSError,
             "[Errno 38] Function not implemented: 'getppid'",
         )
     })
@@ -859,7 +859,7 @@ pub extern "C" fn molt_os_getlogin() -> u64 {
             {
                 return str_bits(_py, &val);
             }
-            raise_exception::<u64>(_py, "OSError", "getlogin failed")
+            raise_exception::<u64>(_py, BuiltinExc::OSError, "getlogin failed")
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -902,7 +902,11 @@ pub extern "C" fn molt_os_get_terminal_size(fd_bits: u64) -> u64 {
             let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
             let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
             if rc < 0 || ws.ws_col == 0 || ws.ws_row == 0 {
-                return raise_exception::<u64>(_py, "OSError", "could not get terminal size");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OSError,
+                    "could not get terminal size",
+                );
             }
             let elems = [
                 MoltObject::from_int(ws.ws_col as i64).bits(),
@@ -910,7 +914,7 @@ pub extern "C" fn molt_os_get_terminal_size(fd_bits: u64) -> u64 {
             ];
             let ptr = alloc_tuple(_py, &elems);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             MoltObject::from_ptr(ptr).bits()
         }
@@ -943,7 +947,7 @@ pub extern "C" fn molt_os_getloadavg() -> u64 {
             let mut avgs: [f64; 3] = [0.0; 3];
             let rc = unsafe { libc::getloadavg(avgs.as_mut_ptr(), 3) };
             if rc < 0 {
-                return raise_exception::<u64>(_py, "OSError", "getloadavg failed");
+                return raise_exception::<u64>(_py, BuiltinExc::OSError, "getloadavg failed");
             }
             let elems = [
                 MoltObject::from_float(avgs[0]).bits(),
@@ -952,7 +956,7 @@ pub extern "C" fn molt_os_getloadavg() -> u64 {
             ];
             let ptr = alloc_tuple(_py, &elems);
             if ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             MoltObject::from_ptr(ptr).bits()
         }
@@ -985,7 +989,7 @@ pub extern "C" fn molt_os_uname() -> u64 {
             let mut name: libc::utsname = unsafe { std::mem::zeroed() };
             let rc = unsafe { libc::uname(&mut name) };
             if rc < 0 {
-                return raise_exception::<u64>(_py, "OSError", "uname failed");
+                return raise_exception::<u64>(_py, BuiltinExc::OSError, "uname failed");
             }
             fn cstr_field(bytes: &[libc::c_char]) -> String {
                 let s = unsafe { std::ffi::CStr::from_ptr(bytes.as_ptr()) };
@@ -1007,7 +1011,7 @@ pub extern "C" fn molt_os_uname() -> u64 {
                             dec_ref_bits(_py, *prev);
                         }
                     }
-                    return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                    return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
                 }
                 elems[i] = MoltObject::from_ptr(ptr).bits();
             }
@@ -1018,7 +1022,7 @@ pub extern "C" fn molt_os_uname() -> u64 {
                 }
             }
             if tup.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             MoltObject::from_ptr(tup).bits()
         }
@@ -1083,7 +1087,7 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u
         if paths_obj.is_none() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "commonpath() arg is an empty sequence",
             );
         }
@@ -1091,17 +1095,21 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u
         let mut bytes_flavor = None;
         let paths: Vec<(Vec<u8>, (usize, usize))> = {
             let Some(ptr) = paths_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "paths must be iterable");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "paths must be iterable");
             };
             let type_id = unsafe { object_type_id(ptr) };
             if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "paths must be a list or tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "paths must be a list or tuple",
+                );
             }
             let elems = unsafe { seq_snapshot(ptr) };
             if elems.is_empty() {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "commonpath() arg is an empty sequence",
                 );
             }
@@ -1124,7 +1132,7 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u
                 if bytes_flavor.is_some_and(|previous| previous != is_bytes) {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "Can't mix strings and bytes in path components",
                     );
                 }
@@ -1207,7 +1215,11 @@ pub extern "C" fn molt_os_path_commonpath(paths_bits: u64, windows_utf16_bits: u
                     MoltObject::from_ptr(pointer).bits()
                 }
             }
-            None => raise_exception::<_>(_py, "ValueError", "paths have different drives or roots"),
+            None => raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "paths have different drives or roots",
+            ),
         }
     })
 }
@@ -1285,11 +1297,15 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
         }
         let strs: Vec<String> = {
             let Some(ptr) = paths_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "paths must be iterable");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "paths must be iterable");
             };
             let type_id = unsafe { object_type_id(ptr) };
             if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "paths must be a list or tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "paths must be a list or tuple",
+                );
             }
             let elems = unsafe { seq_snapshot(ptr) };
             if elems.is_empty() {
@@ -1304,7 +1320,13 @@ pub extern "C" fn molt_os_path_commonprefix(paths_bits: u64) -> u64 {
             for &bits in elems.iter() {
                 match string_obj_to_owned(obj_from_bits(bits)) {
                     Some(s) => out.push(s),
-                    None => return raise_exception::<_>(_py, "TypeError", "paths must be strings"),
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            "paths must be strings",
+                        );
+                    }
                 }
             }
             out
@@ -1338,7 +1360,7 @@ pub extern "C" fn molt_os_path_getsize(path_bits: u64) -> u64 {
                 Ok(size) => molt_runtime_core::rt_int(size),
                 Err(_) => raise_exception::<u64>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "file size exceeds runtime integer range",
                 ),
             },
@@ -1515,10 +1537,10 @@ pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
             return error;
         }
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "fd must be an integer");
         };
         let Some(fd2) = to_i64(obj_from_bits(fd2_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fd2 must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "fd2 must be an integer");
         };
         if fd < 0 || fd2 < 0 {
             return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "dup2");
@@ -1561,7 +1583,7 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
             if i128::from(host_pos) != i128::from(pos) {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "Python int too large to convert to C off_t",
                 );
             }
@@ -1652,7 +1674,7 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
 pub extern "C" fn molt_os_isatty(fd_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(fd) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fd must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "fd must be an integer");
         };
         if fd < 0 {
             return MoltObject::from_bool(false).bits();
@@ -1675,7 +1697,7 @@ pub extern "C" fn molt_os_fdopen(_fd_bits: u64, _mode_bits: u64, _closefd_bits: 
     molt_runtime_core::with_core_gil!(_py, {
         raise_exception::<u64>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "os.fdopen() is not yet implemented in Molt",
         )
     })
@@ -1693,10 +1715,10 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
             return error;
         }
         let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pid must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pid must be an integer");
         };
         let Some(sig) = to_i64(obj_from_bits(sig_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "sig must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "sig must be an integer");
         };
         #[cfg(target_arch = "wasm32")]
         {
@@ -1731,10 +1753,10 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
             return error;
         }
         let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pid must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pid must be an integer");
         };
         let Some(options) = to_i64(obj_from_bits(options_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "options must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "options must be an integer");
         };
         #[cfg(target_arch = "wasm32")]
         {
@@ -1759,7 +1781,7 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
             ];
             let tup_ptr = alloc_tuple(_py, &elems);
             if tup_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+                return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             MoltObject::from_ptr(tup_ptr).bits()
         }
@@ -1883,7 +1905,11 @@ const WASM_SYSCONF_ENTRIES: &[(&str, i64, i64)] = &[
 pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(name) = to_i64(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "sysconf name must be an integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "sysconf name must be an integer",
+            );
         };
         #[cfg(target_arch = "wasm32")]
         {
@@ -1930,7 +1956,7 @@ fn alloc_sysconf_names(
             for bits in entries {
                 dec_ref_bits(py, bits);
             }
-            return raise_exception::<_>(py, "MemoryError", "out of memory");
+            return raise_exception::<_>(py, BuiltinExc::MemoryError, "out of memory");
         }
         entries.push(MoltObject::from_ptr(string).bits());
         entries.push(MoltObject::from_int(value).bits());
@@ -1940,7 +1966,7 @@ fn alloc_sysconf_names(
         dec_ref_bits(py, bits);
     }
     if list.is_null() {
-        return raise_exception::<_>(py, "MemoryError", "out of memory");
+        return raise_exception::<_>(py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(list).bits()
 }
@@ -2045,7 +2071,11 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
             let c_path = match CString::new(path.as_os_str().as_encoded_bytes()) {
                 Ok(c) => c,
                 Err(_) => {
-                    return raise_exception::<_>(_py, "ValueError", "path contains null byte");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "path contains null byte",
+                    );
                 }
             };
 
@@ -2066,7 +2096,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                     None => {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "utime: atime must be a number",
                         );
                     }
@@ -2076,7 +2106,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                     None => {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "utime: mtime must be a number",
                         );
                     }
@@ -2117,7 +2147,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                     None => {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "utime: atime must be a number",
                         );
                     }
@@ -2127,7 +2157,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                     None => {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "utime: mtime must be a number",
                         );
                     }
@@ -2184,7 +2214,7 @@ fn windows_filetime_from_seconds(
     if !seconds.is_finite() {
         return Err(raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             &format!("utime: {label} out of range"),
         ));
     }
@@ -2192,7 +2222,7 @@ fn windows_filetime_from_seconds(
     if sec_floor < i64::MIN as f64 || sec_floor > i64::MAX as f64 {
         return Err(raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             &format!("utime: {label} out of range"),
         ));
     }
@@ -2202,7 +2232,7 @@ fn windows_filetime_from_seconds(
         secs = secs.checked_add(1).ok_or_else(|| {
             raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 &format!("utime: {label} out of range"),
             )
         })?;
@@ -2212,7 +2242,7 @@ fn windows_filetime_from_seconds(
         secs = secs.checked_sub(1).ok_or_else(|| {
             raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 &format!("utime: {label} out of range"),
             )
         })?;
@@ -2221,7 +2251,7 @@ fn windows_filetime_from_seconds(
     windows_filetime_from_unix_parts(secs, nanos as u32).ok_or_else(|| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             &format!("utime: {label} out of range"),
         )
     })
@@ -2233,14 +2263,22 @@ fn windows_filetime_now(_py: &CoreGilToken) -> Result<WindowsFileTime, u64> {
     let (secs, nanos) = match now.duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => (
             i64::try_from(duration.as_secs()).map_err(|_| {
-                raise_exception::<u64>(_py, "OverflowError", "utime: current time out of range")
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "utime: current time out of range",
+                )
             })?,
             duration.subsec_nanos(),
         ),
         Err(err) => {
             let duration = err.duration();
             let secs = i64::try_from(duration.as_secs()).map_err(|_| {
-                raise_exception::<u64>(_py, "OverflowError", "utime: current time out of range")
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "utime: current time out of range",
+                )
             })?;
             let nanos = duration.subsec_nanos();
             if nanos == 0 {
@@ -2248,7 +2286,7 @@ fn windows_filetime_now(_py: &CoreGilToken) -> Result<WindowsFileTime, u64> {
                     secs.checked_neg().ok_or_else(|| {
                         raise_exception::<u64>(
                             _py,
-                            "OverflowError",
+                            BuiltinExc::OverflowError,
                             "utime: current time out of range",
                         )
                     })?,
@@ -2261,7 +2299,7 @@ fn windows_filetime_now(_py: &CoreGilToken) -> Result<WindowsFileTime, u64> {
                         .ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "OverflowError",
+                                BuiltinExc::OverflowError,
                                 "utime: current time out of range",
                             )
                         })?,
@@ -2271,7 +2309,11 @@ fn windows_filetime_now(_py: &CoreGilToken) -> Result<WindowsFileTime, u64> {
         }
     };
     windows_filetime_from_unix_parts(secs, nanos).ok_or_else(|| {
-        raise_exception::<u64>(_py, "OverflowError", "utime: current time out of range")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::OverflowError,
+            "utime: current time out of range",
+        )
     })
 }
 
@@ -2300,24 +2342,26 @@ fn windows_filetime_from_sec_nsec_bits(
     nsec_bits: u64,
     label: &str,
 ) -> Result<WindowsFileTime, u64> {
-    let secs = to_i64(obj_from_bits(sec_bits))
-        .ok_or_else(|| raise_exception::<u64>(_py, "TypeError", "utime: times must be integers"))?;
-    let nanos = to_i64(obj_from_bits(nsec_bits))
-        .ok_or_else(|| raise_exception::<u64>(_py, "TypeError", "utime: times must be integers"))?;
+    let secs = to_i64(obj_from_bits(sec_bits)).ok_or_else(|| {
+        raise_exception::<u64>(_py, BuiltinExc::TypeError, "utime: times must be integers")
+    })?;
+    let nanos = to_i64(obj_from_bits(nsec_bits)).ok_or_else(|| {
+        raise_exception::<u64>(_py, BuiltinExc::TypeError, "utime: times must be integers")
+    })?;
     if nanos == -1 {
         return windows_filetime_now(_py);
     }
     if !(0..1_000_000_000).contains(&nanos) {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("utime: {label} nanosecond out of range"),
         ));
     }
     windows_filetime_from_unix_parts(secs, nanos as u32).ok_or_else(|| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             &format!("utime: {label} out of range"),
         )
     })
@@ -2378,7 +2422,7 @@ fn at_path_to_cstring(_py: &CoreGilToken, path: &Path) -> Result<std::ffi::CStri
         Ok(c) => Ok(c),
         Err(_) => Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "embedded null byte",
         )),
     }
@@ -2397,7 +2441,7 @@ fn at_resolve_dir_fd(_py: &CoreGilToken, dir_fd_bits: u64) -> Result<libc::c_int
         Some(fd) => Ok(fd as libc::c_int),
         None => Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "an integer is required",
         )),
     }
@@ -2417,7 +2461,13 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
         } else {
             match to_i64(directory).and_then(|value| libc::c_int::try_from(value).ok()) {
                 Some(value) => Some(value),
-                None => return raise_exception::<u64>(_py, "TypeError", "an integer is required"),
+                None => {
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "an integer is required",
+                    );
+                }
             }
         };
         #[cfg(unix)]
@@ -2643,7 +2693,7 @@ fn at_timespec_pair(
 ) -> Result<[libc::timespec; 2], u64> {
     let one = |bits: u64| -> Result<i64, u64> {
         to_i64(obj_from_bits(bits)).ok_or_else(|| {
-            raise_exception::<u64>(_py, "TypeError", "utime: times must be integers")
+            raise_exception::<u64>(_py, BuiltinExc::TypeError, "utime: times must be integers")
         })
     };
     let mk = |sec: i64, nsec: i64| -> libc::timespec {
@@ -2693,13 +2743,13 @@ pub extern "C" fn molt_os_sendfile(
             return error;
         }
         let Some(out_fd) = to_i64(obj_from_bits(out_fd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "out_fd must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "out_fd must be an integer");
         };
         let Some(in_fd) = to_i64(obj_from_bits(in_fd_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "in_fd must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "in_fd must be an integer");
         };
         let Some(count) = to_i64(obj_from_bits(count_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "count must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "count must be an integer");
         };
         let offset_obj = obj_from_bits(offset_bits);
         let offset_val = if offset_obj.is_none() {
@@ -2710,7 +2760,7 @@ pub extern "C" fn molt_os_sendfile(
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "offset must be an integer or None",
                     );
                 }

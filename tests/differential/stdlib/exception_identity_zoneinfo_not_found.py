@@ -1,4 +1,3 @@
-# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-207 expect_molt_returncode=0 expect_molt_stdout_sha256=3b6df66396209a3c0d8ab25fa9add132fb20b705e962a32f4248202a1763ffc9
 """Purpose: an unknown zone raises zoneinfo.ZoneInfoNotFoundError (a KeyError)."""
 
 import zoneinfo

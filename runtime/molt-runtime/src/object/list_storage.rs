@@ -1,6 +1,7 @@
 //! Physical list admission shared by Python base descriptors and their readers.
 //! Managed values retain their existing Vec owner; native values use the ABI's
 //! PyListObject owner. A borrowed call receiver keeps either storage alive.
+use crate::BuiltinExc;
 use crate::object::foreign::NativeObjectOwner;
 use crate::*;
 use molt_cpython_abi::abi_types::{PyList_Type, PyMappingMethods, PyObject, PySequenceMethods};
@@ -47,7 +48,7 @@ impl<'a, 'py> ListStorage<'a, 'py> {
         Self::from_bits(py, bits).or_else(|| {
             raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '{method}' requires a 'list' object but received a '{}'",
                     type_name(py, obj_from_bits(bits))

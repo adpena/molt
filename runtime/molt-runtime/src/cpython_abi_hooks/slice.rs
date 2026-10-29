@@ -1,5 +1,6 @@
 //! C slice construction and observation share the runtime's fixed three slots.
 use super::*;
+use crate::BuiltinExc;
 
 pub(super) unsafe extern "C" fn hook_slice_new(
     start: u64,
@@ -24,7 +25,11 @@ pub(super) unsafe extern "C" fn hook_slice_item(bits: u64, field: usize) -> Borr
             .as_ptr()
             .filter(|pointer| object_type_id(*pointer) == crate::TYPE_ID_SLICE);
         let Some(pointer) = pointer else {
-            crate::raise_exception::<()>(&py, "SystemError", "slice field requires an exact slice");
+            crate::raise_exception::<()>(
+                &py,
+                BuiltinExc::SystemError,
+                "slice field requires an exact slice",
+            );
             return BorrowedHandleResult::error();
         };
         let value = match field {
@@ -32,7 +37,7 @@ pub(super) unsafe extern "C" fn hook_slice_item(bits: u64, field: usize) -> Borr
             1 => crate::slice_stop_bits(pointer),
             2 => crate::slice_step_bits(pointer),
             _ => {
-                crate::raise_exception::<()>(&py, "SystemError", "invalid slice field");
+                crate::raise_exception::<()>(&py, BuiltinExc::SystemError, "invalid slice field");
                 return BorrowedHandleResult::error();
             }
         };

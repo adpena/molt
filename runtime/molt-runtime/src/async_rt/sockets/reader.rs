@@ -3,6 +3,7 @@
 
 #[cfg(molt_net)]
 use super::*;
+use crate::BuiltinExc;
 
 #[cfg(molt_net)]
 struct MoltSocketReader {
@@ -43,7 +44,7 @@ unsafe fn socket_reader_pull(
         let Some(recv_ptr) = recv_obj.as_ptr() else {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "socket recv intrinsic returned invalid value",
             ));
         };
@@ -51,7 +52,7 @@ unsafe fn socket_reader_pull(
             dec_ref_bits(_py, recv_bits);
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "socket recv intrinsic returned invalid value",
             ));
         }
@@ -321,7 +322,11 @@ pub unsafe extern "C" fn molt_socket_reader_readline_limit(
                 return MoltObject::none().bits();
             }
             let Some(limit_raw) = to_i64(obj_from_bits(limit_bits)) else {
-                return raise_exception::<u64>(_py, "TypeError", "size must be an integer");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "size must be an integer",
+                );
             };
             let reader = &mut *(reader_ptr as *mut MoltSocketReader);
             if limit_raw == 0 {

@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 #[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]
 #[allow(non_snake_case)]
@@ -46,12 +47,12 @@ pub extern "C" fn molt_gpu_tensor_from_parts(
             Err(bits) => return bits,
         };
         let Some(required_len) = size.checked_mul(format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "buffer size overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "buffer size overflow");
         };
         if data_view.len < required_len {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Buffer payload too small for requested size and format",
             );
         }
@@ -119,7 +120,7 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
         if x_format != out_format {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "repeat_axis requires matching input/output formats",
             );
         }
@@ -130,7 +131,7 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
         if shape.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "repeat_axis requires a tensor with at least 1 dimension",
             );
         }
@@ -141,7 +142,7 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
         if axis >= shape.len() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("Invalid axis {} for tensor with {} dims", axis, shape.len()),
             );
         }
@@ -156,10 +157,14 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
         let total_elems = product(&shape);
         let itemsize = x_format.itemsize();
         let Some(required) = total_elems.checked_mul(itemsize) else {
-            return raise_exception::<_>(_py, "OverflowError", "repeat_axis shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "repeat_axis shape overflow",
+            );
         };
         if x_view.len < required {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
 
         let outer = if axis > 0 { product(&shape[..axis]) } else { 1 };
@@ -170,21 +175,37 @@ pub extern "C" fn molt_gpu_repeat_axis_contiguous(
             1
         };
         let Some(chunk_bytes) = inner.checked_mul(itemsize) else {
-            return raise_exception::<_>(_py, "OverflowError", "repeat_axis byte size overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "repeat_axis byte size overflow",
+            );
         };
         let Some(src_axis_bytes) = axis_len.checked_mul(chunk_bytes) else {
-            return raise_exception::<_>(_py, "OverflowError", "repeat_axis byte size overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "repeat_axis byte size overflow",
+            );
         };
         let Some(out_axis_len) = axis_len.checked_mul(repeats) else {
-            return raise_exception::<_>(_py, "OverflowError", "repeat_axis output shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "repeat_axis output shape overflow",
+            );
         };
         let Some(out_axis_bytes) = out_axis_len.checked_mul(chunk_bytes) else {
-            return raise_exception::<_>(_py, "OverflowError", "repeat_axis byte size overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "repeat_axis byte size overflow",
+            );
         };
         let Some(out_len) = outer.checked_mul(out_axis_bytes) else {
             return raise_exception::<_>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "repeat_axis output byte size overflow",
             );
         };
@@ -270,12 +291,16 @@ pub extern "C" fn molt_gpu_buffer_to_list(buffer_bits: u64, count_bits: u64) -> 
             Err(bits) => return bits,
         };
         let Some(required_len) = count.checked_mul(format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "buffer list size overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "buffer list size overflow",
+            );
         };
         if data_view.len < required_len {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Buffer payload too small for requested count and format",
             );
         }
@@ -353,19 +378,23 @@ pub extern "C" fn molt_gpu_linear_contiguous(
             .checked_mul(in_features)
             .and_then(|n| n.checked_mul(x_format.itemsize()))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "x_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "x_data shape overflow");
         };
         let Some(weight_required) = out_features
             .checked_mul(in_features)
             .and_then(|n| n.checked_mul(weight_format.itemsize()))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "weight_data shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "weight_data shape overflow",
+            );
         };
         let Some(out_len) = outer
             .checked_mul(out_features)
             .and_then(|n| n.checked_mul(out_format.itemsize()))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "output shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "output shape overflow");
         };
         if trace_linear {
             eprintln!(
@@ -383,37 +412,53 @@ pub extern "C" fn molt_gpu_linear_contiguous(
         }
 
         if x_view.len < x_required {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
         if weight_view.len < weight_required {
-            return raise_exception::<_>(_py, "ValueError", "weight_data buffer is too small");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "weight_data buffer is too small",
+            );
         }
 
         #[cfg(target_arch = "wasm32")]
         if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
             let browser_result: Result<u64, u64> = (|| {
                 let element_ty = webgpu_linear_element_type(x_format, weight_format, out_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let x_bytes = bytes_like_view_to_webgpu_bytes(x_view, x_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let mut out_webgpu = vec![0u8; outer * out_features * 4];
                 let outer_i32 = i32::try_from(outer).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32")
+                    raise_exception::<u64>(_py, BuiltinExc::OverflowError, "outer exceeds i32")
                 })?;
                 let in_features_i32 = i32::try_from(in_features).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "in_features exceeds i32",
+                    )
                 })?;
                 let out_features_i32 = i32::try_from(out_features).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "out_features exceeds i32")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "out_features exceeds i32",
+                    )
                 })?;
                 let outer_bytes = outer_i32.to_le_bytes();
                 let in_features_bytes = in_features_i32.to_le_bytes();
                 let out_features_bytes = out_features_i32.to_le_bytes();
                 let workgroup_size = 64u32;
                 let total_threads = outer.checked_mul(out_features).ok_or_else(|| {
-                    raise_exception::<u64>(_py, "OverflowError", "gpu linear thread count overflow")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "gpu linear thread count overflow",
+                    )
                 })?;
                 let grid = if total_threads == 0 {
                     0
@@ -422,7 +467,7 @@ pub extern "C" fn molt_gpu_linear_contiguous(
                         |_| {
                             raise_exception::<u64>(
                                 _py,
-                                "OverflowError",
+                                BuiltinExc::OverflowError,
                                 "gpu linear grid exceeds u32",
                             )
                         },
@@ -547,7 +592,7 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
             .iter()
             .try_fold(0usize, |acc, size| acc.checked_add(*size))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "split_sizes overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "split_sizes overflow");
         };
 
         let x_view = match bytes_like_view(_py, x_data_bits, "x_data") {
@@ -563,46 +608,66 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
             .checked_mul(in_features)
             .and_then(|n| n.checked_mul(x_format.itemsize()))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "x_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "x_data shape overflow");
         };
         let Some(weight_required) = out_features
             .checked_mul(in_features)
             .and_then(|n| n.checked_mul(weight_format.itemsize()))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "weight_data shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "weight_data shape overflow",
+            );
         };
         if x_view.len < x_required {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
         if weight_view.len < weight_required {
-            return raise_exception::<_>(_py, "ValueError", "weight_data buffer is too small");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "weight_data buffer is too small",
+            );
         }
 
         #[cfg(target_arch = "wasm32")]
         if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
             let browser_result: Result<u64, u64> = (|| {
                 let element_ty = webgpu_linear_element_type(x_format, weight_format, out_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let x_bytes = bytes_like_view_to_webgpu_bytes(x_view, x_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let mut out_webgpu = vec![0u8; outer * out_features * 4];
                 let outer_i32 = i32::try_from(outer).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32")
+                    raise_exception::<u64>(_py, BuiltinExc::OverflowError, "outer exceeds i32")
                 })?;
                 let in_features_i32 = i32::try_from(in_features).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "in_features exceeds i32",
+                    )
                 })?;
                 let out_features_i32 = i32::try_from(out_features).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "out_features exceeds i32")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "out_features exceeds i32",
+                    )
                 })?;
                 let outer_bytes = outer_i32.to_le_bytes();
                 let in_features_bytes = in_features_i32.to_le_bytes();
                 let out_features_bytes = out_features_i32.to_le_bytes();
                 let workgroup_size = 64u32;
                 let total_threads = outer.checked_mul(out_features).ok_or_else(|| {
-                    raise_exception::<u64>(_py, "OverflowError", "gpu linear thread count overflow")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "gpu linear thread count overflow",
+                    )
                 })?;
                 let grid = if total_threads == 0 {
                     0
@@ -611,7 +676,7 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
                         |_| {
                             raise_exception::<u64>(
                                 _py,
-                                "OverflowError",
+                                BuiltinExc::OverflowError,
                                 "gpu linear grid exceeds u32",
                             )
                         },
@@ -680,7 +745,11 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
                 .checked_mul(size)
                 .and_then(|n| n.checked_mul(out_format.itemsize()))
             else {
-                return raise_exception::<_>(_py, "OverflowError", "output shape overflow");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "output shape overflow",
+                );
             };
             outputs.push(vec![0u8; out_len]);
         }
@@ -789,19 +858,23 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
             .checked_mul(in_features)
             .and_then(|n| n.checked_mul(x_format.itemsize()))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "x_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "x_data shape overflow");
         };
         if x_view.len < x_required {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
         if in_features == 0 {
-            return raise_exception::<_>(_py, "ValueError", "in_features must be positive");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "in_features must be positive",
+            );
         }
         let row_bytes = in_features * weight_format.itemsize();
         if row_bytes == 0 || weight_view.len % row_bytes != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "weight_data byte length must be an even multiple of row width",
             );
         }
@@ -809,7 +882,7 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
         if out_features % 2 != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "interleaved gate weight output dimension must be even",
             );
         }
@@ -818,7 +891,7 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
             .checked_mul(hidden)
             .and_then(|n| n.checked_mul(out_format.itemsize()))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "output shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "output shape overflow");
         };
 
         #[cfg(target_arch = "wasm32")]
@@ -830,30 +903,38 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
                 {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "browser webgpu squared-relu gate fast path currently supports float formats only",
                     ));
                 }
                 let x_bytes = bytes_like_view_to_webgpu_bytes(x_view, x_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let weight_bytes = bytes_like_view_to_webgpu_bytes(weight_view, weight_format)
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                 let mut out_webgpu = vec![0u8; outer * hidden * 4];
                 let outer_i32 = i32::try_from(outer).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "outer exceeds i32")
+                    raise_exception::<u64>(_py, BuiltinExc::OverflowError, "outer exceeds i32")
                 })?;
                 let in_features_i32 = i32::try_from(in_features).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "in_features exceeds i32")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "in_features exceeds i32",
+                    )
                 })?;
                 let hidden_i32 = i32::try_from(hidden).map_err(|_| {
-                    raise_exception::<u64>(_py, "OverflowError", "hidden exceeds i32")
+                    raise_exception::<u64>(_py, BuiltinExc::OverflowError, "hidden exceeds i32")
                 })?;
                 let outer_bytes = outer_i32.to_le_bytes();
                 let in_features_bytes = in_features_i32.to_le_bytes();
                 let hidden_bytes = hidden_i32.to_le_bytes();
                 let workgroup_size = 64u32;
                 let total_threads = outer.checked_mul(hidden).ok_or_else(|| {
-                    raise_exception::<u64>(_py, "OverflowError", "gpu gate thread count overflow")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::OverflowError,
+                        "gpu gate thread count overflow",
+                    )
                 })?;
                 let grid = if total_threads == 0 {
                     0
@@ -862,7 +943,7 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
                         |_| {
                             raise_exception::<u64>(
                                 _py,
-                                "OverflowError",
+                                BuiltinExc::OverflowError,
                                 "gpu gate grid exceeds u32",
                             )
                         },
@@ -992,7 +1073,7 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
             Err(bits) => return bits,
         };
         let Some(op_code) = to_i64(obj_from_bits(op_code_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "op_code must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "op_code must be an integer");
         };
         let a_view = match bytes_like_view(_py, a_data_bits, "a_data") {
             Ok(view) => view,
@@ -1006,16 +1087,16 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
         let a_elems = product(&a_shape);
         let b_elems = product(&b_shape);
         let Some(a_required) = a_elems.checked_mul(a_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "a_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "a_data shape overflow");
         };
         let Some(b_required) = b_elems.checked_mul(b_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "b_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "b_data shape overflow");
         };
         if a_view.len < a_required {
-            return raise_exception::<_>(_py, "ValueError", "a_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "a_data buffer is too small");
         }
         if b_view.len < b_required {
-            return raise_exception::<_>(_py, "ValueError", "b_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "b_data buffer is too small");
         }
 
         let out_ndim = a_shape.len().max(b_shape.len());
@@ -1032,7 +1113,11 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
             } else if b_dim == 1 {
                 out_shape.push(a_dim);
             } else {
-                return raise_exception::<_>(_py, "ValueError", "Cannot broadcast input shapes");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "Cannot broadcast input shapes",
+                );
             }
         }
         let out_elems = product(&out_shape);
@@ -1040,7 +1125,7 @@ pub extern "C" fn molt_gpu_broadcast_binary_contiguous(
         let a_strides = strides(&a_padded);
         let b_strides = strides(&b_padded);
         let Some(out_len) = out_elems.checked_mul(out_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "output shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "output shape overflow");
         };
         let mut out = vec![0u8; out_len];
 
@@ -1110,7 +1195,7 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
         if a_shape.len() < 2 || b_shape.len() < 2 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "matmul requires tensors with at least 2 dimensions",
             );
         }
@@ -1120,7 +1205,7 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
         let b_rows = b_shape[b_shape.len() - 2];
         let b_cols = b_shape[b_shape.len() - 1];
         if a_cols != b_rows {
-            return raise_exception::<_>(_py, "ValueError", "matmul dimension mismatch");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "matmul dimension mismatch");
         }
 
         let a_view = match bytes_like_view(_py, a_data_bits, "a_data") {
@@ -1135,16 +1220,16 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
         let a_elems = product(&a_shape);
         let b_elems = product(&b_shape);
         let Some(a_required) = a_elems.checked_mul(a_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "a_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "a_data shape overflow");
         };
         let Some(b_required) = b_elems.checked_mul(b_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "b_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "b_data shape overflow");
         };
         if a_view.len < a_required {
-            return raise_exception::<_>(_py, "ValueError", "a_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "a_data buffer is too small");
         }
         if b_view.len < b_required {
-            return raise_exception::<_>(_py, "ValueError", "b_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "b_data buffer is too small");
         }
 
         let a_batch_shape = &a_shape[..a_shape.len() - 2];
@@ -1163,7 +1248,11 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
             } else if b_dim == 1 {
                 out_batch_shape.push(a_dim);
             } else {
-                return raise_exception::<_>(_py, "ValueError", "matmul batch shape mismatch");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "matmul batch shape mismatch",
+                );
             }
         }
         let batch_count = if out_batch_shape.is_empty() {
@@ -1175,10 +1264,14 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
             .checked_mul(a_rows)
             .and_then(|n| n.checked_mul(b_cols))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "output shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "output shape overflow");
         };
         let Some(out_len) = out_elems.checked_mul(out_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "output byte size overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "output byte size overflow",
+            );
         };
 
         let mut out = vec![0u8; out_len];
@@ -1189,7 +1282,11 @@ pub extern "C" fn molt_gpu_matmul_contiguous(
             if unsafe { matmul_f32(a_view.ptr, b_view.ptr, out.as_mut_ptr(), &a_shape, &b_shape) }
                 .is_err()
             {
-                return raise_exception::<_>(_py, "ValueError", "matmul batch shape mismatch");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "matmul batch shape mismatch",
+                );
             }
         } else {
             let a_stride = a_rows * a_cols;
@@ -1308,7 +1405,7 @@ pub extern "C" fn molt_gpu_rope_apply_contiguous(
             Err(bits) => return bits,
         };
         if dim % 2 != 0 {
-            return raise_exception::<_>(_py, "ValueError", "dim must be even");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "dim must be even");
         }
 
         let x_view = match bytes_like_view(_py, x_data_bits, "x_data") {
@@ -1329,27 +1426,47 @@ pub extern "C" fn molt_gpu_rope_apply_contiguous(
             .and_then(|n| n.checked_mul(heads))
             .and_then(|n| n.checked_mul(dim))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "rope tensor shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "rope tensor shape overflow",
+            );
         };
         let Some(x_required) = total_elems.checked_mul(x_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "x_data shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "x_data shape overflow");
         };
         let Some(freq_required) = seq_len.checked_mul(freq_dim).and_then(|n| n.checked_mul(4))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "freq buffer shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "freq buffer shape overflow",
+            );
         };
         let Some(out_len) = total_elems.checked_mul(out_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "rope output shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "rope output shape overflow",
+            );
         };
 
         if x_view.len < x_required {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
         if cos_view.len < freq_required {
-            return raise_exception::<_>(_py, "ValueError", "cos_data buffer is too small");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "cos_data buffer is too small",
+            );
         }
         if sin_view.len < freq_required {
-            return raise_exception::<_>(_py, "ValueError", "sin_data buffer is too small");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "sin_data buffer is too small",
+            );
         }
 
         let mut out = vec![0u8; out_len];
@@ -1454,7 +1571,7 @@ pub extern "C" fn molt_gpu_permute_contiguous(
         if x_format != out_format {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "permute requires matching input/output formats",
             );
         }
@@ -1476,10 +1593,10 @@ pub extern "C" fn molt_gpu_permute_contiguous(
         let total_elems = product(&shape);
         let itemsize = x_format.itemsize();
         let Some(required) = total_elems.checked_mul(itemsize) else {
-            return raise_exception::<_>(_py, "OverflowError", "permute shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "permute shape overflow");
         };
         if x_view.len < required {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
         let out_shape: Vec<usize> = dims.iter().map(|&dim| shape[dim]).collect();
         let old_strides = strides(&shape);
@@ -1546,10 +1663,10 @@ pub extern "C" fn molt_gpu_softmax_last_axis_contiguous(
         };
         let total_elems = product(&shape);
         let Some(required) = total_elems.checked_mul(x_format.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "softmax shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "softmax shape overflow");
         };
         if x_view.len < required {
-            return raise_exception::<_>(_py, "ValueError", "x_data buffer is too small");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "x_data buffer is too small");
         }
         let axis_len = *shape.last().unwrap_or(&1);
         let outer = total_elems.checked_div(axis_len).unwrap_or(0);
@@ -1613,24 +1730,28 @@ pub extern "C" fn molt_gpu_rms_norm_last_axis_contiguous(
             Err(bits) => return bits,
         };
         let Some(eps) = to_f64(obj_from_bits(eps_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "eps must be a float");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "eps must be a float");
         };
         if shape.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "rms_norm requires a tensor with at least 1 dimension",
             );
         }
         let axis_len = shape[shape.len() - 1];
         if axis_len == 0 {
-            return raise_exception::<_>(_py, "ValueError", "rms_norm last axis must be non-empty");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "rms_norm last axis must be non-empty",
+            );
         }
         let total_elems = product(&shape);
         if x_view.len != total_elems * x_format.itemsize() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "x_data byte length does not match shape",
             );
         }
@@ -1691,7 +1812,7 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
         if shape.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "squared_relu_gate_interleaved requires a tensor with at least 1 dimension",
             );
         }
@@ -1699,7 +1820,7 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
         if axis_len % 2 != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "squared_relu_gate_interleaved last axis must be even",
             );
         }
@@ -1707,7 +1828,7 @@ pub extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
         if x_view.len != total_elems * x_format.itemsize() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "x_data byte length does not match shape",
             );
         }

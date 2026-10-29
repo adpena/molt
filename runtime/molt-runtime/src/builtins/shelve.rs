@@ -5,6 +5,7 @@
 //!
 //! ABI: NaN-boxed u64 in/out.
 
+use crate::BuiltinExc;
 use crate::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,7 +32,7 @@ thread_local! {
 pub extern "C" fn molt_shelve_open(dbm_handle_bits: u64, protocol_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(dbm_handle) = to_i64(obj_from_bits(dbm_handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "dbm_handle must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "dbm_handle must be int");
         };
         let protocol = to_i64(obj_from_bits(protocol_bits)).unwrap_or(4);
         let id = next_shelf_id();
@@ -54,7 +55,7 @@ pub extern "C" fn molt_shelve_open(dbm_handle_bits: u64, protocol_bits: u64) -> 
 pub extern "C" fn molt_shelve_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle");
         };
         SHELF_MAP.with(|m| {
             m.borrow_mut().remove(&id);
@@ -69,13 +70,13 @@ pub extern "C" fn molt_shelve_close(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_shelve_get_dbm_handle(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle");
         };
         SHELF_MAP.with(|m| {
             let map = m.borrow();
             match map.get(&id) {
                 Some(state) => MoltObject::from_int(state.dbm_handle).bits(),
-                None => raise_exception::<u64>(_py, "ValueError", "shelf is closed"),
+                None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "shelf is closed"),
             }
         })
     })
@@ -87,13 +88,13 @@ pub extern "C" fn molt_shelve_get_dbm_handle(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_shelve_get_protocol(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle");
         };
         SHELF_MAP.with(|m| {
             let map = m.borrow();
             match map.get(&id) {
                 Some(state) => MoltObject::from_int(state.protocol).bits(),
-                None => raise_exception::<u64>(_py, "ValueError", "shelf is closed"),
+                None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "shelf is closed"),
             }
         })
     })

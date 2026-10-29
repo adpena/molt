@@ -1,12 +1,13 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
         let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "safe must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "safe must be str");
         };
         let out = urllib_quote_impl(&string, &safe);
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -21,10 +22,10 @@ pub extern "C" fn molt_urllib_quote(string_bits: u64, safe_bits: u64) -> u64 {
 pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
         let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "safe must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "safe must be str");
         };
         let out = urllib_quote_impl(&string, &safe).replace("%20", "+");
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -39,7 +40,7 @@ pub extern "C" fn molt_urllib_quote_plus(string_bits: u64, safe_bits: u64) -> u6
 pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
         let out = urllib_unquote_impl(&string);
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -55,7 +56,7 @@ pub extern "C" fn molt_urllib_unquote(string_bits: u64) -> u64 {
 pub extern "C" fn molt_urllib_unquote_plus(string_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(string) = string_obj_to_owned(obj_from_bits(string_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "string must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "string must be str");
         };
         let out = urllib_unquote_impl(&string.replace('+', " "));
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -75,13 +76,13 @@ pub extern "C" fn molt_urllib_parse_qsl(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(qs) = string_obj_to_owned(obj_from_bits(qs_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "qs must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "qs must be str");
         };
         let keep_blank_values = is_truthy(_py, obj_from_bits(keep_blank_values_bits));
         let strict_parsing = is_truthy(_py, obj_from_bits(strict_parsing_bits));
         let pairs = match urllib_parse_qsl_impl(&qs, keep_blank_values, strict_parsing) {
             Ok(pairs) => pairs,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         };
         alloc_qsl_list(_py, &pairs)
     })
@@ -95,13 +96,13 @@ pub extern "C" fn molt_urllib_parse_qs(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(qs) = string_obj_to_owned(obj_from_bits(qs_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "qs must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "qs must be str");
         };
         let keep_blank_values = is_truthy(_py, obj_from_bits(keep_blank_values_bits));
         let strict_parsing = is_truthy(_py, obj_from_bits(strict_parsing_bits));
         let pairs = match urllib_parse_qsl_impl(&qs, keep_blank_values, strict_parsing) {
             Ok(pairs) => pairs,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         };
         let mut order: Vec<String> = Vec::new();
         let mut values: HashMap<String, Vec<String>> = HashMap::new();
@@ -120,7 +121,7 @@ pub extern "C" fn molt_urllib_urlencode(query_bits: u64, doseq_bits: u64, safe_b
     molt_runtime_core::with_core_gil!(_py, {
         let doseq = is_truthy(_py, obj_from_bits(doseq_bits));
         let Some(safe) = string_obj_to_owned(obj_from_bits(safe_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "safe must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "safe must be str");
         };
         let out = match urllib_urlencode_impl(_py, query_bits, doseq, &safe) {
             Ok(out) => out,
@@ -143,10 +144,10 @@ pub extern "C" fn molt_urllib_urlsplit(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "scheme must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "scheme must be str");
         };
         let allow_fragments = is_truthy(_py, obj_from_bits(allow_fragments_bits));
         let split = urllib_urlsplit_impl(&url, &scheme, allow_fragments);
@@ -162,10 +163,10 @@ pub extern "C" fn molt_http_client_urlsplit(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "scheme must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "scheme must be str");
         };
         let allow_fragments = is_truthy(_py, obj_from_bits(allow_fragments_bits));
         let split = urllib_urlsplit_impl(&url, &scheme, allow_fragments);
@@ -181,10 +182,10 @@ pub extern "C" fn molt_urllib_urlparse(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "scheme must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "scheme must be str");
         };
         let allow_fragments = is_truthy(_py, obj_from_bits(allow_fragments_bits));
         let parsed = urllib_urlparse_impl(&url, &scheme, allow_fragments);
@@ -202,19 +203,19 @@ pub extern "C" fn molt_urllib_urlunsplit(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "scheme must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "scheme must be str");
         };
         let Some(netloc) = string_obj_to_owned(obj_from_bits(netloc_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "netloc must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "netloc must be str");
         };
         let Some(path) = string_obj_to_owned(obj_from_bits(path_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "path must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "path must be str");
         };
         let Some(query) = string_obj_to_owned(obj_from_bits(query_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "query must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "query must be str");
         };
         let Some(fragment) = string_obj_to_owned(obj_from_bits(fragment_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fragment must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "fragment must be str");
         };
         let out = urllib_unsplit_impl(&scheme, &netloc, &path, &query, &fragment);
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -237,22 +238,22 @@ pub extern "C" fn molt_urllib_urlunparse(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "scheme must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "scheme must be str");
         };
         let Some(netloc) = string_obj_to_owned(obj_from_bits(netloc_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "netloc must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "netloc must be str");
         };
         let Some(mut path) = string_obj_to_owned(obj_from_bits(path_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "path must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "path must be str");
         };
         let Some(params) = string_obj_to_owned(obj_from_bits(params_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "params must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "params must be str");
         };
         let Some(query) = string_obj_to_owned(obj_from_bits(query_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "query must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "query must be str");
         };
         let Some(fragment) = string_obj_to_owned(obj_from_bits(fragment_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "fragment must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "fragment must be str");
         };
         if !params.is_empty() {
             path.push(';');
@@ -272,7 +273,7 @@ pub extern "C" fn molt_urllib_urlunparse(
 pub extern "C" fn molt_urllib_urldefrag(url_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
         let (base, fragment) = if let Some((base, fragment)) = url.split_once('#') {
             (base.to_string(), fragment.to_string())
@@ -287,10 +288,10 @@ pub extern "C" fn molt_urllib_urldefrag(url_bits: u64) -> u64 {
 pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(base) = string_obj_to_owned(obj_from_bits(base_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "base must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "base must be str");
         };
         let Some(url) = string_obj_to_owned(obj_from_bits(url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
         };
         if base.is_empty() {
             let out_ptr = alloc_string(_py, url.as_bytes());
@@ -352,7 +353,11 @@ pub extern "C" fn molt_urllib_urljoin(base_bits: u64, url_bits: u64) -> u64 {
 pub extern "C" fn molt_http_cookiejar_new() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = cookiejar_store_new() else {
-            return raise_exception::<_>(_py, "RuntimeError", "cookie jar allocation failed");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "cookie jar allocation failed",
+            );
         };
         MoltObject::from_int(handle).bits()
     })
@@ -362,10 +367,18 @@ pub extern "C" fn molt_http_cookiejar_new() -> u64 {
 pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "cookie jar handle is invalid",
+            );
         };
         let Some(size) = cookiejar_with(handle, |jar| jar.cookies.len()) else {
-            return raise_exception::<_>(_py, "RuntimeError", "cookie jar handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "cookie jar handle is invalid",
+            );
         };
         MoltObject::from_int(i64::try_from(size).unwrap_or(i64::MAX)).bits()
     })
@@ -375,12 +388,20 @@ pub extern "C" fn molt_http_cookiejar_len(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_http_cookiejar_clear(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "cookie jar handle is invalid",
+            );
         };
         let Some(()) = cookiejar_with_mut(handle, |jar| {
             jar.cookies.clear();
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "cookie jar handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "cookie jar handle is invalid",
+            );
         };
         MoltObject::none().bits()
     })
@@ -394,10 +415,14 @@ pub extern "C" fn molt_http_cookiejar_extract(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "cookie jar handle is invalid",
+            );
         };
         let Some(request_url) = string_obj_to_owned(obj_from_bits(request_url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "request url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "request url must be str");
         };
         let headers = match urllib_http_extract_headers_mapping(_py, headers_bits) {
             Ok(value) => value,
@@ -415,10 +440,14 @@ pub extern "C" fn molt_http_cookiejar_header_for_url(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie jar handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "cookie jar handle is invalid",
+            );
         };
         let Some(request_url) = string_obj_to_owned(obj_from_bits(request_url_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "request url must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "request url must be str");
         };
         let Some(header) = urllib_cookiejar_header_for_url(handle, &request_url) else {
             return MoltObject::none().bits();
@@ -434,7 +463,7 @@ pub extern "C" fn molt_http_cookiejar_header_for_url(
 pub extern "C" fn molt_http_cookies_parse(cookie_header_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(cookie_header) = string_obj_to_owned(obj_from_bits(cookie_header_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "cookie header must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "cookie header must be str");
         };
         let pairs = http_cookies_parse_pairs(&cookie_header);
         match urllib_http_headers_to_list(_py, &pairs) {

@@ -6,6 +6,7 @@
 //! node; its optional container cookie provides generation-safe target-death
 //! removal without a second global registry.
 
+use crate::BuiltinExc;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::object::heap_lifecycle::DetachedEdgeSink;
@@ -68,9 +69,9 @@ fn raise_table_error(_py: &PyToken<'_>, error: WeakTableError) -> u64 {
         WeakTableError::InvalidPreparedCapacity => "invalid prepared weak container table capacity",
     };
     let exception = if error == WeakTableError::InvalidPreparedCapacity {
-        "RuntimeError"
+        crate::BuiltinExc::RuntimeError
     } else {
-        "OverflowError"
+        crate::BuiltinExc::OverflowError
     };
     raise_exception::<u64>(_py, exception, message)
 }
@@ -1002,14 +1003,14 @@ fn state_from_bits(
     let Some(ptr) = maybe_ptr_from_bits(bits) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "weak container state is not an object",
         ));
     };
     let Some(state) = (unsafe { state_from_ptr(ptr) }) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid weak container state",
         ));
     };
@@ -1151,7 +1152,11 @@ pub extern "C" fn molt_weakcontainer_new(kind_bits: u64) -> u64 {
             .ok()
             .and_then(WeakContainerKind::from_u8)
         else {
-            return raise_exception::<_>(_py, "ValueError", "invalid weak container kind");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid weak container kind",
+            );
         };
         let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<WeakContainerState>();
         let ptr = alloc_object(_py, total, TYPE_ID_WEAK_CONTAINER_STATE);
@@ -1244,7 +1249,11 @@ pub extern "C" fn molt_weakcontainer_store_commit(
             Err(bits) => return bits,
         };
         if maybe_ptr_from_bits(weakref_bits).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "weak container reference is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "weak container reference is invalid",
+            );
         }
         let hash = hash_from_bits(hash_bits);
         let expected_target_bits = match state.kind {
@@ -1262,7 +1271,7 @@ pub extern "C" fn molt_weakcontainer_store_commit(
         if !target_valid {
             return raise_exception::<_>(
                 _py,
-                "ReferenceError",
+                BuiltinExc::ReferenceError,
                 "weak container reference does not match its live referent",
             );
         }
@@ -1323,7 +1332,7 @@ pub extern "C" fn molt_weakcontainer_store_commit(
                     }
                     return raise_exception::<_>(
                         _py,
-                        "ReferenceError",
+                        BuiltinExc::ReferenceError,
                         "weak referent died during insertion",
                     );
                 }
@@ -1421,7 +1430,7 @@ pub extern "C" fn molt_weakcontainer_store_commit(
                         dec_ref_bits(_py, old);
                         return raise_exception::<_>(
                             _py,
-                            "ReferenceError",
+                            BuiltinExc::ReferenceError,
                             "weak value died during insertion",
                         );
                     }
@@ -1458,7 +1467,7 @@ pub extern "C" fn molt_weakcontainer_get(state_bits: u64, key_bits: u64, hash_bi
             Ok((found, _)) => found,
             Err(bits) => return bits,
         }) else {
-            return raise_exception::<_>(_py, "KeyError", "weak container key not found");
+            return raise_exception::<_>(_py, BuiltinExc::KeyError, "weak container key not found");
         };
         let snapshot = {
             let table = state.read();
@@ -1481,7 +1490,7 @@ pub extern "C" fn molt_weakcontainer_get(state_bits: u64, key_bits: u64, hash_bi
             }
         });
         result.unwrap_or_else(|| {
-            raise_exception::<u64>(_py, "KeyError", "weak container key not found")
+            raise_exception::<u64>(_py, BuiltinExc::KeyError, "weak container key not found")
         })
     })
 }
@@ -1508,7 +1517,11 @@ pub extern "C" fn molt_weakcontainer_take(
             Err(bits) => return bits,
         }) else {
             if raise_missing {
-                return raise_exception::<_>(_py, "KeyError", "weak container key not found");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::KeyError,
+                    "weak container key not found",
+                );
             }
             return MoltObject::none().bits();
         };
@@ -1531,7 +1544,7 @@ pub extern "C" fn molt_weakcontainer_take(
         });
         result.unwrap_or_else(|| {
             if raise_missing {
-                raise_exception::<u64>(_py, "KeyError", "weak container key not found")
+                raise_exception::<u64>(_py, BuiltinExc::KeyError, "weak container key not found")
             } else {
                 MoltObject::none().bits()
             }
@@ -1590,7 +1603,11 @@ pub extern "C" fn molt_weakcontainer_iter(state_bits: u64, projection_bits: u64)
         }
         let projection = to_i64(obj_from_bits(projection_bits)).unwrap_or(-1);
         if !matches!(projection, 1..=3) {
-            return raise_exception::<_>(_py, "ValueError", "invalid weak iterator projection");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid weak iterator projection",
+            );
         }
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<u64>()
@@ -1731,7 +1748,7 @@ pub(crate) fn weakcontainer_iter_next_value(
         let Some(snapshot) = snapshot else {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 state.kind.mutation_error(),
             ));
         };
@@ -1854,7 +1871,7 @@ pub extern "C" fn molt_weakcontainer_refs(state_bits: u64) -> u64 {
                 }
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "weak container order index is corrupt",
                 );
             }
@@ -1890,7 +1907,7 @@ pub extern "C" fn molt_weakcontainer_pop(state_bits: u64) -> u64 {
                     else {
                         return raise_exception::<_>(
                             _py,
-                            "RuntimeError",
+                            BuiltinExc::RuntimeError,
                             "weak container order index is corrupt",
                         );
                     };
@@ -1908,7 +1925,7 @@ pub extern "C" fn molt_weakcontainer_pop(state_bits: u64) -> u64 {
                 } else {
                     "popitem(): dictionary is empty"
                 };
-                return raise_exception::<_>(_py, "KeyError", msg);
+                return raise_exception::<_>(_py, BuiltinExc::KeyError, msg);
             };
             let snapshot = {
                 let table = state.read();

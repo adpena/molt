@@ -20,7 +20,7 @@ fn code_point_from_bits(py: &CoreGilToken, bits: u64) -> Result<u32, u64> {
     let Some(bytes) = (unsafe { molt_runtime_core::rt_string_as_bytes(bits) }) else {
         return Err(raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "argument must be str",
         ));
     };
@@ -31,7 +31,7 @@ fn code_point_from_bits(py: &CoreGilToken, bits: u64) -> Result<u32, u64> {
         .ok_or_else(|| {
             raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "need a single Unicode character as parameter",
             )
         })
@@ -219,7 +219,7 @@ fn char_from_bits(_py: &CoreGilToken, bits: u64) -> Result<char, u64> {
     let Some(s) = string_obj_to_owned(obj) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "argument must be str",
         ));
     };
@@ -229,7 +229,7 @@ fn char_from_bits(_py: &CoreGilToken, bits: u64) -> Result<char, u64> {
         _ => {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "need a single Unicode character as parameter",
             ));
         }
@@ -240,7 +240,7 @@ fn char_from_bits(_py: &CoreGilToken, bits: u64) -> Result<char, u64> {
 fn alloc_str(_py: &CoreGilToken, s: &str) -> u64 {
     let ptr = alloc_string(_py, s.as_bytes());
     if ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -264,7 +264,11 @@ pub extern "C" fn molt_unicodedata_name(ch_bits: u64, default_bits: u64) -> u64 
         // Use default if provided.
         let def_obj = obj_from_bits(default_bits);
         if def_obj.is_none() {
-            return raise_exception::<u64>(_py, "ValueError", &format!("no such name: {ch:?}"));
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                &format!("no such name: {ch:?}"),
+            );
         }
         if let Some(s) = string_obj_to_owned(def_obj) {
             return alloc_str(_py, &s);
@@ -280,13 +284,17 @@ pub extern "C" fn molt_unicodedata_name(ch_bits: u64, default_bits: u64) -> u64 
 pub extern "C" fn molt_unicodedata_lookup(name_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "argument must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be str");
         };
         if let Some(ch) = unicode_names2::character(&s) {
             let encoded = ch.to_string();
             return alloc_str(_py, &encoded);
         }
-        raise_exception::<u64>(_py, "KeyError", &format!("undefined character name '{s}'"))
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::KeyError,
+            &format!("undefined character name '{s}'"),
+        )
     })
 }
 
@@ -360,10 +368,10 @@ pub extern "C" fn molt_unicodedata_decomposition(ch_bits: u64) -> u64 {
 pub extern "C" fn molt_unicodedata_normalize(form_bits: u64, text_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(form) = string_obj_to_owned(obj_from_bits(form_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "form must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "form must be str");
         };
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "text must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "text must be str");
         };
         let normalized = match form.as_str() {
             "NFC" => nfc_normalize(&text),
@@ -374,7 +382,7 @@ pub extern "C" fn molt_unicodedata_normalize(form_bits: u64, text_bits: u64) -> 
             _ => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("invalid normalization form {form}"),
                 );
             }
@@ -387,10 +395,10 @@ pub extern "C" fn molt_unicodedata_normalize(form_bits: u64, text_bits: u64) -> 
 pub extern "C" fn molt_unicodedata_is_normalized(form_bits: u64, text_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(form) = string_obj_to_owned(obj_from_bits(form_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "form must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "form must be str");
         };
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "text must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "text must be str");
         };
         let already = match form.as_str() {
             "NFC" => nfc_normalize(&text) == text,
@@ -400,7 +408,7 @@ pub extern "C" fn molt_unicodedata_is_normalized(form_bits: u64, text_bits: u64)
             _ => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("invalid normalization form {form}"),
                 );
             }
@@ -420,7 +428,7 @@ pub extern "C" fn molt_unicodedata_numeric(ch_bits: u64, default_bits: u64) -> u
             return MoltObject::from_float(value).bits();
         }
         if obj_from_bits(default_bits).is_none() {
-            return raise_exception::<u64>(_py, "ValueError", "not a numeric character");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "not a numeric character");
         }
         inc_ref_bits(_py, default_bits);
         default_bits
@@ -438,7 +446,7 @@ pub extern "C" fn molt_unicodedata_decimal(ch_bits: u64, default_bits: u64) -> u
             return int_bits_from_i64(_py, i64::from(value));
         }
         if obj_from_bits(default_bits).is_none() {
-            return raise_exception::<u64>(_py, "ValueError", "not a decimal character");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "not a decimal character");
         }
         inc_ref_bits(_py, default_bits);
         default_bits
@@ -456,7 +464,7 @@ pub extern "C" fn molt_unicodedata_digit(ch_bits: u64, default_bits: u64) -> u64
             return int_bits_from_i64(_py, i64::from(value));
         }
         if obj_from_bits(default_bits).is_none() {
-            return raise_exception::<u64>(_py, "ValueError", "not a digit character");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "not a digit character");
         }
         inc_ref_bits(_py, default_bits);
         default_bits

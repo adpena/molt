@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::{
     MoltObject, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_tuple, bits_from_ptr,
@@ -9,14 +10,14 @@ fn asyncio_child_watcher_dict_ptr(_py: &PyToken<'_>, callbacks_bits: u64) -> Res
     let Some(ptr) = obj_from_bits(callbacks_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "child watcher callbacks must be dict",
         ));
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_DICT {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "child watcher callbacks must be dict",
         ));
     }
@@ -25,7 +26,11 @@ fn asyncio_child_watcher_dict_ptr(_py: &PyToken<'_>, callbacks_bits: u64) -> Res
 
 fn asyncio_child_watcher_pid(_py: &PyToken<'_>, pid_bits: u64) -> Result<i64, u64> {
     let Some(pid) = to_i64(obj_from_bits(pid_bits)) else {
-        return Err(raise_exception::<u64>(_py, "TypeError", "pid must be int"));
+        return Err(raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "pid must be int",
+        ));
     };
     Ok(pid)
 }
@@ -35,7 +40,7 @@ fn asyncio_child_watcher_args_tuple_bits(_py: &PyToken<'_>, args_bits: u64) -> R
     let Some(args_ptr) = args_obj.as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "args must be tuple or list",
         ));
     };
@@ -62,7 +67,7 @@ fn asyncio_child_watcher_args_tuple_bits(_py: &PyToken<'_>, args_bits: u64) -> R
     }
     Err(raise_exception::<u64>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "args must be tuple or list",
     ))
 }

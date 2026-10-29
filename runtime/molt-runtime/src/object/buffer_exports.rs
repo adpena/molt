@@ -1,6 +1,7 @@
 //! Buffer lifetime and resize admission. Geometry never owns storage: every
 //! published export owns exactly one exporter reference and one counted pin.
 
+use crate::BuiltinExc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::PyToken;
@@ -114,7 +115,7 @@ pub(crate) fn acquire_owner(py: &PyToken<'_>, source: u64) -> Result<u64, ()> {
                             if !crate::exception_pending(py) {
                                 let _ = crate::raise_exception::<u64>(
                                     py,
-                                    "MemoryError",
+                                    BuiltinExc::MemoryError,
                                     "cannot allocate buffer owner",
                                 );
                             }
@@ -131,7 +132,8 @@ pub(crate) fn acquire_owner(py: &PyToken<'_>, source: u64) -> Result<u64, ()> {
 }
 
 fn export_overflow(py: &PyToken<'_>) -> Result<u64, ()> {
-    let _ = crate::raise_exception::<u64>(py, "OverflowError", "too many exported buffers");
+    let _ =
+        crate::raise_exception::<u64>(py, BuiltinExc::OverflowError, "too many exported buffers");
     Err(())
 }
 
@@ -212,7 +214,7 @@ impl<'scope> CallbackMemoryView<'scope> {
         ) else {
             return Err(crate::raise_exception(
                 py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "invalid IO buffer geometry",
             ));
         };
@@ -265,7 +267,7 @@ impl BufferAccessError {
     pub(crate) fn raise(self, py: &PyToken<'_>, invalid_message: &str) -> u64 {
         match self {
             Self::Preparation | Self::Pending => crate::MoltObject::none().bits(),
-            Self::Invalid => crate::raise_exception(py, "TypeError", invalid_message),
+            Self::Invalid => crate::raise_exception(py, BuiltinExc::TypeError, invalid_message),
         }
     }
 }
@@ -342,7 +344,7 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
         let abi = crate::cpython_abi_hooks::abi_buffer_view_from_runtime(result.export);
         if let Some(message) = buffer::descriptor_request_error(&abi, flags) {
             let message = std::str::from_utf8(&message[..message.len() - 1]).unwrap();
-            crate::raise_exception::<()>(py, "BufferError", message);
+            crate::raise_exception::<()>(py, BuiltinExc::BufferError, message);
             return Err(BufferAccessError::Pending);
         }
         Ok(result)
@@ -488,7 +490,7 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
             .ok_or_else(|| {
                 let _ = crate::raise_exception::<u64>(
                     self.py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "buffer length exceeds the active address space",
                 );
                 BufferAccessError::Pending
@@ -496,7 +498,7 @@ impl<'a, 'py> ScopedBuffer<'a, 'py> {
         if len != 0 && export.data.is_null() {
             let _ = crate::raise_exception::<u64>(
                 self.py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "buffer data pointer is null",
             );
             return Err(BufferAccessError::Pending);
@@ -631,12 +633,17 @@ pub(crate) unsafe fn bytearray_data(ptr: *mut u8) -> (*mut u8, usize) {
 /// Shared Python/C-ABI resize, after the caller has finished size coercion.
 pub(crate) fn bytearray_resize(py: &PyToken<'_>, bits: u64, len: usize) -> bool {
     let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
-        let _ = crate::raise_exception::<u64>(py, "TypeError", "bytearray object expected");
+        let _ =
+            crate::raise_exception::<u64>(py, BuiltinExc::TypeError, "bytearray object expected");
         return false;
     };
     unsafe {
         if crate::object_type_id(ptr) != crate::TYPE_ID_BYTEARRAY {
-            let _ = crate::raise_exception::<u64>(py, "TypeError", "bytearray object expected");
+            let _ = crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "bytearray object expected",
+            );
             return false;
         }
         bytearray_mutate(py, ptr, len, |vec| vec.resize(len, 0)).is_some()
@@ -657,11 +664,11 @@ pub(crate) unsafe fn bytearray_mutate<T>(
         Ok(out) => Some(out),
         Err(BufferMutationError::Exported) => crate::raise_exception(
             py,
-            "BufferError",
+            BuiltinExc::BufferError,
             "Existing exports of data: object cannot be re-sized",
         ),
         Err(BufferMutationError::Allocation) => {
-            crate::raise_exception(py, "MemoryError", "bytearray allocation failed")
+            crate::raise_exception(py, BuiltinExc::MemoryError, "bytearray allocation failed")
         }
     }
 }
@@ -720,7 +727,7 @@ pub(crate) unsafe fn bytearray_require_unexported(
     if unsafe { bytearray_is_exported(ptr) } {
         Err(crate::raise_exception(
             py,
-            "BufferError",
+            BuiltinExc::BufferError,
             "Existing exports of data: object cannot be re-sized",
         ))
     } else {

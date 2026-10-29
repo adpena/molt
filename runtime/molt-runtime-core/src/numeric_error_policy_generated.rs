@@ -49,20 +49,20 @@ impl NumericErrorContext {
         }
     }
 
-    pub const fn error_class(self) -> &'static str {
+    pub const fn error_kind(self) -> crate::BuiltinExc {
         match self {
-            Self::IntegerTrueDivision => "ZeroDivisionError",
-            Self::FloatTrueDivision => "ZeroDivisionError",
-            Self::ComplexTrueDivision => "ZeroDivisionError",
-            Self::IntegerFloorDivision => "ZeroDivisionError",
-            Self::FloatFloorDivision => "ZeroDivisionError",
-            Self::IntegerModulo => "ZeroDivisionError",
-            Self::FloatModulo => "ZeroDivisionError",
-            Self::IntegerDivmod => "ZeroDivisionError",
-            Self::FloatDivmod => "ZeroDivisionError",
-            Self::NegativePower => "ZeroDivisionError",
-            Self::ComplexNegativePower => "ZeroDivisionError",
-            Self::ModularPowerZero => "ValueError",
+            Self::IntegerTrueDivision => crate::BuiltinExc::ZeroDivisionError,
+            Self::FloatTrueDivision => crate::BuiltinExc::ZeroDivisionError,
+            Self::ComplexTrueDivision => crate::BuiltinExc::ZeroDivisionError,
+            Self::IntegerFloorDivision => crate::BuiltinExc::ZeroDivisionError,
+            Self::FloatFloorDivision => crate::BuiltinExc::ZeroDivisionError,
+            Self::IntegerModulo => crate::BuiltinExc::ZeroDivisionError,
+            Self::FloatModulo => crate::BuiltinExc::ZeroDivisionError,
+            Self::IntegerDivmod => crate::BuiltinExc::ZeroDivisionError,
+            Self::FloatDivmod => crate::BuiltinExc::ZeroDivisionError,
+            Self::NegativePower => crate::BuiltinExc::ZeroDivisionError,
+            Self::ComplexNegativePower => crate::BuiltinExc::ZeroDivisionError,
+            Self::ModularPowerZero => crate::BuiltinExc::ValueError,
         }
     }
 

@@ -167,7 +167,7 @@ fn unpack_i64(_py: &PyToken, bits: u64, label: &str) -> Result<i64, u64> {
         return Ok(f as i64);
     }
     let msg = format!("datetime: expected int for {label}");
-    Err(raise_exception::<u64>(_py, "TypeError", &msg))
+    Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg))
 }
 
 #[inline]
@@ -180,7 +180,7 @@ fn unpack_f64(_py: &PyToken, bits: u64, label: &str) -> Result<f64, u64> {
         return Ok(i as f64);
     }
     let msg = format!("datetime: expected number for {label}");
-    Err(raise_exception::<u64>(_py, "TypeError", &msg))
+    Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg))
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ macro_rules! unpack_str {
             Some(s) => s,
             None => {
                 let msg = format!("datetime: expected str for {}", $label);
-                return raise_exception::<u64>($py, "TypeError", &msg);
+                return raise_exception::<u64>($py, BuiltinExc::TypeError, &msg);
             }
         }
     }};
@@ -239,7 +239,7 @@ pub extern "C" fn molt_datetime_days_in_month(year_bits: u64, month_bits: u64) -
         };
         if !(1..=12).contains(&month) {
             let msg = format!("month must be in 1..12, not {month}");
-            return raise_exception::<u64>(_py, "ValueError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
         }
         MoltObject::from_int(days_in_month_impl(year, month) as i64).bits()
     })
@@ -428,7 +428,7 @@ pub extern "C" fn molt_datetime_td_normalize(
         if !(-999_999_999..=999_999_999).contains(&out_days) {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "timedelta # of days is too large: timedelta.max = timedelta(999999999, 86399, 999999)",
             );
         }
@@ -650,7 +650,7 @@ pub extern "C" fn molt_datetime_parse_isoformat_date(text_bits: u64) -> u64 {
                 ];
                 tuple_bits(_py, &elems)
             }
-            Err(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -676,7 +676,7 @@ pub extern "C" fn molt_datetime_parse_isoformat_time(text_bits: u64) -> u64 {
                 // dec_ref the None placeholder only if it was a ptr (it isn't, None is inline)
                 tuple_bits(_py, &elems)
             }
-            Err(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -705,7 +705,7 @@ pub extern "C" fn molt_datetime_parse_isoformat(text_bits: u64) -> u64 {
 
         let (y, m, d) = match parse_isodate_str(date_str) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         };
 
         let (h, mi, sec, us, utcoff) = if time_str.is_empty() {
@@ -713,7 +713,7 @@ pub extern "C" fn molt_datetime_parse_isoformat(text_bits: u64) -> u64 {
         } else {
             match parse_isotime_str(time_str) {
                 Ok(v) => v,
-                Err(msg) => return raise_exception::<u64>(_py, "ValueError", &msg),
+                Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
             }
         };
 
@@ -763,7 +763,7 @@ pub extern "C" fn molt_datetime_strptime(text_bits: u64, fmt_bits: u64) -> u64 {
                 ];
                 tuple_bits(_py, &elems)
             }
-            Err(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -1117,7 +1117,7 @@ pub extern "C" fn molt_datetime_format_isotime(
         let s = format_isotime_impl(h, mi, sec, us, None, &timespec);
         match s {
             Ok(text) => string_bits(_py, &text),
-            Err(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -1227,13 +1227,13 @@ pub extern "C" fn molt_datetime_format_isodatetime(
         let tz_str = string_obj_to_owned(obj_from_bits(tz_str_bits)).unwrap_or_default();
         let utcoff = match parse_iso_offset_str(&tz_str) {
             Ok(value) => value,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         };
 
         let date_str = format!("{y:04}-{m:02}-{d:02}");
         let time_str = match format_isotime_impl(h, mi, sec, us, utcoff, &timespec) {
             Ok(s) => s,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         };
 
         let sep_char = sep.chars().next().unwrap_or('T');
@@ -1606,7 +1606,7 @@ pub extern "C" fn molt_datetime_strftime(
             fmt: &fmt,
         }) {
             Ok(s) => string_bits(_py, &s),
-            Err(msg) => raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -1722,7 +1722,7 @@ pub extern "C" fn molt_datetime_now_local() -> u64 {
                     ];
                     tuple_bits(_py, &elems)
                 }
-                Err(msg) => raise_exception::<u64>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, &msg),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -1737,7 +1737,7 @@ pub extern "C" fn molt_datetime_now_local() -> u64 {
             if offset_west == i64::MIN {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     "localtime failed: timezone information unavailable",
                 );
             }
@@ -1813,7 +1813,11 @@ pub extern "C" fn molt_datetime_fromtimestamp_utc(ts_bits: u64) -> u64 {
             Err(e) => return e,
         };
         if !ts.is_finite() {
-            return raise_exception::<u64>(_py, "OverflowError", "timestamp out of range");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::OverflowError,
+                "timestamp out of range",
+            );
         }
         let secs = ts.trunc() as i64;
         let us = ((ts.fract().abs()) * 1_000_000.0).round() as i64;
@@ -1839,7 +1843,11 @@ pub extern "C" fn molt_datetime_fromtimestamp_local(ts_bits: u64) -> u64 {
             Err(e) => return e,
         };
         if !ts.is_finite() {
-            return raise_exception::<u64>(_py, "OverflowError", "timestamp out of range");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::OverflowError,
+                "timestamp out of range",
+            );
         }
         let secs = ts.trunc() as i64;
         let us = ((ts.fract().abs()) * 1_000_000.0).round() as i64;
@@ -1860,7 +1868,7 @@ pub extern "C" fn molt_datetime_fromtimestamp_local(ts_bits: u64) -> u64 {
                     ];
                     tuple_bits(_py, &elems)
                 }
-                Err(msg) => raise_exception::<u64>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, &msg),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -1869,7 +1877,7 @@ pub extern "C" fn molt_datetime_fromtimestamp_local(ts_bits: u64) -> u64 {
             if offset_west == i64::MIN {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     "localtime failed: timezone information unavailable",
                 );
             }
@@ -1948,7 +1956,7 @@ pub extern "C" fn molt_datetime_to_timestamp(
             {
                 match localtime_to_epoch_from_local(y, m, d, h as i32, mi as i32, sec as i32) {
                     Ok(v) => v,
-                    Err(msg) => return raise_exception::<u64>(_py, "OSError", &msg),
+                    Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::OSError, &msg),
                 }
             }
             #[cfg(target_arch = "wasm32")]
@@ -1959,7 +1967,7 @@ pub extern "C" fn molt_datetime_to_timestamp(
                 if offset_west == i64::MIN {
                     return raise_exception::<u64>(
                         _py,
-                        "OSError",
+                        BuiltinExc::OSError,
                         "localtime failed: timezone information unavailable",
                     );
                 }
@@ -2211,16 +2219,16 @@ pub extern "C" fn molt_datetime_validate_date(y_bits: u64, m_bits: u64, d_bits: 
         };
         if !(1..=9999).contains(&y) {
             let msg = format!("year must be in 1..9999, not {y}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(1..=12).contains(&m) {
             let msg = format!("month must be in 1..12, not {m}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         let max_day = days_in_month_impl(y as i32, m as i32) as i64;
         if !(1..=max_day).contains(&d) {
             let msg = format!("day {d} must be in range 1..{max_day} for month {m} in year {y}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         MoltObject::from_bool(true).bits()
     })
@@ -2257,23 +2265,23 @@ pub extern "C" fn molt_datetime_validate_time(
         };
         if !(0..24).contains(&h) {
             let msg = format!("hour must be in 0..23, not {h}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..60).contains(&mi) {
             let msg = format!("minute must be in 0..59, not {mi}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..60).contains(&sec) {
             let msg = format!("second must be in 0..59, not {sec}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..1_000_000).contains(&us) {
             let msg = format!("microsecond must be in 0..999999, not {us}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         if !(0..=1).contains(&fold) {
             let msg = format!("fold must be either 0 or 1, not {fold}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         MoltObject::from_bool(true).bits()
     })
@@ -2330,7 +2338,7 @@ pub extern "C" fn molt_datetime_combine(
         if !(1..=9999).contains(&y) || !(1..=12).contains(&m) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("year {y} or month {m} is out of range"),
             );
         }
@@ -2338,7 +2346,7 @@ pub extern "C" fn molt_datetime_combine(
         if d < 1 || d > max_day {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("day {d} is out of range for month"),
             );
         }
@@ -2347,7 +2355,11 @@ pub extern "C" fn molt_datetime_combine(
             || !(0..60).contains(&sec)
             || !(0..1_000_000).contains(&us)
         {
-            return raise_exception::<u64>(_py, "ValueError", "time component out of range");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "time component out of range",
+            );
         }
         let elems = [
             MoltObject::from_int(y).bits(),
@@ -2364,7 +2376,7 @@ pub extern "C" fn molt_datetime_combine(
             dec_ref_bits(_py, e);
         }
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -2395,13 +2407,17 @@ pub extern "C" fn molt_date_fromisocalendar(
         if !(1..=7).contains(&iso_day) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("Invalid day: {iso_day} (range is [1, 7])"),
             );
         }
         let max_week = iso_weeks_in_year(iso_year as i32) as i64;
         if iso_week < 1 || iso_week > max_week {
-            return raise_exception::<u64>(_py, "ValueError", &format!("Invalid week: {iso_week}"));
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                &format!("Invalid week: {iso_week}"),
+            );
         }
         // January 4 is always in ISO week 1
         let jan4_ordinal = ymd_to_ordinal(iso_year as i32, 1, 4);
@@ -2419,7 +2435,7 @@ pub extern "C" fn molt_date_fromisocalendar(
             dec_ref_bits(_py, e);
         }
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -2433,7 +2449,7 @@ fn numeric_zero_error(py: &PyToken, context: NumericErrorContext) -> u64 {
     {
         return raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "unsupported numeric exception target version",
         );
     } else if molt_runtime_core::rt_target_at_least(3, 14) {
@@ -2445,7 +2461,7 @@ fn numeric_zero_error(py: &PyToken, context: NumericErrorContext) -> u64 {
     };
     raise_exception::<u64>(
         py,
-        context.error_class(),
+        context.error_kind(),
         context.message(3, minor).expect("admitted target"),
     )
 }
@@ -2496,7 +2512,7 @@ pub extern "C" fn molt_timedelta_truediv_td(
         let a_total = td_total_us(a_days, a_secs, a_us);
         let b_total = td_total_us(b_days, b_secs, b_us);
         if b_total == 0.0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero");
+            return raise_exception::<u64>(_py, BuiltinExc::ZeroDivisionError, "division by zero");
         }
         MoltObject::from_float(a_total / b_total).bits()
     })
@@ -2561,7 +2577,7 @@ pub extern "C" fn molt_timedelta_mod_td(
         let Some((rd, rs, ru)) = normalize_timedelta_us_exact(rem) else {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "timedelta days must have magnitude <= 999999999",
             );
         };
@@ -2593,7 +2609,7 @@ pub extern "C" fn molt_timedelta_floordiv_scalar(
         let Some(divisor) = to_bigint(obj_from_bits(divisor_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "timedelta floor divisor must be an integer",
             );
         };
@@ -2616,7 +2632,7 @@ pub extern "C" fn molt_timedelta_floordiv_scalar(
         let Some((rd, rs, ru)) = normalize_timedelta_us_exact(result_us) else {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "timedelta days must have magnitude <= 999999999",
             );
         };
@@ -2701,7 +2717,7 @@ fn timedelta_tuple(_py: &PyToken, days: i64, secs: i64, us: i64) -> u64 {
         dec_ref_bits(_py, e);
     }
     if tuple_ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
@@ -2731,7 +2747,7 @@ pub extern "C" fn molt_datetime_as_int(value_bits: u64) -> u64 {
         if let Some(big) = to_bigint(obj) {
             return int_bits_from_bigint(_py, big);
         }
-        raise_exception::<u64>(_py, "TypeError", "integer argument expected")
+        raise_exception::<u64>(_py, BuiltinExc::TypeError, "integer argument expected")
     })
 }
 
@@ -2776,7 +2792,13 @@ pub extern "C" fn molt_datetime_format_time(
             "microseconds" => format!("{}.{:06}", base, us),
             "minutes" => format!("{:02}:{:02}", h, m),
             "hours" => format!("{:02}", h),
-            _ => return raise_exception::<u64>(_py, "ValueError", "Unknown timespec value"),
+            _ => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "Unknown timespec value",
+                );
+            }
         };
         string_bits(_py, &result)
     })
@@ -2860,7 +2882,7 @@ pub extern "C" fn molt_timezone_validate(days_bits: u64, secs_bits: u64) -> u64 
         if !(-86400 < total && total < 86400) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "offset must be strictly between -24h and +24h",
             );
         }

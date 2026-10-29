@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::runtime_flags::{self, RuntimeFlag};
 use std::cell::Cell;
@@ -937,7 +938,7 @@ pub unsafe extern "C" fn molt_spawn(task_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(task_ptr) = resolve_task_ptr(task_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
             };
             // Repeated spawn of a terminal task cannot establish an external
             // reference for work that enqueue will necessarily reject.
@@ -979,7 +980,7 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
             let _py = _gil.token();
             let _py = &_py;
             let Some(task_ptr) = resolve_task_ptr(task_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
             };
             if async_trace_enabled() {
                 eprintln!("molt async trace: block_on task=0x{:x}", task_ptr as usize);

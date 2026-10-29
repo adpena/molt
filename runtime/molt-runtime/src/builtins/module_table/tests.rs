@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use std::sync::atomic::AtomicU64 as TestCounter;
 
 /// One synthetic registry row, in the Python layout writer's column order.
@@ -191,7 +192,7 @@ extern "C" fn init_g4_src() -> u64 {
 
 extern "C" fn init_g4_fail() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "ValueError", "g4 init failure")
+        raise_exception::<u64>(_py, BuiltinExc::ValueError, "g4 init failure")
     })
 }
 
@@ -200,7 +201,7 @@ extern "C" fn init_g4_z_static_ext_fail() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "g4_z_static_ext_fail: static-link PyModuleDef Py_mod_exec slot \
                  returned non-zero",
         )
@@ -488,7 +489,12 @@ fn raw_module_body_dispatch_preserves_caller_exception_baseline_and_error() {
             crate::exception_stack_baseline_set(0);
             let exception = crate::builtins::exceptions::ExceptionValue::adopt(
                 py,
-                MoltObject::from_ptr(crate::alloc_exception(py, "ValueError", "body error")).bits(),
+                MoltObject::from_ptr(crate::alloc_exception(
+                    py,
+                    BuiltinExc::ValueError,
+                    "body error",
+                ))
+                .bits(),
             );
             crate::builtins::exceptions::molt_raise(exception.bits())
         })
@@ -510,10 +516,10 @@ fn raw_module_body_dispatch_preserves_caller_exception_baseline_and_error() {
             py,
             crate::molt_exception_last_pending(),
         );
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
             exception.bits(),
-            "ValueError",
+            crate::BuiltinExc::ValueError,
         ));
         assert_eq!(
             crate::builtins::exceptions::format_exception_message(
@@ -877,9 +883,9 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
     crate::with_gil_entry_nopanic!(py, {
         let _provider = crate::test_support::NativeProviderTestNamespace::new(py, "builtins");
         let class =
-            crate::builtins::exceptions::exception_type_bits_from_name(py, "_DeadlockError");
+            crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::DeadlockError);
         assert_ne!(class, 0);
-        let base = crate::builtins::exceptions::exception_type_bits_from_name(py, "RuntimeError");
+        let base = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::RuntimeError);
         assert!(crate::issubclass_bits(class, base));
         let name = ExceptionValue::adopt(
             py,
@@ -910,21 +916,21 @@ fn deadlock_exception_payload_projects_one_internal_runtime_error_identity() {
         );
         let builtins = interpreter_builtins_dictionary(py).unwrap();
         for internal in [
-            "CancelledError",
-            "UnsupportedOperation",
-            "_DeadlockError",
-            "PickleError",
-            "PicklingError",
-            "UnpicklingError",
-            "gaierror",
-            "herror",
-            "StatisticsError",
+            crate::BuiltinExc::CancelledError,
+            crate::BuiltinExc::UnsupportedOperation,
+            crate::BuiltinExc::DeadlockError,
+            crate::BuiltinExc::PickleError,
+            crate::BuiltinExc::PicklingError,
+            crate::BuiltinExc::UnpicklingError,
+            crate::BuiltinExc::SocketGaiError,
+            crate::BuiltinExc::SocketHError,
+            crate::BuiltinExc::StatisticsError,
         ] {
             let name = ExceptionValue::adopt(
                 py,
-                crate::attr_name_bits_from_bytes(py, internal.as_bytes()).unwrap(),
+                crate::attr_name_bits_from_bytes(py, internal.name().as_bytes()).unwrap(),
             );
-            let expected = crate::builtins::exceptions::exception_type_bits_from_name(py, internal);
+            let expected = crate::builtins::exceptions::exception_class_bits(py, internal);
             let lookup = ExceptionValue::adopt(py, crate::molt_builtin_class_lookup(name.bits()));
             assert_eq!(
                 lookup.bits(),
@@ -1046,11 +1052,10 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
                                     py,
                                     crate::builtins::exceptions::molt_exception_last_pending(),
                                 );
-                                let expected =
-                                    crate::builtins::exceptions::exception_type_bits_from_name(
-                                        py,
-                                        "_DeadlockError",
-                                    );
+                                let expected = crate::builtins::exceptions::exception_class_bits(
+                                    py,
+                                    BuiltinExc::DeadlockError,
+                                );
                                 pending
                                     && obj_from_bits(error.bits()).as_ptr().is_some_and(
                                         |pointer| unsafe {
@@ -1611,7 +1616,7 @@ fn explicit_private_body_self_import_reads_public_missing_present_and_none() {
             if mode == 2 {
                 assert!(failed);
                 assert!(
-                    pending_exception_text(py, "ModuleNotFoundError")
+                    pending_exception_text(py, crate::BuiltinExc::ModuleNotFoundError)
                         .contains("None in sys.modules")
                 );
                 assert_eq!(nested, 0);
@@ -2017,7 +2022,7 @@ fn recursive_public_deletion_reenters_initializer_and_restores_outer_custody() {
             RECURSIVE_MODE.store(mode, Ordering::SeqCst);
             RECURSIVE_RUNS.store(0, Ordering::SeqCst);
             RECURSIVE_RESTORED.store(0, Ordering::SeqCst);
-            raise_exception::<()>(py, "ValueError", "recursive initializer failure");
+            raise_exception::<()>(py, BuiltinExc::ValueError, "recursive initializer failure");
             let error = crate::builtins::exceptions::molt_exception_last_pending();
             let error = crate::builtins::exceptions::ExceptionValue::adopt(py, error);
             crate::clear_exception(py);
@@ -2047,8 +2052,10 @@ fn recursive_public_deletion_reenters_initializer_and_restores_outer_custody() {
                 assert!(exception_pending(py));
                 let observed = crate::builtins::exceptions::molt_exception_last_pending();
                 if mode == 2 {
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                        py, observed, "KeyError"
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
+                        py,
+                        observed,
+                        crate::BuiltinExc::KeyError
                     ));
                 } else {
                     assert_eq!(
@@ -2103,10 +2110,12 @@ fn successful_initializer_returns_final_publication_and_moves_it_after_nested_im
             if mode == 2 {
                 assert!(exception_pending(py));
                 let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                    py, error, "KeyError"
+                assert!(crate::builtins::exceptions::exception_matches_kind(
+                    py,
+                    error,
+                    crate::BuiltinExc::KeyError
                 ));
-                let message = pending_exception_text(py, "KeyError");
+                let message = pending_exception_text(py, crate::BuiltinExc::KeyError);
                 assert!(message.contains(text));
                 assert!(module_lookup(py, text).unwrap().is_none());
             } else {
@@ -2564,12 +2573,12 @@ fn import_outcome_registered_cache_refresh_preserves_initializer_custody() {
     });
 }
 
-fn pending_exception_text(_py: &PyToken<'_>, expected_kind: &str) -> String {
+fn pending_exception_text(_py: &PyToken<'_>, expected_kind: crate::BuiltinExc) -> String {
     assert!(exception_pending(_py), "expected a pending exception");
     let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
     assert!(
-        crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, expected_kind),
-        "expected {expected_kind} before clearing its owned exception"
+        crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, expected_kind),
+        "expected {expected_kind:?} before clearing its owned exception"
     );
     let text = obj_from_bits(exc_bits)
         .as_ptr()
@@ -2719,7 +2728,7 @@ fn builtin_bootstrap_publication_precedes_recursive_python_and_preserves_deletio
             }
             let value = crate::molt_module_get_global(unrelated, key);
             assert!(is_none_bits(value));
-            assert!(pending_exception_text(py, "NameError").contains("NameError"));
+            assert!(pending_exception_text(py, crate::BuiltinExc::NameError).contains("NameError"));
             assert!(
                 unsafe {
                     crate::dict_get_in_place(py, dict, key).expect("dictionary lookup succeeds")
@@ -2844,11 +2853,15 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
             for through_frame in [false, true] {
                 let value = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                 assert!(is_none_bits(value));
-                assert!(pending_exception_text(_py, "NameError").contains("NameError"));
+                assert!(
+                    pending_exception_text(_py, crate::BuiltinExc::NameError).contains("NameError")
+                );
 
                 let unrelated = lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
                 assert!(is_none_bits(unrelated));
-                assert!(pending_exception_text(_py, "NameError").contains("NameError"));
+                assert!(
+                    pending_exception_text(_py, crate::BuiltinExc::NameError).contains("NameError")
+                );
 
                 // Actual captured builtins values supply both the module
                 // namespace and ordinary fallback lookup during bootstrap.
@@ -2877,7 +2890,10 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
                 for module in [builtins_bits, unrelated_bits] {
                     let deleted = lookup_test_global(_py, module, name_bits, through_frame);
                     assert!(is_none_bits(deleted));
-                    assert!(pending_exception_text(_py, "NameError").contains("NameError"));
+                    assert!(
+                        pending_exception_text(_py, crate::BuiltinExc::NameError)
+                            .contains("NameError")
+                    );
                 }
 
                 let _owner_fixture_11 = TestExecutionOwner::set(
@@ -2896,7 +2912,9 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
                 let foreign = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                 let _owner_fixture_12 = TestExecutionOwner::set(table, idx, owner);
                 assert!(is_none_bits(foreign));
-                assert!(pending_exception_text(_py, "NameError").contains("NameError"));
+                assert!(
+                    pending_exception_text(_py, crate::BuiltinExc::NameError).contains("NameError")
+                );
             }
         }
         // A replaced visible cache entry cannot borrow the old table
@@ -2925,7 +2943,9 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
         for through_frame in [false, true] {
             let replacement = lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
             assert!(is_none_bits(replacement));
-            assert!(pending_exception_text(_py, "NameError").contains("NameError"));
+            assert!(
+                pending_exception_text(_py, crate::BuiltinExc::NameError).contains("NameError")
+            );
         }
         {
             inc_ref_bits(_py, builtins_bits);
@@ -2961,7 +2981,9 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
             for through_frame in [false, true] {
                 let missing = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                 assert!(is_none_bits(missing));
-                assert!(pending_exception_text(_py, "NameError").contains("NameError"));
+                assert!(
+                    pending_exception_text(_py, crate::BuiltinExc::NameError).contains("NameError")
+                );
             }
             let _owner_fixture_14 = TestExecutionOwner::set(table, idx, 0);
         }
@@ -3003,13 +3025,13 @@ fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         let fail_id = test_registry_id("g4_fail");
         let failed = module_ensure(_py, fail_id);
         assert!(is_none_bits(failed));
-        let text = pending_exception_text(_py, "ValueError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ValueError);
         assert!(text.contains("g4 init failure"), "{text}");
         // The row must be back to Uninit: a retry re-enters init and
         // fails identically instead of returning a phantom module.
         let retry = module_ensure(_py, fail_id);
         assert!(is_none_bits(retry));
-        let text = pending_exception_text(_py, "ValueError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ValueError);
         assert!(text.contains("g4 init failure"), "{text}");
 
         // ── Static-extension failure unwind: Initializing → Uninit ──
@@ -3017,7 +3039,7 @@ fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         let ext_runs_before = EXT_FAIL_RUNS.load(Ordering::SeqCst);
         let ext_failed = module_ensure(_py, ext_fail_id);
         assert!(is_none_bits(ext_failed));
-        let text = pending_exception_text(_py, "ImportError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ImportError);
         assert!(text.contains("ImportError"), "{text}");
         assert!(
             text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
@@ -3036,7 +3058,7 @@ fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         );
         let ext_retry = module_ensure(_py, ext_fail_id);
         assert!(is_none_bits(ext_retry));
-        let text = pending_exception_text(_py, "ImportError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ImportError);
         assert!(
             text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
             "{text}"
@@ -3098,7 +3120,7 @@ fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         // ── No init lane: fail closed with CPython's exact message ──
         let missing = module_ensure(_py, test_registry_id("g4_noinit"));
         assert!(is_none_bits(missing));
-        let text = pending_exception_text(_py, "ModuleNotFoundError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ModuleNotFoundError);
         assert!(
             text.contains("No module named 'g4_noinit'"),
             "registry rows without an init lane fail closed: {text}"
@@ -3169,7 +3191,7 @@ fn assert_g4_ensure_state_machine_transitions(public_cache: bool) {
         module_table_view_replace(_py, src_id, none_bits());
         let halted = module_ensure(_py, src_id);
         assert!(is_none_bits(halted));
-        let text = pending_exception_text(_py, "ModuleNotFoundError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ModuleNotFoundError);
         assert!(
             text.contains("import of g4_src halted; None in sys.modules"),
             "row 5.2 exact message: {text}"
@@ -3222,7 +3244,7 @@ fn r0_static_extension_init_failure_unwinds_initializing() {
         let runs_before = EXT_FAIL_RUNS.load(Ordering::SeqCst);
         let failed = module_ensure(_py, ext_fail_id);
         assert!(is_none_bits(failed));
-        let text = pending_exception_text(_py, "ImportError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ImportError);
         assert!(
             text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
             "{text}"
@@ -3242,7 +3264,7 @@ fn r0_static_extension_init_failure_unwinds_initializing() {
 
         let retry = module_ensure(_py, ext_fail_id);
         assert!(is_none_bits(retry));
-        let text = pending_exception_text(_py, "ImportError");
+        let text = pending_exception_text(_py, crate::BuiltinExc::ImportError);
         assert!(
             text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
             "{text}"

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use std::cell::RefCell;
 
@@ -89,7 +90,11 @@ extern "C" fn equal(left: u64, _right: u64) -> u64 {
             }
         }
         if raise {
-            return raise_exception::<_>(py, "ValueError", "comparison consumer sentinel");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::ValueError,
+                "comparison consumer sentinel",
+            );
         }
         inc_ref_bits(py, result);
         result
@@ -101,7 +106,7 @@ extern "C" fn getitem(_self: u64, index: u64) -> u64 {
         let index = to_i64(obj_from_bits(index)).unwrap();
         STATE.with(|state| state.borrow_mut().events.push(40 + index as u8));
         if index != 0 {
-            return raise_exception::<_>(py, "IndexError", "end");
+            return raise_exception::<_>(py, BuiltinExc::IndexError, "end");
         }
         let value = STATE.with(|state| state.borrow().left_value);
         inc_ref_bits(py, value);
@@ -117,7 +122,7 @@ extern "C" fn produce() -> u64 {
             state.right_value
         });
         if STATE.with(|state| state.borrow().stop_callable) {
-            return raise_exception::<_>(py, "StopIteration", "callable exhausted");
+            return raise_exception::<_>(py, BuiltinExc::StopIteration, "callable exhausted");
         }
         inc_ref_bits(py, value);
         value
@@ -141,7 +146,7 @@ fn field_get(py: &PyToken<'_>, object: u64, field: u8) -> u64 {
         )
     });
     if raise {
-        return raise_exception::<_>(py, "ValueError", "field getter sentinel");
+        return raise_exception::<_>(py, BuiltinExc::ValueError, "field getter sentinel");
     }
     inc_ref_bits(py, value);
     value
@@ -159,10 +164,10 @@ fn expect_value_error(py: &PyToken<'_>, result: u64) {
     assert!(obj_from_bits(result).is_none());
     assert!(exception_pending(py));
     let exception = molt_exception_last();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         py,
         exception,
-        "ValueError"
+        crate::BuiltinExc::ValueError
     ));
     clear_exception(py);
     dec_ref_bits(py, exception);

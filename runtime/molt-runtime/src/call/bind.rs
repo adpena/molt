@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 #[cfg(test)]
 use crate::alloc_string;
 use crate::builtins::frames::FrameInvocationGuard;
@@ -463,20 +464,40 @@ pub(crate) unsafe fn call_bind_with_arguments(
         }
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if callable_matches_runtime_symbol(Some(func_bits), fn_key!(molt_type_call)) {
             let Some(self_bits) = self_bits else {
-                return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "type.__call__ expects type",
+                );
             };
             let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "type.__call__ expects type",
+                );
             };
             if object_type_id(self_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "type.__call__ expects type",
+                );
             }
             return call_type_with_arguments(_py, self_ptr, args);
         }

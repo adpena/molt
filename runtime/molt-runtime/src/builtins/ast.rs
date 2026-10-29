@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt as NumBigInt;
 use rustpython_parser::{Mode as ParseMode, ParseErrorType, ast as pyast, parse as parse_python};
@@ -37,14 +38,14 @@ impl<'a, 'py> AstParseCtors<'a, 'py> {
             }
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "ast.parse constructor payload must be a tuple/list",
             ));
         };
         if values.len() != 14 {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "ast.parse constructor payload must include 14 constructors",
             ));
         }
@@ -128,20 +129,20 @@ fn call_ctor3(
     Ok(out)
 }
 
-fn parse_error_type(error: &ParseErrorType) -> &'static str {
+fn parse_error_type(error: &ParseErrorType) -> crate::BuiltinExc {
     if error.is_tab_error() {
-        "TabError"
+        crate::BuiltinExc::TabError
     } else if error.is_indentation_error() {
-        "IndentationError"
+        crate::BuiltinExc::IndentationError
     } else {
-        "SyntaxError"
+        crate::BuiltinExc::SyntaxError
     }
 }
 
 fn unsupported_expr(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
     raise_exception::<_>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         &format!("molt ast.parse intrinsic unsupported expression node: {kind}"),
     )
 }
@@ -149,7 +150,7 @@ fn unsupported_expr(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
 fn unsupported_stmt(_py: &crate::PyToken<'_>, kind: &str) -> u64 {
     raise_exception::<_>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         &format!("molt ast.parse intrinsic unsupported statement node: {kind}"),
     )
 }
@@ -204,7 +205,7 @@ fn convert_constant_value(_py: &crate::PyToken<'_>, value: &pyast::Constant) -> 
             let Some(parsed) = NumBigInt::parse_bytes(dec.as_bytes(), 10) else {
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "molt ast.parse intrinsic failed to decode integer constant",
                 ));
             };
@@ -237,7 +238,7 @@ fn convert_constant_value(_py: &crate::PyToken<'_>, value: &pyast::Constant) -> 
         pyast::Constant::Ellipsis => Ok(ellipsis_bits(_py)),
         pyast::Constant::Complex { .. } => Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "molt ast.parse intrinsic unsupported constant node: Complex",
         )),
     }
@@ -312,14 +313,14 @@ fn convert_arg(
     if arg.default.is_some() {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "molt ast.parse intrinsic unsupported function arg defaults",
         ));
     }
     if arg.def.annotation.is_some() || arg.def.type_comment.is_some() {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "molt ast.parse intrinsic unsupported function arg annotations",
         ));
     }
@@ -354,7 +355,7 @@ fn convert_stmt(
             {
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "molt ast.parse intrinsic unsupported FunctionDef metadata",
                 ));
             }
@@ -365,7 +366,7 @@ fn convert_stmt(
             {
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "molt ast.parse intrinsic unsupported function signature shape",
                 ));
             }
@@ -439,7 +440,7 @@ fn convert_stmt(
             if node.type_comment.is_some() {
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "molt ast.parse intrinsic unsupported Assign type_comment",
                 ));
             }
@@ -636,15 +637,17 @@ pub extern "C" fn molt_ast_parse(
     crate::with_gil_entry_nopanic!(_py, {
         let source = match string_obj_to_owned(obj_from_bits(source_bits)) {
             Some(value) => value,
-            None => return raise_exception::<_>(_py, "TypeError", "source must be str"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "source must be str"),
         };
         let filename = match string_obj_to_owned(obj_from_bits(filename_bits)) {
             Some(value) => value,
-            None => return raise_exception::<_>(_py, "TypeError", "filename must be str"),
+            None => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "filename must be str");
+            }
         };
         let mode = match string_obj_to_owned(obj_from_bits(mode_bits)) {
             Some(value) => value,
-            None => return raise_exception::<_>(_py, "TypeError", "mode must be str"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "mode must be str"),
         };
         let _ = type_comments_bits;
         let _ = feature_version_bits;
@@ -656,7 +659,13 @@ pub extern "C" fn molt_ast_parse(
         let parse_mode = match mode.as_str() {
             "exec" => ParseMode::Module,
             "eval" => ParseMode::Expression,
-            _ => return raise_exception::<_>(_py, "ValueError", "mode must be 'exec' or 'eval'"),
+            _ => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "mode must be 'exec' or 'eval'",
+                );
+            }
         };
         let parsed = match parse_python(&source, parse_mode, &filename) {
             Ok(value) => value,
@@ -712,7 +721,7 @@ pub extern "C" fn molt_ast_parse(
             }
             _ => raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "molt ast.parse intrinsic unsupported parse mode result",
             ),
         }
@@ -727,7 +736,11 @@ pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
             Err(err) => return err,
         };
         let Some(kind) = kind else {
-            return raise_exception::<_>(_py, "TypeError", "ast.walk() expected AST node");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "ast.walk() expected AST node",
+            );
         };
         if !matches!(
             kind.as_str(),
@@ -746,7 +759,11 @@ pub extern "C" fn molt_ast_walk(node_bits: u64) -> u64 {
                 | "Add"
                 | "BinOp"
         ) {
-            return raise_exception::<_>(_py, "TypeError", "ast.walk() expected AST node");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "ast.walk() expected AST node",
+            );
         }
         let mut stack: Vec<u64> = Vec::new();
         inc_ref_bits(_py, node_bits);
@@ -847,7 +864,11 @@ pub extern "C" fn molt_ast_get_docstring(node_bits: u64, clean_bits: u64) -> u64
 pub extern "C" fn molt_ast_iter_fields(node_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(node_bits).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "expected an AST node, got None");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "expected an AST node, got None",
+            );
         }
         let missing = missing_bits(_py);
         let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
@@ -947,7 +968,11 @@ fn has_fields_attr(_py: &crate::PyToken<'_>, obj_bits: u64) -> bool {
 pub extern "C" fn molt_ast_iter_child_nodes(node_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(node_bits).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "expected an AST node, got None");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "expected an AST node, got None",
+            );
         }
         let missing = missing_bits(_py);
         let Some(fields_key) = attr_name_bits_from_bytes(_py, b"_fields") else {
@@ -1071,7 +1096,11 @@ mod snapshot_tests {
                 BASE_OWNERS.load(Ordering::SeqCst) + 1
             );
             if FAIL.load(Ordering::SeqCst) != 0 {
-                let out = raise_exception::<u64>(py, "ValueError", "constructor callback failed");
+                let out = raise_exception::<u64>(
+                    py,
+                    BuiltinExc::ValueError,
+                    "constructor callback failed",
+                );
                 CALLBACK_ERROR.store(
                     crate::exception_last_bits_noinc(py).unwrap(),
                     Ordering::SeqCst,
@@ -1190,7 +1219,7 @@ mod snapshot_tests {
                 }
                 return alloc_tuple_bits(py, &[]);
             }
-            raise_exception::<u64>(py, "AttributeError", "missing test field")
+            raise_exception::<u64>(py, BuiltinExc::AttributeError, "missing test field")
         })
     }
 

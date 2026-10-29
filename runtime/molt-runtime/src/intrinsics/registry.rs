@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue, IntrinsicSpec};
 use crate::object::ops::{
     DICT_STRING_BINDING_LIMIT, ExactStringLookup, dict_bind_string_entries,
@@ -224,7 +225,7 @@ fn module_dict_ptr(module_ptr: *mut u8) -> Option<*mut u8> {
 
 fn ensure_registry_memory_error(py: &PyToken<'_>, message: &'static str) {
     if !exception_pending(py) {
-        raise_exception::<()>(py, "MemoryError", message);
+        raise_exception::<()>(py, BuiltinExc::MemoryError, message);
     }
 }
 
@@ -259,7 +260,11 @@ impl OwnedExactDict {
         let owner = crate::PtrDropGuard::new(ptr);
         if unsafe { object_type_id(ptr) } != TYPE_ID_DICT || exception_pending(py) {
             if !exception_pending(py) {
-                raise_exception::<()>(py, "RuntimeError", "dictionary copy returned a non-dict");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::RuntimeError,
+                    "dictionary copy returned a non-dict",
+                );
             }
             return None;
         }
@@ -357,7 +362,7 @@ pub(crate) fn publish_python_native_namespace(
     else {
         raise_exception::<()>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "native provider initializer must publish a module",
         );
         return false;
@@ -377,12 +382,12 @@ pub(crate) fn publish_python_native_namespace(
             let Some(name) = spec.public_name(minor, cfg!(target_os = "windows")) else {
                 continue;
             };
-            let Some(bits) =
-                crate::builtins::exceptions::builtin_exception_type_bits_from_name(py, name)
-            else {
+            let bits = crate::builtins::exceptions::exception_class_bits(py, spec.kind());
+            if bits == 0 {
                 ensure_registry_memory_error(py, "builtin exception materialization failed");
                 return false;
-            };
+            }
+            inc_ref_bits(py, bits);
             let inserted = checked_dict_insert(py, staged, name.as_bytes(), bits);
             dec_ref_bits(py, bits);
             if !inserted {
@@ -441,7 +446,7 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
     else {
         raise_exception::<()>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "builtins initializer must publish a module",
         );
         return false;
@@ -456,7 +461,7 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
         let Some(id) = crate::builtins::module_table::module_id_of(spec.python_module) else {
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "admitted native provider is absent from the module registry",
             );
             return false;
@@ -471,7 +476,7 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
         let Some(namespace) = obj_from_bits(provider).as_ptr().and_then(module_dict_ptr) else {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "native provider initializer returned a non-module",
             );
             return false;
@@ -481,7 +486,7 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
             Ok(None) => {
                 raise_exception::<()>(
                     py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     "admitted native provider did not publish its callable",
                 );
                 return false;
@@ -670,7 +675,11 @@ fn bind_names<'a, 'py>(
     bindings: &[(&str, u64)],
 ) -> Option<crate::object::ops::DetachedDictReferences<'a, 'py, [u64; DICT_STRING_BINDING_LIMIT]>> {
     if bindings.len() > DICT_STRING_BINDING_LIMIT {
-        raise_exception::<()>(_py, "SystemError", "namespace binding exceeds its bound");
+        raise_exception::<()>(
+            _py,
+            BuiltinExc::SystemError,
+            "namespace binding exceeds its bound",
+        );
         return None;
     }
     let mut key_owners: [Option<crate::PtrDropGuard>; DICT_STRING_BINDING_LIMIT] =
@@ -1374,7 +1383,7 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
         dec_ref_bits(_py, existing_bits);
         raise_exception::<()>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "_intrinsics cache entry is not a module",
         );
         dec_ref_bits(_py, name_bits);
@@ -1383,7 +1392,7 @@ pub(crate) fn register_intrinsics_module(_py: &PyToken<'_>) {
     if !obj_from_bits(existing_bits).is_none() {
         raise_exception::<()>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "_intrinsics cache entry is not a module",
         );
         dec_ref_bits(_py, name_bits);
@@ -1460,7 +1469,11 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
             if trace {
                 eprintln!("molt require_intrinsic: non-pointer arg bits=0x{name_bits:x}");
             }
-            return raise_exception::<u64>(_py, "TypeError", "intrinsic name must be str");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "intrinsic name must be str",
+            );
         };
         inc_ref_bits(_py, name_bits);
         let _name_owner = crate::PtrDropGuard::new(name_ptr);
@@ -1471,9 +1484,9 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
                         "molt require_intrinsic: arg type={} bits=0x{name_bits:x}",
                         crate::type_name(_py, name_obj),
                     );
-                    raise_exception::<u64>(_py, "TypeError", "intrinsic name must be str")
+                    raise_exception::<u64>(_py, BuiltinExc::TypeError, "intrinsic name must be str")
                 } else {
-                    raise_exception::<u64>(_py, "TypeError", "intrinsic name must be str")
+                    raise_exception::<u64>(_py, BuiltinExc::TypeError, "intrinsic name must be str")
                 };
             }
             let len = string_len(name_ptr);
@@ -1504,20 +1517,20 @@ pub extern "C" fn molt_require_intrinsic_runtime(name_bits: u64, namespace_bits:
                 } else {
                     raise_exception::<u64>(
                         _py,
-                        "MemoryError",
+                        BuiltinExc::MemoryError,
                         &format!("failed to allocate intrinsic function: {name}"),
                     )
                 }
             }
             Err(IntrinsicResolveError::NotCallable) => raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 &format!("intrinsic is a raw non-callable ABI: {name}"),
             ),
             Err(IntrinsicResolveError::Unknown | IntrinsicResolveError::MissingSymbol) => {
                 raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     &format!("intrinsic unavailable: {name}"),
                 )
             }
@@ -1531,13 +1544,21 @@ pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u6
         let _ = namespace_bits;
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "intrinsic name must be str");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "intrinsic name must be str",
+            );
         };
         inc_ref_bits(_py, name_bits);
         let _name_owner = crate::PtrDropGuard::new(name_ptr);
         let name = unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<u64>(_py, "TypeError", "intrinsic name must be str");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "intrinsic name must be str",
+                );
             }
             let len = string_len(name_ptr);
             let bytes = std::slice::from_raw_parts(string_bytes(name_ptr), len);
@@ -1556,7 +1577,7 @@ pub extern "C" fn molt_load_intrinsic_runtime(name_bits: u64, namespace_bits: u6
                 } else {
                     raise_exception::<u64>(
                         _py,
-                        "MemoryError",
+                        BuiltinExc::MemoryError,
                         &format!("failed to allocate intrinsic function: {name}"),
                     )
                 }
@@ -2029,10 +2050,10 @@ mod tests {
                     assert_eq!(required, MoltObject::none().bits());
                     assert!(exception_pending(_py));
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         _py,
                         error,
-                        "RuntimeError"
+                        crate::BuiltinExc::RuntimeError
                     ));
                     crate::clear_exception(_py);
                     dec_ref_bits(_py, error);

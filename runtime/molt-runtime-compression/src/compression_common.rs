@@ -26,7 +26,7 @@ pub(crate) fn validate_clinic_buffer(
     }
     let name = type_name(py, obj_from_bits(bits));
     let message = format!("{function}() {argument} must be contiguous buffer, not {name}");
-    raise_exception(py, "TypeError", &message);
+    raise_exception(py, BuiltinExc::TypeError, &message);
     false
 }
 
@@ -101,7 +101,7 @@ pub(crate) fn codec_uint64(py: &PyToken, bits: u64) -> Result<u64, u64> {
             if size > 8 {
                 return Err(raise_exception(
                     py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "Python int too large for C uint64_t",
                 ));
             }

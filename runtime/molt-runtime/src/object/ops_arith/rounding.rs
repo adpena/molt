@@ -1,6 +1,7 @@
 //! Builtin round dispatch and the inherited numeric descriptors share one owner.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::numbers::{
     index_bigint_integral_bits, index_integral_payload_bits, index_ssize_clamped_from_obj,
 };
@@ -55,7 +56,7 @@ pub(super) fn round(py: &PyToken<'_>, value: u64, digits: u64, supplied: bool) -
     let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(100)]);
     raise_exception(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!("type {name} doesn't define __round__ method"),
     )
 }
@@ -130,12 +131,16 @@ fn float_round(py: &PyToken<'_>, value: u64, digits: u64) -> u64 {
     };
     if obj_from_bits(digits).is_none() {
         if value.is_nan() {
-            return raise_exception(py, "ValueError", "cannot convert float NaN to integer");
+            return raise_exception(
+                py,
+                BuiltinExc::ValueError,
+                "cannot convert float NaN to integer",
+            );
         }
         if value.is_infinite() {
             return raise_exception(
                 py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "cannot convert float infinity to integer",
             );
         }
@@ -168,7 +173,11 @@ fn float_round(py: &PyToken<'_>, value: u64, digits: u64) -> u64 {
         }
     };
     if !rounded.is_finite() {
-        return raise_exception(py, "OverflowError", "rounded value too large to represent");
+        return raise_exception(
+            py,
+            BuiltinExc::OverflowError,
+            "rounded value too large to represent",
+        );
     }
     float_result_bits(py, rounded)
 }

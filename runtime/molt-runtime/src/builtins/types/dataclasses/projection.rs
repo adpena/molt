@@ -1,5 +1,6 @@
 use super::field_runtime::dc_getattr_default_bits;
 use super::*;
+use crate::BuiltinExc;
 use crate::object::seq_access::{locked_len, pin_item};
 
 fn dataclasses_class_bits(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
@@ -548,7 +549,7 @@ pub extern "C" fn molt_dataclasses_fields(class_or_instance_bits: u64, field_tag
         let Some(fields_dict_bits) = dataclasses_fields_dict_bits(_py, cls_bits, missing) else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "must be called with a dataclass type or instance",
             );
         };
@@ -577,7 +578,7 @@ pub extern "C" fn molt_dataclasses_asdict(
         if !dataclasses_is_dataclass_instance(_py, obj_bits, missing) {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "asdict() should be called on dataclass instances",
             );
         }
@@ -596,7 +597,7 @@ pub extern "C" fn molt_dataclasses_astuple(
         if !dataclasses_is_dataclass_instance(_py, obj_bits, missing) {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "astuple() should be called on dataclass instances",
             );
         }
@@ -616,7 +617,7 @@ pub extern "C" fn molt_dataclasses_replace(
         if !dataclasses_is_dataclass_instance(_py, obj_bits, missing) {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "replace() should be called on dataclass instances",
             );
         }
@@ -640,7 +641,7 @@ pub extern "C" fn molt_dataclasses_replace(
             dec_ref_bits(_py, values_bits);
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "replace() should be called on dataclass instances",
             );
         };
@@ -742,7 +743,7 @@ pub extern "C" fn molt_dataclasses_replace(
                     dec_ref_bits(_py, changes_copy_bits);
                     dec_ref_bits(_py, values_bits);
                     let msg = format!("InitVar {name_repr} must be specified with replace()");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 continue;
             }
@@ -782,7 +783,7 @@ pub extern "C" fn molt_dataclasses_replace(
                     let msg = format!(
                         "field {field_name} is declared with init=False, it cannot be specified with replace()"
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 continue;
             }

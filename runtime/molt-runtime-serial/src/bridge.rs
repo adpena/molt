@@ -74,10 +74,12 @@ pub fn runtime_state_get_or_init(
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
-    let bits = unsafe {
-        (vt().raise_exception)(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
-    };
+pub fn raise_exception<T: ExceptionSentinel>(
+    _py: &PyToken,
+    kind: impl Into<ExcKind>,
+    msg: &str,
+) -> T {
+    let bits = unsafe { (vt().raise_exception)(kind.into().code(), msg.as_ptr(), msg.len()) };
     T::from_bits(bits)
 }
 
@@ -87,29 +89,16 @@ pub fn exception_pending(_py: &PyToken) -> bool {
 
 /// Replace a failed converter's raised owner without handling it. The current
 /// handled exception still supplies the new error's implicit context.
-pub fn replace_exception(_py: &PyToken, kind: &str, message: &str) -> u64 {
-    unsafe { (vt().replace_exception)(kind.as_ptr(), kind.len(), message.as_ptr(), message.len()) }
+pub fn replace_exception(_py: &PyToken, kind: impl Into<ExcKind>, message: &str) -> u64 {
+    unsafe { (vt().replace_exception)(kind.into().code(), message.as_ptr(), message.len()) }
 }
 
 pub fn decode_ascii_input(_py: &PyToken, bits: u64) -> u64 {
     unsafe { (vt().decode_ascii_input)(bits) }
 }
 
-pub fn binascii_exception_type(_py: &PyToken, kind: molt_runtime_core::BinasciiException) -> u64 {
-    unsafe { (vt().binascii_exception_type)(kind) }
-}
-
 pub fn raise_binascii_error(py: &PyToken, message: &str) -> u64 {
-    let class = unsafe {
-        molt_runtime_core::OwnedRuntimeValue::from_owned_bits(
-            py,
-            binascii_exception_type(py, molt_runtime_core::BinasciiException::Error),
-        )
-    };
-    if exception_pending(py) {
-        return MoltObject::none().bits();
-    }
-    molt_runtime_core::rt_raise_class(py, class.bits(), message)
+    raise_exception(py, BuiltinExc::BinasciiError, message)
 }
 
 /// Borrow the class and argument tuple; return an independently owned exception.
@@ -815,7 +804,7 @@ pub fn iterable_to_string_vec(_py: &PyToken, values_bits: u64) -> Result<Vec<Str
         let Some(item) = string_obj_to_owned(obj_from_bits(value.bits())) else {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "expected str item",
             ));
         };

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_super_builtin(type_bits: u64, obj_bits: u64) -> u64 {
@@ -204,7 +205,7 @@ pub extern "C" fn molt_range_builtin(start_bits: u64, stop_bits: u64, step_bits:
         if start_bits == missing {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "range expected at least 1 argument, got 0",
             );
         }
@@ -232,7 +233,7 @@ pub extern "C" fn molt_slice_builtin(start_bits: u64, stop_bits: u64, step_bits:
         if start_bits == missing {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "slice expected at least 1 argument, got 0",
             );
         }

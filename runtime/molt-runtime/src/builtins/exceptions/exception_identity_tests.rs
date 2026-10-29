@@ -3,6 +3,7 @@
 //! native exception storage directly; a normal C call can return a managed view.
 
 use super::*;
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{errors, memory, object, refcount, sequences};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -36,7 +37,8 @@ mod http_exception_boundary_tests {
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
             molt_runtime_core::with_core_gil!(core_py, {
-                let outer = ExceptionValue::adopt(py, managed_exception(py, "KeyError"));
+                let outer =
+                    ExceptionValue::adopt(py, managed_exception(py, crate::BuiltinExc::KeyError));
                 let _outer_handler = ExceptionStackScope::push(py);
                 exception_context_set(py, outer.bits());
                 let entry_depth = exception_stack_depth();
@@ -75,10 +77,10 @@ mod http_exception_boundary_tests {
                         (*header_from_obj_ptr(obj_from_bits(raised.bits()).as_ptr().unwrap()))
                             .ref_count_snapshot();
                     for (target, expected) in [
-                        ("TimeoutError", timeout),
-                        ("OSError", os_error),
-                        ("Exception", ordinary),
-                        ("ImportError", import_error),
+                        (crate::BuiltinExc::TimeoutError, timeout),
+                        (crate::BuiltinExc::OSError, os_error),
+                        (crate::BuiltinExc::Exception, ordinary),
+                        (crate::BuiltinExc::ImportError, import_error),
                     ] {
                         assert_eq!(
                             http::pending_exception_matches_builtin(core_py, target),
@@ -106,8 +108,10 @@ mod http_exception_boundary_tests {
                         wrapper_refs
                     );
 
-                    let replacement =
-                        ExceptionValue::adopt(py, managed_exception(py, "LookupError"));
+                    let replacement = ExceptionValue::adopt(
+                        py,
+                        managed_exception(py, crate::BuiltinExc::LookupError),
+                    );
                     assert!(
                         http::with_saved_exception::<()>(core_py, || {
                             assert_active(py, raised.bits());
@@ -320,7 +324,8 @@ mod http_exception_boundary_tests {
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
-            let outer = ExceptionValue::adopt(py, managed_exception(py, "KeyError"));
+            let outer =
+                ExceptionValue::adopt(py, managed_exception(py, crate::BuiltinExc::KeyError));
             let _outer_handler = ExceptionStackScope::push(py);
             exception_context_set(py, outer.bits());
             let entry_depth = exception_stack_depth();
@@ -350,9 +355,12 @@ mod http_exception_boundary_tests {
                 });
                 let raised = ExceptionValue::adopt(py, foreign_bits(native));
                 refcount::Py_DECREF(native);
-                let handler_failure =
-                    ExceptionValue::adopt(py, managed_exception(py, "LookupError"));
-                let cleanup_failure = ExceptionValue::adopt(py, managed_exception(py, "OSError"));
+                let handler_failure = ExceptionValue::adopt(
+                    py,
+                    managed_exception(py, crate::BuiltinExc::LookupError),
+                );
+                let cleanup_failure =
+                    ExceptionValue::adopt(py, managed_exception(py, crate::BuiltinExc::OSError));
                 let tuple = ExceptionValue::adopt(
                     py,
                     MoltObject::from_ptr(alloc_tuple(
@@ -445,14 +453,18 @@ mod http_exception_boundary_tests {
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::concurrency::gil::with_gil(|py| unsafe {
             let py = &py;
-            let outer = ExceptionValue::adopt(py, managed_exception(py, "KeyError"));
+            let outer =
+                ExceptionValue::adopt(py, managed_exception(py, crate::BuiltinExc::KeyError));
             let _outer_handler = ExceptionStackScope::push(py);
             exception_context_set(py, outer.bits());
             for probe in ["success", "lookup", "truthiness"] {
                 let native = native_exception(&raw mut PyExc_FileNotFoundError);
                 let raised = ExceptionValue::adopt(py, foreign_bits(native));
                 refcount::Py_DECREF(native);
-                let failure = ExceptionValue::adopt(py, managed_exception(py, "LookupError"));
+                let failure = ExceptionValue::adopt(
+                    py,
+                    managed_exception(py, crate::BuiltinExc::LookupError),
+                );
                 let mut methods: Vec<(&[u8], *const (), u64)> = vec![
                     (b"handle_request", serve_request as *const (), 1),
                     (b"handle_error", handle_error as *const (), 3),
@@ -523,7 +535,8 @@ fn native_error_roundtrip_retains_identity_and_owned_metadata() {
                 let native = native_exception(class);
                 let bits = foreign_bits(native);
                 let context =
-                    MoltObject::from_ptr(alloc_exception(py, "LookupError", "context")).bits();
+                    MoltObject::from_ptr(alloc_exception(py, BuiltinExc::LookupError, "context"))
+                        .bits();
                 exception_replace_field_bits(py, bits, ExceptionFieldSlot::Context, context)
                     .unwrap();
                 errors::PyErr_SetObject(class.cast(), native);
@@ -641,7 +654,7 @@ extern "C" fn reentrant_typed_index(_: u64) -> u64 {
             ExceptionTypedField::OSErrorFilename,
             MoltObject::none().bits(),
         ) {
-            return raise_exception::<u64>(py, "SystemError", message);
+            return raise_exception::<u64>(py, BuiltinExc::SystemError, message);
         }
         TYPED_DROPS_DURING_INDEX
             .with(|count| count.set(TYPED_INPUT_DROPS.with(std::cell::Cell::get)));
@@ -684,7 +697,7 @@ fn typed_batches_pin_later_inputs_and_retire_values_after_reentrant_conversion()
             let indexer = crate::call_callable0(py, index_class);
             let native = native_exception(&raw mut PyExc_OSError);
             let native_bits = foreign_bits(native);
-            let managed = managed_exception(py, "OSError");
+            let managed = managed_exception(py, crate::BuiltinExc::OSError);
             for receiver in [managed, native_bits] {
                 TYPED_UPDATE_RECEIVER.with(|slot| slot.set(receiver));
                 for later_input in [true, false] {
@@ -767,7 +780,7 @@ fn native_typed_fields_preserve_defaults_atomic_updates_and_pending_identity() {
 
             let stop = native_exception(&raw mut PyExc_StopIteration);
             let stop_bits = foreign_bits(stop);
-            let pending = managed_exception(py, "LookupError");
+            let pending = managed_exception(py, crate::BuiltinExc::LookupError);
             record_exception(py, obj_from_bits(pending).as_ptr().unwrap());
             molt_exception_set_value(stop_bits, MoltObject::from_int(42).bits());
             assert_eq!(exception_last_bits_noinc(py), Some(pending));
@@ -796,10 +809,10 @@ fn native_typed_fields_preserve_defaults_atomic_updates_and_pending_identity() {
                     .typed_field(py, ExceptionTypedField::OSErrorCharactersWritten)
                     .is_none()
             );
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "AttributeError"
+                crate::BuiltinExc::AttributeError
             ));
             clear_exception(py);
             let text = MoltObject::from_ptr(alloc_string(py, b"file")).bits();
@@ -812,10 +825,10 @@ fn native_typed_fields_preserve_defaults_atomic_updates_and_pending_identity() {
                 ],
             );
             assert!(result.is_err());
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             clear_exception(py);
             assert!(
@@ -935,7 +948,7 @@ unsafe fn native_tuple(items: &[*mut PyObject]) -> *mut PyObject {
     }
 }
 
-fn managed_exception(py: &PyToken<'_>, name: &str) -> u64 {
+fn managed_exception(py: &PyToken<'_>, name: crate::BuiltinExc) -> u64 {
     let value = alloc_exception(py, name, "identity");
     assert!(!value.is_null());
     MoltObject::from_ptr(value).bits()
@@ -958,8 +971,8 @@ fn real_native_exception_subclasses_and_metaclasses_match_without_identity_hooks
             let native = native_exception(&raw mut *child);
             let native_bits = foreign_bits(native);
             let class_bits = foreign_bits((&raw mut *base).cast());
-            let value_class = exception_type_bits_from_name(py, "ValueError");
-            let key_class = exception_type_bits_from_name(py, "KeyError");
+            let value_class = exception_class_bits(py, BuiltinExc::ValueError);
+            let key_class = exception_class_bits(py, BuiltinExc::KeyError);
             let exception_class = builtin_classes(py).exception;
 
             assert!(exception_is_class(py, class_bits));
@@ -991,7 +1004,7 @@ fn real_native_exception_subclasses_and_metaclasses_match_without_identity_hooks
                 1
             );
 
-            let managed = managed_exception(py, "ValueError");
+            let managed = managed_exception(py, crate::BuiltinExc::ValueError);
             let managed_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(managed);
             assert_eq!(
                 errors::PyErr_GivenExceptionMatches(
@@ -1050,7 +1063,11 @@ fn foreign_handler_tuples_validate_the_complete_flat_handler() {
             for handler in [invalid_bits, nested_bits, managed_invalid] {
                 assert!(obj_from_bits(molt_exception_match_handler(value, handler)).is_none());
                 let pending = crate::exception_last_bits_noinc(py).expect("invalid handler raises");
-                assert!(exception_matches_builtin_name(py, pending, "TypeError"));
+                assert!(exception_matches_kind(
+                    py,
+                    pending,
+                    crate::BuiltinExc::TypeError
+                ));
                 crate::clear_exception(py);
             }
             assert!(errors::PyErr_Occurred().is_null());
@@ -1342,7 +1359,11 @@ fn native_exception_public_methods_use_physical_receiver_admission() {
             let result = crate::call_callable2(py, traceback_method, bits, note);
             assert!(obj_from_bits(result).is_none());
             let pending = crate::exception_last_bits_noinc(py).expect("invalid traceback raises");
-            assert!(exception_matches_builtin_name(py, pending, "TypeError"));
+            assert!(exception_matches_kind(
+                py,
+                pending,
+                crate::BuiltinExc::TypeError
+            ));
             assert_eq!(
                 format_exception_message(py, obj_from_bits(pending).as_ptr().unwrap()),
                 "__traceback__ must be a traceback or None"
@@ -1378,7 +1399,7 @@ fn native_matching_preserves_both_exact_pending_error_channels() {
                 value: c_error,
                 traceback: ptr::null_mut(),
             });
-            let runtime_error = managed_exception(py, "RuntimeError");
+            let runtime_error = managed_exception(py, crate::BuiltinExc::RuntimeError);
             // Matching preserves two independently restored owners. Publishing
             // a new semantic raise would supersede the C indicator instead.
             crate::test_support::restore_runtime_raised(py, runtime_error);
@@ -1463,7 +1484,7 @@ fn init_storage_call(
     names: &[u64],
     values: &[u64],
 ) {
-    let owner = exception_type_bits_from_name(py, root.owner_name());
+    let owner = exception_class_bits(py, root.owner_kind());
     let callable = exception_method_bits_for_owner(py, owner, "__init__")
         .expect("method lookup succeeds")
         .unwrap();
@@ -1581,10 +1602,10 @@ fn runtime_exception_initializers_dispatch_real_native_storage_without_wrapper_w
                 values,
             );
             assert!(exception_pending(py));
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             clear_exception(py);
             assert_eq!(
@@ -1645,21 +1666,21 @@ fn declaring_base_exception_init_preserves_typed_fields_across_storage() {
             for (native_class, name, root, field, public_name) in [
                 (
                     &raw mut PyExc_StopIteration,
-                    "StopIteration",
+                    crate::BuiltinExc::StopIteration,
                     ExceptionLayoutRoot::StopIteration,
                     ExceptionTypedField::StopIterationValue,
                     b"value".as_slice(),
                 ),
                 (
                     &raw mut PyExc_SyntaxError,
-                    "SyntaxError",
+                    crate::BuiltinExc::SyntaxError,
                     ExceptionLayoutRoot::SyntaxError,
                     ExceptionTypedField::SyntaxMessage,
                     b"msg".as_slice(),
                 ),
                 (
                     &raw mut PyExc_ImportError,
-                    "ImportError",
+                    crate::BuiltinExc::ImportError,
                     ExceptionLayoutRoot::ImportError,
                     ExceptionTypedField::ImportMessage,
                     b"msg".as_slice(),
@@ -1774,7 +1795,7 @@ fn native_child_of_managed_exception_initializes_real_physical_payload() {
             let parent = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
             crate::molt_class_set_base(
                 parent.bits(),
-                exception_type_bits_from_name(py, "Exception"),
+                exception_class_bits(py, BuiltinExc::Exception),
             );
             crate::object::class_finish_definition(
                 py,
@@ -1828,14 +1849,17 @@ fn missing_iteration_diagnostic_preserves_pending_error_identity_and_owners() {
             let input = MoltObject::from_int(7).bits();
             let none = MoltObject::none().bits();
             assert_eq!(raise_not_iterable::<u64>(py, input), none);
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             clear_exception(py);
             for (runtime_pending, c_pending) in [(true, false), (false, true), (true, true)] {
-                let managed = ExceptionValue::adopt(py, managed_exception(py, "LookupError"));
+                let managed = ExceptionValue::adopt(
+                    py,
+                    managed_exception(py, crate::BuiltinExc::LookupError),
+                );
                 let native = native_exception(&raw mut PyExc_KeyError);
                 if c_pending {
                     refcount::Py_INCREF(native);

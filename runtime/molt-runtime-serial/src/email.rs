@@ -179,11 +179,11 @@ fn quopri_decode_impl(data: &[u8], header: bool) -> Vec<u8> {
 fn quopri_expect_bytes_like(_py: &PyToken, bits: u64, arg_name: &str) -> Result<Vec<u8>, u64> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         let msg = format!("quopri {arg_name} expects bytes-like");
-        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
     };
     let Some(raw) = (unsafe { bytes_like_slice(ptr) }) else {
         let msg = format!("quopri {arg_name} expects bytes-like");
-        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
     };
     Ok(raw.to_vec())
 }
@@ -192,7 +192,7 @@ fn quopri_expect_single_byte(_py: &PyToken, bits: u64, arg_name: &str) -> Result
     let bytes = quopri_expect_bytes_like(_py, bits, arg_name)?;
     if bytes.len() != 1 {
         let msg = format!("quopri {arg_name} expects single-byte bytes");
-        return Err(raise_exception::<u64>(_py, "ValueError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg));
     }
     Ok(bytes[0])
 }
@@ -247,12 +247,12 @@ fn email_quopri_expect_int_octet(_py: &PyToken, bits: u64, arg_name: &str) -> Re
         Some(value) => value,
         None => {
             let msg = format!("email.quoprimime {arg_name} expects int");
-            return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+            return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
         }
     };
     if !(0..=255).contains(&value) {
         let msg = format!("email.quoprimime {arg_name} out of range");
-        return Err(raise_exception::<u64>(_py, "ValueError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg));
     }
     Ok(value as u8)
 }
@@ -262,7 +262,7 @@ fn email_quopri_expect_string(_py: &PyToken, bits: u64, arg_name: &str) -> Resul
         Some(value) => Ok(value),
         None => {
             let msg = format!("email.quoprimime {arg_name} expects str");
-            Err(raise_exception::<u64>(_py, "TypeError", &msg))
+            Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg))
         }
     }
 }
@@ -357,21 +357,21 @@ fn email_message_id_from_bits(_py: &PyToken, message_bits: u64) -> Result<u64, u
     let Some(raw) = to_i64(obj_from_bits(message_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "email message handle is invalid",
         ));
     };
     if raw <= 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "email message handle is invalid",
         ));
     }
     let Ok(id) = u64::try_from(raw) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "email message handle is invalid",
         ));
     };
@@ -666,14 +666,14 @@ fn email_get_int_attr(_py: &PyToken, obj_bits: u64, name: &[u8]) -> Result<i64, 
         let name_text = std::str::from_utf8(name).unwrap_or("attribute");
         return Err(raise_exception::<u64>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             &format!("datetime object missing {name_text}"),
         ));
     }
     let Some(value) = to_i64(obj_from_bits(value_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "datetime field must be int",
         ));
     };
@@ -700,16 +700,20 @@ pub extern "C" fn molt_email_message_set(
             Err(err) => return err,
         };
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "header name must be str");
         };
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header value must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "header value must be str");
         };
         let mut registry = email_message_registry()
             .lock()
             .expect("email message registry lock poisoned");
         let Some(message) = registry.get_mut(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "email message handle is invalid",
+            );
         };
         message.headers.push((name, value));
         MoltObject::none().bits()
@@ -724,13 +728,17 @@ pub extern "C" fn molt_email_message_set_content(message_bits: u64, content_bits
             Err(err) => return err,
         };
         let Some(content) = string_obj_to_owned(obj_from_bits(content_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "content must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "content must be str");
         };
         let mut registry = email_message_registry()
             .lock()
             .expect("email message registry lock poisoned");
         let Some(message) = registry.get_mut(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "email message handle is invalid",
+            );
         };
         message.body = content;
         message.content_type = "text/plain".to_string();
@@ -750,16 +758,28 @@ pub extern "C" fn molt_email_message_add_alternative(
             Err(err) => return err,
         };
         let Some(content) = string_obj_to_owned(obj_from_bits(content_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "alternative content must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "alternative content must be str",
+            );
         };
         let Some(subtype) = string_obj_to_owned(obj_from_bits(subtype_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "alternative subtype must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "alternative subtype must be str",
+            );
         };
         let mut registry = email_message_registry()
             .lock()
             .expect("email message registry lock poisoned");
         let Some(message) = registry.get_mut(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "email message handle is invalid",
+            );
         };
         if message.parts.is_empty() {
             let mut first = email_message_default();
@@ -799,7 +819,7 @@ pub extern "C" fn molt_email_message_add_attachment(
             } else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "attachment payload must be bytes-like or str",
                 );
             }
@@ -808,21 +828,25 @@ pub extern "C" fn molt_email_message_add_attachment(
         } else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "attachment payload must be bytes-like or str",
             );
         };
         let Some(maintype) = string_obj_to_owned(obj_from_bits(maintype_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maintype must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "maintype must be str");
         };
         let Some(subtype) = string_obj_to_owned(obj_from_bits(subtype_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "subtype must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "subtype must be str");
         };
         let filename = if obj_from_bits(filename_bits).is_none() {
             None
         } else {
             let Some(value) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "filename must be str or None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "filename must be str or None",
+                );
             };
             Some(value)
         };
@@ -830,7 +854,11 @@ pub extern "C" fn molt_email_message_add_attachment(
             .lock()
             .expect("email message registry lock poisoned");
         let Some(message) = registry.get_mut(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "email message handle is invalid",
+            );
         };
         if message.parts.is_empty() {
             let mut first = email_message_default();
@@ -861,7 +889,11 @@ pub extern "C" fn molt_email_message_as_string(message_bits: u64) -> u64 {
             .lock()
             .expect("email message registry lock poisoned");
         let Some(message) = registry.get(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "email message handle is invalid",
+            );
         };
         let rendered = email_serialize_message(message);
         let out_ptr = alloc_string(_py, rendered.as_bytes());
@@ -893,7 +925,11 @@ pub extern "C" fn molt_email_utils_make_msgid(domain_bits: u64) -> u64 {
             "localhost".to_string()
         } else {
             let Some(value) = string_obj_to_owned(obj_from_bits(domain_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "domain must be str or None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "domain must be str or None",
+                );
             };
             value
         };
@@ -969,7 +1005,7 @@ pub extern "C" fn molt_email_utils_getaddresses(values_bits: u64) -> u64 {
 pub extern "C" fn molt_email_utils_parsedate_tz(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "date value must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "date value must be str");
         };
         let Some((year, month, day, hour, minute, second, offset)) =
             email_parse_datetime_like(value.as_str())
@@ -1043,17 +1079,17 @@ pub extern "C" fn molt_email_utils_format_datetime(dt_bits: u64) -> u64 {
 pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(value) = string_obj_to_owned(obj_from_bits(value_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "date value must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "date value must be str");
         };
         let Some((year, month, day, hour, minute, second, offset)) =
             email_parse_datetime_like(value.as_str())
         else {
-            return raise_exception::<_>(_py, "ValueError", "invalid date value");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid date value");
         };
         if offset != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "non-UTC email date offsets are not yet supported",
             );
         }
@@ -1088,7 +1124,7 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
         if datetime_class_bits == missing || timezone_class_bits == missing {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "datetime module is missing required classes",
             );
         }
@@ -1106,12 +1142,16 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
         }
         if utc_bits == missing {
             dec_ref_bits(_py, datetime_class_bits);
-            return raise_exception::<_>(_py, "RuntimeError", "datetime.timezone.utc missing");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "datetime.timezone.utc missing",
+            );
         }
         let Some(datetime_class_ptr) = obj_from_bits(datetime_class_bits).as_ptr() else {
             dec_ref_bits(_py, utc_bits);
             dec_ref_bits(_py, datetime_class_bits);
-            return raise_exception::<_>(_py, "TypeError", "datetime class is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "datetime class is invalid");
         };
         let out_bits = unsafe {
             call_class_init_with_args(
@@ -1142,7 +1182,7 @@ pub extern "C" fn molt_email_utils_parsedate_to_datetime(value_bits: u64) -> u64
 pub extern "C" fn molt_email_headerregistry_value(name_bits: u64, value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(_name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "header name must be str");
         };
         let Some(value) = format_obj_str(_py, obj_from_bits(value_bits)) else {
             return MoltObject::none().bits();
@@ -1160,19 +1200,23 @@ pub extern "C" fn molt_email_headerregistry_value(name_bits: u64, value_bits: u6
 pub extern "C" fn molt_email_header_encode_word(text_bits: u64, charset_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header text must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "header text must be str");
         };
         let charset = if obj_from_bits(charset_bits).is_none() {
             None
         } else {
             let Some(value) = string_obj_to_owned(obj_from_bits(charset_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "charset must be str or None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "charset must be str or None",
+                );
             };
             Some(value)
         };
         let encoded = match email_header_encode_word_impl(text.as_str(), charset.as_deref()) {
             Ok(value) => value,
-            Err(msg) => return raise_exception::<_>(_py, "RuntimeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg),
         };
         let out_ptr = alloc_string(_py, encoded.as_bytes());
         if out_ptr.is_null() {
@@ -1186,10 +1230,10 @@ pub extern "C" fn molt_email_header_encode_word(text_bits: u64, charset_bits: u6
 pub extern "C" fn molt_email_address_addr_spec(username_bits: u64, domain_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(username) = string_obj_to_owned(obj_from_bits(username_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "username must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "username must be str");
         };
         let Some(domain) = string_obj_to_owned(obj_from_bits(domain_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "domain must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "domain must be str");
         };
         let out = email_address_addr_spec_impl(username.as_str(), domain.as_str());
         let out_ptr = alloc_string(_py, out.as_bytes());
@@ -1208,13 +1252,13 @@ pub extern "C" fn molt_email_address_format(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(display_name) = string_obj_to_owned(obj_from_bits(display_name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "display_name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "display_name must be str");
         };
         let Some(username) = string_obj_to_owned(obj_from_bits(username_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "username must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "username must be str");
         };
         let Some(domain) = string_obj_to_owned(obj_from_bits(domain_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "domain must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "domain must be str");
         };
         let out =
             email_address_format_impl(display_name.as_str(), username.as_str(), domain.as_str());
@@ -1331,7 +1375,13 @@ pub extern "C" fn molt_quopri_unhex(s_bits: u64) -> u64 {
                 b'0'..=b'9' => i64::from(byte - b'0'),
                 b'a'..=b'f' => i64::from(byte - b'a' + 10),
                 b'A'..=b'F' => i64::from(byte - b'A' + 10),
-                _ => return raise_exception::<_>(_py, "ValueError", "quopri unhex expects hex"),
+                _ => {
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "quopri unhex expects hex",
+                    );
+                }
             };
             out = out.saturating_mul(16).saturating_add(value);
         }
@@ -1410,7 +1460,7 @@ pub extern "C" fn molt_email_quoprimime_quote(c_bits: u64) -> u64 {
         let Some(ch) = it.next() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "ord() expected a character, but string of length 0 found",
             );
         };
@@ -1419,10 +1469,10 @@ pub extern "C" fn molt_email_quoprimime_quote(c_bits: u64) -> u64 {
                 "ord() expected a character, but string of length {} found",
                 c.chars().count()
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         if (ch as u32) > 255 {
-            return raise_exception::<_>(_py, "IndexError", "list index out of range");
+            return raise_exception::<_>(_py, BuiltinExc::IndexError, "list index out of range");
         }
         let mut out = String::with_capacity(3);
         email_quopri_push_escape(ch as u8, &mut out);
@@ -1441,14 +1491,14 @@ pub extern "C" fn molt_email_quoprimime_unquote(s_bits: u64) -> u64 {
         if chars.len() < 3 || chars[0] != '=' {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "invalid literal for int() with base 16",
             );
         }
         let Some(ch) = email_quopri_decode_hex_pair(chars[1], chars[2]) else {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "invalid literal for int() with base 16",
             );
         };
@@ -1529,10 +1579,16 @@ pub extern "C" fn molt_email_quoprimime_body_encode(
         };
         let maxlinelen = match to_i64(obj_from_bits(maxlinelen_bits)) {
             Some(value) => value,
-            None => return raise_exception::<_>(_py, "TypeError", "maxlinelen must be int"),
+            None => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxlinelen must be int");
+            }
         };
         if maxlinelen < 4 {
-            return raise_exception::<_>(_py, "ValueError", "maxlinelen must be at least 4");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "maxlinelen must be at least 4",
+            );
         }
         let eol = match email_quopri_expect_string(_py, eol_bits, "body_encode eol") {
             Ok(value) => value,

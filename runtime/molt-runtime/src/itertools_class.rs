@@ -1,5 +1,6 @@
 //! Canonical itertools class construction shared by reduced and full profiles.
 
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::*;
 use molt_runtime_core::ObjectShapeId;
@@ -56,7 +57,11 @@ pub(crate) fn alloc_itertools_class(
             callback == 0 || arity == 0 || defaults.len() as u64 >= arity
         })
     {
-        return raise_exception::<u64>(py, "SystemError", "invalid itertools callable declaration");
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "invalid itertools callable declaration",
+        );
     }
     let name_str_ptr = alloc_string(py, name.as_bytes());
     if name_str_ptr.is_null() {
@@ -81,7 +86,11 @@ pub(crate) fn alloc_itertools_class(
     }
     if !unsafe { crate::object::class_set_instance_shape_id(class_ptr, shape) } {
         if !exception_pending(py) {
-            raise_exception::<u64>(py, "SystemError", "invalid itertools instance shape");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid itertools instance shape",
+            );
         }
         return discard_itertools_class(py, class_bits);
     }
@@ -95,7 +104,11 @@ pub(crate) fn alloc_itertools_class(
         )
     } {
         if !exception_pending(py) {
-            raise_exception::<u64>(py, "SystemError", "invalid itertools metaclass edge");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid itertools metaclass edge",
+            );
         }
         return discard_itertools_class(py, class_bits);
     }
@@ -106,7 +119,11 @@ pub(crate) fn alloc_itertools_class(
     let namespace = obj_from_bits(unsafe { class_dict_bits(class_ptr) }).as_ptr();
     let Some(dict_ptr) = namespace.filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_DICT)
     else {
-        raise_exception::<u64>(py, "SystemError", "itertools class has no valid namespace");
+        raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "itertools class has no valid namespace",
+        );
         return discard_itertools_class(py, class_bits);
     };
     let layout_name = intern_static_name(
@@ -663,10 +680,10 @@ mod tests {
                 "an immutable type rejects __next__ rebinding"
             );
             let error = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             crate::clear_exception(py);
             dec_ref_bits(py, error);

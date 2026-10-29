@@ -42,8 +42,7 @@ pub fn runtime_state_get_or_init(
 
 unsafe extern "C" {
     fn __molt_collections_raise_exception(
-        type_ptr: *const u8,
-        type_len: usize,
+        kind_code: u16,
         msg_ptr: *const u8,
         msg_len: usize,
     ) -> u64;
@@ -53,14 +52,13 @@ unsafe extern "C" {
     fn __molt_collections_raise_key_error_with_key(key_bits: u64) -> u64;
 }
 
-pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
+pub fn raise_exception<T: ExceptionSentinel>(
+    _py: &CoreGilToken,
+    type_name: impl Into<ExcKind>,
+    msg: &str,
+) -> T {
     let bits = unsafe {
-        __molt_collections_raise_exception(
-            type_name.as_ptr(),
-            type_name.len(),
-            msg.as_ptr(),
-            msg.len(),
-        )
+        __molt_collections_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len())
     };
     T::from_bits(bits)
 }

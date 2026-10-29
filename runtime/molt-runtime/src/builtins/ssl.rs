@@ -8,6 +8,7 @@
 //! ABI: NaN-boxed u64 in/out.  Handle IDs are allocated from a monotonic
 //! counter and stored in thread-local maps to avoid cross-thread aliasing.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
@@ -203,7 +204,11 @@ pub extern "C" fn molt_ssl_context_load_cert_chain(
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let certfile = opt_string_from_bits(certfile_bits);
@@ -219,7 +224,11 @@ pub extern "C" fn molt_ssl_context_load_cert_chain(
             }
         };
         if !found {
-            return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid ssl context handle",
+            );
         }
         return_none()
     })
@@ -245,7 +254,11 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let cafile = opt_string_from_bits(cafile_bits);
@@ -280,7 +293,11 @@ pub extern "C" fn molt_ssl_context_load_verify_locations(
             }
         };
         if !found {
-            return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid ssl context handle",
+            );
         }
         return_none()
     })
@@ -293,12 +310,20 @@ pub extern "C" fn molt_ssl_context_set_default_verify_paths(handle_bits: u64) ->
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let valid = CTX_REGISTRY.lock().unwrap().contains_key(&id);
         if !valid {
-            return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid ssl context handle",
+            );
         }
         return_none()
     })
@@ -310,7 +335,11 @@ pub extern "C" fn molt_ssl_context_set_ciphers(handle_bits: u64, cipherstring_bi
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let ciphers = opt_string_from_bits(cipherstring_bits);
@@ -324,7 +353,11 @@ pub extern "C" fn molt_ssl_context_set_ciphers(handle_bits: u64, cipherstring_bi
             }
         };
         if !found {
-            return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid ssl context handle",
+            );
         }
         return_none()
     })
@@ -336,7 +369,11 @@ pub extern "C" fn molt_ssl_context_get_protocol(handle_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let proto = CTX_REGISTRY
@@ -346,7 +383,9 @@ pub extern "C" fn molt_ssl_context_get_protocol(handle_bits: u64) -> u64 {
             .map(|ctx| ctx.protocol);
         match proto {
             Some(p) => int_bits_from_i64(_py, p),
-            None => raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
+            None => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid ssl context handle")
+            }
         }
     })
 }
@@ -357,7 +396,11 @@ pub extern "C" fn molt_ssl_context_check_hostname_get(handle_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let val = CTX_REGISTRY
@@ -367,7 +410,9 @@ pub extern "C" fn molt_ssl_context_check_hostname_get(handle_bits: u64) -> u64 {
             .map(|ctx| ctx.check_hostname);
         match val {
             Some(b) => MoltObject::from_bool(b).bits(),
-            None => raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
+            None => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid ssl context handle")
+            }
         }
     })
 }
@@ -378,7 +423,11 @@ pub extern "C" fn molt_ssl_context_check_hostname_set(handle_bits: u64, value_bi
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let flag = {
@@ -399,7 +448,11 @@ pub extern "C" fn molt_ssl_context_check_hostname_set(handle_bits: u64, value_bi
             }
         };
         if !found {
-            return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid ssl context handle",
+            );
         }
         return_none()
     })
@@ -411,7 +464,11 @@ pub extern "C" fn molt_ssl_context_verify_mode_get(handle_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let val = CTX_REGISTRY
@@ -421,7 +478,9 @@ pub extern "C" fn molt_ssl_context_verify_mode_get(handle_bits: u64) -> u64 {
             .map(|ctx| ctx.verify_mode);
         match val {
             Some(v) => int_bits_from_i64(_py, v),
-            None => raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
+            None => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid ssl context handle")
+            }
         }
     })
 }
@@ -432,12 +491,16 @@ pub extern "C" fn molt_ssl_context_verify_mode_set(handle_bits: u64, mode_bits: 
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let mode = to_i64(obj_from_bits(mode_bits)).unwrap_or(CERT_NONE);
         if !matches!(mode, CERT_NONE | CERT_OPTIONAL | CERT_REQUIRED) {
-            return raise_exception::<u64>(_py, "ValueError", "invalid verify mode");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid verify mode");
         }
         let found = {
             let mut map = CTX_REGISTRY.lock().unwrap();
@@ -456,7 +519,7 @@ pub extern "C" fn molt_ssl_context_verify_mode_set(handle_bits: u64, mode_bits: 
         if !found {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot set CERT_NONE while check_hostname is enabled",
             );
         }
@@ -503,7 +566,11 @@ pub extern "C" fn molt_ssl_wrap_socket(
         let ctx_id = match to_i64(obj_from_bits(ctx_handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl context handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl context handle must be int",
+                );
             }
         };
         let ctx_state = CTX_REGISTRY
@@ -522,7 +589,13 @@ pub extern "C" fn molt_ssl_wrap_socket(
             });
         let ctx_state = match ctx_state {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "ValueError", "invalid ssl context handle"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid ssl context handle",
+                );
+            }
         };
 
         let server_side = {
@@ -535,7 +608,11 @@ pub extern "C" fn molt_ssl_wrap_socket(
         let raw_fd = match to_i64(obj_from_bits(sock_handle_bits)) {
             Some(v) => v as i32,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "socket handle must be an int fd");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "socket handle must be an int fd",
+                );
             }
         };
 
@@ -546,7 +623,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
             let _ = raw_fd;
             return raise_exception::<u64>(
                 _py,
-                "OSError",
+                BuiltinExc::OSError,
                 "ssl.wrap_socket not supported on this platform",
             );
         }
@@ -556,7 +633,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
             if dup_fd < 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &std::io::Error::last_os_error().to_string(),
                 );
             }
@@ -571,7 +648,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 None => {
                     return raise_exception::<u64>(
                         _py,
-                        "ssl.SSLError",
+                        crate::ModuleExc::SslError,
                         "server-side ssl requires certfile",
                     );
                 }
@@ -581,7 +658,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 None => {
                     return raise_exception::<u64>(
                         _py,
-                        "ssl.SSLError",
+                        crate::ModuleExc::SslError,
                         "server-side ssl requires keyfile",
                     );
                 }
@@ -592,7 +669,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     Err(e) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             &format!("cannot open certfile: {e}"),
                         );
                     }
@@ -603,7 +680,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     Err(e) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             &format!("cannot parse certfile: {e}"),
                         );
                     }
@@ -615,7 +692,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     Err(e) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             &format!("cannot open keyfile: {e}"),
                         );
                     }
@@ -626,14 +703,14 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     Ok(None) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             "no private key found in keyfile",
                         );
                     }
                     Err(e) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             &format!("cannot parse keyfile: {e}"),
                         );
                     }
@@ -647,7 +724,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 Err(e) => {
                     return raise_exception::<u64>(
                         _py,
-                        "ssl.SSLError",
+                        crate::ModuleExc::SslError,
                         &format!("TLS server config error: {e}"),
                     );
                 }
@@ -657,7 +734,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 Err(e) => {
                     return raise_exception::<u64>(
                         _py,
-                        "ssl.SSLError",
+                        crate::ModuleExc::SslError,
                         &format!("TLS connection error: {e}"),
                     );
                 }
@@ -682,7 +759,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     Err(e) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             &format!("cannot open cafile: {e}"),
                         );
                     }
@@ -709,7 +786,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     Err(e) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             &format!("cannot open certfile: {e}"),
                         );
                     }
@@ -722,7 +799,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                     Err(e) => {
                         return raise_exception::<u64>(
                             _py,
-                            "ssl.SSLError",
+                            crate::ModuleExc::SslError,
                             &format!("cannot open keyfile: {e}"),
                         );
                     }
@@ -742,7 +819,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 None => {
                     return raise_exception::<u64>(
                         _py,
-                        "ssl.SSLError",
+                        crate::ModuleExc::SslError,
                         "server_hostname required for client-side TLS",
                     );
                 }
@@ -752,7 +829,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 Err(e) => {
                     return raise_exception::<u64>(
                         _py,
-                        "ssl.SSLError",
+                        crate::ModuleExc::SslError,
                         &format!("invalid server hostname: {e}"),
                     );
                 }
@@ -762,7 +839,7 @@ pub extern "C" fn molt_ssl_wrap_socket(
                 Err(e) => {
                     return raise_exception::<u64>(
                         _py,
-                        "ssl.SSLError",
+                        crate::ModuleExc::SslError,
                         &format!("TLS connection error: {e}"),
                     );
                 }
@@ -805,7 +882,11 @@ pub extern "C" fn molt_ssl_wrap_socket(
         ) {
             return err;
         }
-        raise_exception::<u64>(_py, "OSError", "ssl.wrap_socket not supported on WASM")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::OSError,
+            "ssl.wrap_socket not supported on WASM",
+        )
     })
 }
 
@@ -816,13 +897,21 @@ pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl socket handle must be int",
+                );
             }
         };
         let operation = {
             let map = SOCK_REGISTRY.lock().unwrap();
             let Some(state) = map.get(&id) else {
-                return raise_exception::<u64>(_py, "ValueError", "invalid ssl socket handle");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid ssl socket handle",
+                );
             };
             match state.inner {
                 SslSocketInner::Client(_) => crate::OperationId::SslHandshakeClient,
@@ -883,7 +972,7 @@ pub extern "C" fn molt_ssl_socket_do_handshake(handle_bits: u64) -> u64 {
         })();
         match result {
             Ok(()) => return_none(),
-            Err(msg) => raise_exception::<u64>(_py, "ssl.SSLError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, crate::ModuleExc::SslError, &msg),
         }
     })
 }
@@ -897,7 +986,7 @@ pub extern "C" fn molt_ssl_socket_do_handshake(_handle_bits: u64) -> u64 {
         {
             return err;
         }
-        raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
+        raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
@@ -912,7 +1001,11 @@ pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl socket handle must be int",
+                );
             }
         };
         let max_len = to_i64(obj_from_bits(len_bits)).unwrap_or(4096).max(0) as usize;
@@ -935,7 +1028,7 @@ pub extern "C" fn molt_ssl_socket_read(handle_bits: u64, len_bits: u64) -> u64 {
         })();
         match result {
             Ok(data) => return_bytes_val(_py, &data),
-            Err(msg) => raise_exception::<u64>(_py, "ssl.SSLError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, crate::ModuleExc::SslError, &msg),
         }
     })
 }
@@ -948,7 +1041,7 @@ pub extern "C" fn molt_ssl_socket_read(_handle_bits: u64, _len_bits: u64) -> u64
         {
             return err;
         }
-        raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
+        raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
@@ -963,7 +1056,11 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl socket handle must be int",
+                );
             }
         };
         let data_export = match crate::object::buffer_exports::ScopedBuffer::simple(_py, data_bits)
@@ -991,7 +1088,7 @@ pub extern "C" fn molt_ssl_socket_write(handle_bits: u64, data_bits: u64) -> u64
         })();
         match result {
             Ok(n) => int_bits_from_i64(_py, n as i64),
-            Err(msg) => raise_exception::<u64>(_py, "ssl.SSLError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, crate::ModuleExc::SslError, &msg),
         }
     })
 }
@@ -1004,7 +1101,7 @@ pub extern "C" fn molt_ssl_socket_write(_handle_bits: u64, _data_bits: u64) -> u
         {
             return err;
         }
-        raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
+        raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
@@ -1015,7 +1112,11 @@ pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl socket handle must be int",
+                );
             }
         };
         let binary_form = is_truthy(_py, obj_from_bits(binary_form_bits));
@@ -1054,7 +1155,7 @@ pub extern "C" fn molt_ssl_socket_getpeercert(handle_bits: u64, binary_form_bits
 #[cfg(molt_wasm_net)]
 pub extern "C" fn molt_ssl_socket_getpeercert(_handle_bits: u64, _binary_form_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
+        raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
@@ -1065,7 +1166,11 @@ pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl socket handle must be int",
+                );
             }
         };
         let info = SOCK_REGISTRY
@@ -1074,7 +1179,9 @@ pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
             .get(&id)
             .map(|s| (s.cipher_name.clone(), s.protocol_version.clone()));
         match info {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid ssl socket handle"),
+            None => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid ssl socket handle")
+            }
             Some((None, _)) => MoltObject::none().bits(),
             Some((Some(name), ver)) => {
                 let name_ptr = alloc_string(_py, name.as_bytes());
@@ -1105,7 +1212,7 @@ pub extern "C" fn molt_ssl_socket_cipher(handle_bits: u64) -> u64 {
 #[cfg(molt_wasm_net)]
 pub extern "C" fn molt_ssl_socket_cipher(_handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
+        raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
@@ -1116,7 +1223,11 @@ pub extern "C" fn molt_ssl_socket_version(handle_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl socket handle must be int",
+                );
             }
         };
         let ver = SOCK_REGISTRY
@@ -1135,7 +1246,7 @@ pub extern "C" fn molt_ssl_socket_version(handle_bits: u64) -> u64 {
 #[cfg(molt_wasm_net)]
 pub extern "C" fn molt_ssl_socket_version(_handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
+        raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
     })
 }
 
@@ -1148,14 +1259,20 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "ssl socket handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ssl socket handle must be int",
+                );
             }
         };
         #[cfg(all(molt_has_net_io, unix))]
         {
             let state = SOCK_REGISTRY.lock().unwrap().remove(&id);
             match state {
-                None => raise_exception::<u64>(_py, "ValueError", "invalid ssl socket handle"),
+                None => {
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid ssl socket handle")
+                }
                 Some(state) => {
                     drop(state);
                     return_none()
@@ -1165,12 +1282,16 @@ pub extern "C" fn molt_ssl_socket_unwrap(handle_bits: u64) -> u64 {
         #[cfg(all(molt_has_net_io, not(unix)))]
         {
             let _ = id;
-            raise_exception::<u64>(_py, "OSError", "ssl.unwrap not supported on this platform")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::OSError,
+                "ssl.unwrap not supported on this platform",
+            )
         }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = id;
-            raise_exception::<u64>(_py, "OSError", "ssl not supported on WASM")
+            raise_exception::<u64>(_py, BuiltinExc::OSError, "ssl not supported on WASM")
         }
     })
 }
@@ -1237,7 +1358,7 @@ pub extern "C" fn molt_ssl_openssl_version() -> u64 {
 mod tests {
     use super::*;
     use crate::builtins::exceptions::{
-        exception_matches_builtin_name, molt_exception_clear, molt_exception_last_pending,
+        exception_matches_kind, molt_exception_clear, molt_exception_last_pending,
     };
     use std::net::TcpListener;
     use std::os::fd::AsRawFd;
@@ -1281,10 +1402,10 @@ mod tests {
         (original, peer)
     }
 
-    fn take_error(py: &PyToken<'_>, name: &str) {
+    fn take_error(py: &PyToken<'_>, name: crate::BuiltinExc) {
         assert!(crate::exception_pending(py));
         let error = molt_exception_last_pending();
-        assert!(exception_matches_builtin_name(py, error, name));
+        assert!(exception_matches_kind(py, error, name));
         molt_exception_clear();
         crate::dec_ref_bits(py, error);
     }
@@ -1332,8 +1453,11 @@ mod tests {
                 let (handle, duplicate) = wrap_original(&py, &original);
                 let id = to_i64(obj_from_bits(handle)).unwrap();
                 for (invalid, error) in [
-                    (MoltObject::none().bits(), "TypeError"),
-                    (MoltObject::from_int(-1).bits(), "ValueError"),
+                    (MoltObject::none().bits(), crate::BuiltinExc::TypeError),
+                    (
+                        MoltObject::from_int(-1).bits(),
+                        crate::BuiltinExc::ValueError,
+                    ),
                 ] {
                     molt_ssl_socket_unwrap(invalid);
                     take_error(&py, error);
@@ -1343,7 +1467,7 @@ mod tests {
                 assert_eq!(molt_ssl_socket_unwrap(handle), MoltObject::none().bits());
                 assert!(!crate::exception_pending(&py));
                 molt_ssl_socket_unwrap(handle);
-                take_error(&py, "ValueError");
+                take_error(&py, crate::BuiltinExc::ValueError);
                 assert!(!SOCK_REGISTRY.lock().unwrap().contains_key(&id));
                 assert_ne!(
                     unsafe { libc::fcntl(original.as_raw_fd(), libc::F_GETFD) },

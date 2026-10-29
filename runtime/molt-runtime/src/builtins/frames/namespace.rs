@@ -5,6 +5,7 @@
 //! participate. A keyed, single-consumption handoff does not create a second
 //! Python frame, and cannot leak into a later direct recursive call.
 
+use crate::BuiltinExc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::object::layout::{
@@ -143,7 +144,7 @@ pub(crate) fn admit_compiled_namespace(
         if !crate::exception_pending(py) {
             raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "compiled invocation has no globals namespace",
             );
         }
@@ -278,7 +279,7 @@ pub(crate) fn take_invocation_namespace(
         if !crate::exception_pending(py) {
             raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "compiled invocation has no globals namespace",
             );
         }

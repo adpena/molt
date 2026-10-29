@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 use molt_runtime_platform::stat_support;
 
@@ -24,7 +25,11 @@ pub extern "C" fn molt_stat_constants() -> u64 {
 
 fn parse_stat_mode(_py: &crate::PyToken<'_>, mode_bits: u64) -> Result<i64, u64> {
     let Some(mode) = to_i64(obj_from_bits(mode_bits)) else {
-        return Err(raise_exception::<_>(_py, "TypeError", "mode must be int"));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "mode must be int",
+        ));
     };
     Ok(mode)
 }

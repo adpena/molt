@@ -1,5 +1,6 @@
 //! Managed storage adapter for the shared native/C-ABI lexicographic contract.
 use super::*;
+use crate::BuiltinExc;
 use crate::object::seq_access::{
     PinnedSequenceItem, locked_len, pin_item, with_immutable_tuple_slice,
 };
@@ -60,7 +61,7 @@ impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
                     None => {
                         raise_exception::<()>(
                             self.py,
-                            "SystemError",
+                            BuiltinExc::SystemError,
                             "invalid tuple comparison storage",
                         );
                         Err(molt_runtime_core::ErrorIndicatorSet)

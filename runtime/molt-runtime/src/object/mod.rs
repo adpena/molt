@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 use std::alloc::Layout;
 #[cfg(target_arch = "wasm32")]
@@ -1825,7 +1826,7 @@ pub(crate) fn boxed_object_total_size(py: &PyToken<'_>, payload_bits: u64) -> Op
     if payload % std::mem::size_of::<u64>() != 0 {
         crate::raise_exception::<()>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "boxed allocation size must use u64 field stride",
         );
         return None;
@@ -3051,7 +3052,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             if !key_is_exact_string {
                 crate::raise_exception::<()>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "class field-offset keys must be exact strings",
                 );
                 return Err(());
@@ -3059,7 +3060,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             let Some(offset) = obj_from_bits(pair[1]).as_int() else {
                 crate::raise_exception::<()>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "class field offsets must be exact integers",
                 );
                 return Err(());
@@ -3067,7 +3068,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             let Ok(offset) = usize::try_from(offset) else {
                 crate::raise_exception::<()>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "class field offsets must be nonnegative",
                 );
                 return Err(());
@@ -3075,7 +3076,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             if offset % std::mem::size_of::<u64>() != 0 {
                 crate::raise_exception::<()>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "class field offsets must be u64-aligned",
                 );
                 return Err(());
@@ -3083,7 +3084,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             if offset < field_start {
                 crate::raise_exception::<()>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "class field offset overlaps the native instance prefix",
                 );
                 return Err(());
@@ -3094,7 +3095,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             {
                 crate::raise_exception::<()>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "distinct class fields cannot share a physical offset",
                 );
                 return Err(());
@@ -3105,7 +3106,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             {
                 crate::raise_exception::<()>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "class field offset overlaps reserved layout storage",
                 );
                 return Err(());
@@ -3145,7 +3146,11 @@ pub(crate) unsafe fn class_finish_definition(
             return Err(());
         }
         if class_has_policy(class_ptr, CLASS_POLICY_DEFINITION_FINISHING) {
-            crate::raise_exception::<()>(_py, "RuntimeError", "recursive class layout sealing");
+            crate::raise_exception::<()>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "recursive class layout sealing",
+            );
             return Err(());
         }
         let finish_guard = ClassDefinitionFinishGuard::begin(class_policy_word(class_ptr));
@@ -5163,10 +5168,10 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             assert!(crate::exception_pending(_py));
             let exception = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 exception,
-                "TypeError",
+                crate::BuiltinExc::TypeError,
             ));
             assert_eq!(
                 unsafe { object_class_bits(obj_ptr) },

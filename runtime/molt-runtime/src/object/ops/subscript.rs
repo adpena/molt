@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::compatibility_error::CompatibilityError;
 use crate::object::memoryview::{
     memoryview_adjust_format, memoryview_assign_slice, memoryview_is_index_key,
@@ -110,7 +111,7 @@ pub(crate) fn index_impl(
                     if object_type_id(obj_ptr) != TYPE_ID_TYPE {
                         raise_exception::<()>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             &format!(
                                 "'{}' object is not subscriptable",
                                 type_name(_py, obj_from_bits(obj_bits))
@@ -219,7 +220,11 @@ pub(crate) fn index_impl(
                         return Err(());
                     }
                     if memoryview_data(ptr).is_null() {
-                        raise_exception::<()>(_py, "BufferError", "invalid memoryview storage");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::BufferError,
+                            "invalid memoryview storage",
+                        );
                         return Err(());
                     }
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
@@ -247,7 +252,11 @@ pub(crate) fn index_impl(
                             let val = memoryview_read_item_at(_py, ptr, 0, &format);
                             return val.ok_or(());
                         }
-                        raise_exception::<()>(_py, "TypeError", "invalid indexing of 0-dim memory");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            "invalid indexing of 0-dim memory",
+                        );
                         return Err(());
                     }
                     if let Some(tup_ptr) = key.as_ptr()
@@ -287,7 +296,7 @@ pub(crate) fn index_impl(
                             }
                             raise_exception::<()>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "memoryview: invalid slice key",
                             );
                             return Err(());
@@ -304,7 +313,7 @@ pub(crate) fn index_impl(
                         } {
                             raise_exception::<()>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "memoryview: invalid slice key",
                             );
                             return Err(());
@@ -328,11 +337,15 @@ pub(crate) fn index_impl(
                                 ndim,
                                 elems.len()
                             );
-                            raise_exception::<()>(_py, "TypeError", &msg);
+                            raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
                             return Err(());
                         }
                         if shape.len() != strides.len() {
-                            raise_exception::<()>(_py, "BufferError", "invalid memoryview strides");
+                            raise_exception::<()>(
+                                _py,
+                                BuiltinExc::BufferError,
+                                "invalid memoryview strides",
+                            );
                             return Err(());
                         }
                         let mut indices = Vec::with_capacity(elems.len());
@@ -352,7 +365,7 @@ pub(crate) fn index_impl(
                             }
                             if i < 0 || i >= dim_len_i64 {
                                 let msg = format!("index out of bounds on dimension {}", dim + 1);
-                                raise_exception::<()>(_py, "IndexError", &msg);
+                                raise_exception::<()>(_py, BuiltinExc::IndexError, &msg);
                                 return Err(());
                             }
                             indices.push(i as isize);
@@ -360,7 +373,7 @@ pub(crate) fn index_impl(
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
                             raise_exception::<()>(
                                 _py,
-                                "BufferError",
+                                BuiltinExc::BufferError,
                                 "invalid memoryview index offset",
                             );
                             return Err(());
@@ -400,7 +413,7 @@ pub(crate) fn index_impl(
                     if i < 0 || i >= len {
                         raise_exception::<()>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "index out of bounds on dimension 1",
                         );
                         return Err(());
@@ -408,7 +421,7 @@ pub(crate) fn index_impl(
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
                         raise_exception::<()>(
                             _py,
-                            "BufferError",
+                            BuiltinExc::BufferError,
                             "invalid memoryview index offset",
                         );
                         return Err(());
@@ -557,13 +570,21 @@ pub(crate) fn index_impl(
                             i += len;
                         }
                         if i < 0 || i >= len {
-                            raise_exception::<()>(_py, "IndexError", "string index out of range");
+                            raise_exception::<()>(
+                                _py,
+                                BuiltinExc::IndexError,
+                                "string index out of range",
+                            );
                             return Err(());
                         }
                         let start =
                             utf8_char_to_byte_index_cached(_py, bytes, i, Some(ptr as usize));
                         let Some((end, _)) = wtf8_step(bytes, start, false) else {
-                            raise_exception::<()>(_py, "IndexError", "string index out of range");
+                            raise_exception::<()>(
+                                _py,
+                                BuiltinExc::IndexError,
+                                "string index out of range",
+                            );
                             return Err(());
                         };
                         let out_ptr = alloc_string(_py, &bytes[start..end]);
@@ -582,12 +603,12 @@ pub(crate) fn index_impl(
                         if type_id == TYPE_ID_BYTEARRAY {
                             raise_exception::<()>(
                                 _py,
-                                "IndexError",
+                                BuiltinExc::IndexError,
                                 "bytearray index out of range",
                             );
                             return Err(());
                         }
-                        raise_exception::<()>(_py, "IndexError", "index out of range");
+                        raise_exception::<()>(_py, BuiltinExc::IndexError, "index out of range");
                         return Err(());
                     }
                     return Ok(MoltObject::from_int(bytes[i as usize] as i64).bits());
@@ -665,12 +686,20 @@ pub(crate) fn index_impl(
                                 task, len, i
                             );
                         }
-                        raise_exception::<()>(_py, "IndexError", "list index out of range");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::IndexError,
+                            "list index out of range",
+                        );
                         return Err(());
                     }
                     let Some(val_item) = crate::object::seq_access::pin_item(_py, ptr, i as usize)
                     else {
-                        raise_exception::<()>(_py, "IndexError", "list index out of range");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::IndexError,
+                            "list index out of range",
+                        );
                         return Err(());
                     };
                     let val = val_item.bits();
@@ -755,11 +784,19 @@ pub(crate) fn index_impl(
                                 task, len, i
                             );
                         }
-                        raise_exception::<()>(_py, "IndexError", "tuple index out of range");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::IndexError,
+                            "tuple index out of range",
+                        );
                         return Err(());
                     }
                     let Some(val) = crate::object::seq_access::item(ptr, i as usize) else {
-                        raise_exception::<()>(_py, "IndexError", "tuple index out of range");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::IndexError,
+                            "tuple index out of range",
+                        );
                         return Err(());
                     };
                     inc_ref_bits(_py, val);
@@ -780,7 +817,7 @@ pub(crate) fn index_impl(
                             if adj < 0 {
                                 raise_exception::<()>(
                                     _py,
-                                    "IndexError",
+                                    BuiltinExc::IndexError,
                                     "range object index out of range",
                                 );
                                 return Err(());
@@ -790,7 +827,7 @@ pub(crate) fn index_impl(
                                 Err(_) => {
                                     raise_exception::<()>(
                                         _py,
-                                        "IndexError",
+                                        BuiltinExc::IndexError,
                                         "range object index out of range",
                                     );
                                     return Err(());
@@ -809,7 +846,11 @@ pub(crate) fn index_impl(
                                 }
                             };
                         }
-                        raise_exception::<()>(_py, "IndexError", "range object index out of range");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::IndexError,
+                            "range object index out of range",
+                        );
                         return Err(());
                     }
                     if let Some(slice_ptr) = key.as_ptr()
@@ -848,7 +889,11 @@ pub(crate) fn index_impl(
                         idx += &len;
                     }
                     if idx.is_negative() || idx >= len {
-                        raise_exception::<()>(_py, "IndexError", "range object index out of range");
+                        raise_exception::<()>(
+                            _py,
+                            BuiltinExc::IndexError,
+                            "range object index out of range",
+                        );
                         return Err(());
                     }
                     let val = start + step * idx;
@@ -909,7 +954,7 @@ pub(crate) fn index_impl(
                 {
                     let view_name = type_name(_py, obj);
                     let msg = format!("'{}' object is not subscriptable", view_name);
-                    raise_exception::<()>(_py, "TypeError", &msg);
+                    raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
                     return Err(());
                 }
                 if type_id == TYPE_ID_TYPE {
@@ -1006,7 +1051,7 @@ pub(crate) fn index_impl(
                 }
                 format!("'{}' object is not subscriptable", tn)
             };
-            raise_exception::<()>(_py, "TypeError", &msg);
+            raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
         }
         let obj_dbg = obj_from_bits(obj_bits);
@@ -1024,7 +1069,7 @@ pub(crate) fn index_impl(
             );
         }
         let msg = format!("'{}' object is not subscriptable", type_name(_py, obj));
-        raise_exception::<()>(_py, "TypeError", &msg);
+        raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
         Err(())
     })
 }
@@ -1068,7 +1113,7 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
                     if i < 0 || i >= len {
                         return raise_exception::<_>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "string index out of range",
                         );
                     }
@@ -1076,7 +1121,7 @@ pub extern "C" fn molt_ord_at(obj_bits: u64, key_bits: u64) -> u64 {
                     let Some((_, code)) = wtf8_step(bytes, start, false) else {
                         return raise_exception::<_>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "string index out of range",
                         );
                     };
@@ -1218,7 +1263,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             let new_len = new_items.len();
                             let result = raise_exception::<_>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 &format!(
                                     "attempt to assign sequence of size {} to extended slice of size {}",
                                     new_len,
@@ -1264,7 +1309,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     if i < 0 || i >= len {
                         return raise_exception::<_>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "list assignment index out of range",
                         );
                     }
@@ -1286,14 +1331,14 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     // message across 3.12/3.13/3.14 for both index and slice.
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "'tuple' object does not support item assignment",
                     );
                 }
                 if type_id == TYPE_ID_RANGE {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "'range' object does not support item assignment",
                     );
                 }
@@ -1316,7 +1361,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                 if let Some(name) = immutable_assign_type_name {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("'{}' object does not support item assignment", name),
                     );
                 }
@@ -1365,7 +1410,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             let Some(new_len) = (len - (e - s)).checked_add(src_bytes.len()) else {
                                 return raise_exception::<_>(
                                     _py,
-                                    "MemoryError",
+                                    BuiltinExc::MemoryError,
                                     "bytearray allocation failed",
                                 );
                             };
@@ -1395,7 +1440,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         if indices.len() != src_bytes.len() {
                             return raise_exception::<_>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 &format!(
                                     "attempt to assign bytes of size {} to extended slice of size {}",
                                     src_bytes.len(),
@@ -1427,7 +1472,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     if i < 0 || i >= len {
                         return raise_exception::<_>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "bytearray index out of range",
                         );
                     }
@@ -1445,14 +1490,14 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     if memoryview_readonly(ptr) {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "cannot modify read-only memory",
                         );
                     }
                     if memoryview_data(ptr).is_null() {
                         return raise_exception::<_>(
                             _py,
-                            "BufferError",
+                            BuiltinExc::BufferError,
                             "invalid memoryview storage",
                         );
                     }
@@ -1485,7 +1530,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         }
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "invalid indexing of 0-dim memory",
                         );
                     }
@@ -1525,7 +1570,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             }
                             return raise_exception::<_>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "memoryview: invalid slice key",
                             );
                         }
@@ -1541,7 +1586,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         } {
                             return raise_exception::<_>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "memoryview: invalid slice key",
                             );
                         }
@@ -1560,12 +1605,12 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                                 ndim,
                                 elems.len()
                             );
-                            return raise_exception::<_>(_py, "TypeError", &msg);
+                            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                         }
                         if shape.len() != strides.len() {
                             return raise_exception::<_>(
                                 _py,
-                                "BufferError",
+                                BuiltinExc::BufferError,
                                 "invalid memoryview strides",
                             );
                         }
@@ -1586,14 +1631,14 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             }
                             if i < 0 || i >= dim_len_i64 {
                                 let msg = format!("index out of bounds on dimension {}", dim + 1);
-                                return raise_exception::<_>(_py, "IndexError", &msg);
+                                return raise_exception::<_>(_py, BuiltinExc::IndexError, &msg);
                             }
                             indices.push(i as isize);
                         }
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
                             return raise_exception::<_>(
                                 _py,
-                                "BufferError",
+                                BuiltinExc::BufferError,
                                 "invalid memoryview index offset",
                             );
                         };
@@ -1636,7 +1681,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     } {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "memoryview: invalid slice key",
                         );
                     }
@@ -1664,14 +1709,14 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     if i < 0 || i >= len {
                         return raise_exception::<_>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "index out of bounds on dimension 1",
                         );
                     }
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
                         return raise_exception::<_>(
                             _py,
-                            "BufferError",
+                            BuiltinExc::BufferError,
                             "invalid memoryview index offset",
                         );
                     };
@@ -1774,7 +1819,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     } else {
                         format!("'{type_name}' object doesn't support item deletion")
                     };
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 if type_id == TYPE_ID_LIST {
                     if let Some(slice_ptr) = key.as_ptr()
@@ -1823,7 +1868,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if i < 0 || i >= len {
                         return raise_exception::<_>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "list assignment index out of range",
                         );
                     }
@@ -1890,7 +1935,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if i < 0 || i >= len {
                         return raise_exception::<_>(
                             _py,
-                            "IndexError",
+                            BuiltinExc::IndexError,
                             "bytearray index out of range",
                         );
                     }
@@ -1913,11 +1958,15 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                     if memoryview_readonly(ptr) {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "cannot modify read-only memory",
                         );
                     }
-                    return raise_exception::<_>(_py, "TypeError", "cannot delete memory");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "cannot delete memory",
+                    );
                 }
                 if let Some(dict_bits) = match dict_backing_bits(_py, obj_bits) {
                     Ok(storage) => storage,
@@ -1948,7 +1997,7 @@ fn unsupported_item_mutation(py: &PyToken<'_>, object: u64, delete: bool) -> u64
     let operation = if delete { "deletion" } else { "assignment" };
     raise_exception::<_>(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!(
             "'{}' object does not support item {operation}",
             type_name(py, obj_from_bits(object))
@@ -2051,7 +2100,7 @@ unsafe fn sequence_contains_builtin(py: &PyToken<'_>, ptr: *mut u8, needle: u64)
             _ => {
                 return raise_exception::<_>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "invalid sequence membership storage",
                 );
             }
@@ -2187,7 +2236,7 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                         let Some(item_ptr) = item.as_ptr() else {
                             return raise_exception::<_>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 &format!(
                                     "'in <string>' requires string as left operand, not {}",
                                     type_name(_py, item)
@@ -2197,7 +2246,7 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
                         if object_type_id(item_ptr) != TYPE_ID_STRING {
                             return raise_exception::<_>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 &format!(
                                     "'in <string>' requires string as left operand, not {}",
                                     type_name(_py, item)
@@ -2264,7 +2313,7 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
         }
         raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "argument of type '{}' is not iterable",
                 type_name(_py, container)
@@ -2303,7 +2352,7 @@ pub extern "C" fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64 
                 let Some(item_ptr) = item.as_ptr() else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "'in <string>' requires string as left operand, not {}",
                             type_name(_py, item)
@@ -2313,7 +2362,7 @@ pub extern "C" fn molt_str_contains(container_bits: u64, item_bits: u64) -> u64 
                 if object_type_id(item_ptr) != TYPE_ID_STRING {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "'in <string>' requires string as left operand, not {}",
                             type_name(_py, item)

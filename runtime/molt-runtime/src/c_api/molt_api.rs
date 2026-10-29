@@ -1,6 +1,7 @@
 //! The `molt_*` public C API — lifecycle, GIL, handles, objects, modules, errors.
 
 use super::*;
+use crate::BuiltinExc;
 
 thread_local! {
     static PUBLIC_GIL_ACQUIRE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -515,7 +516,7 @@ pub extern "C" fn molt_int_from_i64(value: i64) -> MoltHandle {
 #[inline]
 fn raise_type_error_unless_pending(_py: &PyToken<'_>, message: &str) {
     if !exception_pending(_py) {
-        raise_exception::<()>(_py, "TypeError", message);
+        raise_exception::<()>(_py, BuiltinExc::TypeError, message);
     }
 }
 
@@ -575,7 +576,7 @@ pub unsafe extern "C" fn molt_err_set(
         let Some(message) = (unsafe { bytes_slice_from_raw(message_ptr, message_len) }) else {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception message pointer cannot be null when len > 0",
             );
         };
@@ -673,7 +674,7 @@ pub unsafe extern "C" fn molt_object_getattr_bytes(
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "attribute name pointer cannot be null when len > 0",
             );
         };
@@ -682,7 +683,11 @@ pub unsafe extern "C" fn molt_object_getattr_bytes(
             if exception_pending(_py) {
                 return none_bits();
             }
-            return raise_exception::<u64>(_py, "RuntimeError", "failed to intern attribute name");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "failed to intern attribute name",
+            );
         };
         let out = molt_get_attr_name(obj_bits, name_bits);
         dec_ref_bits(_py, name_bits);
@@ -701,7 +706,7 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "attribute name pointer cannot be null when len > 0",
             );
         };
@@ -710,7 +715,11 @@ pub unsafe extern "C" fn molt_object_setattr_bytes(
             if exception_pending(_py) {
                 return -1;
             }
-            return raise_i32(_py, "RuntimeError", "failed to intern attribute name");
+            return raise_i32(
+                _py,
+                BuiltinExc::RuntimeError,
+                "failed to intern attribute name",
+            );
         };
         let set_out = molt_set_attr_name(obj_bits, name_bits, val_bits);
         dec_ref_bits(_py, name_bits);
@@ -823,7 +832,11 @@ pub extern "C" fn molt_module_get_dict(module_bits: MoltHandle) -> MoltHandle {
         unsafe {
             let dict_bits = module_dict_bits(module_ptr);
             if obj_from_bits(dict_bits).is_none() {
-                return raise_exception::<u64>(_py, "RuntimeError", "module dict missing");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "module dict missing",
+                );
             }
             inc_ref_bits(_py, dict_bits);
             dict_bits
@@ -871,7 +884,7 @@ pub(crate) fn register_module_capi_with_callbacks(
         if c_api_module_state(_py).metadata.contains_key(&module_key) {
             return raise_i32(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "module C-API metadata is already registered",
             );
         }
@@ -880,7 +893,7 @@ pub(crate) fn register_module_capi_with_callbacks(
             Err(_) => {
                 return raise_i32(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "module state size does not fit in usize",
                 );
             }
@@ -952,11 +965,19 @@ pub(crate) fn module_exec_begin(module_bits: MoltHandle, def: usize) -> i32 {
         let mut state = c_api_module_state(_py);
         let Some(metadata) = state.metadata.get_mut(&module_ptr_key(module_ptr)) else {
             drop(state);
-            return raise_i32(_py, "SystemError", "extension module has no C-API metadata");
+            return raise_i32(
+                _py,
+                BuiltinExc::SystemError,
+                "extension module has no C-API metadata",
+            );
         };
         if metadata.module_def_ptr != def {
             drop(state);
-            return raise_i32(_py, "SystemError", "extension module definition mismatch");
+            return raise_i32(
+                _py,
+                BuiltinExc::SystemError,
+                "extension module definition mismatch",
+            );
         }
         let started = metadata.exec_started;
         if metadata.module_state.is_none() {
@@ -1011,7 +1032,7 @@ pub(crate) fn module_state_add_with_import(
         if module_def_ptr == 0 {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module definition pointer must not be NULL",
             );
         }
@@ -1122,7 +1143,7 @@ pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
         if module_def_ptr == 0 {
             return crate::abi_return::fail::<crate::abi_return::NullHandle>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module definition pointer must not be NULL",
             );
         }
@@ -1172,12 +1193,16 @@ pub extern "C" fn molt_module_state_remove(module_def_ptr: usize) -> i32 {
         if module_def_ptr == 0 {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module definition pointer must not be NULL",
             );
         }
         let Some(bits) = c_api_module_state_registry_remove_def(_py, module_def_ptr) else {
-            return raise_i32(_py, "RuntimeError", "module definition was not registered");
+            return raise_i32(
+                _py,
+                BuiltinExc::RuntimeError,
+                "module definition was not registered",
+            );
         };
         if !obj_from_bits(bits).is_none() {
             dec_ref_bits(_py, bits);
@@ -1208,7 +1233,7 @@ pub unsafe extern "C" fn molt_module_add_object_bytes(
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module attribute name pointer cannot be null when len > 0",
             );
         };
@@ -1219,7 +1244,7 @@ pub unsafe extern "C" fn molt_module_add_object_bytes(
             }
             return raise_i32(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern module attribute name",
             );
         };
@@ -1247,7 +1272,7 @@ pub unsafe extern "C" fn molt_module_get_object_bytes(
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module attribute name pointer cannot be null when len > 0",
             );
         };
@@ -1258,7 +1283,7 @@ pub unsafe extern "C" fn molt_module_get_object_bytes(
             }
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern module attribute name",
             );
         };
@@ -1320,7 +1345,7 @@ pub unsafe extern "C" fn molt_module_add_string_constant(
         let Some(value_bytes) = (unsafe { bytes_slice_from_raw(value_ptr, value_len) }) else {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "string constant pointer cannot be null when len > 0",
             );
         };
@@ -1365,7 +1390,7 @@ pub extern "C" fn molt_capi_method_dispatch(
             if args_vec.is_empty() {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "C-API method requires a bound self/cls argument",
                 );
             }
@@ -1389,7 +1414,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     if kwargs_present {
                         return raise_exception::<u64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "C-API method does not accept keyword arguments",
                         );
                     }
@@ -1429,7 +1454,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     if kwargs_present {
                         return raise_exception::<u64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "C-API noargs method does not accept keyword arguments",
                         );
                     }
@@ -1437,7 +1462,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     if c_api_method_tuple_len(_py, args_ptr) != expected {
                         return raise_exception::<u64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "C-API noargs method expects no positional arguments",
                         );
                     }
@@ -1450,7 +1475,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     if kwargs_present {
                         return raise_exception::<u64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "C-API METH_O method does not accept keyword arguments",
                         );
                     }
@@ -1458,7 +1483,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                     if c_api_method_tuple_len(_py, args_ptr) != expected {
                         return raise_exception::<u64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "C-API METH_O method expects exactly one argument",
                         );
                     }
@@ -1475,7 +1500,7 @@ pub extern "C" fn molt_capi_method_dispatch(
                 _ => {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "unsupported C-API method flags",
                     );
                 }
@@ -1493,7 +1518,7 @@ pub extern "C" fn molt_capi_method_dispatch(
             }
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "C-API method returned NULL without setting an exception",
             );
         }
@@ -1515,14 +1540,14 @@ pub unsafe extern "C" fn molt_cfunction_create_bytes(
         if method_flags == C_API_METH_VARARGS_KEYWORDS {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "METH_KEYWORDS callbacks must use molt_cfunction_create_keywords_bytes",
             );
         }
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "method name pointer cannot be null when len > 0",
             );
         };
@@ -1532,7 +1557,7 @@ pub unsafe extern "C" fn molt_cfunction_create_bytes(
             let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "method doc pointer cannot be null when len > 0",
                 );
             };
@@ -1566,14 +1591,14 @@ pub unsafe extern "C" fn molt_cfunction_create_keywords_bytes(
         if method_flags != C_API_METH_VARARGS_KEYWORDS {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "keywords callback requires METH_VARARGS | METH_KEYWORDS",
             );
         }
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "method name pointer cannot be null when len > 0",
             );
         };
@@ -1583,7 +1608,7 @@ pub unsafe extern "C" fn molt_cfunction_create_keywords_bytes(
             let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "method doc pointer cannot be null when len > 0",
                 );
             };
@@ -1617,14 +1642,14 @@ pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
         if method_flags == C_API_METH_VARARGS_KEYWORDS {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "METH_KEYWORDS callbacks must use molt_module_add_cfunction_keywords_bytes",
             );
         }
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "method name pointer cannot be null when len > 0",
             );
         };
@@ -1637,7 +1662,7 @@ pub unsafe extern "C" fn molt_module_add_cfunction_bytes(
             let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
                 return raise_i32(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "method doc pointer cannot be null when len > 0",
                 );
             };
@@ -1695,14 +1720,14 @@ pub unsafe extern "C" fn molt_module_add_cfunction_keywords_bytes(
         if method_flags != C_API_METH_VARARGS_KEYWORDS {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "keywords callback requires METH_VARARGS | METH_KEYWORDS",
             );
         }
         let Some(name_bytes) = (unsafe { bytes_slice_from_raw(name_ptr, name_len) }) else {
             return raise_i32(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "method name pointer cannot be null when len > 0",
             );
         };
@@ -1715,7 +1740,7 @@ pub unsafe extern "C" fn molt_module_add_cfunction_keywords_bytes(
             let Some(bytes) = (unsafe { bytes_slice_from_raw(doc_ptr, doc_len) }) else {
                 return raise_i32(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "method doc pointer cannot be null when len > 0",
                 );
             };
@@ -1894,7 +1919,7 @@ pub unsafe extern "C" fn molt_tuple_from_array(items: *const MoltHandle, len: u6
         let Some(elems) = (unsafe { handles_slice_from_raw(items, len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "tuple source pointer cannot be null when len > 0",
             );
         };
@@ -1912,7 +1937,7 @@ pub unsafe extern "C" fn molt_list_from_array(items: *const MoltHandle, len: u64
         let Some(elems) = (unsafe { handles_slice_from_raw(items, len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "list source pointer cannot be null when len > 0",
             );
         };
@@ -1934,14 +1959,14 @@ pub unsafe extern "C" fn molt_dict_from_pairs(
         let Some(key_slice) = (unsafe { handles_slice_from_raw(keys, len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dict key pointer cannot be null when len > 0",
             );
         };
         let Some(value_slice) = (unsafe { handles_slice_from_raw(values, len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dict value pointer cannot be null when len > 0",
             );
         };
@@ -1996,7 +2021,7 @@ pub(crate) unsafe fn acquire_physical_buffer(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if out_view.is_null() {
-            return raise_i32(_py, "TypeError", "out_view cannot be null");
+            return raise_i32(_py, BuiltinExc::TypeError, "out_view cannot be null");
         }
         let owner_bits = match crate::object::buffer_exports::acquire_owner(_py, obj_bits) {
             Ok(owner_bits) => owner_bits,
@@ -2076,41 +2101,53 @@ pub extern "C" fn molt_memoryview_check(obj_bits: MoltHandle) -> i32 {
 pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView) -> MoltHandle {
     crate::with_gil_entry_nopanic!(_py, {
         if view.is_null() {
-            return raise_exception::<u64>(_py, "TypeError", "buffer view cannot be null");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "buffer view cannot be null",
+            );
         }
         // Never retain a borrowed C descriptor across allocation/reentry.
         let mut view = unsafe { *view };
         if view.data.is_null() && view.len != 0 {
             return raise_exception::<u64>(
                 _py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "buffer descriptor has no data pointer",
             );
         }
         if view.ndim as usize > MOLT_BUFFER_MAX_NDIM {
-            return raise_exception::<u64>(_py, "BufferError", "buffer ndim exceeds Molt limit");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::BufferError,
+                "buffer ndim exceeds Molt limit",
+            );
         }
         if view.itemsize == 0 {
-            return raise_exception::<u64>(_py, "BufferError", "buffer itemsize cannot be zero");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::BufferError,
+                "buffer itemsize cannot be zero",
+            );
         }
         let Some(readonly) = buffer_readonly_from_flag(view.readonly) else {
             return raise_exception::<u64>(
                 _py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "buffer readonly flag must be 0 or 1",
             );
         };
         let Ok(backing_capacity) = usize::try_from(view.backing_capacity) else {
             return raise_exception::<u64>(
                 _py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "buffer backing capacity exceeds Molt limit",
             );
         };
         let Ok(itemsize) = usize::try_from(view.itemsize) else {
             return raise_exception::<u64>(
                 _py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "buffer itemsize exceeds the active address space",
             );
         };
@@ -2159,7 +2196,11 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                         if exception_pending(_py) {
                             return none_bits();
                         }
-                        return raise_exception(_py, "BufferError", "invalid source buffer");
+                        return raise_exception(
+                            _py,
+                            BuiltinExc::BufferError,
+                            "invalid source buffer",
+                        );
                     }
                 },
             };
@@ -2175,12 +2216,20 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                 .ok()
                 .and_then(|offset| source_storage.data.addr().checked_sub(offset));
             let (Some(low), Some(high), Some(origin)) = (low, high, origin) else {
-                return raise_exception(_py, "BufferError", "source buffer span overflow");
+                return raise_exception(
+                    _py,
+                    BuiltinExc::BufferError,
+                    "source buffer span overflow",
+                );
             };
             source_span = Some((low, high, origin, source_storage.readonly));
             if source_is_memoryview {
                 let Some(format_ptr) = obj_from_bits(source_storage.format_bits).as_ptr() else {
-                    return raise_exception(_py, "SystemError", "source memoryview has no format");
+                    return raise_exception(
+                        _py,
+                        BuiltinExc::SystemError,
+                        "source memoryview has no format",
+                    );
                 };
                 source_format = Some(
                     unsafe {
@@ -2270,7 +2319,7 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                     dec_ref_bits(_py, format_bits);
                     return raise_exception::<u64>(
                         _py,
-                        "BufferError",
+                        BuiltinExc::BufferError,
                         "buffer logical length exceeds Molt limit",
                     );
                 };
@@ -2303,7 +2352,7 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             }
             return raise_exception::<u64>(
                 _py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "invalid buffer descriptor for memoryview",
             );
         }
@@ -2317,7 +2366,7 @@ pub unsafe extern "C" fn molt_bytes_from(data: *const u8, len: u64) -> MoltHandl
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bytes source pointer cannot be null when len > 0",
             );
         };
@@ -2355,7 +2404,7 @@ pub unsafe extern "C" fn molt_string_from(data: *const u8, len: u64) -> MoltHand
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "string source pointer cannot be null when len > 0",
             );
         };
@@ -2396,7 +2445,7 @@ pub unsafe extern "C" fn molt_bytearray_from(data: *const u8, len: u64) -> MoltH
         let Some(bytes) = (unsafe { bytes_slice_from_raw(data, len) }) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bytearray source pointer cannot be null when len > 0",
             );
         };

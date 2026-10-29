@@ -57,7 +57,7 @@ fn core_immutable_views_borrow_existing_owners_without_retain() {
             )
         };
         assert!(mutable.bytes_slice(py.core_token()).is_none());
-        assert_pending_exception_class(py, "TypeError");
+        assert_pending_exception_class(py, crate::BuiltinExc::TypeError);
         assert!(!exception_pending(py));
     });
 }
@@ -210,7 +210,7 @@ fn array_buffer_export_lease_blocks_resize_until_release() {
         // While the buffer is exported, resizing must raise the interlock error.
         let blocked = molt_array_append(arr_bits, MoltObject::from_int(9).bits());
         assert!(obj_from_bits(blocked).is_none());
-        assert_pending_exception_class(_py, "BufferError");
+        assert_pending_exception_class(_py, crate::BuiltinExc::BufferError);
         let _ = molt_err_clear();
 
         // Releasing the buffer drops the export lease, decrementing `exports`.
@@ -269,7 +269,7 @@ fn buffer_export_contract_all_bytearray_resize_families() {
                 _ => crate::molt_store_index(owner, stride, empty),
             };
             let _ = run();
-            assert_pending_exception_class(py, "BufferError");
+            assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
             assert_eq!(
                 unsafe { crate::bytearray_vec_ref(obj_from_bits(owner).as_ptr().unwrap()) }
                     .as_slice(),
@@ -315,7 +315,7 @@ fn buffer_export_contract_derived_views_release_and_drop_independently() {
         crate::molt_memoryview_release(root);
         for derived in [clone, readonly, cast, sliced] {
             crate::molt_bytearray_append(owner, MoltObject::from_int(120).bits());
-            assert_pending_exception_class(py, "BufferError");
+            assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
             // Destruction without explicit release must discharge its pin.
             dec_ref_bits(py, derived);
         }
@@ -340,7 +340,7 @@ fn buffer_export_contract_c_exports_block_release_and_pin_imported_views() {
         let imported = unsafe { molt_memoryview_from_buffer(&first) };
         assert!(!exception_pending(py));
         crate::molt_memoryview_release(root);
-        assert_pending_exception_class(py, "BufferError");
+        assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         assert!(!unsafe { crate::memoryview_released(obj_from_bits(root).as_ptr().unwrap()) });
         assert_eq!(unsafe { molt_buffer_release(&mut first) }, 0);
         assert_eq!(unsafe { molt_buffer_release(&mut first) }, 0);
@@ -348,7 +348,7 @@ fn buffer_export_contract_c_exports_block_release_and_pin_imported_views() {
         assert!(!exception_pending(py));
         assert_eq!(unsafe { molt_buffer_release(&mut second) }, 0);
         crate::molt_bytearray_clear(owner);
-        assert_pending_exception_class(py, "BufferError");
+        assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         crate::molt_memoryview_release(imported);
         crate::molt_bytearray_clear(owner);
         assert!(!exception_pending(py));
@@ -420,7 +420,7 @@ fn buffer_export_contract_allocation_failure_unwinds_only_its_own_export() {
         assert!(failed.is_err());
         let _ = molt_err_clear();
         molt_array_append(array, MoltObject::from_int(2).bits());
-        assert_pending_exception_class(py, "BufferError");
+        assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         assert_eq!(unsafe { molt_buffer_release(&mut export) }, 0);
         molt_array_append(array, MoltObject::from_int(2).bits());
         assert!(!exception_pending(py));
@@ -464,9 +464,9 @@ fn buffer_export_contract_scoped_consumer_and_gc_detach_share_lifetime() {
         {
             let _consumer = ScopedBufferExport::new(py, view).expect("consumer export");
             crate::molt_memoryview_release(view);
-            assert_pending_exception_class(py, "BufferError");
+            assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
             crate::molt_bytearray_clear(owner);
-            assert_pending_exception_class(py, "BufferError");
+            assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         }
         let (edges, resources) = unsafe { terminal_detach_capacity(py, view_ptr) };
         let mut sink = DetachedEdgeSink::try_with_capacities(edges, resources).unwrap();
@@ -502,12 +502,12 @@ fn buffer_export_contract_bytesio_strict_policy_and_flush_retry() {
         assert!(!exception_pending(py));
         for bytes in [payload, empty] {
             molt_file_write(stream, bytes);
-            assert_pending_exception_class(py, "BufferError");
+            assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         }
         molt_file_truncate(stream, MoltObject::from_int(3).bits());
-        assert_pending_exception_class(py, "BufferError");
+        assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         molt_file_close(stream);
-        assert_pending_exception_class(py, "BufferError");
+        assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         let handle = unsafe { crate::file_handle_ptr(obj_from_bits(stream).as_ptr().unwrap()) };
         assert!(!file_handle_is_closed(unsafe { &*handle }));
         // Construct the real BufferedWriter receiver over this BytesIO. Changing
@@ -525,7 +525,7 @@ fn buffer_export_contract_bytesio_strict_policy_and_flush_retry() {
         assert_eq!(to_i64(obj_from_bits(written)), Some(1));
         assert!(!exception_pending(py));
         molt_file_flush(buffered);
-        assert_pending_exception_class(py, "BufferError");
+        assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
         assert_eq!(unsafe { &(*buffered_handle).write_buf }.as_slice(), b"Z");
         crate::molt_memoryview_release(view);
         molt_file_flush(buffered);
@@ -607,7 +607,7 @@ fn buffer_export_contract_writable_consumer_uses_typed_shaped_byte_capacity() {
                 assert_eq!(buffer.len(), expected_len);
                 assert!(!buffer.as_mut_ptr().is_null());
                 crate::molt_memoryview_release(view);
-                assert_pending_exception_class(py, "BufferError");
+                assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
                 let copied = molt_file_readinto(stream, view);
                 assert_eq!(to_i64(obj_from_bits(copied)), Some(expected_len as i64));
                 assert!(!exception_pending(py));
@@ -624,7 +624,7 @@ fn buffer_export_contract_writable_consumer_uses_typed_shaped_byte_capacity() {
                         .all(|&byte| byte == b'.')
                 );
                 crate::molt_bytearray_clear(owner);
-                assert_pending_exception_class(py, "BufferError");
+                assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
             }
             crate::molt_memoryview_release(view);
             crate::molt_bytearray_clear(owner);
@@ -709,7 +709,7 @@ fn buffer_export_contract_writable_consumer_array_pin_and_source_drop() {
             let buffer = ScopedWritableBuffer::new(py, owner).expect("typed array byte span");
             assert_eq!(buffer.len(), 8);
             molt_array_append(handle, MoltObject::from_int(1).bits());
-            assert_pending_exception_class(py, "BufferError");
+            assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
             let copied = molt_file_readinto(stream, owner);
             assert_eq!(to_i64(obj_from_bits(copied)), Some(8));
             assert!(!exception_pending(py));
@@ -765,7 +765,7 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
                 // WRITABLE omits strides: the memoryview exporter refuses each
                 // non-contiguous layout, including the empty rank-one slice.
                 assert!(matches!(result, Err(BufferAccessError::Pending)));
-                assert_pending_exception_class(py, "BufferError");
+                assert_pending_exception_class(py, crate::BuiltinExc::BufferError);
             }
             // Failed admission releases only its own export, so explicit view
             // release succeeds and discharges the final bytearray resize pin.
@@ -776,7 +776,7 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
                 ScopedWritableBuffer::new(py, view),
                 Err(BufferAccessError::Pending)
             ));
-            assert_pending_exception_class(py, "ValueError");
+            assert_pending_exception_class(py, crate::BuiltinExc::ValueError);
             for bits in [view, owner, format] {
                 dec_ref_bits(py, bits);
             }
@@ -793,7 +793,7 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
                 ScopedWritableBuffer::new(py, value),
                 Err(BufferAccessError::Pending)
             ));
-            assert_pending_exception_class(py, "TypeError");
+            assert_pending_exception_class(py, crate::BuiltinExc::TypeError);
         }
     });
 }
@@ -1030,7 +1030,7 @@ fn memoryview_from_c_buffer_rejects_base_pointer_spoof() {
         source.format[0] = b'B';
 
         let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
-        assert_none_with_exception_class(_py, view_bits, "BufferError");
+        assert_none_with_exception_class(_py, view_bits, crate::BuiltinExc::BufferError);
         dec_ref_bits(_py, bytearray_bits);
     });
 }
@@ -1052,7 +1052,7 @@ fn memoryview_from_c_buffer_rejects_strided_span_past_backing() {
         source.format[0] = b'B';
 
         let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
-        assert_none_with_exception_class(_py, view_bits, "BufferError");
+        assert_none_with_exception_class(_py, view_bits, crate::BuiltinExc::BufferError);
     });
 }
 
@@ -1073,7 +1073,7 @@ fn memoryview_from_c_buffer_rejects_logical_len_mismatch() {
         source.format[0] = b'B';
 
         let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
-        assert_none_with_exception_class(_py, view_bits, "BufferError");
+        assert_none_with_exception_class(_py, view_bits, crate::BuiltinExc::BufferError);
     });
 }
 
@@ -1208,32 +1208,32 @@ fn memoryview_release_closes_byteslike_method_arguments() {
         assert_none_with_exception_class(
             _py,
             crate::molt_bytes_find(hay_bits, view_bits),
-            "ValueError",
+            crate::BuiltinExc::ValueError,
         );
         assert_none_with_exception_class(
             _py,
             crate::molt_bytes_startswith(hay_bits, view_bits),
-            "ValueError",
+            crate::BuiltinExc::ValueError,
         );
         assert_none_with_exception_class(
             _py,
             crate::molt_bytes_split(hay_bits, view_bits),
-            "ValueError",
+            crate::BuiltinExc::ValueError,
         );
         assert_none_with_exception_class(
             _py,
             crate::molt_bytes_replace(hay_bits, view_bits, repl_bits, count_bits),
-            "ValueError",
+            crate::BuiltinExc::ValueError,
         );
         assert_none_with_exception_class(
             _py,
             crate::molt_bytearray_find(bytearray_bits, view_bits),
-            "ValueError",
+            crate::BuiltinExc::ValueError,
         );
         assert_none_with_exception_class(
             _py,
             crate::molt_bytearray_replace(bytearray_bits, view_bits, repl_bits, count_bits),
-            "ValueError",
+            crate::BuiltinExc::ValueError,
         );
 
         let sep_ptr = alloc_bytes(_py, b",");
@@ -1245,7 +1245,7 @@ fn memoryview_release_closes_byteslike_method_arguments() {
         assert_none_with_exception_class(
             _py,
             crate::molt_bytes_join(sep_bits, list_bits),
-            "TypeError",
+            crate::BuiltinExc::TypeError,
         );
 
         dec_ref_bits(_py, list_bits);
@@ -1270,7 +1270,7 @@ fn err_pending_peek_restore_roundtrip() {
         ));
         for current in [std::ptr::null_mut(), task] {
             let previous = crate::replace_current_task(_py, current);
-            let outer = crate::alloc_exception(_py, "ValueError", "handled owner");
+            let outer = crate::alloc_exception(_py, BuiltinExc::ValueError, "handled owner");
             let outer_bits = MoltObject::from_ptr(outer).bits();
             crate::exception_stack_push();
             crate::builtins::exceptions::exception_context_set(_py, outer_bits);

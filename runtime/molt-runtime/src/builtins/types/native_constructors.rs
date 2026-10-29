@@ -2,6 +2,7 @@
 //! type.__call__ uses the same __new__/__init__ lifecycle for exact classes and
 //! heap subtypes. Explicit descriptors run only their named constructor phase.
 
+use crate::BuiltinExc;
 use crate::builtins::native_arguments::NativeArguments as Arguments;
 use crate::object::native_instance::NativePayload;
 use crate::*;
@@ -107,7 +108,7 @@ fn codec_arguments(py: &PyToken<'_>, label: &str, bound: &[Option<u64>; 3]) -> b
             };
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label}() argument '{name}' must be str, not {given}"),
             );
             return false;
@@ -118,7 +119,7 @@ fn codec_arguments(py: &PyToken<'_>, label: &str, bound: &[Option<u64>; 3]) -> b
             return false;
         }
         if value.contains(&0) {
-            raise_exception::<()>(py, "ValueError", "embedded null character");
+            raise_exception::<()>(py, BuiltinExc::ValueError, "embedded null character");
             return false;
         }
     }
@@ -262,7 +263,11 @@ pub(crate) extern "C" fn int_new(args: u64, kwargs: u64) -> u64 {
         };
         let [value, base] = *bound;
         if value.is_none() && base.is_some() {
-            return raise_exception::<_>(py, "TypeError", "int() missing string argument");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "int() missing string argument",
+            );
         }
         molt_int_new(
             class,
@@ -428,7 +433,7 @@ fn bytes_value(py: &PyToken<'_>, bound: [Option<u64>; 3]) -> u64 {
             } else {
                 "errors without a string argument"
             };
-            raise_exception::<_>(py, "TypeError", message)
+            raise_exception::<_>(py, BuiltinExc::TypeError, message)
         }
     }
 }
@@ -465,7 +470,7 @@ fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Op
         .as_ptr()
         .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
     {
-        return raise_exception::<_>(py, "TypeError", "decoding str is not supported");
+        return raise_exception::<_>(py, BuiltinExc::TypeError, "decoding str is not supported");
     }
     let buffer = match ScopedBuffer::simple(py, value) {
         Ok(buffer) => buffer,
@@ -477,7 +482,7 @@ fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Op
                 "decoding to str: need a bytes-like object, {} found",
                 type_name(py, obj_from_bits(value))
             );
-            return raise_exception::<_>(py, "TypeError", &message);
+            return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
         }
     };
     let len = match buffer.contiguous_len() {
@@ -491,7 +496,7 @@ fn decode_string(py: &PyToken<'_>, value: u64, encoding: Option<u64>, errors: Op
         Err(_) => {
             return raise_exception::<_>(
                 py,
-                "BufferError",
+                BuiltinExc::BufferError,
                 "underlying buffer is not C-contiguous",
             );
         }
@@ -551,7 +556,7 @@ pub(crate) extern "C" fn dict_init(args: u64, kwargs: u64) -> u64 {
         let Some(storage) = storage else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "descriptor '__init__' requires a 'dict' object",
             );
         };
@@ -588,7 +593,7 @@ pub(crate) extern "C" fn set_init(args: u64, kwargs: u64) -> u64 {
         {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "descriptor '__init__' requires a 'set' object",
             );
         }

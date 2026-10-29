@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[test]
 fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
@@ -26,10 +27,10 @@ fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
         assert!(!exception_pending(_py));
         molt_module_del_global(lexical_bits, key);
         let error = molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
-            "NameError"
+            crate::BuiltinExc::NameError
         ));
         clear_exception(_py);
         dec_ref_bits(_py, error);
@@ -48,7 +49,7 @@ extern "C" fn namespace_delete_callback(_self: u64, _key: u64) -> u64 {
         DELETE_CALLS.fetch_add(1, Ordering::SeqCst);
         let result = DELETE_RESULT.load(Ordering::SeqCst);
         if result == 0 {
-            return raise_exception::<u64>(_py, "ValueError", "custom deletion failed");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "custom deletion failed");
         }
         inc_ref_bits(_py, result);
         result
@@ -111,10 +112,10 @@ fn namespace_delete_dictionary_success_returns_none_and_keeps_receiver_owner() {
         assert!(!exception_pending(_py));
         let _ = molt_namespace_del(namespace, key);
         let error = molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
-            "NameError"
+            crate::BuiltinExc::NameError
         ));
         clear_exception(_py);
         dec_ref_bits(_py, error);
@@ -147,10 +148,10 @@ fn namespace_delete_custom_mapping_discards_result_and_preserves_pending_entry()
         let _ = molt_namespace_del(namespace, key);
         assert_eq!(DELETE_CALLS.load(Ordering::SeqCst), 2);
         let error = molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
-            "NameError"
+            crate::BuiltinExc::NameError
         ));
         let _ = molt_namespace_del(namespace, key);
         assert_eq!(DELETE_CALLS.load(Ordering::SeqCst), 2);

@@ -1,6 +1,7 @@
 // Binary pickle dump state, memo table, and opcode emitters.
 
 use super::*;
+use crate::BuiltinExc;
 
 pub(crate) struct PickleDumpState {
     pub(crate) protocol: i64,
@@ -51,7 +52,7 @@ pub(crate) fn pickle_option_callable_bits(
     }
     if !is_truthy(_py, obj_from_bits(molt_is_callable(maybe_bits))) {
         let message = format!("pickle {name} must be callable");
-        return Err(raise_exception::<u64>(_py, "TypeError", &message));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &message));
     }
     Ok(Some(maybe_bits))
 }

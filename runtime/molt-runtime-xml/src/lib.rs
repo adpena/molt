@@ -1,6 +1,6 @@
 //! `molt-runtime-xml` — XML intrinsics for the Molt runtime.
 //!
-//! Isolates the xml.etree.ElementTree and xml.sax intrinsics into a
+//! Isolates the xml.etree.ElementTree intrinsics into a
 //! dedicated crate.
 //!
 //! This crate is an optional dependency of `molt-runtime`, gated behind the
@@ -16,4 +16,3 @@ mod bridge_test_stubs;
 mod entities;
 pub mod intrinsics_generated;
 pub mod xml_etree;
-pub mod xml_sax;

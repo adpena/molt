@@ -3,6 +3,7 @@
 //! storage, and all Python edges remain on the existing traced file handle.
 use super::buffered::{self, Operation, call, checked_raw, off_t, owned, raw_owner};
 use super::*;
+use crate::BuiltinExc;
 use crate::object::buffer_exports::{
     CallbackMemoryView, CallbackMemoryViewAccess, ScopedWritableBuffer,
 };
@@ -23,8 +24,13 @@ fn bytes(py: &PyToken<'_>, data: &[u8]) -> u64 {
 }
 
 fn reserve(py: &PyToken<'_>, data: &mut Vec<u8>, additional: usize) -> Result<(), u64> {
-    data.try_reserve(additional)
-        .map_err(|_| raise_exception(py, "MemoryError", "cannot allocate buffered reader storage"))
+    data.try_reserve(additional).map_err(|_| {
+        raise_exception(
+            py,
+            BuiltinExc::MemoryError,
+            "cannot allocate buffered reader storage",
+        )
+    })
 }
 
 unsafe fn advance_raw(pointer: *mut u8, count: usize) {
@@ -55,7 +61,11 @@ unsafe fn raw_read<T: ?Sized>(
             let handle = &*file_handle_ptr(obj_from_bits(raw).as_ptr().unwrap());
             file_handle_require_attached(py, handle)?;
             if file_handle_is_closed(handle) {
-                return Err(raise_exception(py, "ValueError", "read of closed file"));
+                return Err(raise_exception(
+                    py,
+                    BuiltinExc::ValueError,
+                    "read of closed file",
+                ));
             }
             (
                 file_handle_physical_state(py, handle)?.clone(),
@@ -66,7 +76,7 @@ unsafe fn raw_read<T: ?Sized>(
             let result = unsafe {
                 let mut backend = state.backend.lock().unwrap();
                 let backend = backend.as_mut().ok_or_else(|| {
-                    raise_exception::<u64>(py, "ValueError", "read of closed file")
+                    raise_exception::<u64>(py, BuiltinExc::ValueError, "read of closed file")
                 })?;
                 super::buffer::backend_read_bytes(py, memory.bits(), backend, destination, length)
             };
@@ -123,7 +133,7 @@ unsafe fn raw_read<T: ?Sized>(
             ExceptionFieldSlot, RaisedSnapshot, exception_replace_field_bits,
         };
         let previous = crate::builtins::exceptions::take_raised(py);
-        raise_exception::<u64>(py, "OSError", "raw readinto() failed");
+        raise_exception::<u64>(py, BuiltinExc::OSError, "raw readinto() failed");
         if let RaisedSnapshot::Thread(prior) | RaisedSnapshot::Task(_, prior) = previous
             && let Some(current) = crate::builtins::exceptions::exception_last_bits_noinc(py)
         {
@@ -136,7 +146,7 @@ unsafe fn raw_read<T: ?Sized>(
     if count < 0 || count as usize > length {
         return Err(raise_exception(
             py,
-            "OSError",
+            BuiltinExc::OSError,
             &format!(
                 "raw readinto() returned invalid length {count} (should have been between 0 and {length})"
             ),
@@ -267,7 +277,7 @@ unsafe fn read_all(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> u64 {
         let Some(result_pointer) = obj_from_bits(result.bits()).as_ptr() else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 if readall.is_some() {
                     "readall() should return bytes"
                 } else {
@@ -278,7 +288,7 @@ unsafe fn read_all(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> u64 {
         if unsafe { object_type_id(result_pointer) } != TYPE_ID_BYTES {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 if readall.is_some() {
                     "readall() should return bytes"
                 } else {
@@ -324,7 +334,11 @@ pub(super) unsafe fn read(
         return error;
     }
     if length < -1 && !once {
-        return raise_exception(py, "ValueError", "read length must be non-negative or -1");
+        return raise_exception(
+            py,
+            BuiltinExc::ValueError,
+            "read length must be non-negative or -1",
+        );
     }
     let _checked_raw = match unsafe { checked_raw(py, pointer, "read of closed file") } {
         Ok(raw) => raw,
@@ -665,7 +679,7 @@ pub(super) unsafe fn readlines(py: &PyToken<'_>, bits: u64, hint: u64) -> u64 {
                 break;
             }
             Ok(SpecialIterationStep::Missing) => {
-                return raise_exception(py, "TypeError", "object is not an iterator");
+                return raise_exception(py, BuiltinExc::TypeError, "object is not an iterator");
             }
             Err(()) => return MoltObject::none().bits(),
         };
@@ -699,14 +713,14 @@ unsafe fn raw_tell(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> Result<i64, 
             let state = file_handle_physical_state(py, handle)?.clone();
             let mut backend = state.backend.lock().unwrap();
             let backend = backend.as_mut().ok_or_else(|| {
-                raise_exception::<u64>(py, "ValueError", "I/O operation on closed file")
+                raise_exception::<u64>(py, BuiltinExc::ValueError, "I/O operation on closed file")
             })?;
             backend_tell(py, &state, backend)?
         };
         let position = i64::try_from(position).map_err(|_| {
             raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot fit 'int' into an offset-sized integer",
             )
         })?;
@@ -723,7 +737,7 @@ unsafe fn raw_tell(py: &PyToken<'_>, pointer: *mut u8, raw: u64) -> Result<i64, 
     if position < 0 {
         return Err(raise_exception(
             py,
-            "OSError",
+            BuiltinExc::OSError,
             &format!("Raw stream returned invalid position {position}"),
         ));
     }
@@ -774,7 +788,7 @@ pub(super) unsafe fn seek(
     if !supported {
         return raise_exception(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("whence value {whence} unsupported"),
         );
     }
@@ -794,7 +808,7 @@ pub(super) unsafe fn seek(
     if seekable.bits() != MoltObject::from_bool(true).bits() {
         return raise_exception(
             py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "File or stream is not seekable.",
         );
     }
@@ -840,7 +854,7 @@ pub(super) unsafe fn seek(
             None => {
                 return raise_exception(
                     py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "buffered position exceeds file offset range",
                 );
             }
@@ -887,7 +901,7 @@ pub(super) unsafe fn seek(
     if position < 0 {
         return raise_exception(
             py,
-            "OSError",
+            BuiltinExc::OSError,
             &format!("Raw stream returned invalid position {position}"),
         );
     }

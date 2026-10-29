@@ -33,10 +33,13 @@ impl ExceptionSentinel for () {
 }
 
 #[inline]
-pub(super) fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, kind: &str, message: &str) -> T {
-    let bits = unsafe {
-        __molt_gpu_raise_exception(kind.as_ptr(), kind.len(), message.as_ptr(), message.len())
-    };
+pub(super) fn raise_exception<T: ExceptionSentinel>(
+    _py: &PyToken,
+    kind: impl Into<ExcKind>,
+    message: &str,
+) -> T {
+    let bits =
+        unsafe { __molt_gpu_raise_exception(kind.into().code(), message.as_ptr(), message.len()) };
     T::from_bits(bits)
 }
 
@@ -181,8 +184,7 @@ unsafe extern "C" {
     ))]
     fn __molt_gpu_clear_attribute_error_if_pending() -> i32;
     fn __molt_gpu_raise_exception(
-        kind_ptr: *const u8,
-        kind_len: usize,
+        kind_code: u16,
         message_ptr: *const u8,
         message_len: usize,
     ) -> u64;
@@ -391,7 +393,7 @@ pub(super) unsafe fn bound_kernel_arguments(
     let Some(tuple) = obj_from_bits(bound.bits()).as_ptr() else {
         return Err(raise_exception::<u64>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "kernel binding did not return a tuple",
         ));
     };

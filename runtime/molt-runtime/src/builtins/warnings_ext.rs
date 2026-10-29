@@ -9,6 +9,7 @@
 //! `catch_warnings` (which rebinds `warnings.filters`) and the native engine
 //! always read one list.
 
+use crate::BuiltinExc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use crate::builtins::exceptions::ExceptionValue;
@@ -167,8 +168,8 @@ fn owned_tuple<'a, 'py>(py: &'a PyToken<'py>, items: &[u64]) -> Option<Exception
 
 /// A builtin exception class, borrowed from the runtime's class cache.
 /// `None`: an exception is pending.
-fn exception_class(py: &PyToken<'_>, name: &str) -> Option<u64> {
-    let bits = crate::builtins::exceptions::exception_type_bits_from_name(py, name);
+fn exception_class(py: &PyToken<'_>, kind: crate::BuiltinExc) -> Option<u64> {
+    let bits = crate::builtins::exceptions::exception_class_bits(py, kind);
     (bits != 0 && !exception_pending(py)).then_some(bits)
 }
 
@@ -221,18 +222,26 @@ fn warnings_module_attr<'a, 'py>(
 }
 
 /// One CPython default filter: action, category name and optional module.
-type DefaultFilter = (&'static [u8], &'static str, Option<&'static [u8]>);
+type DefaultFilter = (&'static [u8], crate::BuiltinExc, Option<&'static [u8]>);
 
 /// CPython `init_filters` for a release build: show `DeprecationWarning`
 /// in `__main__`, and ignore it elsewhere along with
 /// `PendingDeprecationWarning`, `ImportWarning` and `ResourceWarning`.
 fn default_filters<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>> {
     const DEFAULTS: [DefaultFilter; 5] = [
-        (b"default", "DeprecationWarning", Some(b"__main__")),
-        (b"ignore", "DeprecationWarning", None),
-        (b"ignore", "PendingDeprecationWarning", None),
-        (b"ignore", "ImportWarning", None),
-        (b"ignore", "ResourceWarning", None),
+        (
+            b"default",
+            crate::BuiltinExc::DeprecationWarning,
+            Some(b"__main__"),
+        ),
+        (b"ignore", crate::BuiltinExc::DeprecationWarning, None),
+        (
+            b"ignore",
+            crate::BuiltinExc::PendingDeprecationWarning,
+            None,
+        ),
+        (b"ignore", crate::BuiltinExc::ImportWarning, None),
+        (b"ignore", crate::BuiltinExc::ResourceWarning, None),
     ];
     let none = MoltObject::none().bits();
     let zero = MoltObject::from_int(0).bits();
@@ -264,7 +273,11 @@ fn get_filters<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a, 'py>>
     }
     let filters = state_object(py, &state.filters, default_filters)?;
     if ListStorage::from_bits(py, filters.bits()).is_none() {
-        return raise_exception(py, "ValueError", "_warnings.filters must be a list");
+        return raise_exception(
+            py,
+            BuiltinExc::ValueError,
+            "_warnings.filters must be a list",
+        );
     }
     Some(filters)
 }
@@ -278,7 +291,7 @@ fn get_once_registry<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a,
                 "_warnings.onceregistry must be a dict, not '{}'",
                 type_name(py, obj_from_bits(registry.bits()))
             );
-            return raise_exception(py, "TypeError", &message);
+            return raise_exception(py, BuiltinExc::TypeError, &message);
         }
         hold_state_object(py, &state.once_registry, registry.bits());
         return Some(registry);
@@ -298,7 +311,7 @@ fn get_default_action<'a, 'py>(py: &'a PyToken<'py>) -> Option<ExceptionValue<'a
                 "_warnings.defaultaction must be a string, not '{}'",
                 type_name(py, obj_from_bits(action.bits()))
             );
-            return raise_exception(py, "TypeError", &message);
+            return raise_exception(py, BuiltinExc::TypeError, &message);
         }
         hold_state_object(py, &state.default_action, action.bits());
         return Some(action);
@@ -321,7 +334,7 @@ fn check_matched(py: &PyToken<'_>, pattern: u64, arg: u64) -> Option<bool> {
                 "Can't compare str and {}",
                 type_name(py, obj_from_bits(arg))
             );
-            return raise_exception(py, "TypeError", &message);
+            return raise_exception(py, BuiltinExc::TypeError, &message);
         };
         return Some(string_from_bits(py, pattern).as_deref() == Some(arg_text.as_str()));
     }
@@ -339,7 +352,7 @@ fn filter_fields(py: &PyToken<'_>, item: u64, index: usize) -> Option<[u64; 5]> 
     });
     if fields.is_none() {
         let message = format!("_warnings.filters item {index} isn't a 5-tuple");
-        return raise_exception(py, "ValueError", &message);
+        return raise_exception(py, BuiltinExc::ValueError, &message);
     }
     fields
 }
@@ -367,7 +380,7 @@ fn get_filter<'a, 'py>(
                 "action must be a string, not '{}'",
                 type_name(py, obj_from_bits(action))
             );
-            return raise_exception(py, "TypeError", &message);
+            return raise_exception(py, BuiltinExc::TypeError, &message);
         }
         let good_message = check_matched(py, message, text)?;
         let good_module = check_matched(py, filter_module, module)?;
@@ -378,7 +391,7 @@ fn get_filter<'a, 'py>(
                 "'{}' object cannot be interpreted as an integer",
                 type_name(py, obj_from_bits(line))
             );
-            return raise_exception(py, "TypeError", &message);
+            return raise_exception(py, BuiltinExc::TypeError, &message);
         };
         if good_message && is_subclass && good_module && (line == 0 || line == lineno) {
             let item = ExceptionValue::pin(py, item.bits());
@@ -845,7 +858,7 @@ fn call_show_warning(
     if !crate::builtins::callable::is_callable_impl(py, show.bits()) {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "warnings._showwarnmsg() must be set to a callable",
         );
     }
@@ -853,7 +866,11 @@ fn call_show_warning(
         return false;
     };
     let Some(message_class) = message_class else {
-        return raise_exception(py, "RuntimeError", "unable to get warnings.WarningMessage");
+        return raise_exception(
+            py,
+            BuiltinExc::RuntimeError,
+            "unable to get warnings.WarningMessage",
+        );
     };
     let none = MoltObject::none().bits();
     let args = [message, category, filename, lineno, none, none];
@@ -889,12 +906,16 @@ fn warn_explicit(
         match dict_storage(py, registry) {
             Ok(Some(registry)) => Some(registry),
             Ok(None) => {
-                return raise_exception(py, "TypeError", "'registry' must be a dict or None");
+                return raise_exception(
+                    py,
+                    BuiltinExc::TypeError,
+                    "'registry' must be a dict or None",
+                );
             }
             Err(()) => return false,
         }
     };
-    let Some(warning_class) = exception_class(py, "Warning") else {
+    let Some(warning_class) = exception_class(py, BuiltinExc::Warning) else {
         return false;
     };
     let Some(is_warning) =
@@ -986,7 +1007,7 @@ fn warn_explicit(
                 }
                 let message =
                     format!("Unrecognized action ({action}) in warnings.filters:\n {item}");
-                return raise_exception(py, "RuntimeError", &message);
+                return raise_exception(py, BuiltinExc::RuntimeError, &message);
             }
         };
         match recorded {
@@ -1015,11 +1036,11 @@ fn get_category<'a, 'py>(
     message: u64,
     category: u64,
 ) -> Option<ExceptionValue<'a, 'py>> {
-    let warning_class = exception_class(py, "Warning")?;
+    let warning_class = exception_class(py, BuiltinExc::Warning)?;
     let category = if crate::builtins::type_ops::isinstance_runtime(py, message, warning_class)? {
         crate::builtins::type_ops::type_of_bits(py, message)
     } else if obj_from_bits(category).is_none() {
-        exception_class(py, "UserWarning")?
+        exception_class(py, BuiltinExc::UserWarning)?
     } else {
         category
     };
@@ -1034,15 +1055,19 @@ fn get_category<'a, 'py>(
         "category must be a Warning subclass, not '{}'",
         type_name(py, obj_from_bits(category))
     );
-    raise_exception(py, "TypeError", &message)
+    raise_exception(py, BuiltinExc::TypeError, &message)
 }
 
 /// Runtime warnings share one filter/emission authority with warning intrinsics.
 pub(crate) fn emit_deprecation_warning(py: &PyToken<'_>, message: &str) -> bool {
-    emit_runtime_warning(py, message, "DeprecationWarning")
+    emit_runtime_warning(py, message, crate::BuiltinExc::DeprecationWarning)
 }
 
-pub(crate) fn emit_runtime_warning(py: &PyToken<'_>, message: &str, category: &str) -> bool {
+pub(crate) fn emit_runtime_warning(
+    py: &PyToken<'_>,
+    message: &str,
+    category: crate::BuiltinExc,
+) -> bool {
     let Some(category) = exception_class(py, category) else {
         return false;
     };
@@ -1126,14 +1151,14 @@ pub extern "C" fn molt_warnings_warn_explicit(
                 "warn_explicit() argument 3 must be str, not {}",
                 type_name(_py, obj_from_bits(filename_bits))
             );
-            return raise_exception::<_>(_py, "TypeError", &message);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
         }
         let Some(lineno) = to_i64(obj_from_bits(lineno_bits)) else {
             let message = format!(
                 "'{}' object cannot be interpreted as an integer",
                 type_name(_py, obj_from_bits(lineno_bits))
             );
-            return raise_exception::<_>(_py, "TypeError", &message);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
         };
         if !obj_from_bits(module_globals_bits).is_none() {
             match dict_storage(_py, module_globals_bits) {
@@ -1143,7 +1168,7 @@ pub extern "C" fn molt_warnings_warn_explicit(
                         "module_globals must be a dict, not '{}'",
                         type_name(_py, obj_from_bits(module_globals_bits))
                     );
-                    return raise_exception::<_>(_py, "TypeError", &message);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
                 }
                 Err(()) => return MoltObject::none().bits(),
             }
@@ -1379,7 +1404,7 @@ mod tests {
         );
     }
 
-    fn class(py: &PyToken<'_>, name: &str) -> u64 {
+    fn class(py: &PyToken<'_>, name: crate::BuiltinExc) -> u64 {
         exception_class(py, name).unwrap()
     }
 
@@ -1388,7 +1413,7 @@ mod tests {
         let action = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, action).unwrap());
         let result = molt_warnings_simplefilter(
             action.bits(),
-            class(py, "Warning"),
+            class(py, crate::BuiltinExc::Warning),
             MoltObject::from_int(0).bits(),
             MoltObject::from_bool(false).bits(),
         );
@@ -1768,18 +1793,30 @@ mod tests {
             // DeprecationWarning shows in `__main__`, nowhere else; other
             // categories fall through to the default action.
             let text = ExceptionValue::adopt(py, alloc_string_result(py, "text"));
-            let action = |category: &str, module: &str| {
+            let action = |category: crate::BuiltinExc, module: &str| {
                 let module = ExceptionValue::adopt(py, alloc_string_result(py, module));
                 let (action, _) =
                     get_filter(py, class(py, category), text.bits(), 3, module.bits()).unwrap();
                 string_from_bits(py, action.bits()).unwrap()
             };
-            assert_eq!(action("DeprecationWarning", "__main__"), "default");
-            assert_eq!(action("DeprecationWarning", "__main__x"), "ignore");
-            assert_eq!(action("DeprecationWarning", "pkg"), "ignore");
-            assert_eq!(action("PendingDeprecationWarning", "__main__"), "ignore");
-            assert_eq!(action("ResourceWarning", "pkg"), "ignore");
-            assert_eq!(action("UserWarning", "pkg"), "default");
+            assert_eq!(
+                action(crate::BuiltinExc::DeprecationWarning, "__main__"),
+                "default"
+            );
+            assert_eq!(
+                action(crate::BuiltinExc::DeprecationWarning, "__main__x"),
+                "ignore"
+            );
+            assert_eq!(
+                action(crate::BuiltinExc::DeprecationWarning, "pkg"),
+                "ignore"
+            );
+            assert_eq!(
+                action(crate::BuiltinExc::PendingDeprecationWarning, "__main__"),
+                "ignore"
+            );
+            assert_eq!(action(crate::BuiltinExc::ResourceWarning, "pkg"), "ignore");
+            assert_eq!(action(crate::BuiltinExc::UserWarning, "pkg"), "default");
             assert!(!exception_pending(py));
         });
     }
@@ -1826,7 +1863,7 @@ mod tests {
             let filters = ExceptionValue::adopt(py, molt_warnings_filters_get());
             molt_warnings_resetwarnings();
             let start = version(py);
-            let user = class(py, "UserWarning");
+            let user = class(py, crate::BuiltinExc::UserWarning);
             let none = MoltObject::none().bits();
             let zero = MoltObject::from_int(0).bits();
             let name = |text: &[u8]| {
@@ -1850,7 +1887,15 @@ mod tests {
             simple(always.bits(), true);
             simple(error.bits(), true);
             simple(error.bits(), true);
-            let row = |action: &str| (action.to_string(), None, "UserWarning".to_string(), None, 0);
+            let row = |action: &str| {
+                (
+                    action.to_string(),
+                    None,
+                    crate::BuiltinExc::UserWarning.to_string(),
+                    None,
+                    0,
+                )
+            };
             assert_eq!(
                 filter_rows(py, filters.bits()),
                 [row("ignore"), row("always"), row("error")]
@@ -1866,7 +1911,7 @@ mod tests {
             molt_warnings_filterwarnings(
                 error.bits(),
                 exact.bits(),
-                class(py, "DeprecationWarning"),
+                class(py, crate::BuiltinExc::DeprecationWarning),
                 pkg.bits(),
                 MoltObject::from_int(5).bits(),
                 MoltObject::from_bool(false).bits(),
@@ -1874,25 +1919,48 @@ mod tests {
             assert!(!exception_pending(py));
             let again = ExceptionValue::adopt(py, molt_warnings_filters_get());
             assert_eq!(again.bits(), filters.bits());
-            let action = |category: &str, text: &str, module: &str, line: i64| {
+            let action = |category: crate::BuiltinExc, text: &str, module: &str, line: i64| {
                 let text = ExceptionValue::adopt(py, alloc_string_result(py, text));
                 let module = ExceptionValue::adopt(py, alloc_string_result(py, module));
                 let (action, _) =
                     get_filter(py, class(py, category), text.bits(), line, module.bits()).unwrap();
                 string_from_bits(py, action.bits()).unwrap()
             };
-            assert_eq!(action("DeprecationWarning", "exact", "pkg", 5), "error");
-            assert_eq!(action("DeprecationWarning", "exactly", "pkg", 5), "default");
             assert_eq!(
-                action("DeprecationWarning", "exact", "pkg.sub", 5),
+                action(crate::BuiltinExc::DeprecationWarning, "exact", "pkg", 5),
+                "error"
+            );
+            assert_eq!(
+                action(crate::BuiltinExc::DeprecationWarning, "exactly", "pkg", 5),
                 "default"
             );
-            assert_eq!(action("DeprecationWarning", "exact", "pkg", 6), "default");
+            assert_eq!(
+                action(crate::BuiltinExc::DeprecationWarning, "exact", "pkg.sub", 5),
+                "default"
+            );
+            assert_eq!(
+                action(crate::BuiltinExc::DeprecationWarning, "exact", "pkg", 6),
+                "default"
+            );
             // A filter category matches its subclasses.
-            assert_eq!(action("UserWarning", "any", "m", 1), "ignore");
-            assert_eq!(action("RuntimeWarning", "any", "m", 1), "default");
-            molt_warnings_simplefilter(always.bits(), class(py, "Warning"), zero, none);
-            assert_eq!(action("RuntimeWarning", "any", "m", 1), "always");
+            assert_eq!(
+                action(crate::BuiltinExc::UserWarning, "any", "m", 1),
+                "ignore"
+            );
+            assert_eq!(
+                action(crate::BuiltinExc::RuntimeWarning, "any", "m", 1),
+                "default"
+            );
+            molt_warnings_simplefilter(
+                always.bits(),
+                class(py, crate::BuiltinExc::Warning),
+                zero,
+                none,
+            );
+            assert_eq!(
+                action(crate::BuiltinExc::RuntimeWarning, "any", "m", 1),
+                "always"
+            );
             molt_warnings_resetwarnings();
             assert!(filter_rows(py, filters.bits()).is_empty());
             let after_reset = ExceptionValue::adopt(py, molt_warnings_filters_get());
@@ -1908,7 +1976,7 @@ mod tests {
         let _reset = ResetWarnings;
         crate::with_gil_entry_nopanic!(py, {
             let _module = install_warnings_module(py);
-            let category = class(py, "UserWarning");
+            let category = class(py, crate::BuiltinExc::UserWarning);
             let message = ExceptionValue::adopt(py, alloc_string_result(py, "dedup"));
             let filename = ExceptionValue::adopt(py, alloc_string_result(py, "/app/m.py"));
             let module = ExceptionValue::adopt(py, alloc_string_result(py, "m"));
@@ -2008,8 +2076,17 @@ mod tests {
                 ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"ignore").unwrap());
             let none = MoltObject::none().bits();
             let zero = MoltObject::from_int(0).bits();
-            let row =
-                owned_tuple(py, &[ignore.bits(), none, class(py, "Warning"), none, zero]).unwrap();
+            let row = owned_tuple(
+                py,
+                &[
+                    ignore.bits(),
+                    none,
+                    class(py, crate::BuiltinExc::Warning),
+                    none,
+                    zero,
+                ],
+            )
+            .unwrap();
             let module_filters = ExceptionValue::adopt(
                 py,
                 MoltObject::from_ptr(crate::object::builders::alloc_list(py, &[row.bits()])).bits(),
@@ -2079,7 +2156,7 @@ mod tests {
             // A display failure is the warning call's failure.
             let failure = crate::builtins::exceptions::alloc_exception(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "warning callback failed",
             );
             assert!(!failure.is_null());

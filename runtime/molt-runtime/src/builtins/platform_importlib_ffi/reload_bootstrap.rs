@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 /// The Python facade owns reload discovery/reentry; this is only _exec.
 #[unsafe(no_mangle)]
@@ -174,7 +175,11 @@ pub extern "C" fn molt_importlib_namespace_paths(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -271,7 +276,7 @@ pub(in super::super) fn importlib_acquire_import_lock(py: &PyToken<'_>) -> Resul
     ) {
         return Err(raise_exception::<_>(
             py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "interpreter import state is retired",
         ));
     }
@@ -292,7 +297,7 @@ pub(in super::super) fn importlib_acquire_import_lock(py: &PyToken<'_>) -> Resul
         lock.release();
         return Err(raise_exception::<_>(
             py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "interpreter import state is retired",
         ));
     }
@@ -309,7 +314,11 @@ pub extern "C" fn molt_imp_acquire_lock() -> u64 {
 pub extern "C" fn molt_imp_release_lock() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         if !platform_state(py).import_lock.release() {
-            return raise_exception::<_>(py, "RuntimeError", "not holding the import lock");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::RuntimeError,
+                "not holding the import lock",
+            );
         }
         MoltObject::none().bits()
     })
@@ -341,7 +350,7 @@ pub(in super::super) fn importlib_complete_initial_defaults(py: &PyToken<'_>) ->
         ) {
             Err(raise_exception::<_>(
                 py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 "initial import finders failed to initialize",
             ))
         } else {
@@ -402,7 +411,7 @@ pub(in super::super) fn importlib_complete_initial_defaults(py: &PyToken<'_>) ->
                 crate::builtins::modules::ModuleImportOutcome::Missing { .. } => {
                     return Err(raise_exception::<u64>(
                         py,
-                        "ImportError",
+                        BuiltinExc::ImportError,
                         "admitted machinery initializer is unavailable",
                     ));
                 }
@@ -436,7 +445,7 @@ pub(in super::super) fn importlib_complete_initial_defaults(py: &PyToken<'_>) ->
         } else {
             Err(raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "admitted machinery body did not complete initial finders",
             ))
         }
@@ -517,7 +526,11 @@ pub(in super::super) fn importlib_finish_initial_defaults(
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_LIST })
             .ok_or_else(|| {
-                raise_exception::<u64>(py, "TypeError", "default path hooks must be a list")
+                raise_exception::<u64>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "default path hooks must be a list",
+                )
             })?;
         let defaults = unsafe {
             crate::object::seq_access::snapshot(
@@ -594,14 +607,14 @@ pub extern "C" fn molt_importlib_ensure_default_meta_path(machinery: u64) -> u64
         let Some(provider) = initial_machinery_capability() else {
             return raise_exception::<_>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "default finder producer has no admitted source body",
             );
         };
         if !crate::builtins::modules::module_body_owns_globals(py, provider, machinery) {
             return raise_exception::<_>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "default finder producer does not own its defining globals",
             );
         }

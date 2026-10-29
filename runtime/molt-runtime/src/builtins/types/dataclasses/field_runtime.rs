@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::builders::PtrDropGuard;
 use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
 use crate::object::seq_access::PinnedSequenceSnapshot;
@@ -83,12 +84,12 @@ fn dc_dict_fields<'a, 'py>(
     bits: u64,
 ) -> Result<PinnedSequenceSnapshot<'a, 'py>, ()> {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
-        raise_exception::<()>(py, "TypeError", "dataclass fields must be a dict");
+        raise_exception::<()>(py, BuiltinExc::TypeError, "dataclass fields must be a dict");
         return Err(());
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
-            raise_exception::<()>(py, "TypeError", "dataclass fields must be a dict");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "dataclass fields must be a dict");
             return Err(());
         }
         crate::object::ops_dict::dict_snapshot(
@@ -133,7 +134,11 @@ fn dc_field_bool_attr(
 fn dc_field_name_str(py: &PyToken<'_>, field: u64) -> Result<String, ()> {
     let name = dc_attr(py, field, b"name")?;
     string_obj_to_owned(obj_from_bits(name.bits)).ok_or_else(|| {
-        raise_exception::<()>(py, "TypeError", "dataclass field name must be a string");
+        raise_exception::<()>(
+            py,
+            BuiltinExc::TypeError,
+            "dataclass field name must be a string",
+        );
     })
 }
 
@@ -229,7 +234,7 @@ pub extern "C" fn molt_dataclasses_eq(self_bits: u64, other_bits: u64, compare_n
         else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass comparison fields must be a tuple",
             );
         };
@@ -339,7 +344,7 @@ pub extern "C" fn molt_dataclasses_check_default_order(fields_dict_bits: u64) ->
             } else if let Some(previous) = &previous {
                 return raise_exception::<_>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("non-default argument {name:?} follows default argument {previous:?}"),
                 );
             }

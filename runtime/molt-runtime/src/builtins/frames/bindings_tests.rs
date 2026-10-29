@@ -2,6 +2,7 @@
 //! retired observation, proxy writes, argument zero, the exit's release
 //! orders and invalid states.
 
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 use super::*;
@@ -208,7 +209,7 @@ fn compiled_home_reads_and_moves_follow_the_home_kind() {
         assert!(obj_from_bits(molt_frame_home_load(0)).is_none());
         dec_ref_bits(py, take_pending(py));
         // With an exception pending (a failed frame entry), it is kept.
-        let _ = raise_exception::<u64>(py, "ValueError", "entry failed");
+        let _ = raise_exception::<u64>(py, BuiltinExc::ValueError, "entry failed");
         let before = crate::builtins::exceptions::molt_exception_last_pending();
         let _ = molt_frame_home_take(0);
         let after = take_pending(py);
@@ -640,7 +641,7 @@ fn a_malformed_home_retires_as_malformed_and_is_reported() {
         unsafe { set_home(homes, 0, 9, value) };
         let second = frame_bindings_observe(py, index).expect("payload");
         inc_ref_bits(py, second);
-        let _ = raise_exception::<u64>(py, "ValueError", "exceptional exit");
+        let _ = raise_exception::<u64>(py, BuiltinExc::ValueError, "exceptional exit");
         let before = crate::builtins::exceptions::molt_exception_last_pending();
         frame_stack_pop(py);
         let after = take_pending(py);
@@ -813,7 +814,7 @@ fn compiled_code_borrows_only_homes_the_frame_has() {
         assert_eq!(molt_frame_homes(3), 0);
         dec_ref_bits(py, take_pending(py));
         // A failed entry leaves its exception pending: 0, the same exception.
-        let _ = raise_exception::<u64>(py, "ValueError", "entry failed");
+        let _ = raise_exception::<u64>(py, BuiltinExc::ValueError, "entry failed");
         let before = crate::builtins::exceptions::molt_exception_last_pending();
         assert_eq!(molt_frame_homes(2), 0);
         let after = take_pending(py);

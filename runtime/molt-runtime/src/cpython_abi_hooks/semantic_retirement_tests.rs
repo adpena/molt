@@ -1,6 +1,7 @@
 //! Ordinary semantic retirement must expose, then complete, native error reentry.
 use super::native_test_fixture::NativeType;
 use super::*;
+use crate::BuiltinExc;
 use crate::{PyToken, exception_pending, obj_from_bits};
 use molt_cpython_abi::api::{errors, refcount};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -67,7 +68,7 @@ unsafe fn native_value<'a>(
 }
 
 fn pending_error<'a>(py: &'a PyToken<'_>) -> ProtectedRuntimeValue<'a> {
-    let ptr = crate::builtins::exceptions::alloc_exception(py, "ValueError", "");
+    let ptr = crate::builtins::exceptions::alloc_exception(py, BuiltinExc::ValueError, "");
     assert!(!ptr.is_null());
     unsafe {
         ProtectedRuntimeValue::from_owned_bits(py.core_token(), MoltObject::from_ptr(ptr).bits())
@@ -289,10 +290,10 @@ fn invalid_format_and_mapping_results_expose_their_type_error_to_native_retireme
                     assert_eq!(result, MoltObject::none().bits());
                 }
                 let bits = crate::exception_last_bits_noinc(py).expect("runtime TypeError");
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     bits,
-                    "TypeError"
+                    crate::BuiltinExc::TypeError
                 ));
                 assert_completed(py, Some(bits));
             }
@@ -753,7 +754,7 @@ fn protocol_warning_policy(py: &PyToken<'_>, action: &[u8]) {
         py,
         crate::molt_warnings_simplefilter(
             action.bits(),
-            crate::builtins::exceptions::exception_type_bits_from_name(py, "DeprecationWarning"),
+            crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::DeprecationWarning),
             MoltObject::from_int(0).bits(),
             MoltObject::from_bool(false).bits(),
         ),
@@ -822,7 +823,7 @@ fn managed_truth_length_and_hint_retire_sole_native_owners_at_cpython_boundaries
             assert_eq!(index_result.ready(), 0);
             let failure_bits = crate::builtins::exceptions::alloc_exception(
                 py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 "protocol callback",
             );
             assert!(!failure_bits.is_null());

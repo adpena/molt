@@ -119,10 +119,10 @@ fn inherited_sequence_descriptors_cover_every_operation_and_declaring_owner() {
                 dec_ref_bits(py, invalid);
                 assert!(exception_pending(py));
                 let error = molt_exception_last();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "TypeError"
+                    crate::BuiltinExc::TypeError
                 ));
                 crate::clear_exception(py);
                 dec_ref_bits(py, error);

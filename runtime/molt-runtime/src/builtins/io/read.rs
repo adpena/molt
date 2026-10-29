@@ -1,19 +1,20 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             if buffered::is_reader(_py, ptr) {
                 return buffered_reader::read(_py, handle_bits, ptr, size_bits, false);
@@ -23,10 +24,14 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if !handle.readable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not readable");
             }
             let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
                 Ok(state) => state,
@@ -34,7 +39,11 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
             });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             };
             let size_obj = obj_from_bits(size_bits);
             let size = if size_obj.is_none() {
@@ -46,7 +55,7 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                     None => {
                         let type_name = class_name_for_error(type_of_bits(_py, size_bits));
                         let msg = format!("argument should be integer or None, not '{type_name}'");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 }
             };
@@ -83,7 +92,7 @@ pub extern "C" fn molt_file_read(handle_bits: u64, size_bits: u64) -> u64 {
                     .clone()
                     .unwrap_or_else(|| "strict".to_string());
                 if let Err(msg) = validate_decode_error_handler(errors.as_str()) {
-                    return raise_exception::<_>(_py, "LookupError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                 }
                 let mut encoding_label = handle.encoding.as_deref().unwrap_or("utf-8").to_string();
                 let mut encoding_kind = text_encoding_kind(encoding_label.as_str());
@@ -250,15 +259,15 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             if buffered::is_reader(_py, ptr) {
                 return buffered_reader::read(_py, handle_bits, ptr, size_bits, true);
@@ -268,10 +277,14 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if !handle.readable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not readable");
             }
             let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
                 Ok(state) => state,
@@ -279,7 +292,11 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
             });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             };
             let size_obj = obj_from_bits(size_bits);
             let size = if size_obj.is_none() {
@@ -291,7 +308,7 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
                     None => {
                         let type_name = class_name_for_error(type_of_bits(_py, size_bits));
                         let msg = format!("argument should be integer or None, not '{type_name}'");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 }
             };
@@ -328,7 +345,7 @@ pub extern "C" fn molt_file_read1(handle_bits: u64, size_bits: u64) -> u64 {
                     .clone()
                     .unwrap_or_else(|| "strict".to_string());
                 if let Err(msg) = validate_decode_error_handler(errors.as_str()) {
-                    return raise_exception::<_>(_py, "LookupError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                 }
                 let mut encoding_label = handle.encoding.as_deref().unwrap_or("utf-8").to_string();
                 let mut encoding_kind = text_encoding_kind(encoding_label.as_str());
@@ -487,15 +504,15 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             if buffered::is_reader(_py, ptr) {
                 return buffered_reader::read(
@@ -511,10 +528,14 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if !handle.readable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not readable");
             }
             let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
                 Ok(state) => state,
@@ -522,7 +543,11 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
             });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             };
             if handle.text
                 && let MoltFileBackend::Text(_) = backend
@@ -543,7 +568,7 @@ pub extern "C" fn molt_file_readall(handle_bits: u64) -> u64 {
                     .clone()
                     .unwrap_or_else(|| "strict".to_string());
                 if let Err(msg) = validate_decode_error_handler(errors.as_str()) {
-                    return raise_exception::<_>(_py, "LookupError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                 }
                 let mut encoding_label = handle.encoding.as_deref().unwrap_or("utf-8").to_string();
                 let mut encoding_kind = text_encoding_kind(encoding_label.as_str());
@@ -631,15 +656,15 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             if buffered::is_reader(_py, ptr) {
                 return buffered_reader::readline(_py, handle_bits, ptr, size_bits);
@@ -649,10 +674,14 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if !handle.readable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not readable");
             }
             let size_obj = obj_from_bits(size_bits);
             let size = if size_obj.is_none() {
@@ -665,7 +694,7 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
                         let type_name = class_name_for_error(type_of_bits(_py, size_bits));
                         let msg =
                             format!("'{type_name}' object cannot be interpreted as an integer");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 }
             };
@@ -675,7 +704,11 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
             });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             };
             if handle.text
                 && let MoltFileBackend::Text(_) = backend
@@ -765,7 +798,7 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
                     .unwrap_or_else(|| "strict".to_string());
                 let errors = errors_owned.as_str();
                 if let Err(msg) = validate_decode_error_handler(errors) {
-                    return raise_exception::<_>(_py, "LookupError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                 }
                 let line = match read_line_multibyte(
                     _py,
@@ -798,13 +831,13 @@ pub extern "C" fn molt_file_readline(handle_bits: u64, size_bits: u64) -> u64 {
             ) {
                 Ok(bytes) => bytes,
                 Err(_) => {
-                    return raise_exception::<_>(_py, "OSError", "read failed");
+                    return raise_exception::<_>(_py, BuiltinExc::OSError, "read failed");
                 }
             };
             if text {
                 let errors = handle.errors.as_deref().unwrap_or("strict");
                 if let Err(msg) = validate_decode_error_handler(errors) {
-                    return raise_exception::<_>(_py, "LookupError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                 }
                 let text_bytes =
                     match crate::object::ops::decode_bytes_text(&encoding_label, errors, &bytes) {
@@ -835,15 +868,15 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             if buffered::is_reader(_py, ptr) {
                 return buffered_reader::readlines(_py, handle_bits, hint_bits);
@@ -853,10 +886,14 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if !handle.readable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not readable");
             }
             let hint_obj = obj_from_bits(hint_bits);
             let hint = if hint_obj.is_none() {
@@ -868,7 +905,7 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                     None => {
                         let type_name = class_name_for_error(type_of_bits(_py, hint_bits));
                         let msg = format!("argument should be integer or None, not '{type_name}'");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 }
             };
@@ -878,7 +915,11 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
             });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             };
             if handle.text
                 && let MoltFileBackend::Text(_) = backend
@@ -953,7 +994,7 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                             .unwrap_or_else(|| "strict".to_string());
                         let errors = errors_owned.as_str();
                         if let Err(msg) = validate_decode_error_handler(errors) {
-                            return raise_exception::<_>(_py, "LookupError", &msg);
+                            return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                         }
                         let line = match read_line_multibyte(
                             _py,
@@ -1016,7 +1057,11 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                         ) {
                             Ok(bytes) => bytes,
                             Err(_) => {
-                                return raise_exception::<_>(_py, "OSError", "read failed");
+                                return raise_exception::<_>(
+                                    _py,
+                                    BuiltinExc::OSError,
+                                    "read failed",
+                                );
                             }
                         };
                         if bytes.is_empty() && pending_out.is_empty() {
@@ -1024,7 +1069,7 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                         }
                         let errors = handle.errors.as_deref().unwrap_or("strict");
                         if let Err(msg) = validate_decode_error_handler(errors) {
-                            return raise_exception::<_>(_py, "LookupError", &msg);
+                            return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                         }
                         let encoding_label = handle.encoding.as_deref().unwrap_or("utf-8");
                         let text_bytes = match crate::object::ops::decode_bytes_text(
@@ -1059,7 +1104,7 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
                     ) {
                         Ok(bytes) => bytes,
                         Err(_) => {
-                            return raise_exception::<_>(_py, "OSError", "read failed");
+                            return raise_exception::<_>(_py, BuiltinExc::OSError, "read failed");
                         }
                     };
                     if bytes.is_empty() {
@@ -1096,21 +1141,21 @@ pub extern "C" fn molt_file_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
 fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, name: &str) -> u64 {
     let handle_obj = obj_from_bits(handle_bits);
     let Some(ptr) = handle_obj.as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected file handle");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         }
         let handle_ptr = file_handle_ptr(ptr);
         if handle_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
         }
         inc_ref_bits(_py, handle_bits);
         let _owner = PtrDropGuard::new(ptr);
         if (*handle_ptr).text {
             let msg = format!("{name}() unsupported for text files");
-            return raise_exception::<_>(_py, "OSError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::OSError, &msg);
         }
         let buffer =
             match crate::object::buffer_exports::ScopedWritableBuffer::new(_py, buffer_bits) {
@@ -1140,7 +1185,7 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
                     let msg = format!(
                         "{name}() {argument} must be read-write bytes-like object, not {type_name}"
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             };
         // Clinic acquires the writable argument before the binary operation's
@@ -1154,10 +1199,14 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
             return bits;
         }
         if file_handle_is_closed(handle) {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "I/O operation on closed file",
+            );
         }
         if !handle.readable {
-            return raise_exception::<_>(_py, "UnsupportedOperation", "read");
+            return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "read");
         }
         if buffer.len() == 0 {
             return MoltObject::from_int(0).bits();
@@ -1168,7 +1217,11 @@ fn file_readinto_impl(_py: &PyToken<'_>, handle_bits: u64, buffer_bits: u64, nam
         });
         let mut guard = backend_state.backend.lock().unwrap();
         let Some(backend) = guard.as_mut() else {
-            return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "I/O operation on closed file",
+            );
         };
         let n = match buffered_read_into(_py, handle, backend, &buffer) {
             Ok(n) => n,
@@ -1198,15 +1251,15 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             if buffered::is_reader(_py, ptr) {
                 return buffered_reader::peek(_py, handle_bits, ptr, size_bits);
@@ -1216,16 +1269,20 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if !handle.readable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not readable");
             }
             if handle.text {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "peek");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "peek");
             }
             if handle.buffer_size <= 0 {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "peek");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "peek");
             }
             let size_obj = obj_from_bits(size_bits);
             let size = if size_obj.is_none() {
@@ -1238,7 +1295,7 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
                         let type_name = class_name_for_error(type_of_bits(_py, size_bits));
                         let msg =
                             format!("'{type_name}' object cannot be interpreted as an integer");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 }
             };
@@ -1248,7 +1305,11 @@ pub extern "C" fn molt_file_peek(handle_bits: u64, size_bits: u64) -> u64 {
             });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             };
             if !handle.write_buf.is_empty()
                 && let Err(bits) = flush_write_buffer(_py, handle, backend)
@@ -1294,22 +1355,26 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             let builtins = builtin_classes(_py);
             let class_bits = object_class_bits(ptr);
@@ -1318,7 +1383,7 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
             if !text
                 && !crate::object::class_layout::is_real_subtype(_py, class_bits, builtins.bytes_io)
             {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "getvalue");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "getvalue");
             }
             let backend_state = Arc::clone(match file_handle_physical_state(_py, handle) {
                 Ok(state) => state,
@@ -1326,7 +1391,11 @@ pub extern "C" fn molt_file_getvalue(handle_bits: u64) -> u64 {
             });
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             };
             if !handle.write_buf.is_empty()
                 && let Err(bits) = flush_write_buffer(_py, handle, backend)
@@ -1365,22 +1434,26 @@ pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle_obj = obj_from_bits(handle_bits);
         let Some(ptr) = handle_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected file handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
-                return raise_exception::<_>(_py, "TypeError", "expected file handle");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected file handle");
             }
             let handle_ptr = file_handle_ptr(ptr);
             if handle_ptr.is_null() {
-                return raise_exception::<_>(_py, "RuntimeError", "file handle missing");
+                return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "file handle missing");
             }
             let handle = &mut *handle_ptr;
             if let Err(bits) = file_handle_require_attached(_py, handle) {
                 return bits;
             }
             if file_handle_is_closed(handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             let builtins = builtin_classes(_py);
             if !crate::object::class_layout::is_real_subtype(
@@ -1388,11 +1461,15 @@ pub extern "C" fn molt_file_getbuffer(handle_bits: u64) -> u64 {
                 object_class_bits(ptr),
                 builtins.bytes_io,
             ) {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "getbuffer");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "getbuffer");
             }
             let mem_bits = handle.mem_bits;
             if mem_bits == 0 {
-                return raise_exception::<_>(_py, "RuntimeError", "memory backend missing");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "memory backend missing",
+                );
             }
             molt_memoryview_new(mem_bits)
         }

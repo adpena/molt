@@ -337,10 +337,10 @@ mod predicate_contract_tests {
                     assert!(obj_from_bits(entry(receiver)).is_none(), "{name}");
                     assert!(exception_pending(py), "{name}");
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "TypeError"
+                        crate::BuiltinExc::TypeError
                     ));
                     let message = crate::builtins::exceptions::format_exception_message(
                         py,

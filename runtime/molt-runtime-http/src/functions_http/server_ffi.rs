@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_register(server_bits: u64) -> u64 {
@@ -40,7 +41,7 @@ pub extern "C" fn molt_socketserver_dispatch_begin(server_bits: u64, request_bit
             .lock()
             .expect("socketserver runtime poisoned");
         if runtime.closed_servers.contains(&server_bits) {
-            return raise_exception::<_>(_py, "OSError", "server closed");
+            return raise_exception::<_>(_py, BuiltinExc::OSError, "server closed");
         }
         let request_id = runtime.next_request_id;
         runtime.next_request_id = runtime.next_request_id.saturating_add(1);
@@ -75,7 +76,11 @@ pub extern "C" fn molt_socketserver_dispatch_poll(server_bits: u64, request_id_b
             return MoltObject::none().bits();
         };
         if owner != server_bits {
-            return raise_exception::<_>(_py, "RuntimeError", "request id owner mismatch");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "request id owner mismatch",
+            );
         }
         let Some(pending) = runtime.pending_requests.get_mut(&request_id) else {
             runtime.request_server.remove(&request_id);
@@ -120,7 +125,7 @@ pub extern "C" fn molt_socketserver_get_request_poll(server_bits: u64) -> u64 {
             .lock()
             .expect("socketserver runtime poisoned");
         if runtime.closed_servers.contains(&server_bits) {
-            return raise_exception::<_>(_py, "OSError", "server closed");
+            return raise_exception::<_>(_py, BuiltinExc::OSError, "server closed");
         }
         let Some(queue) = runtime.pending_by_server.get_mut(&server_bits) else {
             return MoltObject::none().bits();
@@ -177,7 +182,7 @@ pub extern "C" fn molt_socketserver_serve_forever(
             if handle_request_bits == missing {
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "socketserver server is missing handle_request",
                 );
             }
@@ -190,7 +195,7 @@ pub extern "C" fn molt_socketserver_serve_forever(
                 }
                 continue;
             }
-            if pending_exception_matches_builtin(_py, "TimeoutError") {
+            if pending_exception_matches_builtin(_py, BuiltinExc::TimeoutError) {
                 clear_exception(_py);
                 if poll_interval > 0.0 {
                     std::thread::sleep(Duration::from_secs_f64(poll_interval.min(0.05)));
@@ -200,7 +205,7 @@ pub extern "C" fn molt_socketserver_serve_forever(
                 }
                 continue;
             }
-            if pending_exception_matches_builtin(_py, "OSError") {
+            if pending_exception_matches_builtin(_py, BuiltinExc::OSError) {
                 let stopped = match with_saved_exception(_py, || {
                     let shutdown = urllib_attr_truthy(_py, server_bits, b"_molt_shutdown_request")?;
                     let closed = urllib_attr_truthy(_py, server_bits, b"_closed")?;
@@ -214,7 +219,7 @@ pub extern "C" fn molt_socketserver_serve_forever(
                     break;
                 }
             }
-            if pending_exception_matches_builtin(_py, "Exception") {
+            if pending_exception_matches_builtin(_py, BuiltinExc::Exception) {
                 if let Err(bits) = with_handled_exception(_py, || {
                     let none_bits = MoltObject::none().bits();
                     socketserver_call_handle_error(_py, server_bits, none_bits, none_bits)
@@ -302,7 +307,7 @@ fn socketserver_complete_request(
             drop(runtime);
             return Err(raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "request id owner mismatch",
             ));
         }
@@ -323,7 +328,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
             Ok(None) => {
                 return raise_exception::<_>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "socketserver server is missing get_request",
                 );
             }
@@ -333,7 +338,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
             dec_ref_bits(py, get_request);
             return raise_exception::<_>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "socketserver server is missing get_request",
             );
         }
@@ -355,7 +360,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                     dec_ref_bits(py, method);
                     return Err(raise_exception::<u64>(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "socketserver server verify_request must be callable",
                     ));
                 }
@@ -380,7 +385,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                 let Some(method) = attr_optional(py, server_bits, b"process_request")? else {
                     return Err(raise_exception::<u64>(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "socketserver server is missing process_request",
                     ));
                 };
@@ -388,7 +393,7 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                     dec_ref_bits(py, method);
                     return Err(raise_exception::<u64>(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "socketserver server is missing process_request",
                     ));
                 }
@@ -401,7 +406,9 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                     Ok(())
                 }
             })();
-            if process_result.is_err() && pending_exception_matches_builtin(py, "Exception") {
+            if process_result.is_err()
+                && pending_exception_matches_builtin(py, BuiltinExc::Exception)
+            {
                 return with_handled_exception(py, || {
                     let handled = socketserver_call_handle_error(
                         py,
@@ -638,7 +645,7 @@ pub extern "C" fn molt_http_server_send_response(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "code must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "code must be int");
         };
         let message = if obj_from_bits(message_bits).is_none() {
             None
@@ -664,7 +671,7 @@ pub extern "C" fn molt_http_server_send_response_only(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "code must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "code must be int");
         };
         let message = if obj_from_bits(message_bits).is_none() {
             None
@@ -720,7 +727,7 @@ pub extern "C" fn molt_http_server_send_error(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "code must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "code must be int");
         };
         let message = if obj_from_bits(message_bits).is_none() {
             None
@@ -784,7 +791,7 @@ pub extern "C" fn molt_http_server_date_time_string(timestamp_bits: u64) -> u64 
 pub extern "C" fn molt_http_status_reason(code_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(code) = to_i64(obj_from_bits(code_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "status code must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "status code must be int");
         };
         let phrase = http_server_reason_phrase(code);
         let ptr = alloc_string(_py, phrase.as_bytes());

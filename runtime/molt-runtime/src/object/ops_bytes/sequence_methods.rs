@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 #[unsafe(no_mangle)]
@@ -26,7 +27,7 @@ fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -
         else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 if mutable {
                     "join expects a bytearray separator"
                 } else {
@@ -75,7 +76,7 @@ fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -
                 let Some(pin) = crate::object::seq_access::pin_item(py, items_ptr, idx) else {
                     return raise_exception(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "sequence changed size during iteration",
                     );
                 };
@@ -101,7 +102,7 @@ fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -
                             molt_cpython_abi::api::errors::PyErr_Clear();
                             return raise_exception(
                                 py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 &format!(
                                     "sequence item {idx}: expected a bytes-like object, {} found",
                                     type_name(py, obj_from_bits(bits)),
@@ -123,13 +124,17 @@ fn bytes_join(py: &PyToken<'_>, sep_bits: u64, items_bits: u64, mutable: bool) -
                     .and_then(|n| n.checked_add(if idx == 0 { 0 } else { sep_len }))
                     .filter(|&n| n <= isize::MAX as usize)
                 else {
-                    return raise_exception(py, "OverflowError", "join() result is too long");
+                    return raise_exception(
+                        py,
+                        BuiltinExc::OverflowError,
+                        "join() result is too long",
+                    );
                 };
                 total_len = length;
                 if crate::object::seq_access::locked_len(items_ptr) != item_count {
                     return raise_exception(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "sequence changed size during iteration",
                     );
                 }
@@ -376,7 +381,7 @@ fn byte_search(
             if !(0..=255).contains(&value) {
                 return Err(raise_exception(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "byte must be in range(0, 256)",
                 ));
             }
@@ -384,7 +389,7 @@ fn byte_search(
             needle = &numeric;
         } else {
             let Some(pointer) = obj_from_bits(source).as_ptr() else {
-                return Err(raise_exception(py, "TypeError", &error()));
+                return Err(raise_exception(py, BuiltinExc::TypeError, &error()));
             };
             guard = bytes_like_arg_or_type_error(py, pointer, error)?;
             needle = guard.as_slice();
@@ -451,10 +456,10 @@ fn byte_search(
             Err(error) => {
                 if tail && exception_pending(py) {
                     let pending = crate::builtins::exceptions::molt_exception_last_pending();
-                    let type_error = crate::builtins::exceptions::exception_matches_builtin_name(
+                    let type_error = crate::builtins::exceptions::exception_matches_kind(
                         py,
                         pending,
-                        "TypeError",
+                        crate::BuiltinExc::TypeError,
                     );
                     dec_ref_bits(py, pending);
                     if type_error {
@@ -466,7 +471,7 @@ fn byte_search(
                         };
                         return raise_exception(
                             py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             &format!(
                                 "{method} first arg must be bytes or a tuple of bytes, not {}",
                                 type_name(py, obj_from_bits(needle_bits))
@@ -998,7 +1003,7 @@ fn bytes_partition_protocol(py: &PyToken<'_>, hay_bits: u64, sep_bits: u64, righ
         )
     };
     let Some(sep_ptr) = sep.as_ptr() else {
-        return raise_exception(py, "TypeError", &invalid());
+        return raise_exception(py, BuiltinExc::TypeError, &invalid());
     };
     let buffer = match bytes_like_arg_or_type_error(py, sep_ptr, invalid) {
         Ok(buffer) => buffer,
@@ -1006,7 +1011,7 @@ fn bytes_partition_protocol(py: &PyToken<'_>, hay_bits: u64, sep_bits: u64, righ
     };
     let separator = buffer.as_slice();
     if separator.is_empty() {
-        return raise_exception(py, "ValueError", "empty separator");
+        return raise_exception(py, BuiltinExc::ValueError, "empty separator");
     }
     // Acquisition has completed before observing either immutable payload.
     let receiver = unsafe { std::slice::from_raw_parts(bytes_data(hay), bytes_len(hay)) };
@@ -1068,7 +1073,7 @@ fn bytearray_partition_protocol(
         }
     };
     if separator.is_empty() {
-        return raise_exception(py, "ValueError", "empty separator");
+        return raise_exception(py, BuiltinExc::ValueError, "empty separator");
     }
     let receiver = unsafe { std::slice::from_raw_parts(bytes_data(hay), bytes_len(hay)) }.to_vec();
     partition_to_tuple(py, &receiver, &separator, right, |_, bytes| {
@@ -1115,7 +1120,7 @@ fn bytes_split_impl(
             "descriptor '{method}' for '{receiver_type}' objects doesn't apply to a '{}' object",
             type_name(_py, hay)
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     // __index__ can resize either bytearray argument. Do not acquire any byte
     // slice until it has completed; then consume the live post-callback storage.
@@ -1145,7 +1150,7 @@ fn bytes_split_impl(
                     "a bytes-like object is required, not '{}'",
                     type_name(_py, needle)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             };
             let needle_bytes_guard = match bytes_like_arg_or_type_error(_py, needle_ptr, || {
                 format!(
@@ -1158,7 +1163,7 @@ fn bytes_split_impl(
             };
             let needle_bytes = needle_bytes_guard.as_slice();
             if needle_bytes.is_empty() {
-                return raise_exception::<_>(_py, "ValueError", "empty separator");
+                return raise_exception::<_>(_py, BuiltinExc::ValueError, "empty separator");
             }
             let hay_bytes = bytes_like_slice(hay_ptr).expect("validated bytes receiver");
             if from_right {
@@ -1254,7 +1259,7 @@ where
                     "a bytes-like object is required, not '{}'",
                     type_name(_py, chars)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             };
             match bytes_like_arg_or_type_error(_py, chars_ptr, || {
                 format!(
@@ -1457,7 +1462,7 @@ pub extern "C" fn molt_bytes_index_slice(
             return MoltObject::none().bits();
         }
         if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
-            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "subsection not found");
         }
         idx_bits
     })
@@ -1485,7 +1490,7 @@ pub extern "C" fn molt_bytes_rindex_slice(
             return MoltObject::none().bits();
         }
         if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
-            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "subsection not found");
         }
         idx_bits
     })
@@ -1513,7 +1518,7 @@ pub extern "C" fn molt_bytearray_index_slice(
             return MoltObject::none().bits();
         }
         if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
-            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "subsection not found");
         }
         idx_bits
     })
@@ -1541,7 +1546,7 @@ pub extern "C" fn molt_bytearray_rindex_slice(
             return MoltObject::none().bits();
         }
         if to_i64(obj_from_bits(idx_bits)).unwrap_or(-1) < 0 {
-            return raise_exception::<_>(_py, "ValueError", "subsection not found");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "subsection not found");
         }
         idx_bits
     })

@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::{MoltObject, PyToken, alloc_list, raise_exception};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1904,10 +1905,10 @@ mod bootstrap_failure_tests {
         }
         let bits = crate::builtins::exceptions::molt_exception_last_pending();
         let matches = !obj_from_bits(bits).is_none()
-            && crate::builtins::exceptions::exception_matches_builtin_name(
+            && crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 bits,
-                "RuntimeError",
+                crate::BuiltinExc::RuntimeError,
             );
         let message = obj_from_bits(bits)
             .as_ptr()
@@ -1960,7 +1961,7 @@ mod bootstrap_failure_tests {
                         if fail {
                             raise_exception::<u64>(
                                 _py,
-                                "RuntimeError",
+                                BuiltinExc::RuntimeError,
                                 "bootstrap regression failure",
                             )
                         } else {
@@ -2527,7 +2528,7 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
         let shared_runtime = !isolated_override;
         let payload = match payload_from_bits(_py, payload_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let handle = Arc::new(MoltThreadHandle::new());
         let thread_handle = handle.clone();
@@ -2535,7 +2536,7 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
             let Some(origin) = RuntimeThreadBorrow::try_acquire(_py) else {
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "runtime is closing thread admission",
                 );
             };
@@ -2543,14 +2544,14 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
                 Ok(handle) => handle,
                 Err(err) => {
                     let msg = format!("thread spawn failed: {err}");
-                    return raise_exception::<_>(_py, "RuntimeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg);
                 }
             }
         } else {
             let Some(lifetime) = RuntimeLifetimeLease::try_acquire() else {
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "runtime is closing thread admission",
                 );
             };
@@ -2558,7 +2559,7 @@ pub unsafe extern "C" fn molt_thread_spawn(payload_bits: u64) -> u64 {
                 Ok(handle) => handle,
                 Err(err) => {
                     let msg = format!("thread spawn failed: {err}");
-                    return raise_exception::<_>(_py, "RuntimeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg);
                 }
             }
         };
@@ -2591,14 +2592,14 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
         if isolated_override {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "shared thread runtime unavailable in isolated mode",
             );
         }
         let Some(origin) = RuntimeThreadBorrow::try_acquire(_py) else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "runtime is closing thread admission",
             );
         };
@@ -2611,7 +2612,7 @@ pub unsafe extern "C" fn molt_thread_spawn_shared(
                 Err(err) => {
                     handle.release_call(_py);
                     let msg = format!("thread spawn failed: {err}");
-                    return raise_exception::<_>(_py, "RuntimeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg);
                 }
             };
         handle.set_join_handle(join);
@@ -2737,15 +2738,23 @@ pub unsafe extern "C" fn molt_thread_stack_size_get() -> u64 {
 pub unsafe extern "C" fn molt_thread_stack_size_set(size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(size_i64) = to_i64(obj_from_bits(size_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "size must be 0 or a positive integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "size must be 0 or a positive integer",
+            );
         };
         if size_i64 < 0 {
-            return raise_exception::<_>(_py, "ValueError", "size must be 0 or a positive integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "size must be 0 or a positive integer",
+            );
         }
         let size = size_i64 as usize;
         if size != 0 && size < THREAD_STACK_SIZE_MIN {
             let msg = format!("size not valid: {size} bytes");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         let prev = THREAD_STACK_SIZE_BYTES.swap(size, AtomicOrdering::AcqRel);
         MoltObject::from_int(prev as i64).bits()
@@ -2759,7 +2768,7 @@ pub unsafe extern "C" fn molt_thread_stack_size_set(size_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if thread_handle_from_bits(handle_bits).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "invalid thread handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid thread handle");
         }
         MoltObject::none().bits()
     })
@@ -2772,7 +2781,7 @@ pub unsafe extern "C" fn molt_thread_drop(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_thread_registry_set_main(name_bits: u64, daemon_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "thread name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "thread name must be str");
         };
         let daemon = is_truthy(_py, obj_from_bits(daemon_bits));
         thread_registry_set_main(_py, name, daemon);
@@ -2792,10 +2801,10 @@ pub unsafe extern "C" fn molt_thread_registry_register(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid thread handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid thread handle");
         };
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "thread name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "thread name must be str");
         };
         let daemon = is_truthy(_py, obj_from_bits(daemon_bits));
         thread_registry_register(_py, &handle, name, daemon);
@@ -2811,7 +2820,7 @@ pub unsafe extern "C" fn molt_thread_registry_register(
 pub unsafe extern "C" fn molt_thread_registry_forget(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(handle) = thread_handle_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid thread handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid thread handle");
         };
         thread_registry_forget(_py, &handle);
         MoltObject::none().bits()
@@ -3046,7 +3055,7 @@ pub extern "C" fn molt_thread_spawn(_payload_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<_>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "threads are unavailable in wasm",
         )
     })
@@ -3062,7 +3071,7 @@ pub extern "C" fn molt_thread_spawn_shared(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<_>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "threads are unavailable in wasm",
         )
     })

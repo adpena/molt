@@ -1,6 +1,7 @@
 //! Formatting, repr, and string conversion — extracted from ops.rs.
 #![allow(clippy::items_after_test_module)]
 
+use crate::BuiltinExc;
 use crate::builtins::attr::lookup_special_method;
 use crate::builtins::numbers::{index_bigint_integral_bits, index_integral_payload_bits};
 use crate::object::ops::as_float_extended;
@@ -328,7 +329,9 @@ pub(crate) fn format_bigint_decimal(
     molt_runtime_core::integer_decimal::decimal_string(value, || {
         crate::builtins::sys_ext::current_int_max_str_digits(py)
     })
-    .map_err(|error| FormatError::Diagnostic("ValueError", Cow::Owned(error.to_string())))
+    .map_err(|error| {
+        FormatError::Diagnostic(crate::BuiltinExc::ValueError, Cow::Owned(error.to_string()))
+    })
 }
 
 pub(crate) fn format_bigint_decimal_magnitude(
@@ -338,7 +341,9 @@ pub(crate) fn format_bigint_decimal_magnitude(
     molt_runtime_core::integer_decimal::decimal_magnitude(value, || {
         crate::builtins::sys_ext::current_int_max_str_digits(py)
     })
-    .map_err(|error| FormatError::Diagnostic("ValueError", Cow::Owned(error.to_string())))
+    .map_err(|error| {
+        FormatError::Diagnostic(crate::BuiltinExc::ValueError, Cow::Owned(error.to_string()))
+    })
 }
 
 fn format_range(
@@ -465,7 +470,11 @@ pub(crate) fn format_diagnostic_type_name_bytes(py: &PyToken<'_>, obj: MoltObjec
         };
         let _owner = obj_from_bits(bits).as_ptr().map(PtrDropGuard::preserving);
         return string_obj_bytes(obj_from_bits(bits)).unwrap_or_else(|| {
-            raise_exception::<()>(py, "SystemError", "diagnostic type name is not a string");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "diagnostic type name is not a string",
+            );
             Vec::new()
         });
     }
@@ -737,7 +746,7 @@ impl ReprGuard {
         if !repr_depth_enter() {
             let _ = raise_exception::<u64>(
                 _py,
-                "RecursionError",
+                BuiltinExc::RecursionError,
                 "maximum recursion depth exceeded while getting the repr of an object",
             );
             return Self {
@@ -913,7 +922,7 @@ pub(crate) extern "C" fn string_str_slot(bits: u64) -> u64 {
         else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "descriptor '__str__' requires a 'str' object",
             );
         };
@@ -1005,7 +1014,11 @@ pub(crate) unsafe fn invoke_format_method(
                     return MoltObject::none().bits();
                 }
             }
-            crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+            crate::builtins::exceptions::raise_exception_bytes::<()>(
+                py,
+                BuiltinExc::TypeError,
+                &message,
+            );
         }
         dec_ref_bits(py, result);
         MoltObject::none().bits()
@@ -1175,7 +1188,7 @@ pub(crate) extern "C" fn dict_repr_slot(bits: u64) -> u64 {
             Ok(None) => {
                 return raise_exception::<_>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "descriptor '__repr__' requires a 'dict' object",
                 );
             }
@@ -1917,13 +1930,21 @@ mod tests {
     extern "C" fn sequence_retirement_finalizer(_object: u64) -> u64 {
         SEQUENCE_FINALIZERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         crate::with_gil_entry_nopanic!(py, {
-            crate::raise_exception::<u64>(py, "ValueError", "retired sequence element")
+            crate::raise_exception::<u64>(
+                py,
+                crate::BuiltinExc::ValueError,
+                "retired sequence element",
+            )
         })
     }
 
     fn retire_sequence_owner<T>(py: &crate::PyToken<'_>, owner: T, pending: bool) {
         let selected = if pending {
-            crate::raise_exception::<u64>(py, "LookupError", "selected callback failure");
+            crate::raise_exception::<u64>(
+                py,
+                crate::BuiltinExc::LookupError,
+                "selected callback failure",
+            );
             crate::exception_last_bits_noinc(py)
         } else {
             None
@@ -2053,7 +2074,11 @@ mod tests {
 
     extern "C" fn dict_view_element_repr_raises(_self_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            crate::raise_exception::<u64>(py, "ValueError", "dict view element repr failed")
+            crate::raise_exception::<u64>(
+                py,
+                crate::BuiltinExc::ValueError,
+                "dict view element repr failed",
+            )
         })
     }
 
@@ -2121,10 +2146,10 @@ mod tests {
                 let result = super::format_obj_output(py, obj_from_bits(view)).into_bits(py);
                 assert!(obj_from_bits(result).is_none());
                 let error = crate::exception_last_bits_noinc(py).expect("repr exception");
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "ValueError"
+                    crate::BuiltinExc::ValueError
                 ));
                 assert_eq!(
                     crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
@@ -2620,8 +2645,8 @@ impl Default for FormatSpec {
 
 #[derive(Debug)]
 pub(crate) enum FormatError {
-    Diagnostic(&'static str, Cow<'static, str>),
-    Bytes(&'static str, Vec<u8>),
+    Diagnostic(crate::BuiltinExc, Cow<'static, str>),
+    Bytes(crate::BuiltinExc, Vec<u8>),
     /// A callback already established the exact runtime exception.
     Pending,
 }
@@ -2652,7 +2677,7 @@ fn unknown_format_code_error(
     let code = code.into();
     let display = format_code_display(code);
     FormatError::Diagnostic(
-        "ValueError",
+        crate::BuiltinExc::ValueError,
         Cow::Owned(format!(
             "Unknown format code '{display}' for object of type '{}'",
             type_name(_py, obj)
@@ -2670,7 +2695,7 @@ fn format_code_display(code: u32) -> String {
 
 fn unsupported_format_string_error(_py: &PyToken<'_>, obj: MoltObject) -> FormatError {
     FormatError::Diagnostic(
-        "TypeError",
+        crate::BuiltinExc::TypeError,
         Cow::Owned(format!(
             "unsupported format string passed to {}.__format__",
             type_name(_py, obj)
@@ -2692,14 +2717,14 @@ impl FormatParseError {
         spec: &[u8],
     ) -> T {
         match self {
-            Self::Diagnostic(message) => raise_exception(py, "ValueError", message),
+            Self::Diagnostic(message) => raise_exception(py, BuiltinExc::ValueError, message),
             Self::InvalidSpecifier => {
                 let mut message = b"Invalid format specifier '".to_vec();
                 message.extend_from_slice(spec);
                 message.extend_from_slice(
                     format!("' for object of type '{}'", type_name(py, obj)).as_bytes(),
                 );
-                FormatError::Bytes("ValueError", message).raise(py)
+                FormatError::Bytes(crate::BuiltinExc::ValueError, message).raise(py)
             }
         }
     }
@@ -2835,7 +2860,7 @@ fn validate_format_grouping(spec: &FormatSpec, default_type: char) -> Result<(),
         };
         if !allowed {
             return Err(FormatError::Diagnostic(
-                "ValueError",
+                crate::BuiltinExc::ValueError,
                 Cow::Owned(format!(
                     "Cannot specify '{separator}' with '{}'.",
                     format_code_display(code)
@@ -2890,7 +2915,7 @@ fn format_fill_bytes(fill: u32) -> Vec<u8> {
 }
 
 fn format_memory_error() -> FormatError {
-    FormatError::Diagnostic("MemoryError", Cow::Borrowed(""))
+    FormatError::Diagnostic(crate::BuiltinExc::MemoryError, Cow::Borrowed(""))
 }
 
 fn format_buffer(capacity: usize) -> Result<Vec<u8>, FormatError> {
@@ -2913,7 +2938,7 @@ pub(crate) fn format_character_codepoint(value: &BigInt) -> Result<Vec<u8>, Form
         .to_u32()
         .filter(|code| *code < 0x110000)
         .ok_or(FormatError::Diagnostic(
-            "OverflowError",
+            crate::BuiltinExc::OverflowError,
             Cow::Borrowed("%c arg not in range(0x110000)"),
         ))?;
     let mut out = format_buffer(4)?;
@@ -3228,23 +3253,26 @@ fn string_format_spec(spec: &FormatSpec) -> Result<FormatSpec, FormatError> {
         } else {
             "Sign not allowed in string format specifier"
         };
-        return Err(FormatError::Diagnostic("ValueError", Cow::Borrowed(msg)));
+        return Err(FormatError::Diagnostic(
+            crate::BuiltinExc::ValueError,
+            Cow::Borrowed(msg),
+        ));
     }
     if spec.coerce_negative_zero {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("Negative zero coercion (z) not allowed in string format specifier"),
         ));
     }
     if spec.alternate {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("Alternate form (#) not allowed in string format specifier"),
         ));
     }
     if spec.align == Some('=') {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("'=' alignment not allowed in string format specifier"),
         ));
     }
@@ -3370,26 +3398,26 @@ fn format_string_with_spec(
 fn validate_integer_format_spec(ty: char, spec: &FormatSpec) -> Result<(), FormatError> {
     if spec.precision.is_some() {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("Precision not allowed in integer format specifier"),
         ));
     }
     if spec.coerce_negative_zero {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("Negative zero coercion (z) not allowed in integer format specifier"),
         ));
     }
     if ty == 'c' {
         if spec.sign.is_some() {
             return Err(FormatError::Diagnostic(
-                "ValueError",
+                crate::BuiltinExc::ValueError,
                 Cow::Borrowed("Sign not allowed with integer format specifier 'c'"),
             ));
         }
         if spec.alternate {
             return Err(FormatError::Diagnostic(
-                "ValueError",
+                crate::BuiltinExc::ValueError,
                 Cow::Borrowed("Alternate form (#) not allowed with integer format specifier 'c'"),
             ));
         }
@@ -3434,7 +3462,7 @@ fn format_int_with_spec(
             .is_none()
         {
             return Err(FormatError::Diagnostic(
-                "OverflowError",
+                crate::BuiltinExc::OverflowError,
                 Cow::Borrowed("Python int too large to convert to C long"),
             ));
         }
@@ -3449,7 +3477,7 @@ fn format_int_with_spec(
         'd' | 'n' => 10,
         _ => {
             return Err(FormatError::Diagnostic(
-                "ValueError",
+                crate::BuiltinExc::ValueError,
                 Cow::Borrowed("unsupported int format type"),
             ));
         }
@@ -3511,7 +3539,7 @@ fn validate_float_precision(spec: &FormatSpec) -> Result<(), FormatError> {
         .is_some_and(|precision| precision > i32::MAX as usize)
     {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("precision too big"),
         ));
     }
@@ -3571,7 +3599,7 @@ pub(crate) fn format_float_value_with_spec(
             '%' => render_float_decimal(abs_val, prec, DecimalNotation::Fixed, true)?,
             _ => {
                 return Err(FormatError::Diagnostic(
-                    "ValueError",
+                    crate::BuiltinExc::ValueError,
                     Cow::Borrowed("unsupported float format type"),
                 ));
             }
@@ -3699,13 +3727,13 @@ fn format_complex_with_spec(
     validate_float_precision(spec)?;
     if spec.fill == u32::from('0') {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("Zero padding is not allowed in complex format specifier"),
         ));
     }
     if spec.align == Some('=') {
         return Err(FormatError::Diagnostic(
-            "ValueError",
+            crate::BuiltinExc::ValueError,
             Cow::Borrowed("'=' alignment flag is not allowed in complex format specifier"),
         ));
     }

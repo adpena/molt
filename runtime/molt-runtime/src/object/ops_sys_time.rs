@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 pub(crate) fn process_time_duration() -> Result<std::time::Duration, String> {
@@ -82,7 +83,7 @@ pub(crate) fn time_parts_to_tuple(
     let decoded_zone = {
         let encoding = match crate::builtins::platform::locale_encoding() {
             Ok(value) => value,
-            Err(message) => return raise_exception::<u64>(_py, "RuntimeError", &message),
+            Err(message) => return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &message),
         };
         match crate::object::ops::decode_bytes_text(&encoding, "surrogateescape", zone) {
             Ok((text, _)) => text,
@@ -141,7 +142,7 @@ pub(crate) fn time_tuple_from_tm(
         if tm.tm_zone.is_null() {
             return raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "native time provider returned no timezone",
             );
         }
@@ -307,7 +308,7 @@ pub(crate) fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i6
             Err(_) => {
                 return Err(raise_exception::<_>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     "system time before epoch",
                 ));
             }
@@ -319,12 +320,12 @@ pub(crate) fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i6
     let Some(val) = to_f64(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, secs_bits));
         let msg = format!("an integer is required (got type {type_name})");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg));
     };
     if !val.is_finite() {
         return Err(raise_exception::<_>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "timestamp out of range for platform time_t",
         ));
     }
@@ -333,7 +334,7 @@ pub(crate) fn parse_time_seconds(_py: &PyToken<'_>, secs_bits: u64) -> Result<i6
     if secs < min as f64 || secs > max as f64 {
         return Err(raise_exception::<_>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "timestamp out of range for platform time_t",
         ));
     }
@@ -478,7 +479,7 @@ impl ParsedTime {
             None
         };
         if let Some(message) = error {
-            return Err(raise_exception(py, "ValueError", message));
+            return Err(raise_exception(py, BuiltinExc::ValueError, message));
         }
         Ok(())
     }
@@ -506,7 +507,7 @@ pub(crate) fn parse_time_argument(
     else {
         return Err(raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "Tuple or struct_time argument required",
         ));
     };
@@ -516,7 +517,7 @@ pub(crate) fn parse_time_argument(
     if fields.len() != 9 {
         return Err(raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{operation}(): illegal time tuple argument"),
         ));
     }
@@ -529,7 +530,11 @@ pub(crate) fn parse_time_argument(
         *value = converted;
     }
     if values[0] < i32::MIN + 1900 {
-        return Err(raise_exception(py, "OverflowError", "year out of range"));
+        return Err(raise_exception(
+            py,
+            BuiltinExc::OverflowError,
+            "year out of range",
+        ));
     }
     // C gettmarg applies remainder before checktm. -1 denotes Sunday; more
     // negative remainders are invalid, while positive weekdays wrap modulo 7.
@@ -620,7 +625,7 @@ pub(crate) fn parse_timegm_tuple(
     let Some(ptr) = obj.as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "Tuple or struct_time argument required",
         ));
     };
@@ -628,7 +633,7 @@ pub(crate) fn parse_timegm_tuple(
         if object_type_id(ptr) != TYPE_ID_TUPLE {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "Tuple or struct_time argument required",
             ));
         }
@@ -640,7 +645,7 @@ pub(crate) fn parse_timegm_tuple(
                 "not enough values to unpack (expected 6, got {})",
                 elems.len()
             );
-            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+            return Err(raise_exception::<_>(_py, BuiltinExc::ValueError, &msg));
         }
         let mut vals = [0i64; 6];
         for (idx, slot) in vals.iter_mut().enumerate() {
@@ -648,12 +653,12 @@ pub(crate) fn parse_timegm_tuple(
             let Some(val) = to_i64(obj_from_bits(bits)) else {
                 let type_name = class_name_for_error(type_of_bits(_py, bits));
                 let msg = format!("an integer is required (got type {type_name})");
-                return Err(raise_exception::<_>(_py, "TypeError", &msg));
+                return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg));
             };
             if val < i32::MIN as i64 || val > i32::MAX as i64 {
                 return Err(raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "timegm(): argument out of range",
                 ));
             }
@@ -1217,7 +1222,7 @@ pub(crate) fn mktime_native(py: &PyToken<'_>, value: &ParsedTime) -> Result<f64,
     if out == -1 && tm.tm_wday == -1 {
         return Err(raise_exception(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "mktime argument out of range",
         ));
     }

@@ -1,5 +1,6 @@
 //! Default ModuleType methods. Subclasses enter the shared attribute protocol.
 
+use crate::BuiltinExc;
 use crate::*;
 
 fn module_receiver(py: &PyToken<'_>, bits: u64, method: &str) -> Option<*mut u8> {
@@ -10,7 +11,7 @@ fn module_receiver(py: &PyToken<'_>, bits: u64, method: &str) -> Option<*mut u8>
     }
     raise_exception::<_>(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!(
             "descriptor '{method}' requires a 'module' object but received a '{}'",
             type_name(py, obj_from_bits(bits))
@@ -173,7 +174,11 @@ pub extern "C" fn molt_module_dir(module: u64) -> u64 {
         };
         let dictionary = unsafe { module_dict_bits(ptr) };
         let Some(dict) = obj_from_bits(dictionary).as_ptr() else {
-            return raise_exception::<_>(py, "TypeError", "module.__dict__ is not a dictionary");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "module.__dict__ is not a dictionary",
+            );
         };
         let Some(name) = attr_name_bits_from_bytes(py, b"__dir__") else {
             return MoltObject::none().bits();

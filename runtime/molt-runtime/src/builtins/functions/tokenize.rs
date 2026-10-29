@@ -1,6 +1,7 @@
 // Token metadata and scanner/encoding ABI. Numeric identities have one source:
 // the target tables generated from receipted CPython source in molt-stdlib-text.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::ExceptionValue;
 use molt_stdlib_text::token_metadata_generated::{TokenTable, token_table};
 use molt_stdlib_text::tokenize::{detect_source_encoding, scan_tokens};
@@ -18,7 +19,7 @@ fn target_token_table(py: &crate::PyToken<'_>) -> Option<&'static TokenTable> {
     if table.is_none() {
         crate::raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "unsupported target Python token metadata",
         );
     }
@@ -92,7 +93,7 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let Some(source) = crate::string_obj_to_owned(crate::obj_from_bits(source_bits)) else {
-            return crate::raise_exception::<_>(py, "TypeError", "source must be str");
+            return crate::raise_exception::<_>(py, BuiltinExc::TypeError, "source must be str");
         };
         let scan = scan_tokens(&source);
         let mut lines = Vec::with_capacity(scan.lines.len());
@@ -107,14 +108,14 @@ pub extern "C" fn molt_tokenize_scan(source_bits: u64) -> u64 {
             let Some(code) = table.number(token.kind) else {
                 return crate::raise_exception::<_>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "scanner emitted a token absent from target Python",
                 );
             };
             let Some(line) = lines.get(token.line_index) else {
                 return crate::raise_exception::<_>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "scanner emitted an invalid source line",
                 );
             };

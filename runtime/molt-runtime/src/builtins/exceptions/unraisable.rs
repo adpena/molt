@@ -699,7 +699,7 @@ mod tests {
     }
 
     fn pending_exception(_py: &PyToken<'_>, message: &str) -> u64 {
-        let _: u64 = raise_exception(_py, "RuntimeError", message);
+        let _: u64 = raise_exception(_py, crate::BuiltinExc::RuntimeError, message);
         exception_last_bits_noinc(_py).expect("pending exception")
     }
 
@@ -1113,8 +1113,8 @@ mod tests {
     fn impossible_reentrant_restore_defers_both_handled_edge_classes_and_fails_closed() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let active_ptr = alloc_exception(_py, "RuntimeError", "active");
-            let fallback_ptr = alloc_exception(_py, "RuntimeError", "fallback");
+            let active_ptr = alloc_exception(_py, crate::BuiltinExc::RuntimeError, "active");
+            let fallback_ptr = alloc_exception(_py, crate::BuiltinExc::RuntimeError, "fallback");
             assert!(!active_ptr.is_null() && !fallback_ptr.is_null());
             let active = MoltObject::from_ptr(active_ptr).bits();
             let fallback = MoltObject::from_ptr(fallback_ptr).bits();

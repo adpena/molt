@@ -3,6 +3,7 @@
 //! Keep this file limited to ABI translation.  GPU algorithms, backend policy,
 //! tensor semantics, and data transforms belong in the satellite crate.
 
+use crate::BuiltinExc;
 /// Translate the Python launch tuple into the executor's owned call builder.
 /// The executor borrows this builder; each per-thread clone is consumed by bind.
 #[unsafe(no_mangle)]
@@ -19,14 +20,14 @@ pub extern "C" fn molt_gpu_kernel_launch_python(
         let Some(args_ptr) = crate::obj_from_bits(args_bits).as_ptr() else {
             return crate::raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "GPU launch args must be a tuple",
             );
         };
         if unsafe { crate::object_type_id(args_ptr) } != crate::TYPE_ID_TUPLE {
             return crate::raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "GPU launch args must be a tuple",
             );
         }
@@ -38,7 +39,7 @@ pub extern "C" fn molt_gpu_kernel_launch_python(
         let Some(builder_ptr) = crate::obj_from_bits(builder).as_ptr() else {
             return crate::raise_exception::<u64>(
                 _py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "GPU launch builder allocation failed",
             );
         };
@@ -54,28 +55,13 @@ pub extern "C" fn molt_gpu_kernel_launch_python(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_gpu_raise_exception(
-    kind_ptr: *const u8,
-    kind_len: usize,
-    message_ptr: *const u8,
-    message_len: usize,
+    kind_code: u16,
+    msg_ptr: *const u8,
+    msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if (kind_ptr.is_null() && kind_len != 0) || (message_ptr.is_null() && message_len != 0) {
-            return crate::MoltObject::none().bits();
-        }
-        let kind_bytes = if kind_len == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(kind_ptr, kind_len) }
-        };
-        let message_bytes = if message_len == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(message_ptr, message_len) }
-        };
-        let kind = std::str::from_utf8(kind_bytes).unwrap_or("RuntimeError");
-        let message = String::from_utf8_lossy(message_bytes);
-        crate::raise_exception::<u64>(_py, kind, &message)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 
@@ -222,7 +208,11 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_ptr.is_null() || (name_ptr.is_null() && name_len != 0) {
-            crate::raise_exception::<()>(_py, "TypeError", "invalid attribute receiver or name");
+            crate::raise_exception::<()>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid attribute receiver or name",
+            );
             return -1;
         }
         let bytes = if name_len == 0 {
@@ -231,7 +221,11 @@ pub extern "C" fn __molt_gpu_object_setattr_raw(
             unsafe { std::slice::from_raw_parts(name_ptr, name_len) }
         };
         let Ok(name) = std::str::from_utf8(bytes) else {
-            crate::raise_exception::<()>(_py, "TypeError", "attribute name must be UTF-8");
+            crate::raise_exception::<()>(
+                _py,
+                BuiltinExc::TypeError,
+                "attribute name must be UTF-8",
+            );
             return -1;
         };
         match unsafe {
@@ -394,7 +388,7 @@ pub extern "C" fn molt_gpu_kernel_descriptor_set(callable: u64, descriptor: u64)
         let Some(function) = crate::obj_from_bits(callable).as_ptr() else {
             return crate::raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "GPU descriptor requires a function",
             );
         };
@@ -402,7 +396,7 @@ pub extern "C" fn molt_gpu_kernel_descriptor_set(callable: u64, descriptor: u64)
             if crate::object_type_id(function) != crate::TYPE_ID_FUNCTION {
                 return crate::raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "GPU descriptor requires a function",
                 );
             }
@@ -410,14 +404,14 @@ pub extern "C" fn molt_gpu_kernel_descriptor_set(callable: u64, descriptor: u64)
             else {
                 return crate::raise_exception::<u64>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "GPU function has no published code",
                 );
             };
             if crate::object_type_id(code) != crate::TYPE_ID_CODE {
                 return crate::raise_exception::<u64>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "GPU function has invalid code",
                 );
             }
@@ -509,7 +503,7 @@ fn gpu_namespace_value(py: &crate::PyToken<'_>, namespace: u64, name: &[u8]) -> 
         }
         _ => crate::raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "GPU binding needs an exact callback-free namespace entry",
         ),
     }
@@ -565,7 +559,7 @@ pub extern "C" fn __molt_gpu_class_binding(object: u64, name: *const u8, len: us
         } else {
             crate::raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "GPU buffer method binding is unavailable",
             )
         }
@@ -581,7 +575,7 @@ pub extern "C" fn __molt_gpu_default_field(object: u64, name: *const u8, len: us
         let refused = || {
             crate::raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "GPU buffer storage needs default attribute access and an ordinary field",
             )
         };
@@ -664,7 +658,7 @@ pub extern "C" fn __molt_gpu_function_binding(function: u64, name: *const u8, le
         let refused = || {
             crate::raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "GPU Python body dependency requires exact captured namespaces",
             )
         };
@@ -727,7 +721,7 @@ pub extern "C" fn __molt_gpu_module_binding(module: u64, name: *const u8, len: u
         let Some(module) = crate::obj_from_bits(module).as_ptr() else {
             return crate::raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "GPU attribute binding requires an exact module",
             );
         };
@@ -738,7 +732,7 @@ pub extern "C" fn __molt_gpu_module_binding(module: u64, name: *const u8, len: u
             {
                 return crate::raise_exception::<u64>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "GPU attribute binding requires an exact module",
                 );
             }

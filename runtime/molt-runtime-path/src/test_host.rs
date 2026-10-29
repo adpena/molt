@@ -148,12 +148,11 @@ unexpected_ptr_mut_u8!(__molt_path_alloc_dict_with_pairs(pairs_ptr: *const u64, 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
+    kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
-    let _ = (type_ptr, type_len, msg_ptr, msg_len);
+    let _ = (kind_code, msg_ptr, msg_len);
     unexpected("__molt_path_raise_exception")
 }
 

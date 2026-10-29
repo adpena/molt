@@ -367,13 +367,17 @@ fn logarithm(_py: &PyToken, bits: u64, function: fn(f64) -> f64) -> u64 {
 
 fn check_finite_round(_py: &PyToken, value: f64) -> Option<()> {
     if value.is_nan() {
-        raise_exception::<Option<()>>(_py, "ValueError", "cannot convert float NaN to integer");
+        raise_exception::<Option<()>>(
+            _py,
+            BuiltinExc::ValueError,
+            "cannot convert float NaN to integer",
+        );
         return None;
     }
     if value.is_infinite() {
         raise_exception::<Option<()>>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "cannot convert float infinity to integer",
         );
         return None;
@@ -419,25 +423,25 @@ fn binary_type_error(_py: &PyToken, lhs_bits: u64, rhs_bits: u64, op: &str) -> u
         type_name(_py, obj_from_bits(lhs_bits)),
         type_name(_py, obj_from_bits(rhs_bits))
     );
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 fn math_domain_error(_py: &PyToken) -> u64 {
-    raise_exception::<_>(_py, "ValueError", "math domain error")
+    raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error")
 }
 
 fn log_domain_error(_py: &PyToken, got: Option<f64>) -> u64 {
     if target_minor() < 14 {
-        return raise_exception::<u64>(_py, "ValueError", "math domain error");
+        return raise_exception::<u64>(_py, BuiltinExc::ValueError, "math domain error");
     }
     if let Some(value) = got {
         let Some(rendered) = render_float(_py, value) else {
             return MoltObject::none().bits();
         };
         let msg = format!("expected a positive input, got {rendered}");
-        return raise_exception::<u64>(_py, "ValueError", &msg);
+        return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
     }
-    raise_exception::<u64>(_py, "ValueError", "expected a positive input")
+    raise_exception::<u64>(_py, BuiltinExc::ValueError, "expected a positive input")
 }
 
 fn log1p_domain_error(_py: &PyToken, value: f64) -> u64 {
@@ -445,7 +449,7 @@ fn log1p_domain_error(_py: &PyToken, value: f64) -> u64 {
         return MoltObject::none().bits();
     };
     let msg = format!("expected argument value > -1, got {rendered}");
-    raise_exception::<u64>(_py, "ValueError", &msg)
+    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)
 }
 
 fn isqrt_biguint(value: &BigUint) -> BigUint {
@@ -702,7 +706,7 @@ pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
         }
         let out = math_exp(f);
         if out.is_infinite() {
-            return raise_exception::<_>(_py, "OverflowError", "math range error");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
         }
         float_result_bits(_py, out)
     })
@@ -725,7 +729,7 @@ pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
         }
         let out = math_expm1(f);
         if out.is_infinite() {
-            return raise_exception::<_>(_py, "OverflowError", "math range error");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
         }
         float_result_bits(_py, out)
     })
@@ -761,7 +765,7 @@ pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a finite input, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         float_result_bits(_py, math_sin(f))
     })
@@ -781,7 +785,7 @@ pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a finite input, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         float_result_bits(_py, math_cos(f))
     })
@@ -801,7 +805,7 @@ pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         float_result_bits(_py, math_acos(f))
     })
@@ -821,7 +825,7 @@ pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a finite input, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         float_result_bits(_py, math_tan(f))
     })
@@ -841,7 +845,7 @@ pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         float_result_bits(_py, math_asin(f))
     })
@@ -881,7 +885,7 @@ pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
         }
         let out = math_sinh(f);
         if out.is_infinite() && !f.is_infinite() {
-            return raise_exception::<_>(_py, "OverflowError", "math range error");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
         }
         float_result_bits(_py, out)
     })
@@ -898,7 +902,7 @@ pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
         }
         let out = math_cosh(f);
         if out.is_infinite() && !f.is_infinite() {
-            return raise_exception::<_>(_py, "OverflowError", "math range error");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
         }
         float_result_bits(_py, out)
     })
@@ -938,7 +942,7 @@ pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a number greater than or equal to 1, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         float_result_bits(_py, math_acosh(f))
     })
@@ -975,7 +979,7 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 };
                 let msg = format!("expected a noninteger or positive integer, got {rendered}");
-                return raise_exception::<_>(_py, "ValueError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
             }
             return float_result_bits(_py, f);
         }
@@ -984,11 +988,11 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a noninteger or positive integer, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         let out = libm::tgamma(f);
         if out.is_infinite() {
-            return raise_exception::<_>(_py, "OverflowError", "math range error");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
         }
         float_result_bits(_py, out)
     })
@@ -1031,7 +1035,7 @@ pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let msg = format!("expected a noninteger or positive integer, got {rendered}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         float_result_bits(_py, math_lgamma(f))
     })
@@ -1101,12 +1105,12 @@ pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
-                return raise_exception::<_>(_py, "ValueError", "math domain error");
+                return raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error");
             }
             return float_result_bits(_py, f);
         }
         if f < 0.0 {
-            return raise_exception::<_>(_py, "ValueError", "math domain error");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error");
         }
         float_result_bits(_py, math_sqrt(f))
     })
@@ -1139,7 +1143,7 @@ fn round_number(_py: &PyToken, bits: u64, mode: RoundMode, name: &'static [u8]) 
         let label = class_name_for_error(type_of_bits(_py, bits));
         return raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("type {:.100} doesn't define __trunc__ method", label),
         );
     }
@@ -1180,10 +1184,10 @@ pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if y == 0.0 {
-            return raise_exception::<_>(_py, "ValueError", "math domain error");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error");
         }
         if x.is_infinite() {
-            return raise_exception::<_>(_py, "ValueError", "math domain error");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "math domain error");
         }
         if x.is_nan() || y.is_nan() {
             return float_result_bits(_py, f64::NAN);
@@ -1254,7 +1258,7 @@ pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
             if f == 0.0 {
                 return float_result_bits(_py, f);
             }
-            return raise_exception::<_>(_py, "OverflowError", "math range error");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
         }
         if exp < i32::MIN as i64 {
             if f == 0.0 {
@@ -1264,7 +1268,7 @@ pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
         }
         let out = math_ldexp(f, exp as i32);
         if out.is_infinite() && f != 0.0 {
-            return raise_exception::<_>(_py, "OverflowError", "math range error");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "math range error");
         }
         float_result_bits(_py, out)
     })
@@ -1286,7 +1290,11 @@ pub extern "C" fn molt_math_isclose(a_bits: u64, b_bits: u64, rel_bits: u64, abs
             return MoltObject::none().bits();
         };
         if rel_tol < 0.0 || abs_tol < 0.0 {
-            return raise_exception::<_>(_py, "ValueError", "tolerances must be non-negative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "tolerances must be non-negative",
+            );
         }
         if a == b {
             return MoltObject::from_bool(true).bits();
@@ -1385,11 +1393,15 @@ pub extern "C" fn molt_math_gcd(args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
         let Some(args_ptr) = args_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "gcd() expected arguments");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "gcd() expected arguments");
         };
         unsafe {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "gcd() expected arguments");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "gcd() expected arguments",
+                );
             }
             let Some(elems) = seq_snapshot(args_ptr) else {
                 return MoltObject::none().bits();
@@ -1425,11 +1437,15 @@ pub extern "C" fn molt_math_lcm(args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
         let Some(args_ptr) = args_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "lcm() expected arguments");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "lcm() expected arguments");
         };
         unsafe {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "lcm() expected arguments");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "lcm() expected arguments",
+                );
             }
             let Some(elems) = seq_snapshot(args_ptr) else {
                 return MoltObject::none().bits();
@@ -1473,7 +1489,7 @@ pub extern "C" fn molt_math_factorial(val_bits: u64) -> u64 {
         if n_val.is_negative() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "factorial() not defined for negative values",
             );
         }
@@ -1514,10 +1530,18 @@ pub extern "C" fn molt_math_comb(n_bits: u64, k_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if n_val.is_negative() {
-            return raise_exception::<_>(_py, "ValueError", "n must be a non-negative integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "n must be a non-negative integer",
+            );
         }
         if k_val.is_negative() {
-            return raise_exception::<_>(_py, "ValueError", "k must be a non-negative integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "k must be a non-negative integer",
+            );
         }
         if k_val > n_val {
             return MoltObject::from_int(0).bits();
@@ -1571,10 +1595,18 @@ pub extern "C" fn molt_math_perm(n_bits: u64, k_bits: u64) -> u64 {
             val
         };
         if n_val.is_negative() {
-            return raise_exception::<_>(_py, "ValueError", "n must be a non-negative integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "n must be a non-negative integer",
+            );
         }
         if k_val.is_negative() {
-            return raise_exception::<_>(_py, "ValueError", "k must be a non-negative integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "k must be a non-negative integer",
+            );
         }
         if k_val > n_val {
             return MoltObject::from_int(0).bits();
@@ -1628,10 +1660,10 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let args_obj = obj_from_bits(args_bits);
         let Some(args_ptr) = args_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "hypot() expected arguments");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "hypot() expected arguments");
         };
         if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "hypot() expected arguments");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "hypot() expected arguments");
         }
         let Some(elems) = (unsafe { seq_snapshot(args_ptr) }) else {
             return MoltObject::none().bits();
@@ -1730,7 +1762,7 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
         if p_vals.len() != q_vals.len() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "both points must have the same number of dimensions",
             );
         }
@@ -1842,10 +1874,18 @@ pub extern "C" fn molt_math_isqrt(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if value.is_negative() {
-            return raise_exception::<_>(_py, "ValueError", "isqrt() argument must be nonnegative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "isqrt() argument must be nonnegative",
+            );
         }
         let Some(biguint) = value.to_biguint() else {
-            return raise_exception::<_>(_py, "ValueError", "isqrt() argument must be nonnegative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "isqrt() argument must be nonnegative",
+            );
         };
         let root = isqrt_biguint(&biguint);
         int_bits_from_bigint(_py, BigInt::from(root))
@@ -2089,11 +2129,11 @@ fn statistics_ratio_float(py: &PyToken, numerator: &BigInt, denominator: &BigInt
         Ok(value) => float_result_bits(py, value),
         Err(RatioFloatError::Overflow) => raise_exception::<u64>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "integer division result too large for a float",
         ),
         Err(RatioFloatError::ZeroDenominator) => {
-            raise_exception::<u64>(py, "ZeroDivisionError", "division by zero")
+            raise_exception::<u64>(py, BuiltinExc::ZeroDivisionError, "division by zero")
         }
     }
 }
@@ -2149,7 +2189,7 @@ fn statistics_exact_result(
         } else {
             format!("{opname} requires at least two data points")
         };
-        return raise_exception::<u64>(py, "StatisticsError", &message);
+        return raise_exception::<u64>(py, BuiltinExc::StatisticsError, &message);
     }
     let count = BigInt::from(total.count);
     let (sum, squares) = total.storage.into_bigints();
@@ -2229,7 +2269,7 @@ fn statistics_collect_sorted_real(_py: &PyToken, data_bits: u64, opname: &str) -
     let mut values = collect_real_vec(_py, data_bits)?;
     if values.is_empty() {
         let msg = format!("{opname} requires at least one data point");
-        raise_exception::<()>(_py, "StatisticsError", &msg);
+        raise_exception::<()>(_py, BuiltinExc::StatisticsError, &msg);
         return None;
     }
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -2240,7 +2280,7 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
     let owned_values = collect_values_vec(_py, data_bits)?;
     let values = OwnedRuntimeValue::as_bits_slice(&owned_values);
     if values.is_empty() {
-        raise_exception::<()>(_py, "StatisticsError", "no mode for empty data");
+        raise_exception::<()>(_py, BuiltinExc::StatisticsError, "no mode for empty data");
         return None;
     }
     let counts_bits = molt_dict_new(0);
@@ -2263,7 +2303,11 @@ fn statistics_mode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
                 if maybe_ptr_from_bits(counts_bits).is_some() {
                     dec_ref_bits(_py, counts_bits);
                 }
-                return raise_exception::<Option<u64>>(_py, "OverflowError", "mode count overflow");
+                return raise_exception::<Option<u64>>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "mode count overflow",
+                );
             };
             if !dict_set_in_place(
                 _py,
@@ -2325,7 +2369,7 @@ fn statistics_multimode_value(_py: &PyToken, data_bits: u64) -> Option<u64> {
                 }
                 return raise_exception::<Option<u64>>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "multimode count overflow",
                 );
             };
@@ -2437,7 +2481,7 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
     if values.is_empty() {
         return raise_exception::<Option<u64>>(
             py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "harmonic_mean requires at least one data point",
         );
     }
@@ -2452,7 +2496,7 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
             if integer.is_negative() {
                 return raise_exception::<Option<u64>>(
                     py,
-                    "StatisticsError",
+                    BuiltinExc::StatisticsError,
                     "harmonic mean does not support negative values",
                 );
             }
@@ -2474,7 +2518,7 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
             if value < 0.0 {
                 return raise_exception::<Option<u64>>(
                     py,
-                    "StatisticsError",
+                    BuiltinExc::StatisticsError,
                     "harmonic mean does not support negative values",
                 );
             }
@@ -2496,7 +2540,7 @@ fn statistics_harmonic_mean_value(py: &PyToken, data: u64) -> Option<u64> {
     if sum.is_zero() {
         return raise_exception::<Option<u64>>(
             py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "Weighted sum must be positive",
         );
     }
@@ -2509,7 +2553,7 @@ fn statistics_geometric_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64>
     if values.is_empty() {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "geometric_mean requires at least one data point",
         );
         return None;
@@ -2517,7 +2561,7 @@ fn statistics_geometric_mean_value(_py: &PyToken, data_bits: u64) -> Option<f64>
     if values.iter().any(|v| *v < 0.0) {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "geometric mean does not support negative values",
         );
         return None;
@@ -2535,7 +2579,7 @@ fn statistics_covariance_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Optio
     if x_values.len() != y_values.len() {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "covariance requires that both inputs have the same length",
         );
         return None;
@@ -2543,7 +2587,7 @@ fn statistics_covariance_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Optio
     if x_values.len() < 2 {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "covariance requires at least two data points",
         );
         return None;
@@ -2563,7 +2607,7 @@ fn statistics_correlation_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Opti
     if x_values.len() != y_values.len() {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "correlation requires that both inputs have the same length",
         );
         return None;
@@ -2571,7 +2615,7 @@ fn statistics_correlation_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Opti
     if x_values.len() < 2 {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "correlation requires at least two data points",
         );
         return None;
@@ -2592,7 +2636,7 @@ fn statistics_correlation_value(_py: &PyToken, x_bits: u64, y_bits: u64) -> Opti
     if denom == 0.0 {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "at least one of the inputs is constant",
         );
         return None;
@@ -2611,7 +2655,7 @@ fn statistics_linear_regression_value(
     if x_values.len() != y_values.len() {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "x and y must have the same number of data points",
         );
         return None;
@@ -2619,7 +2663,7 @@ fn statistics_linear_regression_value(
     if x_values.len() < 2 {
         raise_exception::<()>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "linear_regression requires at least two data points",
         );
         return None;
@@ -2632,7 +2676,7 @@ fn statistics_linear_regression_value(
             sxy += *xv * *yv;
         }
         if sxx == 0.0 {
-            raise_exception::<()>(_py, "StatisticsError", "x is constant");
+            raise_exception::<()>(_py, BuiltinExc::StatisticsError, "x is constant");
             return None;
         }
         return Some((sxy / sxx, 0.0));
@@ -2647,7 +2691,7 @@ fn statistics_linear_regression_value(
         sxy += dx * (*yv - y_mean);
     }
     if sxx == 0.0 {
-        raise_exception::<()>(_py, "StatisticsError", "x is constant");
+        raise_exception::<()>(_py, BuiltinExc::StatisticsError, "x is constant");
         return None;
     }
     let slope = sxy / sxx;

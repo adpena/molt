@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 fn errno_is_shutdown(errno: i64) -> bool {
     #[cfg(all(not(windows), not(target_arch = "wasm32")))]
@@ -16,59 +17,59 @@ fn errno_is_shutdown(errno: i64) -> bool {
     }
 }
 
-fn oserror_subclass_for_errno(errno: i64) -> Option<&'static str> {
+fn oserror_subclass_for_errno(errno: i64) -> Option<BuiltinExc> {
     if errno == libc::EAGAIN as i64
         || errno == libc::EALREADY as i64
         || errno == libc::EWOULDBLOCK as i64
         || errno == libc::EINPROGRESS as i64
     {
-        return Some("BlockingIOError");
+        return Some(BuiltinExc::BlockingIOError);
     }
     if errno == libc::ECHILD as i64 {
-        return Some("ChildProcessError");
+        return Some(BuiltinExc::ChildProcessError);
     }
     if errno == libc::EPIPE as i64 {
-        return Some("BrokenPipeError");
+        return Some(BuiltinExc::BrokenPipeError);
     }
     if errno_is_shutdown(errno) {
-        return Some("BrokenPipeError");
+        return Some(BuiltinExc::BrokenPipeError);
     }
     if errno == libc::ECONNABORTED as i64 {
-        return Some("ConnectionAbortedError");
+        return Some(BuiltinExc::ConnectionAbortedError);
     }
     if errno == libc::ECONNREFUSED as i64 {
-        return Some("ConnectionRefusedError");
+        return Some(BuiltinExc::ConnectionRefusedError);
     }
     if errno == libc::ECONNRESET as i64 {
-        return Some("ConnectionResetError");
+        return Some(BuiltinExc::ConnectionResetError);
     }
     if errno == libc::EEXIST as i64 {
-        return Some("FileExistsError");
+        return Some(BuiltinExc::FileExistsError);
     }
     if errno == libc::ENOENT as i64 {
-        return Some("FileNotFoundError");
+        return Some(BuiltinExc::FileNotFoundError);
     }
     if errno == libc::EINTR as i64 {
-        return Some("InterruptedError");
+        return Some(BuiltinExc::InterruptedError);
     }
     if errno == libc::EISDIR as i64 {
-        return Some("IsADirectoryError");
+        return Some(BuiltinExc::IsADirectoryError);
     }
     if errno == libc::ENOTDIR as i64 {
-        return Some("NotADirectoryError");
+        return Some(BuiltinExc::NotADirectoryError);
     }
     if errno == libc::EACCES as i64 || errno == libc::EPERM as i64 {
-        return Some("PermissionError");
+        return Some(BuiltinExc::PermissionError);
     }
     #[cfg(target_os = "freebsd")]
     if errno == libc::ENOTCAPABLE as i64 {
-        return Some("PermissionError");
+        return Some(BuiltinExc::PermissionError);
     }
     if errno == libc::ESRCH as i64 {
-        return Some("ProcessLookupError");
+        return Some(BuiltinExc::ProcessLookupError);
     }
     if errno == libc::ETIMEDOUT as i64 {
-        return Some("TimeoutError");
+        return Some(BuiltinExc::TimeoutError);
     }
     None
 }
@@ -115,7 +116,7 @@ pub(super) unsafe fn oserror_fields_from_args(
     if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
         return fields;
     }
-    let blocking_type = exception_type_bits_from_name(_py, "BlockingIOError");
+    let blocking_type = exception_class_bits(_py, BuiltinExc::BlockingIOError);
     let exact_blocking = class_bits != 0 && class_bits == blocking_type;
     unsafe {
         crate::object::seq_access::with_borrowed(args_ptr, |elems| {
@@ -197,7 +198,7 @@ pub(crate) fn raise_os_error_errno<T: ExceptionSentinel>(
     errno: i64,
     message: &str,
 ) -> T {
-    let class_bits = exception_type_bits_from_name(_py, "OSError");
+    let class_bits = exception_class_bits(_py, BuiltinExc::OSError);
     raise_os_error_errno_with_class(_py, class_bits, errno, message)
 }
 
@@ -301,7 +302,7 @@ pub(super) fn unicode_error_fields_from_args(
                 "function takes exactly {expected} arguments ({} given)",
                 elems.len()
             );
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
         }
         let (encoding_bits, mut object_bits, start_bits, end_bits, reason_bits, object_idx) =
@@ -326,7 +327,7 @@ pub(super) fn unicode_error_fields_from_args(
                 "argument 1 must be str, not {}",
                 type_name(_py, obj_from_bits(encoding_bits))
             );
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
         }
         if !isinstance_bits(_py, reason_bits, builtins.str) {
@@ -338,7 +339,7 @@ pub(super) fn unicode_error_fields_from_args(
                 "argument {arg_index} must be str, not {}",
                 type_name(_py, obj_from_bits(reason_bits))
             );
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return Err(());
         }
         let mut owned_object = false;
@@ -349,7 +350,7 @@ pub(super) fn unicode_error_fields_from_args(
                         "a bytes-like object is required, not '{}'",
                         type_name(_py, obj_from_bits(object_bits))
                     );
-                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
                     return Err(());
                 };
                 let Some(bytes) = bytes_like_slice(object_ptr) else {
@@ -357,7 +358,7 @@ pub(super) fn unicode_error_fields_from_args(
                         "a bytes-like object is required, not '{}'",
                         type_name(_py, obj_from_bits(object_bits))
                     );
-                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
                     return Err(());
                 };
                 if object_type_id(object_ptr) != crate::TYPE_ID_BYTES {
@@ -375,7 +376,7 @@ pub(super) fn unicode_error_fields_from_args(
                         "argument {object_idx} must be str, not {}",
                         type_name(_py, obj_from_bits(object_bits))
                     );
-                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
                     return Err(());
                 }
             }
@@ -413,7 +414,7 @@ pub(crate) fn alloc_exception_from_class_bits(
         if base_group_bits != 0 && issubclass_bits(class_bits, base_group_bits) {
             return alloc_exception_group_from_class_bits(_py, class_bits, args_bits);
         }
-        let oserror_bits = exception_type_bits_from_name(_py, "OSError");
+        let oserror_bits = exception_class_bits(_py, BuiltinExc::OSError);
         let mut oserror_layout = false;
         if issubclass_bits(class_bits, oserror_bits) {
             oserror_layout = true;
@@ -424,7 +425,7 @@ pub(crate) fn alloc_exception_from_class_bits(
                 && let Some(errno_val) = fields.errno_value
                 && let Some(subclass) = oserror_subclass_for_errno(errno_val)
             {
-                let mapped_bits = exception_type_bits_from_name(_py, subclass);
+                let mapped_bits = exception_class_bits(_py, subclass);
                 if mapped_bits != 0 && obj_from_bits(mapped_bits).as_ptr().is_some() {
                     class_bits = mapped_bits;
                 }

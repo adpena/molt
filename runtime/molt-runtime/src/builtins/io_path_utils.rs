@@ -1,6 +1,7 @@
 // Path, glob, and filesystem utility functions.
 // Extracted from io.rs for compilation-unit size reduction and tree shaking.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_obj_model::MoltObject;
 pub(crate) use molt_runtime_platform::path_text::{
@@ -164,7 +165,7 @@ pub(crate) fn fspath_bits_with_flavor(
     let Some(ptr) = obj.as_ptr() else {
         let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
         let msg = format!("expected str, bytes or os.PathLike object, not {obj_type}");
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg));
     };
 
     unsafe {
@@ -189,7 +190,7 @@ pub(crate) fn fspath_bits_with_flavor(
                 dec_ref_bits(_py, call_bits);
                 let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
                 let msg = format!("expected str, bytes or os.PathLike object, not {obj_type}");
-                return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+                return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
             }
             let res_bits = call_callable0(_py, call_bits);
             let failed = exception_pending(_py);
@@ -212,7 +213,7 @@ pub(crate) fn fspath_bits_with_flavor(
             let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
             let msg =
                 format!("expected {obj_type}.__fspath__() to return str or bytes, not {res_type}");
-            let error = raise_exception::<u64>(_py, "TypeError", &msg);
+            let error = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             dec_ref_bits(_py, res_bits);
             return Err(error);
         }
@@ -220,7 +221,7 @@ pub(crate) fn fspath_bits_with_flavor(
 
     let obj_type = class_name_for_error(type_of_bits(_py, file_bits));
     let msg = format!("expected str, bytes or os.PathLike object, not {obj_type}");
-    Err(raise_exception::<_>(_py, "TypeError", &msg))
+    Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg))
 }
 
 pub(crate) fn path_from_bits(_py: &PyToken<'_>, file_bits: u64) -> Result<std::path::PathBuf, u64> {
@@ -424,7 +425,7 @@ pub(crate) fn path_str_arg_from_bits(
     }
     let type_name = class_name_for_error(type_of_bits(_py, bits));
     let msg = format!("{label} must be str, not {type_name}");
-    Err(raise_exception::<_>(_py, "TypeError", &msg))
+    Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg))
 }
 
 pub(crate) fn alloc_path_list_bits(_py: &PyToken<'_>, values: &[Vec<u8>], bytes_out: bool) -> u64 {
@@ -466,7 +467,7 @@ pub(crate) fn path_abspath_path(
         if !has_capability(py, "fs.read") {
             return Err(raise_exception::<_>(
                 py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "missing fs.read capability",
             ));
         }
@@ -493,7 +494,11 @@ pub(crate) fn path_abspath_text(py: &PyToken<'_>, path: &str, sep: char) -> Resu
     debug_assert_eq!(sep, path_sep_char());
     let absolute = path_abspath_path(py, std::path::Path::new(path))?;
     absolute.into_os_string().into_string().map_err(|_| {
-        raise_exception::<u64>(py, "UnicodeError", "absolute path is not valid Unicode")
+        raise_exception::<u64>(
+            py,
+            BuiltinExc::UnicodeError,
+            "absolute path is not valid Unicode",
+        )
     })
 }
 
@@ -513,14 +518,14 @@ pub(crate) enum GlobDirFdArg {
 
 fn glob_dir_fd_type_error_bits(_py: &PyToken<'_>, type_name: &str) -> u64 {
     let msg = format!("argument should be integer or None, not {type_name}");
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 fn glob_scandir_type_error_bits(_py: &PyToken<'_>, type_name: &str) -> u64 {
     let msg = format!(
         "scandir: path should be string, bytes, os.PathLike, integer or None, not {type_name}"
     );
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 pub(crate) fn glob_dir_fd_arg_from_bits(
@@ -541,7 +546,7 @@ pub(crate) fn glob_dir_fd_arg_from_bits(
         } else {
             "fd is greater than maximum"
         };
-        return Err(raise_exception::<_>(_py, "OverflowError", msg));
+        return Err(raise_exception::<_>(_py, BuiltinExc::OverflowError, msg));
     }
     if exception_pending(_py) {
         clear_exception(_py);
@@ -823,7 +828,7 @@ fn glob1_text(
         } else {
             "cannot use a string pattern on a bytes-like object"
         };
-        return Err(raise_exception::<_>(_py, "TypeError", msg));
+        return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, msg));
     }
     let mut names = listed.names;
     if !(pattern.starts_with(b".") || include_hidden) {
@@ -1546,7 +1551,11 @@ pub(crate) fn path_relpath_text(
     sep: char,
 ) -> Result<String, u64> {
     if path.is_empty() {
-        return Err(raise_exception::<_>(_py, "ValueError", "no path specified"));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "no path specified",
+        ));
     }
     let start_abs = path_abspath_text(_py, start, sep)?;
     let path_abs = path_abspath_text(_py, path, sep)?;

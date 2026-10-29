@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 pub(super) fn socketserver_runtime() -> &'static Mutex<MoltSocketServerRuntime> {
     SOCKETSERVER_RUNTIME.get_or_init(|| {
@@ -20,14 +21,14 @@ pub(super) fn socketserver_extract_bytes(
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} must be bytes-like"),
         ));
     };
     let Some(bytes) = (unsafe { bytes_like_slice(MoltObject::from_ptr(ptr).bits()) }) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} must be bytes-like"),
         ));
     };
@@ -41,14 +42,14 @@ pub(super) fn socketserver_extract_request_id(
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "request id must be int",
         ));
     };
     if value <= 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "request id must be positive",
         ));
     }
@@ -62,7 +63,7 @@ pub(super) fn socketserver_extract_handle_request_tuple(
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "get_request() must return a 3-item tuple",
         ));
     };
@@ -70,7 +71,7 @@ pub(super) fn socketserver_extract_handle_request_tuple(
     if ty != crate::bridge::type_id_tuple() && ty != crate::bridge::type_id_list() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "get_request() must return a 3-item tuple",
         ));
     }
@@ -78,14 +79,14 @@ pub(super) fn socketserver_extract_handle_request_tuple(
     if fields.len() != 3 {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "get_request() must return a 3-item tuple",
         ));
     }
     let Some(request_id) = to_i64(obj_from_bits(fields[2])) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "request id must be int",
         ));
     };
@@ -299,11 +300,11 @@ pub(super) fn http_server_get_required_attr_bits(
     label: &str,
 ) -> Result<u64, u64> {
     let Some(bits) = attr_optional(_py, obj_bits, name)? else {
-        return Err(raise_exception::<u64>(_py, "RuntimeError", label));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::RuntimeError, label));
     };
     if obj_from_bits(bits).is_none() {
         dec_ref_bits(_py, bits);
-        return Err(raise_exception::<u64>(_py, "RuntimeError", label));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::RuntimeError, label));
     }
     Ok(bits)
 }
@@ -353,7 +354,7 @@ pub(super) fn http_server_write_bytes(
         }
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "http handler wfile.write is unavailable",
         ));
     }
@@ -436,7 +437,7 @@ pub(super) fn http_server_readline(
         }
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "http handler rfile.readline is unavailable",
         ));
     }
@@ -551,7 +552,7 @@ pub(super) fn http_server_date_time_string_from_bits(
         let Some(value) = to_f64(obj_from_bits(timestamp_bits)) else {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "timestamp must be float or None",
             ));
         };
@@ -681,7 +682,7 @@ pub(super) fn http_server_handle_one_request_impl(
     if state != 1 {
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "http server request parser returned invalid state",
         ));
     }

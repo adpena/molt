@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime/src/builtins/array_mod.rs ===
+use crate::BuiltinExc;
 //
 // Typed array module intrinsics (CPython `array` module semantics).
 //
@@ -452,7 +453,7 @@ fn array_bits(_py: &PyToken<'_>, handle: ArrayHandle) -> u64 {
 // particular, selecting OOM can retire an old exception and reenter the array.
 #[derive(Clone, Copy)]
 enum ArrayStorageError {
-    Exception(&'static str, &'static str),
+    Exception(crate::BuiltinExc, &'static str),
     Allocation,
     ExtendedSlice { replacement: usize, expected: usize },
 }
@@ -470,7 +471,7 @@ impl ArrayStorageError {
                 expected,
             } => raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!(
                     "attempt to assign array of size {} to extended slice of size {}",
                     replacement, expected,
@@ -482,7 +483,7 @@ impl ArrayStorageError {
 
 fn array_cell(py: &PyToken<'_>, bits: u64) -> Result<Arc<ArrayCell>, u64> {
     array_arc_from_bits(bits)
-        .ok_or_else(|| raise_exception::<u64>(py, "TypeError", "invalid array handle"))
+        .ok_or_else(|| raise_exception::<u64>(py, BuiltinExc::TypeError, "invalid array handle"))
 }
 
 fn with_array_storage<T>(
@@ -503,7 +504,7 @@ fn array_status(py: &PyToken<'_>, result: Result<(), ArrayStorageError>) -> u64 
 fn ensure_array_resizable(handle: &ArrayHandle) -> Result<(), ArrayStorageError> {
     if handle.resize_blocked() {
         Err(ArrayStorageError::Exception(
-            "BufferError",
+            crate::BuiltinExc::BufferError,
             "cannot resize an array that is exporting buffers",
         ))
     } else {
@@ -513,7 +514,7 @@ fn ensure_array_resizable(handle: &ArrayHandle) -> Result<(), ArrayStorageError>
 
 fn storage_elem(tc: Typecode, bits: u64) -> Result<ArrayElem, ArrayStorageError> {
     elem_from_bits_unraised(tc, bits)
-        .map_err(|message| ArrayStorageError::Exception("TypeError", message))
+        .map_err(|message| ArrayStorageError::Exception(crate::BuiltinExc::TypeError, message))
 }
 
 fn copy_array_bytes(bytes: &[u8]) -> Result<Vec<u8>, ArrayStorageError> {
@@ -648,7 +649,7 @@ pub(crate) fn array_buffer_owner_bits(_py: &PyToken<'_>, bits: u64) -> Result<Op
         guard.exports.acquire()
     };
     acquired.map_err(|()| {
-        let _ = raise_exception::<u64>(_py, "OverflowError", "too many exported buffers");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::OverflowError, "too many exported buffers");
     })?;
     let lease_bits = native_handle_new(
         _py,
@@ -729,7 +730,7 @@ fn typecode_from_obj(
         } else {
             "typecode must be str"
         };
-        return Err(raise_exception::<u64>(_py, "TypeError", msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, msg));
     };
     let mut chars = s.chars();
     let ch = match chars.next() {
@@ -740,7 +741,7 @@ fn typecode_from_obj(
             } else {
                 "typecode must be a single character"
             };
-            return Err(raise_exception::<u64>(_py, "ValueError", msg));
+            return Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, msg));
         }
     };
     Typecode::from_char(ch).ok_or_else(|| {
@@ -749,7 +750,7 @@ fn typecode_from_obj(
         } else {
             "bad typecode"
         };
-        raise_exception::<u64>(_py, "ValueError", msg)
+        raise_exception::<u64>(_py, BuiltinExc::ValueError, msg)
     })
 }
 
@@ -787,7 +788,7 @@ pub extern "C" fn molt_array_from_list(typecode_bits: u64, items_bits: u64) -> u
                     let size = handle
                         .encode_elem_into(elem, &mut encoded)
                         .map_err(|message| {
-                            ArrayStorageError::Exception("OverflowError", message)
+                            ArrayStorageError::Exception(crate::BuiltinExc::OverflowError, message)
                         })?;
                     handle
                         .data
@@ -819,7 +820,9 @@ pub extern "C" fn molt_array_append(handle_bits: u64, value_bits: u64) -> u64 {
                 let mut encoded = [0; 8];
                 let size = handle
                     .encode_elem_into(elem, &mut encoded)
-                    .map_err(|message| ArrayStorageError::Exception("OverflowError", message))?;
+                    .map_err(|message| {
+                        ArrayStorageError::Exception(crate::BuiltinExc::OverflowError, message)
+                    })?;
                 ensure_array_resizable(handle)?;
                 handle
                     .data
@@ -842,42 +845,49 @@ pub extern "C" fn molt_array_extend(handle_bits: u64, items_bits: u64) -> u64 {
         let Some(list_ptr) = obj_from_bits(items_bits).as_ptr() else {
             return MoltObject::none().bits();
         };
-        let result =
-            with_array_storage(&cell, |handle| unsafe {
-                // The existing list-input transaction stays atomic. Its borrowed
-                // input and the array lock end before any error is selected.
-                crate::object::seq_access::with_borrowed(list_ptr, |seq| {
-                    let additional = seq.len().checked_mul(handle.typecode.itemsize()).ok_or(
-                        ArrayStorageError::Exception("OverflowError", "array is too large"),
-                    )?;
-                    handle.data.len().checked_add(additional).ok_or(
-                        ArrayStorageError::Exception("OverflowError", "array is too large"),
-                    )?;
-                    let mut encoded = Vec::new();
-                    encoded
-                        .try_reserve_exact(additional)
-                        .map_err(|_| ArrayStorageError::Allocation)?;
-                    for &bits in seq {
-                        let elem = storage_elem(handle.typecode, bits)?;
-                        let mut item = [0; 8];
-                        let size = handle
-                            .encode_elem_into(elem, &mut item)
-                            .map_err(|message| {
-                                ArrayStorageError::Exception("OverflowError", message)
-                            })?;
-                        encoded.extend_from_slice(&item[..size]);
-                    }
-                    if !encoded.is_empty() {
-                        ensure_array_resizable(handle)?;
-                    }
-                    handle
-                        .data
-                        .try_reserve_exact(encoded.len())
-                        .map_err(|_| ArrayStorageError::Allocation)?;
-                    handle.data.extend_from_slice(&encoded);
-                    Ok(())
-                })
-            });
+        let result = with_array_storage(&cell, |handle| unsafe {
+            // The existing list-input transaction stays atomic. Its borrowed
+            // input and the array lock end before any error is selected.
+            crate::object::seq_access::with_borrowed(list_ptr, |seq| {
+                let additional = seq.len().checked_mul(handle.typecode.itemsize()).ok_or(
+                    ArrayStorageError::Exception(
+                        crate::BuiltinExc::OverflowError,
+                        "array is too large",
+                    ),
+                )?;
+                handle
+                    .data
+                    .len()
+                    .checked_add(additional)
+                    .ok_or(ArrayStorageError::Exception(
+                        crate::BuiltinExc::OverflowError,
+                        "array is too large",
+                    ))?;
+                let mut encoded = Vec::new();
+                encoded
+                    .try_reserve_exact(additional)
+                    .map_err(|_| ArrayStorageError::Allocation)?;
+                for &bits in seq {
+                    let elem = storage_elem(handle.typecode, bits)?;
+                    let mut item = [0; 8];
+                    let size = handle
+                        .encode_elem_into(elem, &mut item)
+                        .map_err(|message| {
+                            ArrayStorageError::Exception(crate::BuiltinExc::OverflowError, message)
+                        })?;
+                    encoded.extend_from_slice(&item[..size]);
+                }
+                if !encoded.is_empty() {
+                    ensure_array_resizable(handle)?;
+                }
+                handle
+                    .data
+                    .try_reserve_exact(encoded.len())
+                    .map_err(|_| ArrayStorageError::Allocation)?;
+                handle.data.extend_from_slice(&encoded);
+                Ok(())
+            })
+        });
         array_status(py, result)
     })
 }
@@ -1007,14 +1017,14 @@ pub extern "C" fn molt_array_getitem(handle_bits: u64, index_bits: u64) -> u64 {
             let index = if index < 0 { len + index } else { index };
             if index < 0 || index >= len {
                 return Err(ArrayStorageError::Exception(
-                    "IndexError",
+                    crate::BuiltinExc::IndexError,
                     "array index out of range",
                 ));
             }
             handle
                 .read_elem(index as usize)
                 .ok_or(ArrayStorageError::Exception(
-                    "IndexError",
+                    crate::BuiltinExc::IndexError,
                     "array index out of range",
                 ))
         });
@@ -1040,7 +1050,7 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
             let Some(value_cell) = array_arc_from_bits(value_bits) else {
                 return raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!(
                         "can only assign array (not \"{}\") to array slice",
                         crate::class_name_for_error(crate::type_of_bits(py, value_bits)),
@@ -1059,7 +1069,7 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
                 with_array_storage(&cell, |handle| {
                     if value_tc != handle.typecode {
                         return Err(ArrayStorageError::Exception(
-                            "TypeError",
+                            crate::BuiltinExc::TypeError,
                             "bad argument type for built-in operation",
                         ));
                     }
@@ -1107,14 +1117,14 @@ pub extern "C" fn molt_array_setitem(handle_bits: u64, index_bits: u64, value_bi
                 let index = if index < 0 { len + index } else { index };
                 if index < 0 || index >= len {
                     return Err(ArrayStorageError::Exception(
-                        "IndexError",
+                        crate::BuiltinExc::IndexError,
                         "array assignment index out of range",
                     ));
                 }
                 let elem = storage_elem(handle.typecode, value_bits)?;
-                handle
-                    .set_elem(index as usize, elem)
-                    .map_err(|message| ArrayStorageError::Exception("OverflowError", message))
+                handle.set_elem(index as usize, elem).map_err(|message| {
+                    ArrayStorageError::Exception(crate::BuiltinExc::OverflowError, message)
+                })
             }),
         )
     })
@@ -1168,7 +1178,7 @@ pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
                 let index = if index < 0 { len + index } else { index };
                 if index < 0 || index >= len {
                     return Err(ArrayStorageError::Exception(
-                        "IndexError",
+                        crate::BuiltinExc::IndexError,
                         "array assignment index out of range",
                     ));
                 }
@@ -1176,7 +1186,9 @@ pub extern "C" fn molt_array_delitem(handle_bits: u64, index_bits: u64) -> u64 {
                 handle
                     .remove_at(index as usize)
                     .map(|_| ())
-                    .map_err(|message| ArrayStorageError::Exception("IndexError", message))
+                    .map_err(|message| {
+                        ArrayStorageError::Exception(crate::BuiltinExc::IndexError, message)
+                    })
             }),
         )
     })
@@ -1275,7 +1287,7 @@ pub extern "C" fn molt_array_frombytes(handle_bits: u64, data_bits: u64) -> u64 
             with_array_storage(&cell, |handle| {
                 if data.len() % handle.typecode.itemsize() != 0 {
                     return Err(ArrayStorageError::Exception(
-                        "ValueError",
+                        crate::BuiltinExc::ValueError,
                         "bytes length not a multiple of item size",
                     ));
                 }
@@ -1307,7 +1319,7 @@ pub extern "C" fn molt_array_tolist(handle_bits: u64) -> u64 {
                 .map_err(|_| ArrayStorageError::Allocation)?;
             for index in 0..handle.len() {
                 elems.push(handle.read_elem(index).ok_or(ArrayStorageError::Exception(
-                    "RuntimeError",
+                    crate::BuiltinExc::RuntimeError,
                     "array data corrupted",
                 ))?);
             }
@@ -1382,21 +1394,21 @@ pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
             let len = handle.len() as i64;
             if len == 0 {
                 return Err(ArrayStorageError::Exception(
-                    "IndexError",
+                    crate::BuiltinExc::IndexError,
                     "pop from empty array",
                 ));
             }
             let index = if index < 0 { len + index } else { index };
             if index < 0 || index >= len {
                 return Err(ArrayStorageError::Exception(
-                    "IndexError",
+                    crate::BuiltinExc::IndexError,
                     "pop index out of range",
                 ));
             }
             let elem = handle
                 .read_elem(index as usize)
                 .ok_or(ArrayStorageError::Exception(
-                    "IndexError",
+                    crate::BuiltinExc::IndexError,
                     "pop index out of range",
                 ))?;
             Ok((index as usize, elem))
@@ -1416,9 +1428,9 @@ pub extern "C" fn molt_array_pop(handle_bits: u64, index_bits: u64) -> u64 {
             // clamped to the current size, as array_del_slice does.
             if index < handle.len() {
                 ensure_array_resizable(handle)?;
-                handle
-                    .remove_at(index)
-                    .map_err(|message| ArrayStorageError::Exception("IndexError", message))?;
+                handle.remove_at(index).map_err(|message| {
+                    ArrayStorageError::Exception(crate::BuiltinExc::IndexError, message)
+                })?;
             }
             Ok(())
         });
@@ -1446,7 +1458,9 @@ pub extern "C" fn molt_array_insert(handle_bits: u64, index_bits: u64, value_bit
                 let mut encoded = [0; 8];
                 let size = handle
                     .encode_elem_into(elem, &mut encoded)
-                    .map_err(|message| ArrayStorageError::Exception("OverflowError", message))?;
+                    .map_err(|message| {
+                        ArrayStorageError::Exception(crate::BuiltinExc::OverflowError, message)
+                    })?;
                 let len = handle.len() as i64;
                 let index = if index < 0 {
                     (len + index).max(0)
@@ -1502,7 +1516,7 @@ pub extern "C" fn molt_array_remove(handle_bits: u64, value_bits: u64) -> u64 {
                     Ok(())
                 }
                 None => Err(ArrayStorageError::Exception(
-                    "ValueError",
+                    crate::BuiltinExc::ValueError,
                     "array.remove(x): x not in array",
                 )),
             }
@@ -1616,7 +1630,7 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                             return Ok(pos as i64);
                         }
                         return Err(ArrayStorageError::Exception(
-                            "ValueError",
+                            crate::BuiltinExc::ValueError,
                             "array.index(x): x not in array",
                         ));
                     }
@@ -1627,7 +1641,7 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                         return Ok(pos as i64);
                     }
                     return Err(ArrayStorageError::Exception(
-                        "ValueError",
+                        crate::BuiltinExc::ValueError,
                         "array.index(x): x not in array",
                     ));
                 }
@@ -1640,7 +1654,7 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                     return Ok(pos as i64);
                 }
                 return Err(ArrayStorageError::Exception(
-                    "ValueError",
+                    crate::BuiltinExc::ValueError,
                     "array.index(x): x not in array",
                 ));
             }
@@ -1661,7 +1675,7 @@ pub extern "C" fn molt_array_index(handle_bits: u64, value_bits: u64) -> u64 {
                 }
             }
             Err(ArrayStorageError::Exception(
-                "ValueError",
+                crate::BuiltinExc::ValueError,
                 "array.index(x): x not in array",
             ))
         });

@@ -4,6 +4,7 @@
 //! etc. is a separate linker symbol so that `wasm-ld --gc-sections` can drop
 //! unused entries.
 
+use crate::BuiltinExc;
 use crate::object::iterable::{IterationExhaustion, SpecialIterationKind, SpecialIterationStep};
 use crate::object::memoryview::memoryview_prepare_iter;
 use crate::object::{
@@ -41,7 +42,11 @@ pub extern "C" fn molt_range_new(start_bits: u64, stop_bits: u64, step_bits: u64
             return MoltObject::none().bits();
         };
         if step.is_zero() {
-            return raise_exception::<_>(_py, "ValueError", "range() arg 3 must not be zero");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "range() arg 3 must not be zero",
+            );
         }
         alloc_range_from_bigints(_py, start, stop, step)
     })
@@ -120,11 +125,19 @@ pub extern "C" fn molt_range_count(range_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let range_obj = obj_from_bits(range_bits);
         let Some(range_ptr) = range_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "count() argument must be range");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "count() argument must be range",
+            );
         };
         unsafe {
             if object_type_id(range_ptr) != TYPE_ID_RANGE {
-                return raise_exception::<_>(_py, "TypeError", "count() argument must be range");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "count() argument must be range",
+                );
             }
         }
 
@@ -175,11 +188,19 @@ pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let range_obj = obj_from_bits(range_bits);
         let Some(range_ptr) = range_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "index() argument must be range");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "index() argument must be range",
+            );
         };
         unsafe {
             if object_type_id(range_ptr) != TYPE_ID_RANGE {
-                return raise_exception::<_>(_py, "TypeError", "index() argument must be range");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "index() argument must be range",
+                );
             }
         }
 
@@ -195,7 +216,11 @@ pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
                 }
                 return int_bits_from_bigint(_py, idx);
             }
-            return raise_exception::<_>(_py, "ValueError", "sequence.index(x): x not in sequence");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "sequence.index(x): x not in sequence",
+            );
         }
 
         if let Some((start, stop, step)) = range_components_i64(range_ptr) {
@@ -221,7 +246,11 @@ pub extern "C" fn molt_range_index(range_bits: u64, val_bits: u64) -> u64 {
                 idx += 1;
             }
         }
-        raise_exception::<_>(_py, "ValueError", "sequence.index(x): x not in sequence")
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "sequence.index(x): x not in sequence",
+        )
     })
 }
 
@@ -269,7 +298,7 @@ pub extern "C" fn molt_next_builtin(iter_bits: u64, default_bits: u64) -> u64 {
                     "'{}' object is not an iterator",
                     type_name(_py, obj_from_bits(iter_bits))
                 );
-                raise_exception::<_>(_py, "TypeError", &msg)
+                raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
             }
             Err(()) => MoltObject::none().bits(),
         }
@@ -281,7 +310,7 @@ pub(crate) unsafe fn map_new_impl(_py: &PyToken<'_>, func_bits: u64, iterables: 
         if iterables.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "map() must have at least two arguments",
             );
         }
@@ -449,14 +478,18 @@ pub extern "C" fn molt_zip_builtin(iterables_bits: u64, strict_bits: u64) -> u64
         let _strict_bits = MoltObject::from_bool(strict).bits();
         let iterables_obj = obj_from_bits(iterables_bits);
         let Some(iterables_ptr) = iterables_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "zip expects an iterable of iterables");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zip expects an iterable of iterables",
+            );
         };
         unsafe {
             let tid = object_type_id(iterables_ptr);
             if tid != TYPE_ID_TUPLE && tid != TYPE_ID_LIST {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "zip expects an iterable of iterables",
                 );
             }
@@ -607,7 +640,7 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
             }
         }
         let msg = format!("'{}' object is not reversible", type_name(_py, obj));
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     }
 }
 
@@ -694,7 +727,7 @@ pub(crate) unsafe fn enumerate_new_impl(
                     "'{}' object cannot be interpreted as an integer",
                     type_name(_py, start_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             start_bits
         } else {
@@ -899,7 +932,7 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                             type_name(_py, obj_from_bits(res))
                         );
                         dec_ref_bits(_py, res);
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                     return res;
                 }
@@ -978,7 +1011,7 @@ unsafe fn call_iter_finish(py: &PyToken<'_>, ptr: *mut u8) {
 pub(super) fn iter_sentinel(_py: &PyToken<'_>, callable_bits: u64, sentinel_bits: u64) -> u64 {
     let callable_ok = is_truthy(_py, obj_from_bits(molt_is_callable(callable_bits)));
     if !callable_ok {
-        return raise_exception::<_>(_py, "TypeError", "iter(v, w): v must be callable");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "iter(v, w): v must be callable");
     }
     let total = std::mem::size_of::<MoltHeader>() + CALL_ITER_PAYLOAD_SIZE;
     let iter_ptr = alloc_object(_py, total, TYPE_ID_CALL_ITER);
@@ -1017,7 +1050,7 @@ pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
                     "'{}' object is not async iterable",
                     type_name(_py, obj_from_bits(obj_bits))
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             };
             let iterator = call_callable0(_py, method);
             dec_ref_bits(_py, method);
@@ -1041,7 +1074,7 @@ pub extern "C" fn molt_aiter(obj_bits: u64) -> u64 {
                     type_name(_py, obj_from_bits(iterator))
                 );
                 dec_ref_bits(_py, iterator);
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             iterator
         }
@@ -1251,7 +1284,11 @@ unsafe fn alloc_hash_iterator(py: &PyToken<'_>, target_bits: u64, reverse: bool)
             super::ClassEdgeOwnership::Owned,
         ) {
             dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
-            return raise_exception(py, "SystemError", "hash iterator class publication failed");
+            return raise_exception(
+                py,
+                BuiltinExc::SystemError,
+                "hash iterator class publication failed",
+            );
         }
         super::gc::gc_publish_initialized(py, ptr);
         MoltObject::from_ptr(ptr).bits()
@@ -1334,7 +1371,7 @@ unsafe fn hash_iterator_step<'a, 'py>(
             super::layout::hash_iterator_state(ptr, reverse).expected = usize::MAX;
             raise_exception::<()>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 if set {
                     "Set changed size during iteration"
                 } else {
@@ -1374,7 +1411,7 @@ unsafe fn hash_iterator_step<'a, 'py>(
         if !set && !reverse && remaining == 0 {
             raise_exception::<()>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "dictionary keys changed during iteration",
             );
             hash_iterator_finish(py, ptr, reverse);
@@ -1414,7 +1451,7 @@ unsafe fn publish_native_iterator(py: &PyToken<'_>, ptr: *mut u8) -> bool {
         ) {
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "native iterator class publication failed",
             );
             dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
@@ -1464,14 +1501,14 @@ pub(crate) unsafe fn resolve_deferred_iterator_class(py: &PyToken<'_>, ptr: *mut
 pub(crate) extern "C" fn list_iterator_length_hint(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(ptr) = obj_from_bits(bits).as_ptr() else {
-            return raise_exception(py, "TypeError", "list iterator required");
+            return raise_exception(py, BuiltinExc::TypeError, "list iterator required");
         };
         unsafe {
             let b = builtin_classes(py);
             let class = object_class_bits(ptr);
             let reverse = class == b.list_reverseiterator;
             if !reverse && class != b.list_iterator {
-                return raise_exception(py, "TypeError", "list iterator required");
+                return raise_exception(py, BuiltinExc::TypeError, "list iterator required");
             }
             let target = if reverse {
                 reversed_target_bits(ptr)
@@ -1502,11 +1539,11 @@ pub(crate) extern "C" fn list_iterator_length_hint(bits: u64) -> u64 {
 pub(crate) extern "C" fn hash_iterator_length_hint(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(ptr) = obj_from_bits(bits).as_ptr() else {
-            return raise_exception(py, "TypeError", "hash iterator required");
+            return raise_exception(py, BuiltinExc::TypeError, "hash iterator required");
         };
         unsafe {
             let Some((reverse, projection)) = hash_iterator_kind(py, ptr) else {
-                return raise_exception(py, "TypeError", "hash iterator required");
+                return raise_exception(py, BuiltinExc::TypeError, "hash iterator required");
             };
             let remaining = if let Some(target) = obj_from_bits(iter_target_bits(ptr))
                 .as_ptr()
@@ -1624,14 +1661,18 @@ fn exhausted() -> IterationResult {
 }
 
 fn not_an_iterator(py: &PyToken<'_>) -> IterationResult {
-    raise_exception::<()>(py, "TypeError", "object is not an iterator");
+    raise_exception::<()>(py, BuiltinExc::TypeError, "object is not an iterator");
     Err(())
 }
 
 /// A failure that left no exception still has to report one.
 fn invalid_iterator_state(py: &PyToken<'_>) -> IterationResult {
     if !exception_pending(py) {
-        raise_exception::<()>(py, "SystemError", "iterator target state is invalid");
+        raise_exception::<()>(
+            py,
+            BuiltinExc::SystemError,
+            "iterator target state is invalid",
+        );
     }
     Err(())
 }
@@ -1758,7 +1799,7 @@ unsafe fn generator_next_step(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult
             // Only an async generator's own operations drive an awaiting body.
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "generator awaited outside its async generator",
             );
             Err(())
@@ -1868,10 +1909,10 @@ unsafe fn call_iter_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
         if exception_pending(py) {
             dec_ref_bits(py, val_bits);
             let exception = molt_exception_last_pending();
-            let stop = crate::builtins::exceptions::exception_matches_builtin_name(
+            let stop = crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "StopIteration",
+                crate::BuiltinExc::StopIteration,
             );
             if stop {
                 clear_exception(py);
@@ -2132,7 +2173,7 @@ unsafe fn zip_strict_mismatch(
             index + 1,
             preceding(index)
         );
-        raise_exception::<()>(py, "ValueError", &msg);
+        raise_exception::<()>(py, BuiltinExc::ValueError, &msg);
         return Err(());
     }
     let count = unsafe { (*iters_ptr).len() };
@@ -2149,7 +2190,7 @@ unsafe fn zip_strict_mismatch(
                     other + 1,
                     preceding(other)
                 );
-                raise_exception::<()>(py, "ValueError", &msg);
+                raise_exception::<()>(py, BuiltinExc::ValueError, &msg);
                 return Err(());
             }
             SpecialIterationStep::Exhausted(payload) => dec_ref_bits(py, payload),
@@ -2509,7 +2550,7 @@ unsafe fn sequence_iterator_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationRes
                             "'{}' object is not subscriptable",
                             type_name(py, obj_from_bits(target_bits))
                         );
-                        raise_exception::<()>(py, "TypeError", &message);
+                        raise_exception::<()>(py, BuiltinExc::TypeError, &message);
                         Err(())
                     }
                     Err(()) => Err(()),
@@ -2570,7 +2611,7 @@ unsafe fn pair_from_step(py: &PyToken<'_>, iter_bits: u64, step: IterationResult
                     "'{}' object is not an iterator",
                     type_name(py, obj_from_bits(iter_bits))
                 );
-                raise_exception::<_>(py, "TypeError", &msg)
+                raise_exception::<_>(py, BuiltinExc::TypeError, &msg)
             }
             Err(()) => {
                 if let Some(slot) = cache {
@@ -2640,12 +2681,16 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
         let Some(value_out) = crate::provenance::abi::mut_ptr::<u64>(value_out_bits) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "iterator output address exceeds the active address space",
             );
         };
         if value_out.is_null() {
-            return raise_exception::<u64>(_py, "RuntimeError", "iterator output pointer is null");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "iterator output pointer is null",
+            );
         }
         let (done, value) = iter_next_unboxed_step(_py, iter_bits);
         // SAFETY: the caller supplies writable storage for one word.
@@ -2668,7 +2713,7 @@ fn iter_next_unboxed_step(py: &PyToken<'_>, iter_bits: u64) -> (u64, u64) {
             (MoltObject::from_bool(true).bits(), no_value)
         }
         Ok(SpecialIterationStep::Missing) => (
-            raise_exception::<_>(py, "TypeError", "object is not an iterator"),
+            raise_exception::<_>(py, BuiltinExc::TypeError, "object is not an iterator"),
             no_value,
         ),
         Err(()) => (no_value, no_value),
@@ -2767,7 +2812,7 @@ pub extern "C" fn molt_anext(obj_bits: u64) -> u64 {
                     "'{}' object is not an async iterator",
                     type_name(_py, obj_from_bits(obj_bits))
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             };
             let result = call_callable0(_py, method);
             dec_ref_bits(_py, method);
@@ -3040,10 +3085,10 @@ mod tests {
                     crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
                     assert!(crate::exception_pending(py));
                     let error = crate::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "MemoryError",
+                        crate::BuiltinExc::MemoryError,
                     ));
                     crate::molt_exception_clear();
                     dec_ref_bits(py, error);
@@ -3112,10 +3157,10 @@ mod tests {
                 );
                 crate::molt_operator_length_hint(reverse, int(0));
                 let error = crate::builtins::exceptions::molt_exception_last_pending();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "OverflowError"
+                    crate::BuiltinExc::OverflowError
                 ));
                 crate::molt_exception_clear();
                 dec_ref_bits(py, error);
@@ -3134,10 +3179,10 @@ mod tests {
                 assert_eq!(hint, int(-1), "set length hint uses signed Py_ssize_t");
                 crate::molt_operator_length_hint(iter, int(0));
                 let error = crate::builtins::exceptions::molt_exception_last_pending();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "ValueError"
+                    crate::BuiltinExc::ValueError
                 ));
                 crate::molt_exception_clear();
                 dec_ref_bits(py, error);

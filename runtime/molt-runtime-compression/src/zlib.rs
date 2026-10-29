@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
-        return raise_exception(_py, "MemoryError", "out of memory");
+        return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -47,12 +47,14 @@ pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
         match compress_bytes(unsafe { export.bytes(_py) }, level, -15) {
             Ok(out) => return_bytes(_py, &out),
             Err(ZlibFailure::Memory) => {
-                raise_exception(_py, "MemoryError", "deflate out of memory")
+                raise_exception(_py, BuiltinExc::MemoryError, "deflate out of memory")
             }
-            Err(ZlibFailure::Initialization(zlib::Z_STREAM_ERROR)) => {
-                raise_exception(_py, "ValueError", "deflate level must be in range -1..9")
-            }
-            Err(_) => raise_exception(_py, "ValueError", "deflate failed"),
+            Err(ZlibFailure::Initialization(zlib::Z_STREAM_ERROR)) => raise_exception(
+                _py,
+                BuiltinExc::ValueError,
+                "deflate level must be in range -1..9",
+            ),
+            Err(_) => raise_exception(_py, BuiltinExc::ValueError, "deflate failed"),
         }
     })
 }
@@ -63,14 +65,14 @@ pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
         // Internal ZIP storage accepts only physical bytes/bytearray here.
         let obj = obj_from_bits(data_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception(_py, "TypeError", "inflate expects bytes");
+            return raise_exception(_py, BuiltinExc::TypeError, "inflate expects bytes");
         };
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
                 return raise_exception(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("inflate expects bytes, got {}", type_name(_py, obj)),
                 );
             }
@@ -78,9 +80,9 @@ pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
             match decompress_bytes(input, -15, 16384) {
                 Ok(out) => return_bytes(_py, &out),
                 Err(ZlibFailure::Memory) => {
-                    raise_exception(_py, "MemoryError", "inflate out of memory")
+                    raise_exception(_py, BuiltinExc::MemoryError, "inflate out of memory")
                 }
-                Err(_) => raise_exception(_py, "ValueError", "invalid deflate data"),
+                Err(_) => raise_exception(_py, BuiltinExc::ValueError, "invalid deflate data"),
             }
         }
     })
@@ -118,9 +120,11 @@ pub extern "C" fn molt_zlib_compress(
         };
         match compress_bytes(unsafe { export.bytes(_py) }, level, wbits) {
             Ok(out) => return_bytes(_py, &out),
-            Err(ZlibFailure::Memory) => {
-                raise_exception(_py, "MemoryError", "Out of memory while compressing data")
-            }
+            Err(ZlibFailure::Memory) => raise_exception(
+                _py,
+                BuiltinExc::MemoryError,
+                "Out of memory while compressing data",
+            ),
             Err(ZlibFailure::Initialization(zlib::Z_STREAM_ERROR)) => {
                 molt_runtime_core::rt_raise_class(_py, error_owner.bits(), "Bad compression level")
             }
@@ -164,13 +168,15 @@ pub extern "C" fn molt_zlib_decompress(
             Err(bits) => return bits,
         };
         if initial < 0 {
-            return raise_exception(_py, "ValueError", "bufsize must be non-negative");
+            return raise_exception(_py, BuiltinExc::ValueError, "bufsize must be non-negative");
         }
         match decompress_bytes(unsafe { export.bytes(_py) }, wbits, initial.max(1) as usize) {
             Ok(out) => return_bytes(_py, &out),
-            Err(ZlibFailure::Memory) => {
-                raise_exception(_py, "MemoryError", "Out of memory while decompressing data")
-            }
+            Err(ZlibFailure::Memory) => raise_exception(
+                _py,
+                BuiltinExc::MemoryError,
+                "Out of memory while decompressing data",
+            ),
             Err(ZlibFailure::Initialization(code)) => molt_runtime_core::rt_raise_class(
                 _py,
                 error_owner.bits(),
@@ -646,7 +652,7 @@ pub extern "C" fn molt_zlib_compressobj_new(
     molt_runtime_core::with_gil_entry!(_py, {
         let error_owner = OwnedRuntimeValue::retain(_py, error_class);
         let Some(zdict_present) = obj_from_bits(zdict_present_bits).as_bool() else {
-            return raise_exception(_py, "SystemError", "invalid zdict presence flag");
+            return raise_exception(_py, BuiltinExc::SystemError, "invalid zdict presence flag");
         };
         let mut options = [0i32; 5];
         for (value, bits) in options.iter_mut().zip([
@@ -685,7 +691,7 @@ pub extern "C" fn molt_zlib_compressobj_new(
         {
             return raise_exception(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "zdict length does not fit in an unsigned int",
             );
         }
@@ -695,12 +701,16 @@ pub extern "C" fn molt_zlib_compressobj_new(
                 Err(zlib::Z_MEM_ERROR) => {
                     return raise_exception(
                         _py,
-                        "MemoryError",
+                        BuiltinExc::MemoryError,
                         "Can't allocate memory for compression object",
                     );
                 }
                 Err(zlib::Z_STREAM_ERROR) => {
-                    return raise_exception(_py, "ValueError", "Invalid initialization option");
+                    return raise_exception(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "Invalid initialization option",
+                    );
                 }
                 Err(code) => {
                     return molt_runtime_core::rt_raise_class(
@@ -718,7 +728,7 @@ pub extern "C" fn molt_zlib_compressobj_new(
             if code != zlib::Z_OK {
                 return raise_exception(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     if code == zlib::Z_STREAM_ERROR {
                         "Invalid dictionary"
                     } else {
@@ -823,7 +833,11 @@ fn finish_deflate_output(
     phase: &str,
 ) -> u64 {
     match result {
-        Err(_) => raise_exception(py, "MemoryError", "Out of memory while compressing data"),
+        Err(_) => raise_exception(
+            py,
+            BuiltinExc::MemoryError,
+            "Out of memory while compressing data",
+        ),
         Ok(result) => match result.status {
             Err(code) => molt_runtime_core::rt_raise_class(
                 py,
@@ -1179,17 +1193,21 @@ pub extern "C" fn molt_zlib_decompressobj_new(wbits_bits: u64) -> u64 {
             Err(zlib::Z_MEM_ERROR) => {
                 return raise_exception(
                     _py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "Can't allocate memory for decompression object",
                 );
             }
             Err(zlib::Z_STREAM_ERROR) => {
-                return raise_exception(_py, "ValueError", "Invalid initialization option");
+                return raise_exception(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "Invalid initialization option",
+                );
             }
             Err(_) => {
                 return raise_exception(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "zlib decompressor ABI initialization failed",
                 );
             }
@@ -1245,7 +1263,11 @@ pub extern "C" fn molt_zlib_decompressobj_decompress(
             Err(bits) => return bits,
         };
         if max_length < 0 {
-            return raise_exception(_py, "ValueError", "max_length must be non-negative");
+            return raise_exception(
+                _py,
+                BuiltinExc::ValueError,
+                "max_length must be non-negative",
+            );
         }
         let limit = if max_length == 0 {
             isize::MAX as usize
@@ -1260,7 +1282,7 @@ pub extern "C" fn molt_zlib_decompressobj_decompress(
             Ok(result) => result,
             Err(_) => {
                 drop(handle);
-                return raise_exception(_py, "MemoryError", "out of memory");
+                return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
             }
         };
         let had_tail = !handle.unconsumed_tail.is_empty();
@@ -1269,7 +1291,7 @@ pub extern "C" fn molt_zlib_decompressobj_decompress(
             .is_err()
         {
             drop(handle);
-            return raise_exception(_py, "MemoryError", "out of memory");
+            return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
         }
         drop(handle);
         if let Err(error) = result.status {
@@ -1306,7 +1328,11 @@ pub extern "C" fn molt_zlib_decompressobj_flush(
             Err(bits) => return bits,
         };
         if length <= 0 {
-            return raise_exception(_py, "ValueError", "length must be greater than zero");
+            return raise_exception(
+                _py,
+                BuiltinExc::ValueError,
+                "length must be greater than zero",
+            );
         }
         let mut handle = handle_owner
             .lock()
@@ -1324,7 +1350,7 @@ pub extern "C" fn molt_zlib_decompressobj_flush(
             Err(_) => {
                 handle.unconsumed_tail = input;
                 drop(handle);
-                return raise_exception(_py, "MemoryError", "out of memory");
+                return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
             }
         };
         let had_tail = !input.is_empty();
@@ -1333,7 +1359,7 @@ pub extern "C" fn molt_zlib_decompressobj_flush(
             // unused_data allocation must not retire that pre-existing owner.
             handle.unconsumed_tail = input.into_owned();
             drop(handle);
-            return raise_exception(_py, "MemoryError", "out of memory");
+            return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
         }
         if result.status == Ok(ZlibStatus::StreamEnd) {
             handle.decoder = None;

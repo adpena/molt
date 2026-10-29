@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::object::ops::DecodeTextError as OpsDecodeTextError;
 use crate::*;
 use molt_stdlib_text::codec_registry::PYTHON_ENCODING_ALIASES;
@@ -11,12 +12,12 @@ fn codec_arg_to_str(
     let obj = obj_from_bits(bits);
     if obj.is_none() {
         let msg = format!("{func_name}() argument '{arg_name}' must be str, not None");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let Some(text) = string_obj_to_owned(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, bits));
         let msg = format!("{func_name}() argument '{arg_name}' must be str, not {type_name}");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     Some(text)
 }
@@ -24,12 +25,16 @@ fn codec_arg_to_str(
 fn lookup_arg_to_str(_py: &PyToken<'_>, bits: u64) -> Option<String> {
     let obj = obj_from_bits(bits);
     if obj.is_none() {
-        return raise_exception::<_>(_py, "TypeError", "lookup() argument must be str, not None");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "lookup() argument must be str, not None",
+        );
     }
     let Some(text) = string_obj_to_owned(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, bits));
         let msg = format!("lookup() argument must be str, not {type_name}");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     Some(text)
 }
@@ -91,7 +96,11 @@ pub extern "C" fn molt_codecs_decode(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(with_consumed) = obj_from_bits(with_consumed_bits).as_bool() else {
-            return raise_exception::<_>(_py, "TypeError", "codec result selector must be bool");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "codec result selector must be bool",
+            );
         };
         let encoding = match codec_arg_to_str(_py, encoding_bits, "decode", "encoding") {
             Some(val) => val,
@@ -106,11 +115,11 @@ pub extern "C" fn molt_codecs_decode(
             Ok(_) => {}
             Err(OpsDecodeTextError::UnknownEncoding(name)) => {
                 let msg = format!("unknown encoding: {name}");
-                return raise_exception::<_>(_py, "LookupError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
             }
             Err(OpsDecodeTextError::UnknownErrorHandler(name)) => {
                 let msg = format!("unknown error handler name '{name}'");
-                return raise_exception::<_>(_py, "LookupError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
             }
             Err(OpsDecodeTextError::Failure(..)) => {}
         }
@@ -119,7 +128,7 @@ pub extern "C" fn molt_codecs_decode(
         let Some(_ptr) = obj.as_ptr() else {
             let type_name = type_name(_py, obj);
             let msg = format!("a bytes-like object is required, not '{type_name}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let input = match crate::object::buffer_exports::ScopedBuffer::simple(_py, obj_bits) {
             Ok(input) => input,
@@ -154,7 +163,11 @@ pub extern "C" fn molt_codecs_encode(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(with_consumed) = obj_from_bits(with_consumed_bits).as_bool() else {
-            return raise_exception::<_>(_py, "TypeError", "codec result selector must be bool");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "codec result selector must be bool",
+            );
         };
         let encoding = match codec_arg_to_str(_py, encoding_bits, "encode", "encoding") {
             Some(val) => val,
@@ -173,7 +186,7 @@ pub extern "C" fn molt_codecs_encode(
         let Some(ptr) = obj.as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "utf_8_encode() argument 1 must be str, not None",
             );
         };
@@ -181,7 +194,7 @@ pub extern "C" fn molt_codecs_encode(
             if object_type_id(ptr) != TYPE_ID_STRING {
                 let type_name = type_name(_py, obj);
                 let msg = format!("utf_8_encode() argument 1 must be str, not {type_name}");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
             let out = match encode_string_with_errors(bytes, &encoding, Some(&errors)) {
@@ -220,7 +233,7 @@ pub extern "C" fn molt_codecs_lookup_name(encoding_bits: u64) -> u64 {
         };
         let Some(kind) = crate::object::ops::normalize_encoding(&encoding) else {
             let msg = format!("unknown encoding: {encoding}");
-            return raise_exception::<_>(_py, "LookupError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
         };
         let ptr = alloc_string(_py, crate::object::ops::encoding_kind_name(kind).as_bytes());
         if ptr.is_null() {

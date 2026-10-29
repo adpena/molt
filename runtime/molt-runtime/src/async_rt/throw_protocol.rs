@@ -4,6 +4,7 @@
 //! cancellation/close paths already own a canonical exception instance. The
 //! tuple is kept intact during delegation and normalized only at its receiver.
 
+use crate::BuiltinExc;
 use crate::builtins::exceptions::{
     ExceptionFieldSlot, ExceptionValue, exception_class, exception_class_is_subtype,
     exception_field, exception_is_class, exception_is_instance, exception_matches_type,
@@ -47,7 +48,11 @@ fn arguments(py: &PyToken<'_>, carrier: u64) -> Option<ThrowArguments> {
         }
         .flatten();
         if copied.is_none() {
-            return raise_exception::<_>(py, "SystemError", "invalid throw argument carrier");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid throw argument carrier",
+            );
         }
         copied
     } else {
@@ -68,15 +73,23 @@ pub(crate) fn parse_throw_call(py: &PyToken<'_>, args: u64, kwargs: u64) -> Opti
     let args = crate::builtins::types::call_vararg_args(py, "throw", args)?;
     let keywords = crate::builtins::types::call_vararg_kwargs(py, "throw", kwargs)?;
     let Some((&receiver, args)) = args.split_first() else {
-        return raise_exception::<_>(py, "TypeError", "descriptor 'throw' needs an argument");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::TypeError,
+            "descriptor 'throw' needs an argument",
+        );
     };
     if !keywords.is_empty() {
-        return raise_exception::<_>(py, "TypeError", "throw() takes no keyword arguments");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::TypeError,
+            "throw() takes no keyword arguments",
+        );
     }
     if !(1..=3).contains(&args.len()) {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("throw expected 1 to 3 arguments, got {}", args.len()),
         );
     }
@@ -122,7 +135,7 @@ fn construct_throw_exception(py: &PyToken<'_>, class: u64, value: u64) -> Option
     if !exception_is_instance(py, instance.bits()) {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "calling exception class did not return an exception instance",
         );
     }
@@ -155,7 +168,7 @@ fn take_throw_normalization_failure(
             return if exception_pending(py) {
                 None
             } else {
-                raise_exception::<_>(py, "TypeError", message)
+                raise_exception::<_>(py, BuiltinExc::TypeError, message)
             };
         }
     }
@@ -176,7 +189,7 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
         if !unsafe { crate::object::class_layout::is_real_instance(py, traceback, ty) } {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "throw() third argument must be a traceback object",
             );
         }
@@ -186,7 +199,7 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
         if !obj_from_bits(value).is_none() {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "instance exception may not have a separate value",
             );
         }
@@ -240,7 +253,7 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
     } else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "exceptions must be classes or instances deriving from BaseException",
         );
     };
@@ -259,7 +272,7 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
         return if exception_pending(py) {
             None
         } else {
-            raise_exception::<_>(py, "TypeError", message)
+            raise_exception::<_>(py, BuiltinExc::TypeError, message)
         };
     }
     Some(normalized.into_bits())
@@ -279,7 +292,7 @@ pub(crate) fn throw_is_generator_exit(py: &PyToken<'_>, carrier: u64) -> bool {
     let Some(args) = arguments(py, carrier) else {
         return false;
     };
-    let target = crate::exception_type_bits_from_name(py, "GeneratorExit");
+    let target = crate::exception_class_bits(py, BuiltinExc::GeneratorExit);
     if exception_is_class(py, args[0]) {
         exception_class_is_subtype(py, args[0], target)
     } else {
@@ -310,7 +323,7 @@ pub(crate) unsafe fn raise_body_exception(
     exception: u64,
 ) -> u64 {
     use crate::builtins::exceptions::{
-        ExceptionFieldSlot, exception_matches_builtin_name, exception_replace_field_bits,
+        ExceptionFieldSlot, exception_matches_kind, exception_replace_field_bits,
     };
     use crate::object::layout::{CodeExecutionKind, code_execution_kind};
 
@@ -331,7 +344,7 @@ pub(crate) unsafe fn raise_body_exception(
         }
     };
     let message = if kind != CodeExecutionKind::Direct
-        && exception_matches_builtin_name(py, exception, "StopIteration")
+        && exception_matches_kind(py, exception, crate::BuiltinExc::StopIteration)
     {
         Some(match kind {
             CodeExecutionKind::AsyncGenerator => "async generator raised StopIteration",
@@ -340,7 +353,7 @@ pub(crate) unsafe fn raise_body_exception(
             CodeExecutionKind::Direct => unreachable!(),
         })
     } else if kind == CodeExecutionKind::AsyncGenerator
-        && exception_matches_builtin_name(py, exception, "StopAsyncIteration")
+        && exception_matches_kind(py, exception, crate::BuiltinExc::StopAsyncIteration)
     {
         Some("async generator raised StopAsyncIteration")
     } else {
@@ -351,7 +364,7 @@ pub(crate) unsafe fn raise_body_exception(
         dec_ref_bits(py, exception);
         return result;
     };
-    let converted = alloc_exception(py, "RuntimeError", message);
+    let converted = alloc_exception(py, BuiltinExc::RuntimeError, message);
     if converted.is_null() {
         dec_ref_bits(py, exception);
         return MoltObject::none().bits();
@@ -362,7 +375,7 @@ pub(crate) unsafe fn raise_body_exception(
             dec_ref_bits(py, converted);
             dec_ref_bits(py, exception);
             if !exception_pending(py) {
-                return raise_exception::<_>(py, "SystemError", message);
+                return raise_exception::<_>(py, BuiltinExc::SystemError, message);
             }
             return MoltObject::none().bits();
         }

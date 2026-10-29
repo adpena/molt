@@ -14,6 +14,7 @@
 //! Compiled frames pin the activation; projections follow each cell's actual
 //! publication ordinal, including prologue reentry and terminal unwinding.
 
+use crate::BuiltinExc;
 use std::collections::HashMap;
 
 use molt_codegen_abi::{FRAME_HOME_CELL, FRAME_HOME_HOLDS_REFERENCE, FRAME_HOME_PLAIN};
@@ -65,7 +66,7 @@ impl Drop for RetainedEdges<'_, '_> {
 }
 
 fn schema_error<T>(py: &PyToken<'_>, message: &str) -> Option<T> {
-    raise_exception::<u64>(py, "TypeError", message);
+    raise_exception::<u64>(py, BuiltinExc::TypeError, message);
     None
 }
 
@@ -228,7 +229,7 @@ impl LocalsProjectionError {
         if let Self::Layout(message) = self
             && !exception_pending(py)
         {
-            raise_exception::<u64>(py, "SystemError", message);
+            raise_exception::<u64>(py, BuiltinExc::SystemError, message);
         }
     }
 }
@@ -845,7 +846,11 @@ pub(crate) unsafe fn activation_frame_clear(
     unsafe {
         let state = activation_frame_state(ptr);
         if state == FrameState::Executing {
-            raise_exception::<u64>(py, "RuntimeError", "cannot clear an executing frame");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::RuntimeError,
+                "cannot clear an executing frame",
+            );
             return Err(());
         }
         if state.is_terminal() {
@@ -853,7 +858,11 @@ pub(crate) unsafe fn activation_frame_clear(
         }
         let started = state != FrameState::Created;
         if started && policy.pep667() {
-            raise_exception::<u64>(py, "RuntimeError", "cannot clear a suspended frame");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::RuntimeError,
+                "cannot clear a suspended frame",
+            );
             return Err(());
         }
         let generator = object_type_id(ptr) == TYPE_ID_GENERATOR;
@@ -972,7 +981,11 @@ pub extern "C" fn molt_frame_locals_begin() -> u64 {
             return MoltObject::none().bits();
         }
         if object_frame_locals_phase(ptr) != 0 {
-            return raise_exception::<u64>(py, "SystemError", "stateful prologue entered twice");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "stateful prologue entered twice",
+            );
         }
         if unsafe { init_body_prefix(py, ptr, &layout) }.is_err() {
             return MoltObject::none().bits();
@@ -993,7 +1006,11 @@ pub extern "C" fn molt_frame_cell_publish(offset_bits: u64, cell_bits: u64) -> u
         let ptr = obj_from_bits(owner).as_ptr().unwrap();
         let Some(offset) = to_i64(obj_from_bits(offset_bits)).and_then(|n| usize::try_from(n).ok())
         else {
-            return raise_exception::<u64>(py, "SystemError", "stateful cell offset is invalid");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "stateful cell offset is invalid",
+            );
         };
         let phase = crate::object::aux_header::object_frame_locals_phase(ptr);
         let admitted = layout
@@ -1012,7 +1029,7 @@ pub extern "C" fn molt_frame_cell_publish(offset_bits: u64, cell_bits: u64) -> u
         {
             return raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "stateful cell publication violates its layout",
             );
         }

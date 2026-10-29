@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 use crate::call::function::function_code_execution_kind;
@@ -159,7 +160,7 @@ pub extern "C" fn molt_function_closure_bits(func_bits: u64) -> u64 {
 pub extern "C" fn molt_call_arity_error(expected: i64, got: i64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let msg = format!("call arity mismatch (expected {expected}, got {got})");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 

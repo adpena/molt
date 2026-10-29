@@ -16,6 +16,7 @@
 //! `foreign_release` calls back into the bridge to `Py_DECREF` + drop the identity
 //! mapping when the Molt wrapper is collected.
 
+use crate::BuiltinExc;
 use crate::{PyToken, TYPE_ID_FOREIGN};
 
 use super::{ObjectAuxPreselection, alloc_object_zeroed_unpublished_with_aux, bits_from_ptr};
@@ -32,7 +33,7 @@ pub(crate) fn foreign_new(_py: &PyToken<'_>, c_ptr: usize) -> u64 {
     {
         crate::raise_exception::<()>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "GC-capable foreign object was not enrolled in the runtime GC authority",
         );
         return 0;

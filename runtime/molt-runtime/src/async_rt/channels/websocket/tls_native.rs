@@ -1,5 +1,6 @@
 #![cfg(molt_has_net_io)]
 
+use crate::BuiltinExc;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
@@ -308,7 +309,7 @@ pub(super) enum TlsConnectError {
 
 fn tls_resolver_protocol_error(py: &PyToken<'_>, message: &str) -> TlsConnectError {
     if !exception_pending(py) {
-        raise_exception::<u64>(py, "RuntimeError", message);
+        raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
     }
     TlsConnectError::PendingPython
 }
@@ -609,7 +610,7 @@ pub(super) fn tls_server_ssl_attr_string(
         dec_ref_bits(_py, attr_bits);
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "ssl context cert/key attributes must be str or None",
         ));
     };
@@ -617,7 +618,7 @@ pub(super) fn tls_server_ssl_attr_string(
     if value.is_empty() {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "ssl cert/key paths cannot be empty",
         ));
     }
@@ -726,8 +727,12 @@ mod resolver_tests {
     fn tls_resolver_pending_keeps_exact_class_errno_and_exception_owner() {
         let _guard = RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            for (name, code) in [("gaierror", 9), ("OSError", 9), ("BlockingIOError", 11)] {
-                let class = crate::builtins::exceptions::exception_type_bits_from_name(py, name);
+            for (name, code) in [
+                (crate::BuiltinExc::SocketGaiError, 9),
+                (crate::BuiltinExc::OSError, 9),
+                (crate::BuiltinExc::BlockingIOError, 11),
+            ] {
+                let class = crate::builtins::exceptions::exception_class_bits(py, name);
                 crate::builtins::exceptions::raise_os_error_errno_with_class::<u64>(
                     py,
                     class,
@@ -791,7 +796,7 @@ mod resolver_tests {
                 let class = crate::builtins::exceptions::exception_class(py, error).unwrap();
                 assert_eq!(
                     class.bits(),
-                    crate::builtins::exceptions::exception_type_bits_from_name(py, "RuntimeError")
+                    crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::RuntimeError)
                 );
                 clear_exception(py);
                 dec_ref_bits(py, error);

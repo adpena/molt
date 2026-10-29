@@ -1,4 +1,4 @@
-# MOLT_META: backends=jit,llvm,native platforms=posix expect_fail=molt expect_fail_reason=open_finding finding=HF-207 expect_molt_returncode=0 expect_molt_stdout_sha256=6a6997b3911ebfae5d5ef97ffc242dfa6c387aa1e3d2556c70b7ba13af5743b9
+# MOLT_META: backends=jit,llvm,native platforms=posix
 # MOLT_ENV: MOLT_CAPABILITIES=fs,env,time,random,process.exec
 """Purpose: a failing checked child raises subprocess.CalledProcessError with its fields."""
 

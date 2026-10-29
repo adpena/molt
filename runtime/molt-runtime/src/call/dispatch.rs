@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::call::ExceptionBaselineGuard;
 use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
 use crate::call::{StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target};
@@ -46,7 +47,7 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
                 ) {
                     let class_name = class_name_for_error(call_bits);
                     let msg = format!("{class_name}() takes no arguments");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
@@ -79,11 +80,19 @@ pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
             }
             let name_obj = obj_from_bits(name_bits);
             let Some(name_ptr) = name_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "builtin name must be str");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "builtin name must be str",
+                );
             };
             let name = {
                 if object_type_id(name_ptr) != crate::TYPE_ID_STRING {
-                    return raise_exception::<_>(_py, "TypeError", "builtin name must be str");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "builtin name must be str",
+                    );
                 }
                 let len = crate::string_len(name_ptr);
                 let bytes = std::slice::from_raw_parts(crate::string_bytes(name_ptr), len);
@@ -100,7 +109,11 @@ pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
             }
             // CallBuiltin names the active public namespace. A miss cannot
             // acquire an intrinsic or retry against a different module cache.
-            raise_exception::<_>(_py, "NameError", &format!("name '{name}' is not defined"))
+            raise_exception::<_>(
+                _py,
+                BuiltinExc::NameError,
+                &format!("name '{name}' is not defined"),
+            )
         }
     })
 }
@@ -422,11 +435,11 @@ mod tests {
                 assert!(exception_pending(py));
                 let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
                 let expected = if name == public_name {
-                    "NameError"
+                    crate::BuiltinExc::NameError
                 } else {
-                    "TypeError"
+                    crate::BuiltinExc::TypeError
                 };
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py, error, expected
                 ));
                 crate::clear_exception(py);
@@ -437,10 +450,10 @@ mod tests {
                 crate::molt_func_new_builtin_named(public_name, fn_addr!(crate::molt_len), 0, 1);
             assert!(exception_pending(py));
             let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "NameError"
+                crate::BuiltinExc::NameError
             ));
             crate::clear_exception(py);
             crate::dec_ref_bits(py, missing);

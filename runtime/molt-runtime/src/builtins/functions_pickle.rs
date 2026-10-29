@@ -43,8 +43,8 @@ pub(crate) enum PickleError {
 impl PickleError {
     fn raise(self, py: &crate::PyToken<'_>, message: &str) -> u64 {
         let kind = match self {
-            Self::Pickling => "PicklingError",
-            Self::Unpickling => "UnpicklingError",
+            Self::Pickling => crate::BuiltinExc::PicklingError,
+            Self::Unpickling => crate::BuiltinExc::UnpicklingError,
         };
         raise_exception::<u64>(py, kind, message)
     }

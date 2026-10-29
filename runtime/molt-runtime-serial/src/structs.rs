@@ -601,7 +601,8 @@ fn unsigned_range_message(code: char, bits: usize) -> String {
     format!("'{code}' format requires 0 <= number <= {max}")
 }
 
-type StructIntrinsicError = (&'static str, String);
+/// `None` means an exception is already pending; otherwise the kind to raise.
+type StructIntrinsicError = (Option<BuiltinExc>, String);
 
 fn struct_unpack_values<'py>(
     _py: &'py PyToken,
@@ -616,29 +617,33 @@ fn struct_unpack_values<'py>(
     for op in ops {
         match op.kind {
             StructKind::Pad => {
-                let delta = op
-                    .count
-                    .checked_mul(op.size)
-                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                offset = offset
-                    .checked_add(delta)
-                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                let delta = op.count.checked_mul(op.size).ok_or((
+                    Some(BuiltinExc::OverflowError),
+                    "total struct size too long".to_string(),
+                ))?;
+                offset = offset.checked_add(delta).ok_or((
+                    Some(BuiltinExc::OverflowError),
+                    "total struct size too long".to_string(),
+                ))?;
                 if offset > size {
                     return Err((
-                        "ValueError",
+                        Some(BuiltinExc::ValueError),
                         "unpack requires a buffer of sufficient size".to_string(),
                     ));
                 }
             }
             StructKind::Bytes | StructKind::Pascal => {
-                offset = align_up(offset, op.align)
-                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                let end = offset
-                    .checked_add(op.size)
-                    .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                offset = align_up(offset, op.align).ok_or((
+                    Some(BuiltinExc::OverflowError),
+                    "total struct size too long".to_string(),
+                ))?;
+                let end = offset.checked_add(op.size).ok_or((
+                    Some(BuiltinExc::OverflowError),
+                    "total struct size too long".to_string(),
+                ))?;
                 if end > size {
                     return Err((
-                        "ValueError",
+                        Some(BuiltinExc::ValueError),
                         "unpack requires a buffer of sufficient size".to_string(),
                     ));
                 }
@@ -656,7 +661,10 @@ fn struct_unpack_values<'py>(
                 let bytes = bytes.to_vec();
                 let ptr = alloc_bytes(_py, &bytes);
                 if ptr.is_null() {
-                    return Err(("MemoryError", "allocation failed".to_string()));
+                    return Err((
+                        Some(BuiltinExc::MemoryError),
+                        "allocation failed".to_string(),
+                    ));
                 }
                 out.push(unsafe {
                     OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(ptr).bits())
@@ -665,14 +673,17 @@ fn struct_unpack_values<'py>(
             }
             StructKind::Char => {
                 for _ in 0..op.count {
-                    offset = align_up(offset, op.align)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    let end = offset
-                        .checked_add(1)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    offset = align_up(offset, op.align).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
+                    let end = offset.checked_add(1).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
                     if end > size {
                         return Err((
-                            "ValueError",
+                            Some(BuiltinExc::ValueError),
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
@@ -681,7 +692,10 @@ fn struct_unpack_values<'py>(
                     let byte = [slice[0]];
                     let ptr = alloc_bytes(_py, &byte);
                     if ptr.is_null() {
-                        return Err(("MemoryError", "allocation failed".to_string()));
+                        return Err((
+                            Some(BuiltinExc::MemoryError),
+                            "allocation failed".to_string(),
+                        ));
                     }
                     out.push(unsafe {
                         OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(ptr).bits())
@@ -691,14 +705,17 @@ fn struct_unpack_values<'py>(
             }
             StructKind::Bool => {
                 for _ in 0..op.count {
-                    offset = align_up(offset, op.align)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    let end = offset
-                        .checked_add(1)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    offset = align_up(offset, op.align).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
+                    let end = offset.checked_add(1).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
                     if end > size {
                         return Err((
-                            "ValueError",
+                            Some(BuiltinExc::ValueError),
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
@@ -715,14 +732,17 @@ fn struct_unpack_values<'py>(
             }
             StructKind::Int { signed } => {
                 for _ in 0..op.count {
-                    offset = align_up(offset, op.align)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    let end = offset
-                        .checked_add(op.size)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    offset = align_up(offset, op.align).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
+                    let end = offset.checked_add(op.size).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
                     if end > size {
                         return Err((
-                            "ValueError",
+                            Some(BuiltinExc::ValueError),
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
@@ -730,15 +750,15 @@ fn struct_unpack_values<'py>(
                         unsafe { std::slice::from_raw_parts(data.add(offset), end - offset) };
                     let bits = if signed {
                         let val = read_signed(slice, parsed.endian, op.size)
-                            .map_err(|msg| ("OverflowError", msg))?;
+                            .map_err(|msg| (Some(BuiltinExc::OverflowError), msg))?;
                         int_bits_from_i128(_py, val)
                     } else {
                         let val = read_unsigned(slice, parsed.endian, op.size)
-                            .map_err(|msg| ("OverflowError", msg))?;
+                            .map_err(|msg| (Some(BuiltinExc::OverflowError), msg))?;
                         int_bits_from_i128(_py, val as i128)
                     };
                     if exception_pending(_py) {
-                        return Err(("", String::new()));
+                        return Err((None, String::new()));
                     }
                     out.push(unsafe { OwnedRuntimeValue::from_owned_bits(_py, bits) });
                     offset = end;
@@ -746,14 +766,17 @@ fn struct_unpack_values<'py>(
             }
             StructKind::Float => {
                 for _ in 0..op.count {
-                    offset = align_up(offset, op.align)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
-                    let end = offset
-                        .checked_add(op.size)
-                        .ok_or(("OverflowError", "total struct size too long".to_string()))?;
+                    offset = align_up(offset, op.align).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
+                    let end = offset.checked_add(op.size).ok_or((
+                        Some(BuiltinExc::OverflowError),
+                        "total struct size too long".to_string(),
+                    ))?;
                     if end > size {
                         return Err((
-                            "ValueError",
+                            Some(BuiltinExc::ValueError),
                             "unpack requires a buffer of sufficient size".to_string(),
                         ));
                     }
@@ -789,7 +812,12 @@ fn struct_unpack_values<'py>(
                                 StructEndian::Big => f64::from_be_bytes(buf8),
                             }
                         }
-                        _ => return Err(("OverflowError", "unsupported float size".to_string())),
+                        _ => {
+                            return Err((
+                                Some(BuiltinExc::OverflowError),
+                                "unsupported float size".to_string(),
+                            ));
+                        }
                     };
                     out.push(unsafe {
                         OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_float(val).bits())
@@ -829,7 +857,7 @@ fn struct_error(py: &PyToken, class: u64, message: &str) -> u64 {
 
 fn plan(py: &PyToken, error: u64, format: u64) -> Result<StructPlan, u64> {
     let text = format_obj_to_owned(py, obj_from_bits(format))
-        .map_err(|message| raise_exception::<u64>(py, "TypeError", &message))?;
+        .map_err(|message| raise_exception::<u64>(py, BuiltinExc::TypeError, &message))?;
     let (format, ops) = parse_format(&text).map_err(|message| struct_error(py, error, &message))?;
     let size = calc_size(&ops)
         .filter(|&n| n <= isize::MAX as usize)
@@ -889,7 +917,11 @@ fn index_value(py: &PyToken, error: u64, bits: u64) -> Result<BigInt, u64> {
         to_bigint(obj_from_bits(value.bits()))
             .or_else(|| to_i64(obj_from_bits(value.bits())).map(BigInt::from))
             .ok_or_else(|| {
-                raise_exception::<u64>(py, "SystemError", "index result has no integer storage")
+                raise_exception::<u64>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "index result has no integer storage",
+                )
             })
     }
 }
@@ -1156,7 +1188,7 @@ fn pack_values(
                             u64::from(f16_from_f64(value).map_err(|_| {
                                 raise_exception::<u64>(
                                     py,
-                                    "OverflowError",
+                                    BuiltinExc::OverflowError,
                                     "float too large to pack with e format",
                                 )
                             })?),
@@ -1170,7 +1202,7 @@ fn pack_values(
                                     |_| {
                                         raise_exception::<u64>(
                                             py,
-                                            "OverflowError",
+                                            BuiltinExc::OverflowError,
                                             "float too large to pack with f format",
                                         )
                                     },
@@ -1229,6 +1261,9 @@ fn unpack_record(py: &PyToken, error: Option<u64>, plan: &StructPlan, data: *con
             if exception_pending(py) {
                 return MoltObject::none().bits();
             }
+            let Some(kind) = kind else {
+                return MoltObject::none().bits();
+            };
             return match error {
                 Some(error) => struct_error(py, error, &message),
                 None => raise_exception::<u64>(py, kind, &message),
@@ -1307,7 +1342,11 @@ pub extern "C" fn molt_struct_pack(error: u64, format: u64, values: u64) -> u64 
         };
         let mut output = Vec::new();
         if output.try_reserve_exact(plan.size).is_err() {
-            return raise_exception::<u64>(py, "MemoryError", "struct output allocation failed");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::MemoryError,
+                "struct output allocation failed",
+            );
         }
         output.resize(plan.size, 0);
         if let Err(bits) = pack_values(py, error, &plan, &values, output.as_mut_ptr()) {
@@ -1347,7 +1386,7 @@ pub extern "C" fn molt_struct_pack_into(
                 }
                 return raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!(
                         "argument must be read-write bytes-like object, not {}",
                         if obj_from_bits(buffer).is_none() {
@@ -1702,7 +1741,7 @@ pub extern "C" fn molt_struct_iter_unpack(error: u64, class: u64, format: u64, b
             if !admitted_iterator_class(class.as_ptr()) {
                 return raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "invalid struct iterator declaration",
                 );
             }

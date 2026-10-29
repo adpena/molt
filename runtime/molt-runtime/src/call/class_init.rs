@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::exceptions::{
     exception_layout_kind_for_class, exception_typed_fields_replace_internal, molt_exception_init,
@@ -54,7 +55,7 @@ pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut
         let name = class_name_for_error(class_bits);
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("cannot create '{name}' instances"),
         );
     }
@@ -102,7 +103,7 @@ pub(crate) unsafe fn consume_init_result(_py: &PyToken<'_>, init_result_bits: u6
         return true;
     };
     let message = format!("__init__() should return None, not '{type_name}'");
-    let _ = raise_exception::<u64>(_py, "TypeError", &message);
+    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &message);
     false
 }
 
@@ -149,7 +150,7 @@ fn reject_builtin_exception_keywords(_py: &PyToken<'_>, class_bits: u64, kw_name
     }
     let class_name = class_name_for_error(class_bits);
     let msg = format!("{class_name}() takes no keyword arguments");
-    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
     true
 }
 
@@ -168,7 +169,7 @@ pub(crate) fn apply_builtin_exception_keywords(
         return false;
     }
     if obj_from_bits(inst_bits).as_ptr().is_none() {
-        let _ = raise_exception::<u64>(_py, "SystemError", "expected exception object");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::SystemError, "expected exception object");
         return true;
     }
     let layout = exception_layout_kind_for_class(_py, constructor_class_bits);
@@ -184,7 +185,7 @@ pub(crate) fn apply_builtin_exception_keywords(
             if max_keywords == 1 { "" } else { "s" },
             kw_names.len(),
         );
-        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         return true;
     }
 
@@ -195,7 +196,8 @@ pub(crate) fn apply_builtin_exception_keywords(
     }
     for (&name_bits, &value_bits) in kw_names.iter().zip(kw_values) {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            let _ = raise_exception::<u64>(_py, "SystemError", "keyword name must be str");
+            let _ =
+                raise_exception::<u64>(_py, BuiltinExc::SystemError, "keyword name must be str");
             return true;
         };
         let field = layout
@@ -207,7 +209,7 @@ pub(crate) fn apply_builtin_exception_keywords(
             } else {
                 format!("'{name}' is an invalid keyword argument for {constructor_name}()")
             };
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return true;
         };
         let slot = updates[..max_keywords]
@@ -221,7 +223,7 @@ pub(crate) fn apply_builtin_exception_keywords(
         exception_typed_fields_replace_internal(_py, inst_bits, &updates[..max_keywords])
     {
         if !exception_pending(_py) {
-            let _ = raise_exception::<u64>(_py, "SystemError", message);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::SystemError, message);
         }
         return true;
     }
@@ -270,7 +272,7 @@ pub(crate) unsafe fn construct_exception_from_args(
         if !issubclass_bits(class_bits, builtins.base_exception) {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exceptions must derive from BaseException",
             );
         }
@@ -416,7 +418,11 @@ pub(crate) unsafe fn call_class_init_with_args(
         let builtins = builtin_classes(_py);
         if class_bits == builtins.none_type {
             if !args.is_empty() {
-                return raise_exception::<_>(_py, "TypeError", "NoneType takes no arguments");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "NoneType takes no arguments",
+                );
             }
             return MoltObject::none().bits();
         }
@@ -424,7 +430,7 @@ pub(crate) unsafe fn call_class_init_with_args(
             if !args.is_empty() {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "NotImplementedType takes no arguments",
                 );
             }
@@ -432,7 +438,11 @@ pub(crate) unsafe fn call_class_init_with_args(
         }
         if class_bits == builtins.ellipsis_type {
             if !args.is_empty() {
-                return raise_exception::<_>(_py, "TypeError", "ellipsis takes no arguments");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "ellipsis takes no arguments",
+                );
             }
             return ellipsis_bits(_py);
         }
@@ -456,7 +466,7 @@ pub(crate) unsafe fn call_class_init_with_args(
                 0 => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "slice expected at least 1 argument, got 0",
                     );
                 }
@@ -475,7 +485,7 @@ pub(crate) unsafe fn call_class_init_with_args(
                 }
                 _ => {
                     let msg = format!("slice expected at most 3 arguments, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
@@ -484,7 +494,7 @@ pub(crate) unsafe fn call_class_init_with_args(
                 0 => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "range expected at least 1 argument, got 0",
                     );
                 }
@@ -502,7 +512,7 @@ pub(crate) unsafe fn call_class_init_with_args(
                 }
                 _ => {
                     let msg = format!("range expected at most 3 arguments, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
@@ -541,7 +551,7 @@ pub(crate) unsafe fn construct_regular_class(
         if crate::builtins::structseq::disallows_instantiation(py, class) {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "cannot create '{}' instances",
                     crate::builtins::structseq::native_name(py, class_bits)
@@ -578,7 +588,7 @@ pub(crate) unsafe fn construct_regular_class(
                 {
                     return raise_exception::<_>(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("{}() takes no arguments", class_name_for_error(class_bits)),
                     );
                 }
@@ -620,7 +630,7 @@ pub(crate) unsafe fn construct_regular_class(
                 dec_ref_bits(py, instance);
                 return raise_exception::<_>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("{}() takes no arguments", class_name_for_error(actual_bits)),
                 );
             }
@@ -679,7 +689,7 @@ pub(crate) fn raise_not_callable(_py: &PyToken<'_>, obj: MoltObject) -> u64 {
         );
     }
     let msg = format!("'{}' object is not callable", type_name(_py, obj));
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 pub(crate) unsafe fn call_builtin_type_if_needed(
@@ -710,7 +720,7 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
                     return Some(crate::molt_bool_builtin(args[0]));
                 }
                 let msg = format!("bool expected at most 1 argument, got {}", args.len());
-                return Some(raise_exception::<_>(_py, "TypeError", &msg));
+                return Some(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg));
             }
             return Some(call_class_init_with_args(_py, call_ptr, args));
         }
@@ -795,7 +805,11 @@ pub(crate) unsafe fn function_set_attr_bits_deferred<'a, 'py>(
             .as_ptr()
             .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_STRING)
         {
-            raise_exception::<u64>(_py, "TypeError", "function attribute name must be a string");
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "function attribute name must be a string",
+            );
             return Err(());
         }
         let name = obj_from_bits(attr_bits).as_ptr().unwrap();
@@ -830,7 +844,7 @@ pub(crate) unsafe fn function_set_attr_name(
             if !exception_pending(py) {
                 raise_exception::<u64>(
                     py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "function attribute name allocation failed",
                 );
             }
@@ -1048,7 +1062,11 @@ mod tests {
                 .as_ptr()
                 .expect("builtin object class");
             let class_owners = unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
-            raise_exception::<()>(py, "ValueError", "original allocation caller error");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::ValueError,
+                "original allocation caller error",
+            );
             let original = crate::builtins::exceptions::ExceptionValue::adopt(
                 py,
                 molt_exception_last_pending(),
@@ -1185,10 +1203,10 @@ mod tests {
             assert!(exception_pending(py));
             let error = crate::molt_exception_last();
             let error_ptr = obj_from_bits(error).as_ptr().unwrap();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             assert_eq!(
                 crate::format_exception_message(py, error_ptr),
@@ -1300,7 +1318,7 @@ mod tests {
     fn builtin_exception_constructor_releases_owned_init_descriptor() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let class_bits = crate::exception_type_bits_from_name(_py, "AttributeError");
+            let class_bits = crate::exception_class_bits(_py, BuiltinExc::AttributeError);
             let class_ptr = obj_from_bits(class_bits)
                 .as_ptr()
                 .expect("AttributeError class");
@@ -1345,7 +1363,7 @@ mod tests {
     fn oserror_keyword_rejection_names_requested_constructor_before_errno_selection() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let class_bits = crate::exception_type_bits_from_name(_py, "OSError");
+            let class_bits = crate::exception_class_bits(_py, BuiltinExc::OSError);
             let class_ptr = obj_from_bits(class_bits).as_ptr().expect("OSError class");
             let message_ptr = alloc_string(_py, b"missing");
             let filename_ptr = alloc_string(_py, b"input.txt");

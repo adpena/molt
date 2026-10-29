@@ -2,6 +2,7 @@
 //! admission authority through `RuntimeHooks::exception_group_admit`.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::alloc_exception;
 use crate::object::builders::alloc_tuple;
 use molt_cpython_abi::abi_types::{
@@ -12,7 +13,7 @@ use molt_cpython_abi::api::{errors, object, refcount, sequences, strings, typeob
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_cpython_abi::hooks::ExceptionGroupRequest;
 
-fn exception(py: &crate::PyToken<'_>, kind: &str) -> u64 {
+fn exception(py: &crate::PyToken<'_>, kind: crate::BuiltinExc) -> u64 {
     let ptr = alloc_exception(py, kind, "admission");
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
@@ -69,8 +70,8 @@ fn ref_count(bits: u64) -> u32 {
 fn hook_admission_reports_exact_cpython_decisions() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let value = exception(py, "ValueError");
-        let interrupt = exception(py, "KeyboardInterrupt");
+        let value = exception(py, crate::BuiltinExc::ValueError);
+        let interrupt = exception(py, crate::BuiltinExc::KeyboardInterrupt);
 
         let (args, tuple) = group_args(py, &[value]);
         let value_baseline = ref_count(value);
@@ -321,7 +322,7 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
             refcount::Py_DECREF(empty);
             let value = GLOBAL_BRIDGE.molt_value_for_pyobj(native_value).unwrap();
             refcount::Py_DECREF(native_value);
-            let other = exception(py, "TypeError");
+            let other = exception(py, crate::BuiltinExc::TypeError);
             let (args, children) = group_args(py, &[value, other]);
             let c_args = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(args);
             let native_group = errors::molt_native_exception_new(
@@ -347,7 +348,7 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
             );
             assert!(!crate::exception_pending(py));
             let value_class =
-                crate::builtins::exceptions::exception_type_bits_from_name(py, "ValueError");
+                crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::ValueError);
             assert!(
                 crate::object::class_layout::is_real_instance(
                     py,

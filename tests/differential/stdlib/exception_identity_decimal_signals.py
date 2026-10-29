@@ -1,4 +1,3 @@
-# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-207 expect_molt_returncode=0 expect_molt_stdout_sha256=e9108191f755af18938600607614dd5e24f0b6ae49e7506b16c0a71335e7a66a
 """Purpose: trapped decimal signals raise decimal's own classes and stay out of builtins."""
 
 import builtins

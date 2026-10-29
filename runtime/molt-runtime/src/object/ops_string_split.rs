@@ -1,5 +1,6 @@
 //! String split and partition operations.
 
+use crate::BuiltinExc;
 use crate::*;
 use memchr::memmem;
 use molt_obj_model::MoltObject;
@@ -20,14 +21,14 @@ fn partition_string(py: &PyToken<'_>, hay_bits: u64, sep_bits: u64, right: bool)
     else {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("must be str, not {}", type_name(py, sep)),
         );
     };
     let hay = unsafe { std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr)) };
     let sep = unsafe { std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr)) };
     if sep.is_empty() {
-        return raise_exception(py, "ValueError", "empty separator");
+        return raise_exception(py, BuiltinExc::ValueError, "empty separator");
     }
     use crate::object::ops_bytes::{PartitionPart, partition_to_tuple};
     partition_to_tuple(py, hay, sep, right, |kind, bytes| match kind {
@@ -96,11 +97,11 @@ unsafe fn validate_string_split_separator(_py: &PyToken<'_>, needle_bits: u64) -
         if unsafe { string_len(ptr) } != 0 {
             return Some(ptr);
         }
-        raise_exception::<()>(_py, "ValueError", "empty separator");
+        raise_exception::<()>(_py, BuiltinExc::ValueError, "empty separator");
         return None;
     }
     let msg = format!("must be str or None, not {}", type_name(_py, needle));
-    raise_exception::<()>(_py, "TypeError", &msg);
+    raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
     None
 }
 
@@ -130,7 +131,7 @@ pub extern "C" fn molt_string_split_validate(hay_bits: u64, needle_bits: u64) ->
 }
 
 fn split_field_index_error(_py: &PyToken<'_>) -> u64 {
-    raise_exception::<_>(_py, "IndexError", "list index out of range")
+    raise_exception::<_>(_py, BuiltinExc::IndexError, "list index out of range")
 }
 
 pub(crate) fn split_field_bounds_at_index(
@@ -196,7 +197,7 @@ pub(crate) fn explicit_split_field_args(
                 "list indices must be integers or slices, not {}",
                 type_name(_py, obj_from_bits(index_bits))
             );
-            raise_exception::<()>(_py, "TypeError", &msg);
+            raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
             return None;
         };
         let Ok(target_index) = usize::try_from(index) else {
@@ -477,7 +478,11 @@ pub extern "C" fn molt_string_split_field_ord_at_bounds(
                     i += len;
                 }
                 if i < 0 || i >= len {
-                    return raise_exception::<_>(_py, "IndexError", "string index out of range");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::IndexError,
+                        "string index out of range",
+                    );
                 }
                 return MoltObject::from_int(field[i as usize] as i64).bits();
             }
@@ -487,11 +492,19 @@ pub extern "C" fn molt_string_split_field_ord_at_bounds(
                 i += len;
             }
             if i < 0 || i >= len {
-                return raise_exception::<_>(_py, "IndexError", "string index out of range");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "string index out of range",
+                );
             }
             let Some(code) = molt_obj_model::text_storage::code_points(field).nth(i as usize)
             else {
-                return raise_exception::<_>(_py, "IndexError", "string index out of range");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "string index out of range",
+                );
             };
             MoltObject::from_int(code as i64).bits()
         }
@@ -590,7 +603,7 @@ mod split_contract_tests {
         crate::with_gil_entry_nopanic!(py, {
             INDEX_CALLS.fetch_add(1, Ordering::SeqCst);
             match INDEX_MODE.load(Ordering::SeqCst) {
-                1 => raise_exception::<u64>(py, "RuntimeError", "split index failure"),
+                1 => raise_exception::<u64>(py, BuiltinExc::RuntimeError, "split index failure"),
                 2 => MoltObject::from_float(1.0).bits(),
                 3 => {
                     for (slot, replacement) in [
@@ -654,11 +667,11 @@ mod split_contract_tests {
         MoltObject::from_ptr(ptr).bits()
     }
 
-    fn assert_error(py: &PyToken<'_>, result: u64, kind: &str) {
+    fn assert_error(py: &PyToken<'_>, result: u64, kind: crate::BuiltinExc) {
         assert!(obj_from_bits(result).is_none());
         assert!(exception_pending(py));
         let error = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             py, error, kind
         ));
         clear_exception(py);
@@ -937,7 +950,7 @@ mod split_contract_tests {
                         let list = MoltObject::from_ptr(alloc_list(py, &[item, tail])).bits();
                         let result = join(separator, list);
                         if invalid {
-                            assert_error(py, result, "TypeError");
+                            assert_error(py, result, crate::BuiltinExc::TypeError);
                         } else {
                             assert!(!exception_pending(py));
                             assert_eq!(
@@ -1017,7 +1030,7 @@ mod split_contract_tests {
                 let list = MoltObject::from_ptr(alloc_list(py, &[item, tail])).bits();
                 let result = molt_bytearray_join(separator, list);
                 if invalid {
-                    assert_error(py, result, "TypeError");
+                    assert_error(py, result, crate::BuiltinExc::TypeError);
                 } else {
                     assert!(!exception_pending(py));
                     unsafe {
@@ -1062,7 +1075,7 @@ mod split_contract_tests {
                         MoltObject::none().bits(),
                         index,
                     ),
-                    "TypeError",
+                    crate::BuiltinExc::TypeError,
                 );
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 let wrong_receiver = value(
@@ -1077,24 +1090,35 @@ mod split_contract_tests {
                 assert_error(
                     py,
                     split(wrong_receiver, MoltObject::none().bits(), index),
-                    "TypeError",
+                    crate::BuiltinExc::TypeError,
                 );
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 dec_ref_bits(py, wrong_receiver);
                 let hay = value(py, type_id, b"a,b");
                 let empty = value(py, type_id, b"");
                 for (separator, error) in [
-                    (MoltObject::from_int(7).bits(), "TypeError"),
-                    (MoltObject::from_float(0.0).bits(), "TypeError"),
-                    (empty, "ValueError"),
+                    (MoltObject::from_int(7).bits(), crate::BuiltinExc::TypeError),
+                    (
+                        MoltObject::from_float(0.0).bits(),
+                        crate::BuiltinExc::TypeError,
+                    ),
+                    (empty, crate::BuiltinExc::ValueError),
                 ] {
                     INDEX_CALLS.store(0, Ordering::SeqCst);
                     assert_error(py, split(hay, separator, index), error);
                     assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
                     INDEX_MODE.store(1, Ordering::SeqCst);
-                    assert_error(py, split(hay, separator, index), "RuntimeError");
+                    assert_error(
+                        py,
+                        split(hay, separator, index),
+                        crate::BuiltinExc::RuntimeError,
+                    );
                     INDEX_MODE.store(2, Ordering::SeqCst);
-                    assert_error(py, split(hay, separator, index), "TypeError");
+                    assert_error(
+                        py,
+                        split(hay, separator, index),
+                        crate::BuiltinExc::TypeError,
+                    );
                     INDEX_MODE.store(0, Ordering::SeqCst);
                 }
                 for exponent in [100i32, -100] {
@@ -1103,7 +1127,11 @@ mod split_contract_tests {
                         py,
                         if exponent < 0 { -magnitude } else { magnitude },
                     );
-                    assert_error(py, split(hay, empty, huge), "OverflowError");
+                    assert_error(
+                        py,
+                        split(hay, empty, huge),
+                        crate::BuiltinExc::OverflowError,
+                    );
                     dec_ref_bits(py, huge);
                 }
                 for limit in [
@@ -1111,7 +1139,11 @@ mod split_contract_tests {
                     num_bigint::BigInt::from(isize::MIN) - 1,
                 ] {
                     let limit = crate::builtins::numbers::bigint_bits(py, limit);
-                    assert_error(py, split(hay, empty, limit), "OverflowError");
+                    assert_error(
+                        py,
+                        split(hay, empty, limit),
+                        crate::BuiltinExc::OverflowError,
+                    );
                     dec_ref_bits(py, limit);
                 }
                 for limit in [isize::MIN, isize::MAX] {
@@ -1212,7 +1244,7 @@ mod split_contract_tests {
                     for separator in [sep, view] {
                         let result = split(hay, separator, MoltObject::from_int(1).bits());
                         if type_id == TYPE_ID_STRING {
-                            assert_error(py, result, "TypeError");
+                            assert_error(py, result, crate::BuiltinExc::TypeError);
                         } else {
                             let expected: &[&[u8]] = if right {
                                 &[b"x|y", b"z"]
@@ -1229,9 +1261,9 @@ mod split_contract_tests {
                         py,
                         result,
                         if type_id == TYPE_ID_STRING {
-                            "TypeError"
+                            crate::BuiltinExc::TypeError
                         } else {
-                            "ValueError"
+                            crate::BuiltinExc::ValueError
                         },
                     );
                     assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
@@ -1325,8 +1357,8 @@ mod split_contract_tests {
                     INDEX_CALLS.store(0, Ordering::SeqCst);
                     let result = split(hay, view, index);
                     match expected {
-                        None => assert_error(py, result, "BufferError"),
-                        Some([]) => assert_error(py, result, "ValueError"),
+                        None => assert_error(py, result, crate::BuiltinExc::BufferError),
+                        Some([]) => assert_error(py, result, crate::BuiltinExc::ValueError),
                         Some(_) => {
                             assert!(!exception_pending(py));
                             assert!(obj_from_bits(result).as_ptr().is_some());
@@ -1353,7 +1385,7 @@ mod split_contract_tests {
                         }
                         dec_ref_bits(py, result);
                     } else {
-                        assert_error(py, result, "TypeError");
+                        assert_error(py, result, crate::BuiltinExc::TypeError);
                     }
                     for bits in [items, separator, hay] {
                         dec_ref_bits(py, bits);
@@ -1364,7 +1396,11 @@ mod split_contract_tests {
                 let items = alloc_list(py, &[view]);
                 assert!(!items.is_null());
                 let items = MoltObject::from_ptr(items).bits();
-                assert_error(py, molt_bytes_join(separator, items), "TypeError");
+                assert_error(
+                    py,
+                    molt_bytes_join(separator, items),
+                    crate::BuiltinExc::TypeError,
+                );
                 for bits in [items, separator, view, format, base] {
                     dec_ref_bits(py, bits);
                 }

@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
 use crate::{
     MoltObject, capability_fix_hint, has_capability, is_trusted, raise_exception,
@@ -51,7 +52,13 @@ pub extern "C" fn molt_capabilities_has(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "capability name must be str"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "capability name must be str",
+                );
+            }
         };
         let allowed = has_capability(_py, &name);
         {
@@ -79,7 +86,13 @@ pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(crate::obj_from_bits(name_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "capability name must be str"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "capability name must be str",
+                );
+            }
         };
         let allowed = has_capability(_py, &name);
         // Emit audit event for the explicit require() intrinsic.
@@ -104,7 +117,7 @@ pub extern "C" fn molt_capabilities_require(name_bits: u64) -> u64 {
             let hint = capability_fix_hint(&name);
             return raise_exception::<_>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 &format!("missing '{name}' capability. {hint}"),
             );
         }
@@ -122,7 +135,7 @@ pub extern "C" fn molt_capabilities_require_operation(name_bits: u64) -> u64 {
                 let Ok(name) = std::str::from_utf8(bytes) else {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "host operation name must contain only valid Unicode scalar values",
                     ));
                 };
@@ -132,7 +145,11 @@ pub extern "C" fn molt_capabilities_require_operation(name_bits: u64) -> u64 {
         match outcome {
             Some(Ok(())) => MoltObject::none().bits(),
             Some(Err(error)) => error,
-            None => raise_exception::<u64>(_py, "TypeError", "host operation name must be str"),
+            None => raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "host operation name must be str",
+            ),
         }
     })
 }

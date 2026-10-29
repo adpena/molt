@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -12,7 +13,7 @@ extern "C" fn yield_heap_value_then_raise() -> u64 {
             inc_ref_bits(_py, bits);
             bits
         } else {
-            raise_exception::<u64>(_py, "LookupError", "injected iterator failure")
+            raise_exception::<u64>(_py, BuiltinExc::LookupError, "injected iterator failure")
         }
     })
 }
@@ -37,7 +38,7 @@ extern "C" fn yield_raise_yield_then_sentinel() -> u64 {
                 inc_ref_bits(_py, bits);
                 bits
             }
-            1 => raise_exception::<u64>(_py, "LookupError", "injected iterator failure"),
+            1 => raise_exception::<u64>(_py, BuiltinExc::LookupError, "injected iterator failure"),
             _ => MoltObject::from_int(777).bits(),
         }
     })
@@ -89,7 +90,7 @@ fn failed_unpack_initializes_every_result_slot_to_none() {
 fn preexisting_exception_still_initializes_every_result_slot() {
     let _lock = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let _: u64 = raise_exception(_py, "RuntimeError", "prior failure");
+        let _: u64 = raise_exception(_py, BuiltinExc::RuntimeError, "prior failure");
         let mut outputs = [u64::MAX, u64::MAX];
         let result = unsafe {
             molt_unpack_sequence(

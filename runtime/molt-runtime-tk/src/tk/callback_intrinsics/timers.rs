@@ -19,6 +19,7 @@ use super::super::state::{
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::tcl::TclObj;
 use crate::bridge::{dec_ref_bits, inc_ref_bits, is_truthy, raise_exception_u64, to_i64};
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 use std::collections::HashSet;
 
@@ -236,7 +237,7 @@ pub extern "C" fn molt_tk_after_cancel(app_bits: u64, identifier_bits: u64) -> u
         if !is_truthy(_py, identifier_obj) {
             return raise_exception_u64(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "id must be a valid identifier returned from after or after_idle",
             );
         }

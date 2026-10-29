@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 use std::sync::Arc;
 
 /// Python's match-count convention: zero is unlimited, negative is no work.
@@ -41,11 +42,11 @@ fn alloc_text_units(py: &CoreGilToken, units: &[u32]) -> *mut u8 {
 pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(compiled) = pattern_handle_arc(handle_bits) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let text_obj = obj_from_bits(text_bits);
         let Some(maxsplit) = to_i64(obj_from_bits(maxsplit_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maxsplit must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxsplit must be int");
         };
 
         let group_count = compiled.compiled.group_count;
@@ -67,7 +68,7 @@ pub extern "C" fn molt_re_split(handle_bits: u64, text_bits: u64, maxsplit_bits:
         if is_bytes && bytes.is_none() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "cannot use a bytes pattern on a string-like object",
             );
         }
@@ -189,10 +190,10 @@ pub extern "C" fn molt_re_sub(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(compiled) = pattern_handle_arc(handle_bits) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let Some(count) = to_i64(obj_from_bits(count_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "count must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "count must be int");
         };
 
         let group_count = compiled.compiled.group_count;
@@ -301,14 +302,14 @@ fn molt_re_sub_bytes(
     let Some(repl) = (unsafe { bytes_obj_to_borrowed(obj_from_bits(repl_bits)) }) else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "a bytes-like object is required for the replacement",
         );
     };
     let Some(text) = (unsafe { bytes_obj_to_borrowed(obj_from_bits(text_bits)) }) else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "cannot use a bytes pattern on a string-like object",
         );
     };
@@ -341,7 +342,7 @@ fn molt_re_sub_bytes(
         if expanded.iter().any(|unit| *unit > 255) {
             return raise_exception::<_>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "byte replacement produced a non-byte value",
             );
         }
@@ -401,7 +402,11 @@ pub extern "C" fn molt_re_escape(pattern_bits: u64) -> u64 {
             .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_BYTES);
         let escaped = if is_bytes {
             let Some(pattern) = (unsafe { bytes_obj_to_borrowed(object) }) else {
-                return raise_exception::<_>(_py, "TypeError", "pattern must be str or bytes");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "pattern must be str or bytes",
+                );
             };
             re_escape_impl(pattern)
         } else {

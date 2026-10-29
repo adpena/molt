@@ -25,6 +25,7 @@ use crate::bridge::{
     dec_ref_bits, decode_value_list, is_truthy, raise_exception_u64, string_obj_to_owned, to_f64,
     to_i64,
 };
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{GilReleaseGuard, MoltObject, obj_from_bits};
 use std::time::Duration;
 
@@ -335,7 +336,7 @@ pub extern "C" fn molt_tk_getboolean(value_bits: u64) -> u64 {
             }
             return raise_exception_u64(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("invalid boolean value \"{text}\""),
             );
         }
@@ -356,7 +357,7 @@ pub extern "C" fn molt_tk_getdouble(value_bits: u64) -> u64 {
         }
         raise_exception_u64(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!(
                 "invalid floating-point value \"{}\"",
                 unsafe { string_obj_to_owned(obj) }.unwrap_or_else(|| "?".to_string())

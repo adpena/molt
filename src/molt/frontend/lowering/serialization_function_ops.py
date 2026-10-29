@@ -104,8 +104,8 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "kind": "exception_match_builtin",
                     "args": [op.args[0].name],
                     "out": op.result.name,
-                    "s_value": metadata.get("exception_name", "Exception"),
-                    "value": int(metadata.get("exception_tag", 2)),
+                    "s_value": metadata["exception_name"],
+                    "value": int(metadata["exception_tag"]),
                 }
             )
         elif op.kind == "ISSUBCLASS":

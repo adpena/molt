@@ -1,6 +1,7 @@
 //! Dynamic obligations emitted once by the frontend descriptor projection.
 //! This boundary does not execute IR or infer a second range lattice.
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 pub(super) struct AdmittedBindings<'py> {
     _pins: Vec<OwnedRuntimeValue<'py>>,
@@ -15,7 +16,7 @@ pub(super) fn admit<'py>(
     grid: i64,
     threads: i64,
 ) -> Result<AdmittedBindings<'py>, u64> {
-    let fail = |message: &str| raise_exception::<u64>(py, "RuntimeError", message);
+    let fail = |message: &str| raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
     let mut pins = Vec::new();
     // All user-capable argument extraction has completed. Refresh through the
     // default field owner before checking callable/binding dependencies.
@@ -244,7 +245,7 @@ fn refresh_buffer_fields<'py>(
     let size = owned_lookup(py, default_field(object, "_size"))?;
     let itemsize = owned_lookup(py, default_field(object, "_itemsize"))?;
     let element = owned_lookup(py, default_field(object, "_element_type"))?;
-    let fail = |message: &str| raise_exception::<u64>(py, "RuntimeError", message);
+    let fail = |message: &str| raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
     let format_ptr = obj_from_bits(format.bits())
         .as_ptr()
         .ok_or_else(|| fail("GPU buffer format must be an exact string"))?;
@@ -307,7 +308,7 @@ fn require_body<'py>(
     {
         return Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("GPU buffer dependency {role} no longer has its compiler-admitted body"),
         ));
     }
@@ -323,7 +324,7 @@ fn require_builtin<'py>(
     if !builtin_matches(value.bits(), name) {
         return Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("GPU buffer builtin dependency {name} was rebound"),
         ));
     }
@@ -366,7 +367,7 @@ fn admit_buffer_methods<'py>(
             if !intrinsic_matches(intrinsic.bits(), symbol) {
                 return Err(raise_exception::<u64>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "GPU buffer struct primitive was rebound",
                 ));
             }
@@ -380,7 +381,7 @@ fn admit_buffer_methods<'py>(
         if error.bits() != declared_error.bits() {
             return Err(raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "GPU buffer struct error identity disagrees with its module",
             ));
         }

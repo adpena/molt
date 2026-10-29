@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_io_default_buffer_size() -> u64 {
@@ -30,7 +31,7 @@ pub extern "C" fn molt_io_text_encoding(encoding_bits: u64, stacklevel_bits: u64
         };
         if warn_default_encoding {
             let category =
-                crate::builtins::exceptions::exception_type_bits_from_name(_py, "EncodingWarning");
+                crate::builtins::exceptions::exception_class_bits(_py, BuiltinExc::EncodingWarning);
             let message_ptr = alloc_string(_py, b"'encoding' argument not specified");
             if category == 0 || message_ptr.is_null() {
                 return MoltObject::none().bits();
@@ -63,7 +64,13 @@ pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
             Some(name) => name,
-            None => return raise_exception::<_>(_py, "TypeError", "io class name must be str"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "io class name must be str",
+                );
+            }
         };
         let builtins = builtin_classes(_py);
         let bits = match name.as_str() {
@@ -80,7 +87,7 @@ pub extern "C" fn molt_io_class(name_bits: u64) -> u64 {
             "StringIO" => builtins.string_io,
             _ => {
                 let msg = format!("unknown io class '{name}'");
-                return raise_exception::<_>(_py, "AttributeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::AttributeError, &msg);
             }
         };
         inc_ref_bits(_py, bits);
@@ -156,7 +163,7 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
         let Some((want_read, want_write)) = capabilities else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "expected a concrete buffered stream type",
             );
         };
@@ -176,10 +183,18 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
                 return bits;
             }
             if file_handle_is_closed(raw_handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if raw_handle.text {
-                return raise_exception::<_>(_py, "ValueError", "raw stream must be binary");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "raw stream must be binary",
+                );
             }
             let size_obj = obj_from_bits(buffer_size_bits);
             let mut buffer_size = if size_obj.is_none() {
@@ -191,7 +206,7 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
                         let type_name = class_name_for_error(type_of_bits(_py, buffer_size_bits));
                         let msg =
                             format!("'{type_name}' object cannot be interpreted as an integer");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     }
                 }
             };
@@ -199,13 +214,17 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
                 buffer_size = default_buffer_size(_py);
             }
             if buffer_size == 0 {
-                return raise_exception::<_>(_py, "ValueError", "buffer size must be > 0");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "buffer size must be > 0",
+                );
             }
             if want_read && !raw_handle.readable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not readable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not readable");
             }
             if want_write && !raw_handle.writable {
-                return raise_exception::<_>(_py, "UnsupportedOperation", "not writable");
+                return raise_exception::<_>(_py, BuiltinExc::UnsupportedOperation, "not writable");
             }
             let owns_fd = raw_handle.owns_fd;
             let ptr = alloc_file_handle_with_state(
@@ -248,12 +267,12 @@ pub extern "C" fn molt_buffered_new(cls_bits: u64, raw_bits: u64, buffer_size_bi
 pub extern "C" fn molt_buffered_init(self_bits: u64, raw_bits: u64, buffer_size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(pointer) = obj_from_bits(self_bits).as_ptr() else {
-            return raise_exception(py, "TypeError", "expected buffered stream");
+            return raise_exception(py, BuiltinExc::TypeError, "expected buffered stream");
         };
         unsafe {
             if object_type_id(pointer) != TYPE_ID_FILE_HANDLE || file_handle_ptr(pointer).is_null()
             {
-                return raise_exception(py, "TypeError", "expected buffered stream");
+                return raise_exception(py, BuiltinExc::TypeError, "expected buffered stream");
             }
             let classes = builtin_classes(py);
             let class = obj_from_bits(object_class_bits(pointer)).as_ptr().unwrap();
@@ -319,10 +338,14 @@ pub extern "C" fn molt_text_io_wrapper_new(
                 return bits;
             }
             if file_handle_is_closed(buffer_handle) {
-                return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "I/O operation on closed file",
+                );
             }
             if buffer_handle.text {
-                return raise_exception::<_>(_py, "ValueError", "buffer must be binary");
+                return raise_exception::<_>(_py, BuiltinExc::ValueError, "buffer must be binary");
             }
             let encoding = if obj_from_bits(encoding_bits).is_none() {
                 None
@@ -336,7 +359,9 @@ pub extern "C" fn molt_text_io_wrapper_new(
             let (encoding, encoding_original) =
                 match selected_text_encoding(_py, encoding.as_deref()) {
                     Ok((label, display)) => (Some(label), Some(display)),
-                    Err(message) => return raise_exception::<u64>(_py, "LookupError", &message),
+                    Err(message) => {
+                        return raise_exception::<u64>(_py, BuiltinExc::LookupError, &message);
+                    }
                 };
             let errors = if obj_from_bits(errors_bits).is_none() {
                 Some("strict".to_string())
@@ -529,7 +554,7 @@ pub extern "C" fn molt_stringio_new(cls_bits: u64, initial_bits: u64, newline_bi
         } else {
             let type_name = class_name_for_error(type_of_bits(_py, initial_bits));
             let msg = format!("initial_value must be str, not {type_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let newline = match open_arg_newline(_py, newline_bits) {
             Some(val) => Some(val),

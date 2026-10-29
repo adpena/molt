@@ -1,6 +1,7 @@
 //! Fixed typed callable metadata, independent of the public instance dictionary.
 //! Published code owns immutable signature facts; this tail owns mutable public
 //! fields and the setup facts of native or not-yet-published runtime callables.
+use crate::BuiltinExc;
 use crate::*;
 
 // Existing executable/layout words stay at offsets 0 through 12. One 15-word
@@ -200,7 +201,7 @@ pub(crate) unsafe fn write_public(
                     return {
                         raise_exception::<()>(
                             py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             &format!("{} must be set to a string object", field.name()),
                         );
                         Err(())
@@ -226,7 +227,7 @@ pub(crate) unsafe fn write_public(
                     return {
                         raise_exception::<()>(
                             py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             &format!("{} must be set to a {} object", field.name(), label),
                         );
                         Err(())
@@ -236,7 +237,7 @@ pub(crate) unsafe fn write_public(
             Field::Doc | Field::Module => {}
             _ => {
                 return {
-                    raise_exception::<()>(py, "AttributeError", "readonly attribute");
+                    raise_exception::<()>(py, BuiltinExc::AttributeError, "readonly attribute");
                     Err(())
                 };
             }

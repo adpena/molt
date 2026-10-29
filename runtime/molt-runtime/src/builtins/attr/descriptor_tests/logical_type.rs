@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 extern "C" fn logical_type_poll(_task: u64) -> i64 {
     MoltObject::none().bits() as i64
@@ -196,7 +197,7 @@ fn logical_type_lookup_preserves_nondata_class_shadow_and_real_descriptor_identi
 extern "C" fn failing_apparent_class(_receiver: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         CLASS_DESCRIPTOR_CALLS.fetch_add(1, Ordering::Relaxed);
-        raise_exception::<u64>(py, "AttributeError", "class descriptor denied")
+        raise_exception::<u64>(py, BuiltinExc::AttributeError, "class descriptor denied")
     })
 }
 
@@ -222,10 +223,10 @@ fn logical_type_lookup_keeps_descriptor_failure_and_optional_default() {
             dec_ref_bits(py, result);
             assert_eq!(CLASS_DESCRIPTOR_CALLS.load(Ordering::Relaxed), 1);
             let exception = crate::builtins::exceptions::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "AttributeError"
+                crate::BuiltinExc::AttributeError
             ));
             clear_exception(py);
             dec_ref_bits(py, exception);
@@ -513,7 +514,7 @@ fn logical_type_super_cache_admits_only_plain_python_methods() {
             for (base, label) in [
                 (builtin_classes(py).dict, b"SuperDictChild".as_slice()),
                 (
-                    crate::builtins::exceptions::exception_type_bits_from_name(py, "OSError"),
+                    crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::OSError),
                     b"SuperOSErrorChild".as_slice(),
                 ),
             ] {

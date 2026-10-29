@@ -97,7 +97,7 @@ macro_rules! with_gil_entry {
             if !__is_alloc_panic {
                 let _ = $crate::builtins::exceptions::raise_exception::<u64>(
                     $py,
-                    "RuntimeError",
+                    $crate::BuiltinExc::RuntimeError,
                     __msg,
                 );
             }

@@ -1,6 +1,7 @@
 // Type conversion operations.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::BuiltinExc;
 use crate::const_data_cache::{
     ConstDataLiteralKind, const_data_literal_insert, const_data_literal_lookup,
 };
@@ -430,14 +431,14 @@ pub unsafe extern "C" fn molt_bigint_from_bytes(ptr: *const u8, len_bits: u64) -
             else {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "integer literal byte length is too large",
                 );
             };
             if ptr.is_null() || len == 0 {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "integer literal requires nonempty signed bytes",
                 );
             }
@@ -497,7 +498,7 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                         "could not convert string to float: {}",
                         format_string_repr_bytes(super::ops::unicode_data(_py), bytes)
                     );
-                    return raise_exception::<_>(_py, "ValueError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                 }
                 if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                     let len = bytes_len(ptr);
@@ -513,7 +514,7 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                         format_bytes(bytes)
                     };
                     let msg = format!("could not convert string to float: {rendered}");
-                    return raise_exception::<_>(_py, "ValueError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                 }
             }
         }
@@ -521,7 +522,7 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
             "float() argument must be a string or a real number, not '{}'",
             class_name_for_error(type_of_bits(_py, val_bits))
         );
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -559,7 +560,7 @@ pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
                 Ok(None) => {
                     return raise_exception::<_>(
                         _py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "float conversion returned no float storage",
                     );
                 }
@@ -610,7 +611,7 @@ fn float_value_bits_or_descriptor_error(
     let msg = format!(
         "descriptor '{method}' for 'float' objects doesn't apply to a '{type_label}' object"
     );
-    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
     None
 }
 
@@ -667,12 +668,16 @@ pub extern "C" fn molt_float_as_integer_ratio(self_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if value.is_nan() {
-            return raise_exception::<_>(_py, "ValueError", "cannot convert NaN to integer ratio");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "cannot convert NaN to integer ratio",
+            );
         }
         if value.is_infinite() {
             return raise_exception::<_>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "cannot convert Infinity to integer ratio",
             );
         }
@@ -753,7 +758,7 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
         let Some(text_ptr) = text_obj.as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bad argument type for built-in operation",
             );
         };
@@ -761,7 +766,7 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
             if object_type_id(text_ptr) != TYPE_ID_STRING {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "bad argument type for built-in operation",
                 );
             }
@@ -792,7 +797,7 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
             if !issubclass_bits(cls_bits, builtins.float) {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "fromhex() requires a float subclass",
                 );
             }
@@ -823,7 +828,7 @@ pub extern "C" fn molt_float_from_number(cls_bits: u64, val_bits: u64) -> u64 {
             dec_ref_bits(_py, out_bits);
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "from_number() requires a float subclass",
             );
         }
@@ -842,7 +847,7 @@ pub(crate) extern "C" fn complex_complex(bits: u64) -> u64 {
         let Some(ptr) = complex_ptr_from_bits(bits) else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "descriptor '__complex__' requires a 'complex' object",
             );
         };
@@ -886,7 +891,7 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
             if has_imag {
                 return raise_exception::<_>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "complex() can't take second arg if first is a string",
                 );
             }
@@ -896,9 +901,11 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
                 .and_then(|text| parse_complex_from_str(super::ops::unicode_data(py), text).ok());
             return match parts {
                 Some(parts) => complex_bits(py, parts.re, parts.im),
-                None => {
-                    raise_exception::<_>(py, "ValueError", "complex() arg is a malformed string")
-                }
+                None => raise_exception::<_>(
+                    py,
+                    BuiltinExc::ValueError,
+                    "complex() arg is a malformed string",
+                ),
             };
         }
         if has_imag
@@ -906,7 +913,11 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
                 .as_ptr()
                 .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
         {
-            return raise_exception::<_>(py, "TypeError", "complex() second arg can't be a string");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "complex() second arg can't be a string",
+            );
         }
 
         // Only the first argument uses __complex__. The returned reference stays
@@ -930,7 +941,7 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
                 dec_ref_bits(py, result);
                 return raise_exception::<_>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("__complex__ returned non-complex (type {actual})"),
                 );
             };
@@ -957,7 +968,7 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
         } {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "complex() first argument must be a string or a number, not '{}'",
                     class_name_for_error(type_of_bits(py, real_bits))
@@ -972,7 +983,7 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
         {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "complex() second argument must be a number, not '{}'",
                     class_name_for_error(type_of_bits(py, imag_bits))
@@ -1017,7 +1028,11 @@ pub extern "C" fn molt_complex_from_obj(val_bits: u64, imag_bits: u64, has_imag_
 pub extern "C" fn molt_complex_conjugate(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = complex_ptr_from_bits(val_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "complex.conjugate expects complex");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "complex.conjugate expects complex",
+            );
         };
         let value = unsafe { *complex_ref(ptr) };
         complex_bits(_py, value.re, -value.im)
@@ -1038,7 +1053,7 @@ pub extern "C" fn molt_complex_from_number(cls_bits: u64, val_bits: u64) -> u64 
                         "must be real number, not {}",
                         type_name(_py, obj_from_bits(val_bits))
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
@@ -1055,7 +1070,7 @@ pub extern "C" fn molt_complex_from_number(cls_bits: u64, val_bits: u64) -> u64 
         if !issubclass_bits(cls_bits, builtins.complex) {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "from_number() requires a complex subclass",
             );
         }
@@ -1143,7 +1158,7 @@ pub extern "C" fn molt_int_int(self_bits: u64) -> u64 {
             "descriptor '__int__' requires a 'int' object but received '{}'",
             type_label
         );
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -1158,7 +1173,7 @@ pub extern "C" fn molt_int_index(self_bits: u64) -> u64 {
             "descriptor '__index__' requires a 'int' object but received '{}'",
             type_label
         );
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -1172,7 +1187,7 @@ pub extern "C" fn molt_int_bit_length(self_bits: u64) -> u64 {
                 "descriptor 'bit_length' requires a 'int' object but received '{}'",
                 type_label
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let (_sign, bytes) = value.to_bytes_be();
         if bytes.is_empty() {
@@ -1210,7 +1225,7 @@ pub(in crate::object) fn int_method_value_bits_or_error(
         "descriptor '{method}' requires a 'int' object but received '{}'",
         type_label
     );
-    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
     None
 }
 
@@ -1307,7 +1322,7 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
             if base != 0 && !(2..=36).contains(&base) {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "int() base must be >= 2 and <= 36, or 0",
                 );
             }
@@ -1317,13 +1332,13 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
         };
         let invalid_literal = |base: i64, literal: &str| -> u64 {
             let msg = format!("invalid literal for int() with base {base}: '{literal}'");
-            raise_exception::<_>(_py, "ValueError", &msg)
+            raise_exception::<_>(_py, BuiltinExc::ValueError, &msg)
         };
         if has_base {
             let Some(ptr) = maybe_ptr_from_bits(val_bits) else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "int() can't convert non-string with explicit base",
                 );
             };
@@ -1335,7 +1350,7 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "int() can't convert non-string with explicit base",
                     );
                 }
@@ -1373,7 +1388,7 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                         Ok(val) => val,
                         Err(error) => {
                             if let Some(message) = int_digit_limit_message(error) {
-                                return raise_exception::<_>(_py, "ValueError", &message);
+                                return raise_exception::<_>(_py, BuiltinExc::ValueError, &message);
                             }
                             return invalid_literal(base, text);
                         }
@@ -1401,7 +1416,7 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                         Ok(val) => val,
                         Err(error) => {
                             if let Some(message) = int_digit_limit_message(error) {
-                                return raise_exception::<_>(_py, "ValueError", &message);
+                                return raise_exception::<_>(_py, BuiltinExc::ValueError, &message);
                             }
                             return invalid_literal(base, &format!("b'{text}'"));
                         }
@@ -1414,11 +1429,11 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
             }
         }
         if has_base {
-            return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid literal for int()");
         }
         raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "int() argument must be a string, a bytes-like object or a real number, not '{}'",
                 class_name_for_error(type_of_bits(_py, val_bits))
@@ -1470,7 +1485,11 @@ pub extern "C" fn molt_string_split_field_to_int(
                 needle_bytes,
                 target_index,
             ) else {
-                return raise_exception::<_>(_py, "IndexError", "list index out of range");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "list index out of range",
+                );
             };
             // The field is a sub-slice of a valid UTF-8 `str` split on a UTF-8
             // separator, so `[start..end]` is itself valid UTF-8 (split never
@@ -1487,10 +1506,10 @@ pub extern "C" fn molt_string_split_field_to_int(
                 Ok(val) => val,
                 Err(error) => {
                     if let Some(message) = int_digit_limit_message(error) {
-                        return raise_exception::<_>(_py, "ValueError", &message);
+                        return raise_exception::<_>(_py, BuiltinExc::ValueError, &message);
                     }
                     let msg = format!("invalid literal for int() with base 10: '{field}'");
-                    return raise_exception::<_>(_py, "ValueError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                 }
             };
             if let Some(i) = bigint_to_inline(&parsed) {
@@ -1506,7 +1525,13 @@ pub extern "C" fn molt_guard_type(val_bits: u64, expected_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let expected = match to_i64(obj_from_bits(expected_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "guard type tag must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "guard type tag must be int",
+                );
+            }
         };
         if expected == TYPE_TAG_ANY {
             return val_bits;

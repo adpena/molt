@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::class_layout::{try_is_real_instance, try_is_real_subtype};
 use crate::object::seq_access::with_immutable_tuple_slice;
 
@@ -15,13 +16,13 @@ pub(crate) fn call_vararg_args(
 ) -> Option<Vec<u64>> {
     let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
         let msg = format!("{func_name}() expects positional arguments tuple");
-        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         return None;
     };
     unsafe {
         if object_type_id(args_ptr) != TYPE_ID_TUPLE {
             let msg = format!("{func_name}() expects positional arguments tuple");
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return None;
         }
     }
@@ -52,13 +53,13 @@ pub(crate) fn call_vararg_kwargs<'a, 'py>(
 ) -> Option<CallKeywords<'a, 'py>> {
     let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() else {
         let msg = format!("{func_name}() expects keyword arguments dict");
-        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         return None;
     };
     unsafe {
         if object_type_id(kwargs_ptr) != TYPE_ID_DICT {
             let msg = format!("{func_name}() expects keyword arguments dict");
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return None;
         }
     }
@@ -77,7 +78,8 @@ pub(crate) fn call_vararg_kwargs<'a, 'py>(
         let key_name = match string_obj_to_owned(obj_from_bits(pair[0])) {
             Some(name) => name,
             None => {
-                let _ = raise_exception::<u64>(_py, "TypeError", "keywords must be strings");
+                let _ =
+                    raise_exception::<u64>(_py, BuiltinExc::TypeError, "keywords must be strings");
                 return None;
             }
         };
@@ -112,7 +114,11 @@ pub(crate) fn call_with_kwargs(
 ) -> u64 {
     let mapping = if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
         if unsafe { object_type_id(kwargs_ptr) } != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "TypeError", "keyword arguments must be a dict");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "keyword arguments must be a dict",
+            );
         }
         kwargs_bits
     } else {
@@ -216,7 +222,7 @@ fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
                 dec_ref_bits(_py, bases_tuple_bits);
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "__mro_entries__ must return a tuple",
                 );
             }
@@ -263,12 +269,12 @@ fn prepare_class_impl(
     kwds_bits: u64,
 ) -> Option<PreparedClassState> {
     let Some(name_ptr) = obj_from_bits(name_bits).as_ptr() else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "class name must be str");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "class name must be str");
         return None;
     };
     unsafe {
         if object_type_id(name_ptr) != TYPE_ID_STRING {
-            let _ = raise_exception::<u64>(_py, "TypeError", "class name must be str");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "class name must be str");
             return None;
         }
     }
@@ -281,7 +287,7 @@ fn prepare_class_impl(
     unsafe {
         if object_type_id(kwds_copy_ptr) != TYPE_ID_DICT {
             dec_ref_bits(_py, kwds_copy_bits);
-            let _ = raise_exception::<u64>(_py, "TypeError", "kwds must be a mapping");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "kwds must be a mapping");
             return None;
         }
     }
@@ -428,7 +434,7 @@ fn prepare_class_impl(
             dec_ref_bits(_py, kwds_copy_bits);
             let _ = raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
             );
             return None;
@@ -506,7 +512,7 @@ fn prepare_class_impl(
             dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
             let msg = format!("{meta_name}.__prepare__() must return a mapping, not {ns_type}");
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+            let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return None;
         }
         val_bits
@@ -580,7 +586,11 @@ pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
         }
         let mut message = b"Expected an instance of type, not ".to_vec();
         message.extend_from_slice(&rendered);
-        let raised = crate::builtins::exceptions::alloc_exception_bytes(_py, "TypeError", &message);
+        let raised = crate::builtins::exceptions::alloc_exception_bytes(
+            _py,
+            BuiltinExc::TypeError,
+            &message,
+        );
         if raised.is_null() {
             if !exception_pending(_py) {
                 crate::builtins::exceptions::record_memory_error_without_allocation(_py);
@@ -595,7 +605,7 @@ pub extern "C" fn molt_types_get_original_bases(cls_bits: u64) -> u64 {
             MoltObject::none().bits(),
         ) {
             if !exception_pending(_py) {
-                return raise_exception::<u64>(_py, "SystemError", message);
+                return raise_exception::<u64>(_py, BuiltinExc::SystemError, message);
             }
             return MoltObject::none().bits();
         }
@@ -619,7 +629,7 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
                 "prepare_class() takes at most 3 positional arguments ({} given)",
                 positional.len()
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let mut name_bits = positional.first().copied().unwrap_or(0);
         let mut bases_bits = positional.get(1).copied().unwrap_or(0);
@@ -636,7 +646,7 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
                     if has_name {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "prepare_class() got multiple values for argument 'name'",
                         );
                     }
@@ -647,7 +657,7 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
                     if has_bases {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "prepare_class() got multiple values for argument 'bases'",
                         );
                     }
@@ -658,7 +668,7 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
                     if has_kwds {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "prepare_class() got multiple values for argument 'kwds'",
                         );
                     }
@@ -670,14 +680,14 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
                         "prepare_class() got an unexpected keyword argument '{}'",
                         key
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
         if !has_name {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "prepare_class() missing 1 required positional argument: 'name'",
             );
         }
@@ -730,7 +740,7 @@ pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> 
                 "resolve_bases() takes 1 positional argument but {} were given",
                 positional.len()
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let mut bases_bits = positional.first().copied().unwrap_or(0);
         let mut has_bases = !positional.is_empty();
@@ -740,7 +750,7 @@ pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> 
                     if has_bases {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "resolve_bases() got multiple values for argument 'bases'",
                         );
                     }
@@ -752,14 +762,14 @@ pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> 
                         "resolve_bases() got an unexpected keyword argument '{}'",
                         key
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
         if !has_bases {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "resolve_bases() missing 1 required positional argument: 'bases'",
             );
         }
@@ -781,7 +791,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
                 "new_class() takes at most 4 positional arguments ({} given)",
                 positional.len()
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let mut name_bits = positional.first().copied().unwrap_or(0);
         let mut bases_bits = positional.get(1).copied().unwrap_or(0);
@@ -803,7 +813,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
                     if has_name {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "new_class() got multiple values for argument 'name'",
                         );
                     }
@@ -814,7 +824,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
                     if has_bases {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "new_class() got multiple values for argument 'bases'",
                         );
                     }
@@ -825,7 +835,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
                     if has_kwds {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "new_class() got multiple values for argument 'kwds'",
                         );
                     }
@@ -836,7 +846,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
                     if has_exec {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "new_class() got multiple values for argument 'exec_body'",
                         );
                     }
@@ -845,14 +855,14 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
                 }
                 _ => {
                     let msg = format!("new_class() got an unexpected keyword argument '{}'", key);
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
         if !has_name {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "new_class() missing 1 required positional argument: 'name'",
             );
         }

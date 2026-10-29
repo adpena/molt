@@ -346,8 +346,8 @@ mod tests {
         activation(crate::TASK_KIND_COROUTINE, 0)
     }
 
-    fn exception(py: &PyToken<'_>, name: &str) -> u64 {
-        MoltObject::from_ptr(alloc_exception(py, name, name)).bits()
+    fn exception(py: &PyToken<'_>, name: crate::BuiltinExc) -> u64 {
+        MoltObject::from_ptr(alloc_exception(py, name, name.name())).bits()
     }
 
     fn refcount(bits: u64) -> u32 {
@@ -363,7 +363,7 @@ mod tests {
     fn every_kind_sees_the_callers_innermost_handled_exception() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let handled = exception(py, "LookupError");
+            let handled = exception(py, crate::BuiltinExc::LookupError);
             exception_stack_push();
             exception_context_set(py, handled);
             exception_stack_push();
@@ -409,7 +409,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let (bits, ptr) = generator();
-            let own = exception(py, "KeyError");
+            let own = exception(py, crate::BuiltinExc::KeyError);
             let baseline = refcount(own);
             let scope = ActivationExceptionScope::enter(py, ptr, ActivationKind::Generator);
             exception_stack_push();
@@ -480,7 +480,7 @@ mod tests {
                     (bits, ptr, ActivationKind::Task { own_baseline: true })
                 },
             ] {
-                let own = exception(py, "KeyError");
+                let own = exception(py, crate::BuiltinExc::KeyError);
                 let baseline = refcount(own);
                 let scope = ActivationExceptionScope::enter(py, ptr, kind);
                 exception_stack_push();
@@ -502,7 +502,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let (bits, ptr) = coroutine();
-            let own = exception(py, "ValueError");
+            let own = exception(py, crate::BuiltinExc::ValueError);
             inc_ref_bits(py, own);
             let scope = ActivationExceptionScope::enter(
                 py,

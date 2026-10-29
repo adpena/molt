@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import builtins as _builtins
-
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
@@ -164,7 +162,7 @@ class DivisionImpossible(InvalidOperation):
     pass
 
 
-class DivisionUndefined(InvalidOperation):
+class DivisionUndefined(InvalidOperation, ZeroDivisionError):
     pass
 
 
@@ -172,7 +170,7 @@ class InvalidContext(InvalidOperation):
     pass
 
 
-class FloatOperation(DecimalException):
+class FloatOperation(DecimalException, TypeError):
     pass
 
 
@@ -193,23 +191,6 @@ _SIGNAL_MAP = {
 }
 
 
-for _name, _cls in {
-    "DecimalException": DecimalException,
-    "InvalidOperation": InvalidOperation,
-    "DivisionByZero": DivisionByZero,
-    "Inexact": Inexact,
-    "Overflow": Overflow,
-    "Underflow": Underflow,
-    "Subnormal": Subnormal,
-    "Rounded": Rounded,
-    "Clamped": Clamped,
-    "ConversionSyntax": ConversionSyntax,
-    "DivisionImpossible": DivisionImpossible,
-    "DivisionUndefined": DivisionUndefined,
-    "InvalidContext": InvalidContext,
-    "FloatOperation": FloatOperation,
-}.items():
-    setattr(_builtins, _name, _cls)
 
 
 ROUND_UP = "ROUND_UP"
@@ -465,7 +446,7 @@ class Context:
     def create_decimal(self, value: object) -> "Decimal":
         # Decimal(...) construction is context-invariant; apply this context by routing
         # through a context-aware arithmetic op.
-        dec = Decimal(value)
+        dec = Decimal(value, self)
         if isinstance(dec.as_tuple().exponent, str):
             return dec
         return self.divide(dec, Decimal(1))
@@ -1248,13 +1229,23 @@ def _coerce(value: object) -> Decimal:
 
 
 def _decimal_float_handle(value: float, context: Context | None) -> object:
+    # Mixing a float into the constructor (and create_decimal) signals
+    # FloatOperation; the explicit from_float conversions do not.
     if isinstance(context, Context):
+        _signal_float_operation(context._handle)
         return _MOLT_DECIMAL_FROM_FLOAT(context._handle, value)
     ctx_handle = _MOLT_DECIMAL_CONTEXT_GET_CURRENT()
     try:
+        _signal_float_operation(ctx_handle)
         return _MOLT_DECIMAL_FROM_FLOAT(ctx_handle, value)
     finally:
         _MOLT_DECIMAL_CONTEXT_DROP(ctx_handle)
+
+
+def _signal_float_operation(ctx_handle: object) -> None:
+    _MOLT_DECIMAL_CONTEXT_SET_FLAG(ctx_handle, _MPD_FPU_ERROR, True)
+    if _MOLT_DECIMAL_CONTEXT_GET_TRAP(ctx_handle, _MPD_FPU_ERROR):
+        raise FloatOperation([FloatOperation])
 
 
 def _decimal_handle(value: object, context: Context | None) -> object:

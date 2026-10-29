@@ -1,5 +1,6 @@
 //! Native queue synchronization primitives.
 
+use crate::BuiltinExc;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -378,19 +379,19 @@ fn parse_queue_timeout(
     }
     if !blocking {
         let msg = format!("can't specify a timeout for a non-blocking {op_name}");
-        return Err(raise_exception::<_>(_py, "ValueError", &msg));
+        return Err(raise_exception::<_>(_py, BuiltinExc::ValueError, &msg));
     }
     let Some(timeout) = to_f64(timeout_obj) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "timeout value must be a float",
         ));
     };
     if !timeout.is_finite() || timeout < 0.0 {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "'timeout' must be a non-negative number",
         ));
     }
@@ -402,7 +403,7 @@ fn parse_queue_timeout(
 pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxsize must be an integer");
         };
         let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Fifo));
         let raw = Arc::into_raw(queue) as *mut u8;
@@ -415,7 +416,7 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxsize must be an integer");
         };
         let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Lifo));
         let raw = Arc::into_raw(queue) as *mut u8;
@@ -428,7 +429,7 @@ pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(maxsize) = crate::to_i64(obj_from_bits(maxsize_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "maxsize must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "maxsize must be an integer");
         };
         let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Priority));
         let raw = Arc::into_raw(queue) as *mut u8;
@@ -441,7 +442,7 @@ pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         MoltObject::from_int(queue.qsize()).bits()
     })
@@ -452,7 +453,7 @@ pub unsafe extern "C" fn molt_queue_qsize(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         MoltObject::from_bool(queue.empty()).bits()
     })
@@ -463,7 +464,7 @@ pub unsafe extern "C" fn molt_queue_empty(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_queue_full(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         MoltObject::from_bool(queue.full()).bits()
     })
@@ -479,7 +480,7 @@ pub unsafe extern "C" fn molt_queue_put(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
         let timeout = match parse_queue_timeout(_py, blocking, timeout_bits, "put") {
@@ -518,7 +519,7 @@ pub unsafe extern "C" fn molt_queue_get(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
         let timeout = match parse_queue_timeout(_py, blocking, timeout_bits, "get") {
@@ -544,7 +545,7 @@ pub unsafe extern "C" fn molt_queue_get(
 pub unsafe extern "C" fn molt_queue_shutdown(handle_bits: u64, immediate_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         let immediate = is_truthy(_py, obj_from_bits(immediate_bits));
         queue.shutdown(_py, immediate);
@@ -557,7 +558,7 @@ pub unsafe extern "C" fn molt_queue_shutdown(handle_bits: u64, immediate_bits: u
 pub unsafe extern "C" fn molt_queue_is_shutdown(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         MoltObject::from_bool(queue.is_shutdown()).bits()
     })
@@ -568,7 +569,7 @@ pub unsafe extern "C" fn molt_queue_is_shutdown(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         MoltObject::from_bool(queue.task_done()).bits()
     })
@@ -579,7 +580,7 @@ pub unsafe extern "C" fn molt_queue_task_done(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_queue_join(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(queue) = queue_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid queue handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid queue handle");
         };
         {
             let _release = GilReleaseGuard::suspend();

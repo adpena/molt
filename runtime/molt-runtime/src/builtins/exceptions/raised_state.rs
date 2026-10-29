@@ -145,7 +145,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
-            let ptr = alloc_exception(py, "ValueError", "same owner");
+            let ptr = alloc_exception(py, crate::BuiltinExc::ValueError, "same owner");
             assert!(!ptr.is_null());
             let refs = || unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
             let baseline = refs();
@@ -172,7 +172,8 @@ mod tests {
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         std::thread::spawn(|| {
             crate::with_gil_entry_nopanic!(py, {
-                let ptr = alloc_exception(py, "ValueError", "pending at thread exit");
+                let ptr =
+                    alloc_exception(py, crate::BuiltinExc::ValueError, "pending at thread exit");
                 assert!(!ptr.is_null());
                 record_exception_owned(py, ptr);
                 assert!(exception_pending(py));
@@ -195,12 +196,16 @@ mod tests {
             assert_eq!(exception_last_bits_noinc(py), Some(original));
             assert!(exception_pending(py));
             assert!(!with_saved_raised_exception(py, || {
-                raise_exception::<u64>(py, "ValueError", "replacement");
+                raise_exception::<u64>(py, crate::BuiltinExc::ValueError, "replacement");
                 false
             }));
             assert_ne!(exception_last_bits_noinc(py), Some(original));
             let raised = molt_exception_last_pending();
-            assert!(exception_matches_builtin_name(py, raised, "ValueError"));
+            assert!(exception_matches_kind(
+                py,
+                raised,
+                crate::BuiltinExc::ValueError
+            ));
             clear_exception(py);
             dec_ref_bits(py, raised);
             assert!(!exception_pending(py));

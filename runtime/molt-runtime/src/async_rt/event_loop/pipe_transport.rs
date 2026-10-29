@@ -3,6 +3,7 @@
 //! Owns fd-backed pipe transport state, its registry, and the native/wasm pipe
 //! intrinsics. Event-loop callback tables stay in the parent event_loop module.
 
+use crate::BuiltinExc;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
@@ -133,7 +134,7 @@ fn pipe_require_bytes_slice(_py: &crate::PyToken<'_>, bits: u64) -> Result<&'sta
     let Some(ptr) = obj.as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "a bytes-like object is required",
         ));
     };
@@ -144,7 +145,7 @@ fn pipe_require_bytes_slice(_py: &crate::PyToken<'_>, bits: u64) -> Result<&'sta
     }
     Err(raise_exception::<u64>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "a bytes-like object is required",
     ))
 }
@@ -163,7 +164,7 @@ pub extern "C" fn molt_pipe_transport_new(fd_bits: u64, is_read_bits: u64) -> u6
     crate::with_gil_entry_nopanic!(_py, {
         let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
         if fd < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid file descriptor");
         }
         let is_read = crate::is_truthy(_py, crate::obj_from_bits(is_read_bits));
         let handle = alloc_pipe_transport(_py, fd as i32, is_read);
@@ -177,7 +178,7 @@ pub extern "C" fn molt_pipe_transport_new(_fd_bits: u64, _is_read_bits: u64) -> 
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "pipe transports are not supported on WASM",
         )
     })
@@ -265,7 +266,7 @@ pub extern "C" fn molt_pipe_transport_close(_handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "pipe transports are not supported on WASM",
         )
     })
@@ -288,11 +289,15 @@ pub extern "C" fn molt_pipe_transport_pause_reading(handle_bits: u64) -> u64 {
             state.paused = true;
             Ok(())
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "pipe transport not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "pipe transport not found",
+            );
         };
         match result {
             Ok(()) => MoltObject::none().bits(),
-            Err(msg) => raise_exception::<u64>(_py, "RuntimeError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::RuntimeError, msg),
         }
     })
 }
@@ -314,11 +319,15 @@ pub extern "C" fn molt_pipe_transport_resume_reading(handle_bits: u64) -> u64 {
             state.paused = false;
             Ok(())
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "pipe transport not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "pipe transport not found",
+            );
         };
         match result {
             Ok(()) => MoltObject::none().bits(),
-            Err(msg) => raise_exception::<u64>(_py, "RuntimeError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::RuntimeError, msg),
         }
     })
 }
@@ -377,11 +386,15 @@ pub extern "C" fn molt_pipe_transport_write(handle_bits: u64, data_bits: u64) ->
             }
             Ok(())
         }) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "pipe transport not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "pipe transport not found",
+            );
         };
         match result {
             Ok(()) => MoltObject::none().bits(),
-            Err(msg) => raise_exception::<u64>(_py, "RuntimeError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::RuntimeError, msg),
         }
     })
 }
@@ -392,7 +405,7 @@ pub extern "C" fn molt_pipe_transport_write(_handle_bits: u64, _data_bits: u64) 
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "pipe transports are not supported on WASM",
         )
     })

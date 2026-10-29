@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::methods::{float_method_bits, int_method_bits};
 
 #[derive(Clone, Copy)]
@@ -159,7 +160,11 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
 extern "C" fn numeric_member_get(descriptor: u64, receiver: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(descriptor) = obj_from_bits(descriptor).as_ptr() else {
-            return raise_exception(py, "SystemError", "numeric descriptor has no payload");
+            return raise_exception(
+                py,
+                BuiltinExc::SystemError,
+                "numeric descriptor has no payload",
+            );
         };
         // NativeDescriptor validates the real owner/subtype before dispatch.
         // Read sealed payloads directly: user __int__/__float__ are not part of
@@ -173,9 +178,11 @@ extern "C" fn numeric_member_get(descriptor: u64, receiver: u64) -> u64 {
                 }
                 match crate::builtins::numbers::index_bigint_integral_bits(receiver) {
                     Some(value) => crate::builtins::numbers::int_bits_from_bigint(py, value),
-                    None => {
-                        raise_exception(py, "SystemError", "int descriptor lacks integer storage")
-                    }
+                    None => raise_exception(
+                        py,
+                        BuiltinExc::SystemError,
+                        "int descriptor lacks integer storage",
+                    ),
                 }
             }
             Some(tag) if tag == NumericMember::IntegerImag as u32 => MoltObject::from_int(0).bits(),
@@ -189,9 +196,11 @@ extern "C" fn numeric_member_get(descriptor: u64, receiver: u64) -> u64 {
                 }
                 match crate::object::ops::as_float_extended(obj_from_bits(receiver)) {
                     Some(value) => crate::object::ops::float_result_bits(py, value),
-                    None => {
-                        raise_exception(py, "SystemError", "float descriptor lacks float storage")
-                    }
+                    None => raise_exception(
+                        py,
+                        BuiltinExc::SystemError,
+                        "float descriptor lacks float storage",
+                    ),
                 }
             }
             Some(tag) if tag == NumericMember::FloatImag as u32 => {
@@ -205,7 +214,7 @@ extern "C" fn numeric_member_get(descriptor: u64, receiver: u64) -> u64 {
                 else {
                     return raise_exception(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "complex descriptor lacks complex storage",
                     );
                 };
@@ -219,7 +228,11 @@ extern "C" fn numeric_member_get(descriptor: u64, receiver: u64) -> u64 {
                     },
                 )
             }
-            _ => raise_exception(py, "SystemError", "invalid numeric descriptor operation"),
+            _ => raise_exception(
+                py,
+                BuiltinExc::SystemError,
+                "invalid numeric descriptor operation",
+            ),
         }
     })
 }
@@ -389,7 +402,11 @@ mod numeric_member_tests {
 
     extern "C" fn forbidden_conversion(_receiver: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception(py, "RuntimeError", "numeric member dispatched conversion")
+            raise_exception(
+                py,
+                BuiltinExc::RuntimeError,
+                "numeric member dispatched conversion",
+            )
         })
     }
 

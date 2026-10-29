@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
@@ -251,7 +252,7 @@ pub(crate) fn selected_vfs_route(
             if vfs.resolve(prefix).is_some() {
                 Err(raise_exception::<u64>(
                     py,
-                    "UnicodeError",
+                    BuiltinExc::UnicodeError,
                     "mounted VFS paths must be valid UTF-8",
                 ))
             } else {
@@ -269,8 +270,10 @@ fn admit_metadata_routes(
     let mut capabilities: [&'static str; 4] = [""; 4];
     let mut count = 0;
     for (prefix, _, _) in routes.into_iter().flatten() {
-        let requirement = crate::vfs::caps::mount_requirements(prefix, true, false)
-            .map_err(|error| raise_exception::<u64>(py, "PermissionError", &error.to_string()))?;
+        let requirement =
+            crate::vfs::caps::mount_requirements(prefix, true, false).map_err(|error| {
+                raise_exception::<u64>(py, BuiltinExc::PermissionError, &error.to_string())
+            })?;
         for &capability in requirement.capabilities() {
             capabilities[count] = capability;
             count += 1;
@@ -379,7 +382,7 @@ fn validate_metadata_path(py: &PyToken<'_>, path: &std::path::Path) -> Result<()
     if path.as_os_str().as_encoded_bytes().contains(&0) {
         Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "embedded null byte",
         ))
     } else {
@@ -462,13 +465,13 @@ pub(crate) fn paths_same_file(
 fn raise_vfs_error(py: &PyToken<'_>, error: crate::vfs::VfsError, path: &str) -> u64 {
     let message = format!("{error}: '{path}'");
     let kind = match error {
-        crate::vfs::VfsError::NotFound => "FileNotFoundError",
-        crate::vfs::VfsError::AlreadyExists => "FileExistsError",
+        crate::vfs::VfsError::NotFound => BuiltinExc::FileNotFoundError,
+        crate::vfs::VfsError::AlreadyExists => BuiltinExc::FileExistsError,
         crate::vfs::VfsError::PermissionDenied | crate::vfs::VfsError::ReadOnly => {
-            "PermissionError"
+            BuiltinExc::PermissionError
         }
-        crate::vfs::VfsError::IsDirectory => "IsADirectoryError",
-        _ => "OSError",
+        crate::vfs::VfsError::IsDirectory => BuiltinExc::IsADirectoryError,
+        _ => BuiltinExc::OSError,
     };
     raise_exception::<u64>(py, kind, &message)
 }

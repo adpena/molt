@@ -9,6 +9,7 @@
 //! registry. No host function pointer is embedded in the object.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 pub(crate) use crate::object::layout::{
     NativeDescriptorFlavor, native_descriptor_deleter_bits, native_descriptor_doc_bits,
@@ -180,16 +181,32 @@ pub(crate) fn native_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptor
 /// callables. None is the only absent-callback sentinel; raw zero is rejected.
 pub(crate) fn alloc_native_descriptor(py: &PyToken<'_>, spec: NativeDescriptorSpec) -> u64 {
     let Some(owner_ptr) = obj_from_bits(spec.owner).as_ptr() else {
-        return raise_exception::<_>(py, "SystemError", "native descriptor owner is not a type");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::SystemError,
+            "native descriptor owner is not a type",
+        );
     };
     if unsafe { object_type_id(owner_ptr) } != TYPE_ID_TYPE {
-        return raise_exception::<_>(py, "SystemError", "native descriptor owner is not a type");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::SystemError,
+            "native descriptor owner is not a type",
+        );
     }
     let Some(name_ptr) = obj_from_bits(spec.name).as_ptr() else {
-        return raise_exception::<_>(py, "SystemError", "native descriptor name is not a string");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::SystemError,
+            "native descriptor name is not a string",
+        );
     };
     if unsafe { object_type_id(name_ptr) } != TYPE_ID_STRING {
-        return raise_exception::<_>(py, "SystemError", "native descriptor name is not a string");
+        return raise_exception::<_>(
+            py,
+            BuiltinExc::SystemError,
+            "native descriptor name is not a string",
+        );
     }
     let doc = obj_from_bits(spec.doc);
     if !doc.is_none()
@@ -199,7 +216,7 @@ pub(crate) fn alloc_native_descriptor(py: &PyToken<'_>, spec: NativeDescriptorSp
     {
         return raise_exception::<_>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "native descriptor documentation is not str or None",
         );
     }
@@ -211,7 +228,7 @@ pub(crate) fn alloc_native_descriptor(py: &PyToken<'_>, spec: NativeDescriptorSp
         if callback == 0 {
             return raise_exception::<_>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 &format!("native descriptor {role} is raw zero"),
             );
         }
@@ -220,7 +237,7 @@ pub(crate) fn alloc_native_descriptor(py: &PyToken<'_>, spec: NativeDescriptorSp
         {
             return raise_exception::<_>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 &format!("native descriptor {role} is not callable or None"),
             );
         }
@@ -245,7 +262,11 @@ pub(crate) fn alloc_native_descriptor(py: &PyToken<'_>, spec: NativeDescriptorSp
     );
     if ptr.is_null() {
         if !exception_pending(py) {
-            return raise_exception::<_>(py, "MemoryError", "native descriptor allocation failed");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::MemoryError,
+                "native descriptor allocation failed",
+            );
         }
         MoltObject::none().bits()
     } else {
@@ -283,14 +304,14 @@ fn descriptor_ptr(
     let Some(ptr) = obj_from_bits(descriptor).as_ptr() else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("descriptor '{method}' requires a native descriptor object"),
         );
     };
     let Some(flavor) = (unsafe { native_descriptor_flavor(ptr) }) else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("descriptor '{method}' requires a native descriptor object"),
         );
     };
@@ -301,7 +322,7 @@ fn descriptor_ptr(
     if unsafe { object_class_bits(ptr) } != expected_class {
         return raise_exception::<_>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             &format!(
                 "{} object has an inconsistent native descriptor class edge",
                 flavor.type_name(),
@@ -331,7 +352,7 @@ unsafe fn validate_receiver(py: &PyToken<'_>, ptr: *mut u8, instance: u64) -> bo
     let (name, owner_name) = unsafe { descriptor_text(ptr) };
     raise_exception::<bool>(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!(
             "descriptor '{name}' for '{owner_name}' objects doesn't apply to a '{}' object",
             type_name(py, obj_from_bits(instance)),
@@ -377,7 +398,7 @@ unsafe fn managed_slot_location(
             let (name, owner_name) = descriptor_text(descriptor);
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '{name}' for '{owner_name}' objects doesn't apply to a '{}' object",
                     type_name(py, obj_from_bits(instance)),
@@ -398,7 +419,7 @@ unsafe fn managed_slot_location(
         }
         raise_exception::<()>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "managed slot is absent from its physical layout",
         );
         None
@@ -459,13 +480,13 @@ unsafe fn missing_accessor(
     readable: bool,
 ) -> u64 {
     if flavor == NativeDescriptorFlavor::Member && !readable {
-        return raise_exception::<_>(py, "AttributeError", "readonly attribute");
+        return raise_exception::<_>(py, BuiltinExc::AttributeError, "readonly attribute");
     }
     let (name, owner) = unsafe { descriptor_text(ptr) };
     let operation = if readable { "readable" } else { "writable" };
     raise_exception::<_>(
         py,
-        "AttributeError",
+        BuiltinExc::AttributeError,
         &format!("attribute '{name}' of '{owner}' objects is not {operation}"),
     )
 }
@@ -479,7 +500,7 @@ pub(crate) unsafe fn native_descriptor_get(
     let (ptr, flavor) = descriptor_ptr(py, descriptor, "__get__").ok_or(())?;
     let Some(instance) = instance else {
         if owner.is_none() {
-            raise_exception::<()>(py, "TypeError", "__get__(None, None) is invalid");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "__get__(None, None) is invalid");
             return Err(());
         }
         inc_ref_bits(py, descriptor);
@@ -495,7 +516,11 @@ pub(crate) unsafe fn native_descriptor_get(
     if flavor == NativeDescriptorFlavor::InstanceDictionary {
         let _inputs = DescriptorInputs::new(py, [descriptor, instance]);
         let Some(object) = obj_from_bits(instance).as_ptr() else {
-            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::AttributeError,
+                "object has no instance dictionary",
+            );
             return Err(());
         };
         let value = unsafe { crate::object::field_storage::materialize(py, object) }.ok_or(())?;
@@ -514,7 +539,7 @@ pub(crate) unsafe fn native_descriptor_get(
         let Some(object) = obj_from_bits(instance).as_ptr() else {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "callable metadata requires a heap receiver",
             );
             return Err(());
@@ -524,7 +549,7 @@ pub(crate) unsafe fn native_descriptor_get(
         }? {
             Some(value) => Ok(value),
             None => {
-                raise_exception::<()>(py, "AttributeError", field.name());
+                raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
                 Err(())
             }
         };
@@ -535,7 +560,11 @@ pub(crate) unsafe fn native_descriptor_get(
         let Some(field) =
             molt_cpython_abi::api::typeobj::TypeAttributeField::from_operation(operation)
         else {
-            raise_exception::<()>(py, "SystemError", "invalid root metadata operation");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid root metadata operation",
+            );
             return Err(());
         };
         return unsafe { crate::builtins::attributes::type_metadata::read(py, instance, field) };
@@ -591,11 +620,15 @@ pub(crate) unsafe fn native_descriptor_mutate(
             ],
         );
         let Some(object) = obj_from_bits(instance).as_ptr() else {
-            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::AttributeError,
+                "object has no instance dictionary",
+            );
             return Err(());
         };
         if unsafe { object_type_id(object) } == TYPE_ID_MODULE {
-            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(py, BuiltinExc::AttributeError, "readonly attribute");
             return Err(());
         }
         return unsafe { crate::object::field_storage::replace_dictionary(py, object, value) };
@@ -619,7 +652,7 @@ pub(crate) unsafe fn native_descriptor_mutate(
         let Some(object) = obj_from_bits(instance).as_ptr() else {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "callable metadata requires a heap receiver",
             );
             return Err(());
@@ -641,7 +674,11 @@ pub(crate) unsafe fn native_descriptor_mutate(
         let Some(field) =
             molt_cpython_abi::api::typeobj::TypeAttributeField::from_operation(operation)
         else {
-            raise_exception::<()>(py, "SystemError", "invalid root metadata operation");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid root metadata operation",
+            );
             return Err(());
         };
         return unsafe {
@@ -772,7 +809,7 @@ pub(crate) unsafe fn native_descriptor_reduce(py: &PyToken<'_>, descriptor: u64)
     let _inputs = DescriptorInputs::new(py, [descriptor, owner, name]);
     let getattr = match crate::builtins::functions::lookup_builtin_name(py, "getattr") {
         Ok(Some(value)) => value,
-        Ok(None) => return raise_exception::<_>(py, "AttributeError", "getattr"),
+        Ok(None) => return raise_exception::<_>(py, BuiltinExc::AttributeError, "getattr"),
         Err(()) => return MoltObject::none().bits(),
     };
     let args_ptr = alloc_tuple(py, &[owner, name]);
@@ -820,14 +857,14 @@ fn native_descriptor_method(
     let Some((&receiver, args)) = args.split_first() else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("descriptor '{method}' needs an argument"),
         );
     };
     if matches!(operation, NativeDescriptorOperation::New) {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "cannot create '{}' instances",
                 class_name_for_error(receiver)
@@ -837,7 +874,7 @@ fn native_descriptor_method(
     if !keywords.is_empty() {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{method}() takes no keyword arguments"),
         );
     }
@@ -858,7 +895,7 @@ fn native_descriptor_method(
         };
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "descriptor '{method}' for '{}' objects expected {expected} arguments, got {}",
                 flavor.type_name(),
@@ -1126,7 +1163,7 @@ mod tests {
                 // reading only take_current_error would mistake it for loss.
                 assert_eq!(try_is_real_subtype(py, class_bits, owner), Err(()));
                 let system_error =
-                    crate::builtins::exceptions::exception_type_bits_from_name(py, "SystemError");
+                    crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::SystemError);
                 assert_eq!(
                     pending_exception_class(py),
                     PendingExceptionClass::Class(system_error)
@@ -1165,7 +1202,7 @@ mod tests {
                 let c_identity = c_error.value;
                 let runtime_error = MoltObject::from_ptr(alloc_exception(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "runtime admission outer",
                 ))
                 .bits();
@@ -1221,9 +1258,9 @@ mod tests {
                             assert!(!is_real_instance(py, bits, owner));
                             assert_eq!(
                                 pending_exception_class(py),
-                                PendingExceptionClass::Class(crate::exception_type_bits_from_name(
+                                PendingExceptionClass::Class(crate::exception_class_bits(
                                     py,
-                                    "MemoryError"
+                                    BuiltinExc::MemoryError
                                 ))
                             );
                             assert!(crate::exception_last_bits_noinc(py).is_some());
@@ -1498,10 +1535,10 @@ mod tests {
             let missing = unsafe { native_descriptor_reduce(py, descriptor) };
             assert!(exception_pending(py));
             let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "AttributeError"
+                crate::BuiltinExc::AttributeError
             ));
             clear_exception(py);
             dec_ref_bits(py, missing);
@@ -1512,7 +1549,11 @@ mod tests {
             assert!(exception_pending(py));
             let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
             assert!(
-                crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError"),
+                crate::builtins::exceptions::exception_matches_kind(
+                    py,
+                    error,
+                    crate::BuiltinExc::TypeError
+                ),
                 "mapping error must not become a descriptor SystemError/AttributeError"
             );
             clear_exception(py);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 pub(super) fn exception_last_public_bits(_py: &PyToken<'_>) -> u64 {
     // Fast path: the current execution context's pending flag is authoritative.
@@ -512,7 +513,7 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
             }
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exceptions must derive from BaseException",
             );
         }
@@ -559,9 +560,17 @@ mod diagnostic_tests {
             assert!(pending_exception_diagnostic(py).is_none());
             for missing in [false, true] {
                 let exception = if missing {
-                    molt_exception_new_builtin_one(5, MoltObject::from_int(42).bits())
+                    molt_exception_new_builtin_one(
+                        u64::from(crate::ExcKind::from(crate::BuiltinExc::ValueError).code()),
+                        MoltObject::from_int(42).bits(),
+                    )
                 } else {
-                    MoltObject::from_ptr(alloc_exception(py, "ValueError", "already stored")).bits()
+                    MoltObject::from_ptr(alloc_exception(
+                        py,
+                        BuiltinExc::ValueError,
+                        "already stored",
+                    ))
+                    .bits()
                 };
                 let ptr = obj_from_bits(exception).as_ptr().expect("exception object");
                 let constructor_missing =

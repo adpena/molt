@@ -9,6 +9,7 @@ use super::super::state::{
 };
 use super::super::trace_commands::{alloc_trace_info, normalize_trace_mode_name};
 use crate::bridge::raise_exception_u64;
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::MoltObject;
 
 #[unsafe(no_mangle)]
@@ -39,7 +40,11 @@ pub extern "C" fn molt_tk_trace_add(
             Err(message) => return raise_tcl_for_handle(_py, handle, message),
         };
         if !callback_is_callable(callback_bits) {
-            return raise_exception_u64(_py, "TypeError", "trace callback must be callable");
+            return raise_exception_u64(
+                _py,
+                BuiltinExc::TypeError,
+                "trace callback must be callable",
+            );
         }
 
         let command_name = {

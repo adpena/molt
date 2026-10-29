@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::seq_access::snapshot;
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 
@@ -60,7 +61,7 @@ fn super_receiver_class(_py: &PyToken<'_>, type_bits: u64, obj_bits: u64) -> Opt
     } else {
         "super(type, obj): obj must be an instance or subtype of type".to_owned()
     };
-    let _ = raise_exception::<u64>(_py, "TypeError", &message);
+    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &message);
     None
 }
 
@@ -78,11 +79,11 @@ fn super_construct(
         let got = type_name(_py, type_obj);
         let (exception, message) = match mode {
             SuperConstructionMode::Explicit => (
-                "TypeError",
+                BuiltinExc::TypeError,
                 format!("super() argument 1 must be a type, not {got}"),
             ),
             SuperConstructionMode::Implicit => (
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 format!("super(): __class__ is not a type ({got})"),
             ),
         };
@@ -126,7 +127,7 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
     let frame = frame_python_context_snapshot(_py);
     let argument_item = match frame.context.argument_zero {
         PythonArgumentZero::NoArgument => {
-            return raise_exception::<_>(_py, "RuntimeError", "super(): no arguments");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "super(): no arguments");
         }
         PythonArgumentZero::Value(_) | PythonArgumentZero::Home => None,
         PythonArgumentZero::Cell(bits) => Some(unsafe {
@@ -161,11 +162,15 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
     };
     let Some(argument_bits) = argument_bits.filter(|bits| !is_missing_bits(_py, *bits)) else {
         release_home(_py);
-        return raise_exception::<_>(_py, "RuntimeError", "super(): arg[0] deleted");
+        return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "super(): arg[0] deleted");
     };
     let Some(cell_bits) = frame.context.class_cell_bits else {
         release_home(_py);
-        return raise_exception::<_>(_py, "RuntimeError", "super(): __class__ cell not found");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::RuntimeError,
+            "super(): __class__ cell not found",
+        );
     };
     let class_item = unsafe {
         crate::object::cells::pin_cell_value(
@@ -177,7 +182,11 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
     };
     if is_missing_bits(_py, class_item.bits()) {
         release_home(_py);
-        return raise_exception::<_>(_py, "RuntimeError", "super(): empty __class__ cell");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::RuntimeError,
+            "super(): empty __class__ cell",
+        );
     }
     let result = super_construct(
         _py,
@@ -197,7 +206,11 @@ pub extern "C" fn molt_super_from_frame() -> u64 {
 /// One arity/keyword and frame-observation authority for all builtin call transports.
 pub(crate) fn super_call(_py: &PyToken<'_>, args: &[u64], has_keywords: bool) -> u64 {
     if has_keywords {
-        return raise_exception::<_>(_py, "TypeError", "super() takes no keyword arguments");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "super() takes no keyword arguments",
+        );
     }
     match args {
         [] => super_from_current_frame(_py),
@@ -212,7 +225,7 @@ pub(crate) fn super_call(_py: &PyToken<'_>, args: &[u64], has_keywords: bool) ->
         }
         _ => raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("super() expected at most 2 arguments, got {}", args.len()),
         ),
     }
@@ -275,7 +288,7 @@ pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u
         let Some(alias_ptr) = obj_from_bits(alias_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "GenericAlias.__mro_entries__ expected GenericAlias",
             );
         };
@@ -283,7 +296,7 @@ pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u
             if object_type_id(alias_ptr) != TYPE_ID_GENERIC_ALIAS {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "GenericAlias.__mro_entries__ expected GenericAlias",
                 );
             }
@@ -306,7 +319,7 @@ pub(crate) extern "C" fn generic_alias_instancecheck(_alias_bits: u64, _value_bi
     crate::with_gil_entry_nopanic!(py, {
         raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "isinstance() argument 2 cannot be a parameterized generic",
         )
     })
@@ -316,7 +329,7 @@ pub(crate) extern "C" fn generic_alias_subclasscheck(_alias_bits: u64, _value_bi
     crate::with_gil_entry_nopanic!(py, {
         raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "issubclass() argument 2 cannot be a parameterized generic",
         )
     })
@@ -331,11 +344,19 @@ pub extern "C" fn molt_generic_alias_type_new(
     crate::with_gil_entry_nopanic!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "GenericAlias.__new__ expects type",
+            );
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "GenericAlias.__new__ expects type",
+                );
             }
         }
         let builtins = builtin_classes(_py);
@@ -344,7 +365,7 @@ pub extern "C" fn molt_generic_alias_type_new(
         if !is_generic_alias_subtype {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "GenericAlias.__new__ expected GenericAlias subtype",
             );
         }
@@ -376,11 +397,19 @@ pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64)
     crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "type parameter name must be str",
+            );
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "type parameter name must be str",
+                );
             }
         }
         let builder_bits = molt_callargs_new(1, 0);
@@ -424,10 +453,10 @@ mod super_frame_tests {
         MoltObject::from_ptr(ptr).bits()
     }
 
-    fn assert_error(py: &PyToken<'_>, result: u64, kind: &str, expected: &str) {
+    fn assert_error(py: &PyToken<'_>, result: u64, kind: crate::BuiltinExc, expected: &str) {
         assert!(obj_from_bits(result).is_none());
         let error = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             py, error, kind
         ));
         let message = crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap());
@@ -487,7 +516,12 @@ mod super_frame_tests {
                         class_cell_bits
                     }
                 ));
-                assert_error(py, molt_super_from_frame(), "RuntimeError", message);
+                assert_error(
+                    py,
+                    molt_super_from_frame(),
+                    crate::BuiltinExc::RuntimeError,
+                    message,
+                );
             }
             frame_stack_pop(py);
             for bits in [empty_class_cell, invalid_class_cell, missing_argument_cell] {
@@ -539,7 +573,7 @@ mod super_frame_tests {
                 assert_error(
                     py,
                     call_callable0(py, classes.super_type),
-                    "RuntimeError",
+                    crate::BuiltinExc::RuntimeError,
                     "super(): __class__ is not a type (int)",
                 );
                 for bits in [argument_cell, class_cell] {
@@ -592,7 +626,7 @@ mod super_frame_tests {
             assert_error(
                 py,
                 molt_super_new(MoltObject::from_int(42).bits(), receiver),
-                "TypeError",
+                crate::BuiltinExc::TypeError,
                 "super() argument 1 must be a type, not int",
             );
         });

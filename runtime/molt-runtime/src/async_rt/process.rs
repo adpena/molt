@@ -1,5 +1,6 @@
 use super::process_task_state;
 use super::wake_await_waiters;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::*;
 
@@ -215,7 +216,7 @@ pub unsafe extern "C" fn molt_process_spawn(
             Err(bits) => return bits,
         };
         if args.is_empty() {
-            return raise_exception::<_>(_py, "ValueError", "args must not be empty");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "args must not be empty");
         }
         if trace_process_spawn() {
             let head = args
@@ -343,7 +344,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             Err(bits) => return bits,
         };
         if args.is_empty() {
-            return raise_exception::<_>(_py, "ValueError", "args must not be empty");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "args must not be empty");
         }
         if trace_process_spawn() {
             let head = args
@@ -403,7 +404,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         if is_truthy(_py, obj_from_bits(start_new_session_bits)) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "start_new_session is unavailable on this host",
             );
         }
@@ -420,7 +421,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "process_group must be an integer or None",
                     );
                 }
@@ -431,13 +432,13 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             if to_i64(pg_obj).is_none() {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "process_group must be an integer or None",
                 );
             }
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "process_group is unavailable on this host",
             );
         }
@@ -536,7 +537,7 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
             return MoltObject::none().bits() as i64;
         }
         let Some(state) = process_task_state(_py, obj_ptr) else {
-            return raise_exception::<i64>(_py, "RuntimeError", "process task missing");
+            return raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "process task missing");
         };
         if !state.process.is_pending() {
             task_take_cancel_pending(obj_ptr);

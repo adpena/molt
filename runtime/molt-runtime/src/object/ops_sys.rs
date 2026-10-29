@@ -1,6 +1,7 @@
 // System, GC, time, signal, traceback, profiling, and related runtime support.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::BuiltinExc;
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::exceptions::{ExceptionValue, with_saved_raised_exception};
 use crate::builtins::numbers::{
@@ -40,10 +41,12 @@ pub(crate) fn slice_error(_py: &PyToken<'_>, err: SliceError) -> u64 {
     match err {
         SliceError::Type => raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "slice indices must be integers or None or have an __index__ method",
         ),
-        SliceError::Value => raise_exception::<_>(_py, "ValueError", "slice step cannot be zero"),
+        SliceError::Value => {
+            raise_exception::<_>(_py, BuiltinExc::ValueError, "slice step cannot be zero")
+        }
     }
 }
 
@@ -203,7 +206,7 @@ pub(crate) fn collect_iterable_values(
 
 pub(crate) fn ord_length_error(_py: &PyToken<'_>, len: usize) -> u64 {
     let msg = format!("ord() expected a character, but string of length {len} found");
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 #[unsafe(no_mangle)]
@@ -236,7 +239,7 @@ pub extern "C" fn molt_ord(val: u64) -> u64 {
         }
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("ord() expected string of length 1, but {type_name} found");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -248,13 +251,13 @@ pub(crate) fn gc_int_arg(_py: &PyToken<'_>, bits: u64, label: &str) -> Result<i6
         let big = unsafe { bigint_ref(big_ptr) };
         let Some(value) = big.to_i64() else {
             let msg = format!("{label} value out of range");
-            return Err(raise_exception::<_>(_py, "OverflowError", &msg));
+            return Err(raise_exception::<_>(_py, BuiltinExc::OverflowError, &msg));
         };
         return Ok(value);
     }
     let type_name = class_name_for_error(type_of_bits(_py, bits));
     let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-    Err(raise_exception::<_>(_py, "TypeError", &msg))
+    Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg))
 }
 
 pub(crate) fn trace_sys_version() -> bool {
@@ -969,14 +972,14 @@ pub(crate) fn coerce_length_result(
     if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(result.bits()) {
         if value < 0 {
             drop(result);
-            return raise_exception(py, "ValueError", "__len__() should return >= 0");
+            return raise_exception(py, BuiltinExc::ValueError, "__len__() should return >= 0");
         }
         // Ordinary small integers require neither a second retain nor BigInt
         // materialization. The owner remains live if pointer-width conversion fails.
         return isize::try_from(value).ok().or_else(|| {
             raise_exception(
                 py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 &format!(
                     "cannot fit '{}' into an index-sized integer",
                     crate::object::ops::protocol_type_name(py, result.bits(), 200)
@@ -995,17 +998,21 @@ pub(crate) fn coerce_length_result(
         Ok(Some(value)) => value,
         Err(()) => return None,
         Ok(None) => {
-            return raise_exception(py, "SystemError", "validated index has no integer storage");
+            return raise_exception(
+                py,
+                BuiltinExc::SystemError,
+                "validated index has no integer storage",
+            );
         }
     };
     if value.is_negative() {
         drop(index);
-        return raise_exception(py, "ValueError", "__len__() should return >= 0");
+        return raise_exception(py, BuiltinExc::ValueError, "__len__() should return >= 0");
     }
     value.to_isize().or_else(|| {
         raise_exception(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             &format!(
                 "cannot fit '{}' into an index-sized integer",
                 crate::object::ops::protocol_type_name(py, index.bits(), 200)
@@ -1064,7 +1071,7 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                         if memoryview_ndim(ptr) == 0 {
                             return raise_exception::<_>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "0-dim memory has no length",
                             );
                         }
@@ -1108,7 +1115,7 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                         let Some(len) = len.to_isize() else {
                             return raise_exception(
                                 _py,
-                                "OverflowError",
+                                BuiltinExc::OverflowError,
                                 "Python int too large to convert to C ssize_t",
                             );
                         };
@@ -1149,7 +1156,7 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
         }
         let type_name = class_name_for_error(type_of_bits(_py, val));
         let msg = format!("object of type '{type_name}' has no len()");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -1305,7 +1312,11 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
         let obj = obj_from_bits(val);
         if let Some(i) = to_i64(obj) {
             if !(0..=0x10FFFF).contains(&i) {
-                return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "chr() arg not in range(0x110000)",
+                );
             }
             let code = i as u32;
             let mut out_bytes = Vec::with_capacity(4);
@@ -1324,10 +1335,18 @@ pub extern "C" fn molt_chr(val: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if value.is_negative() || value > BigInt::from(0x10FFFF) {
-            return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "chr() arg not in range(0x110000)",
+            );
         }
         let Some(code) = value.to_u32() else {
-            return raise_exception::<_>(_py, "ValueError", "chr() arg not in range(0x110000)");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "chr() arg not in range(0x110000)",
+            );
         };
         let mut out_bytes = Vec::with_capacity(4);
         molt_obj_model::text_storage::push_code_point(&mut out_bytes, code);
@@ -1371,7 +1390,7 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         if !(0..crate::object::gc::NUM_GENERATIONS as i64).contains(&generation) {
-            return raise_exception::<_>(_py, "ValueError", "invalid generation");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid generation");
         }
         let outcome = unsafe { crate::object::gc::collect_generation(_py, generation as u8) };
         let collected = match outcome.status {
@@ -1389,7 +1408,7 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
             crate::object::gc::GcCollectStatus::UnsupportedConcurrency => {
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "cyclic GC requires a free-threaded stop-the-world guard",
                 );
             }
@@ -1592,7 +1611,7 @@ pub extern "C" fn molt_gc_get_objects(generation_bits: u64) -> u64 {
             if !(0..crate::object::gc::NUM_GENERATIONS as i64).contains(&value) {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "generation parameter must be less than the number of GC generations",
                 );
             }
@@ -1609,7 +1628,7 @@ fn gc_callback_failure(py: &PyToken<'_>, message: &str) -> u64 {
     if !crate::cpython_abi_hooks::transfer_pending_cpython_exception()
         && !crate::exception_pending(py)
     {
-        raise_exception::<()>(py, "RuntimeError", message);
+        raise_exception::<()>(py, BuiltinExc::RuntimeError, message);
     }
     MoltObject::none().bits()
 }
@@ -1628,7 +1647,7 @@ fn gc_introspection_failure(
         }
         crate::object::gc::GcIntrospectionError::UnsupportedConcurrency => raise_exception::<_>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "GC pointer introspection requires a free-threaded stop-the-world guard",
         ),
     }
@@ -1638,14 +1657,14 @@ fn gc_object_args_ptr(_py: &PyToken<'_>, args_bits: u64) -> Result<*mut u8, u64>
     let Some(ptr) = obj_from_bits(args_bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "GC object arguments must be a tuple",
         ));
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_TUPLE {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "GC object arguments must be a tuple",
         ));
     }
@@ -1731,7 +1750,7 @@ pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
         if limit < 1 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "recursion limit must be greater or equal than 1",
             );
         }
@@ -1741,7 +1760,7 @@ pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
             let msg = format!(
                 "cannot set the recursion limit to {limit} at the recursion depth {depth}: the limit is too low"
             );
-            return raise_exception::<_>(_py, "RecursionError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::RecursionError, &msg);
         }
         recursion_limit_set(limit);
         MoltObject::none().bits()
@@ -1798,7 +1817,7 @@ pub extern "C" fn molt_sys_set_version_info(
             if obj.as_ptr().is_none() {
                 return Ok(bits as i64);
             }
-            Err(raise_exception::<u64>(_py, "TypeError", err))
+            Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, err))
         };
         let major = match decode_version_int(major_bits, "major must be int") {
             Ok(v) => v,
@@ -1819,7 +1838,7 @@ pub extern "C" fn molt_sys_set_version_info(
         if major < 0 || minor < 0 || micro < 0 || serial < 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "sys.version_info must be non-negative integers",
             );
         }
@@ -1827,7 +1846,7 @@ pub extern "C" fn molt_sys_set_version_info(
         let Some(release_ptr) = obj_from_bits(releaselevel_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "sys.version_info releaselevel must be str",
             );
         };
@@ -1835,7 +1854,7 @@ pub extern "C" fn molt_sys_set_version_info(
             if object_type_id(release_ptr) != TYPE_ID_STRING {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "sys.version_info releaselevel must be str",
                 );
             }
@@ -1851,7 +1870,7 @@ pub extern "C" fn molt_sys_set_version_info(
         ) {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "sys.version_info releaselevel must be alpha, beta, candidate or final",
             );
         }
@@ -1861,7 +1880,7 @@ pub extern "C" fn molt_sys_set_version_info(
         {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("unsupported compiled Python target {target}"),
             );
         }
@@ -1884,7 +1903,7 @@ pub extern "C" fn molt_sys_set_version_info(
             Some(false) => {
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "compiled Python target is already set",
                 );
             }
@@ -1905,7 +1924,7 @@ pub extern "C" fn molt_sys_set_version_info(
         {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "Python target cannot change after sys initialization",
             );
         }
@@ -1937,7 +1956,7 @@ pub extern "C" fn molt_sys_set_version_info(
                 drop(publication);
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "compiled Python target is already set",
                 );
             }
@@ -2312,7 +2331,7 @@ pub extern "C" fn molt_time_process_time() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         match process_time_duration() {
             Ok(duration) => MoltObject::from_float(duration.as_secs_f64()).bits(),
-            Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
         }
     })
 }
@@ -2322,7 +2341,7 @@ pub extern "C" fn molt_time_process_time_ns() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         match process_time_duration() {
             Ok(duration) => int_bits_from_bigint(_py, BigInt::from(duration.as_nanos())),
-            Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
         }
     })
 }
@@ -2339,7 +2358,7 @@ pub extern "C" fn molt_time_time() -> u64 {
         let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(now) => now,
             Err(_) => {
-                return raise_exception::<_>(_py, "OSError", "system time before epoch");
+                return raise_exception::<_>(_py, BuiltinExc::OSError, "system time before epoch");
             }
         };
         MoltObject::from_float(now.as_secs_f64()).bits()
@@ -2358,7 +2377,7 @@ pub extern "C" fn molt_time_time_ns() -> u64 {
         let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(now) => now,
             Err(_) => {
-                return raise_exception::<_>(_py, "OSError", "system time before epoch");
+                return raise_exception::<_>(_py, BuiltinExc::OSError, "system time before epoch");
             }
         };
         int_bits_from_bigint(_py, BigInt::from(now.as_nanos()))
@@ -2369,18 +2388,30 @@ pub extern "C" fn molt_time_time_ns() -> u64 {
 pub extern "C" fn molt_time_sleep(secs_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(secs) = to_f64(obj_from_bits(secs_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "an integer or float is required");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "an integer or float is required",
+            );
         };
         if secs.is_nan() {
-            return raise_exception::<_>(_py, "ValueError", "Invalid value NaN (not a number)");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "Invalid value NaN (not a number)",
+            );
         }
         if secs < 0.0 {
-            return raise_exception::<_>(_py, "ValueError", "sleep length must be non-negative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "sleep length must be non-negative",
+            );
         }
         if !secs.is_finite() {
             return raise_exception::<_>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "timestamp out of range for platform time_t",
             );
         }
@@ -2389,7 +2420,7 @@ pub extern "C" fn molt_time_sleep(secs_bits: u64) -> u64 {
             Err(_) => {
                 return raise_exception::<_>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "timestamp out of range for platform time_t",
                 );
             }
@@ -2423,7 +2454,7 @@ pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
             let secs = secs as libc::time_t;
             let tm = match localtime_tm(secs) {
                 Ok(tm) => tm,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             };
             time_tuple_from_tm(_py, &tm, secs as i64, true)
         }
@@ -2431,14 +2462,14 @@ pub extern "C" fn molt_time_localtime(secs_bits: u64) -> u64 {
         {
             let offset_west = match local_offset_west_wasm(secs) {
                 Ok(value) => value,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             };
             let mut parts = time_parts_from_epoch_utc(secs.saturating_sub(offset_west));
             let std_offset_west = timezone_west_wasm().unwrap_or(offset_west);
             parts.isdst = if offset_west != std_offset_west { 1 } else { 0 };
             let zone = match tzname_label_wasm(parts.isdst) {
                 Ok(value) => value,
-                Err(message) => return raise_exception::<u64>(_py, "OSError", &message),
+                Err(message) => return raise_exception::<u64>(_py, BuiltinExc::OSError, &message),
             };
             time_parts_to_tuple(_py, parts, zone.as_bytes(), -offset_west)
         }
@@ -2466,7 +2497,7 @@ pub extern "C" fn molt_time_gmtime(secs_bits: u64) -> u64 {
             let secs = secs as libc::time_t;
             let tm = match gmtime_tm(secs) {
                 Ok(tm) => tm,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             };
             time_tuple_from_tm(_py, &tm, secs as i64, false)
         }
@@ -2483,15 +2514,19 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let fmt_obj = obj_from_bits(fmt_bits);
         if fmt_obj.is_none() {
-            return raise_exception::<_>(_py, "TypeError", "strftime() format must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "strftime() format must be str",
+            );
         }
         let Some(fmt) = string_obj_to_owned(fmt_obj) else {
             let type_name = class_name_for_error(type_of_bits(_py, fmt_bits));
             let msg = format!("strftime() format must be str, not {type_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if fmt.as_bytes().contains(&0) {
-            return raise_exception::<_>(_py, "ValueError", "embedded null character");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "embedded null character");
         }
         let parts = match parse_time_argument(_py, time_bits, "strftime", true) {
             Ok(parts) => parts,
@@ -2503,7 +2538,11 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
             let c_fmt = match CString::new(fmt) {
                 Ok(c) => c,
                 Err(_) => {
-                    return raise_exception::<_>(_py, "ValueError", "embedded null character");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "embedded null character",
+                    );
                 }
             };
             let mut buf = vec![0u8; 128];
@@ -2532,7 +2571,7 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
                     if buf.len() >= 1_048_576 {
                         return raise_exception::<_>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "strftime() result too large",
                         );
                     }
@@ -2543,7 +2582,7 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
                 let Ok(text) = std::str::from_utf8(slice) else {
                     return raise_exception::<_>(
                         _py,
-                        "UnicodeError",
+                        BuiltinExc::UnicodeError,
                         "strftime() produced non-UTF-8 output",
                     );
                 };
@@ -2558,7 +2597,7 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
         {
             let out = match strftime_wasm(&fmt, &parts) {
                 Ok(out) => out,
-                Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
             };
             let ptr = alloc_string(_py, out.as_bytes());
             if ptr.is_null() {
@@ -2576,14 +2615,14 @@ pub extern "C" fn molt_time_timezone() -> u64 {
         {
             match timezone_native() {
                 Ok(val) => MoltObject::from_int(val).bits(),
-                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
             match timezone_west_wasm() {
                 Ok(val) => MoltObject::from_int(val).bits(),
-                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             }
         }
     })
@@ -2596,14 +2635,14 @@ pub extern "C" fn molt_time_daylight() -> u64 {
         {
             match daylight_native() {
                 Ok(val) => MoltObject::from_int(val).bits(),
-                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
             match daylight_wasm() {
                 Ok(val) => MoltObject::from_int(val).bits(),
-                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             }
         }
     })
@@ -2616,14 +2655,14 @@ pub extern "C" fn molt_time_altzone() -> u64 {
         {
             match altzone_native() {
                 Ok(val) => MoltObject::from_int(val).bits(),
-                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
             match altzone_wasm() {
                 Ok(val) => MoltObject::from_int(val).bits(),
-                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             }
         }
     })
@@ -2636,7 +2675,7 @@ pub extern "C" fn molt_time_tzname() -> u64 {
         {
             let (std_name, dst_name) = match tzname_native() {
                 Ok(res) => res,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             };
             let std_ptr = alloc_string(_py, std_name.as_bytes());
             if std_ptr.is_null() {
@@ -2662,7 +2701,7 @@ pub extern "C" fn molt_time_tzname() -> u64 {
         {
             let (std_name, dst_name) = match tzname_wasm() {
                 Ok(res) => res,
-                Err(msg) => return raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             };
             let std_ptr = alloc_string(_py, std_name.as_bytes());
             if std_ptr.is_null() {
@@ -2696,7 +2735,7 @@ pub extern "C" fn molt_time_asctime(time_bits: u64) -> u64 {
         };
         let text = match asctime_from_parts(parts.parts) {
             Ok(text) => text,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         };
         let ptr = alloc_string(_py, text.as_bytes());
         if ptr.is_null() {
@@ -2725,7 +2764,7 @@ pub extern "C" fn molt_time_mktime(time_bits: u64) -> u64 {
         {
             match mktime_wasm(parts.parts) {
                 Ok(out) => MoltObject::from_float(out).bits(),
-                Err(msg) => raise_exception::<_>(_py, "OSError", &msg),
+                Err(msg) => raise_exception::<_>(_py, BuiltinExc::OSError, &msg),
             }
         }
     })
@@ -2752,7 +2791,7 @@ pub extern "C" fn molt_time_timegm(time_bits: u64) -> u64 {
 pub extern "C" fn molt_time_get_clock_info(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "unknown clock");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "unknown clock");
         };
         let (name_value, implementation, resolution, monotonic, adjustable) = match name.as_str() {
             "monotonic" | "perf_counter" => (name.as_str(), "molt", 1e-9f64, true, false),
@@ -2765,7 +2804,7 @@ pub extern "C" fn molt_time_get_clock_info(name_bits: u64) -> u64 {
                 }
                 ("time", "molt", 1e-6f64, false, true)
             }
-            _ => return raise_exception::<_>(_py, "ValueError", "unknown clock"),
+            _ => return raise_exception::<_>(_py, BuiltinExc::ValueError, "unknown clock"),
         };
         let name_ptr = alloc_string(_py, name_value.as_bytes());
         if name_ptr.is_null() {
@@ -3011,7 +3050,11 @@ pub extern "C" fn molt_recursion_exit_fast() {
 #[cold]
 pub extern "C" fn molt_raise_recursion_error() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::RecursionError,
+            "maximum recursion depth exceeded",
+        )
     })
 }
 
@@ -3029,12 +3072,12 @@ pub(crate) fn parse_codec_arg(
     let obj = obj_from_bits(bits);
     if obj.is_none() {
         let msg = format!("{func_name}() argument '{arg_name}' must be str, not None");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let Some(text) = string_obj_to_owned(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, bits));
         let msg = format!("{func_name}() argument '{arg_name}' must be str, not {type_name}");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     Some(text)
 }
@@ -3061,7 +3104,7 @@ fn int_bytes_byteorder(py: &PyToken<'_>, bits: u64, label: &str) -> Option<Optio
         };
         raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label}() argument 'byteorder' must be str, not {type_name}"),
         )
     })
@@ -3081,7 +3124,7 @@ pub extern "C" fn molt_int_to_bytes(
                 "descriptor 'to_bytes' requires a 'int' object but received '{}'",
                 type_name
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let length =
             if let Some(length) = crate::builtins::numbers::index_i64_integral_bits(length_bits) {
@@ -3101,7 +3144,7 @@ pub extern "C" fn molt_int_to_bytes(
         if isize::try_from(length).is_err() {
             return raise_exception::<_>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "Python int too large to convert to C ssize_t",
             );
         }
@@ -3115,12 +3158,16 @@ pub extern "C" fn molt_int_to_bytes(
         let Some(is_little) = byteorder else {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "byteorder must be either 'little' or 'big'",
             );
         };
         if length < 0 {
-            return raise_exception::<_>(_py, "ValueError", "length argument must be non-negative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "length argument must be non-negative",
+            );
         }
         let len = length as usize;
         // The canonical builder owns checked layout, zero initialization and NUL.
@@ -3162,12 +3209,12 @@ pub extern "C" fn molt_int_to_bytes(
         if status == INT_BYTES_NEGATIVE_UNSIGNED {
             return raise_exception::<_>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "can't convert negative int to unsigned",
             );
         }
         if status != INT_BYTES_OK {
-            return raise_exception::<_>(_py, "OverflowError", "int too big to convert");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "int too big to convert");
         }
         result.into_bits()
     })
@@ -3191,7 +3238,7 @@ pub extern "C" fn molt_int_from_bytes(
         let Some(is_little) = byteorder else {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "byteorder must be either 'little' or 'big'",
             );
         };
@@ -3252,7 +3299,7 @@ pub extern "C" fn molt_int_from_bytes(
                 else {
                     return raise_exception::<_>(
                         _py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "bytes conversion returned non-bytes storage",
                     );
                 };

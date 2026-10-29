@@ -1,5 +1,6 @@
 //! Slice and dataclass operations.
 
+use crate::BuiltinExc;
 use crate::object::{
     ClassEdgeOwnership, ObjectAuxPreselection, object_init_class_edge_unpublished,
 };
@@ -82,7 +83,7 @@ pub(super) unsafe fn slice_indices_bigint(
         index_bigint_from_obj(_py, step_obj.bits(), msg)?
     };
     if step.is_zero() {
-        raise_exception::<()>(_py, "ValueError", "slice step cannot be zero");
+        raise_exception::<()>(_py, BuiltinExc::ValueError, "slice step cannot be zero");
         return None;
     }
     let step_neg = step.is_negative();
@@ -130,7 +131,11 @@ pub extern "C" fn molt_slice_indices(slice_bits: u64, length_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             if len.is_negative() {
-                return raise_exception::<_>(_py, "ValueError", "length should not be negative");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "length should not be negative",
+                );
             }
             let Some((start, stop, step)) = slice_indices_bigint(_py, slice_ptr, &len) else {
                 return MoltObject::none().bits();
@@ -235,7 +240,7 @@ pub extern "C" fn molt_dataclass_new(
                 }
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dataclass values must be a list/tuple",
                 );
             }
@@ -276,7 +281,13 @@ fn dataclass_new_from_value_slice(
     let name_obj = obj_from_bits(name_bits);
     let name = match string_obj_to_owned(name_obj) {
         Some(val) => val,
-        None => return raise_exception::<_>(_py, "TypeError", "dataclass name must be a str"),
+        None => {
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "dataclass name must be a str",
+            );
+        }
     };
     let field_names_obj = obj_from_bits(field_names_bits);
     let field_names = match decode_string_list(field_names_obj) {
@@ -284,13 +295,17 @@ fn dataclass_new_from_value_slice(
         None => {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass field names must be a list/tuple of str",
             );
         }
     };
     if field_names.len() != values.len() {
-        return raise_exception::<_>(_py, "TypeError", "dataclass constructor argument mismatch");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "dataclass constructor argument mismatch",
+        );
     }
     let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as u64;
     let frozen = (flags & 0x1) != 0;
@@ -303,7 +318,11 @@ fn dataclass_new_from_value_slice(
             .insert(field_name.clone(), idx)
             .is_some()
         {
-            return raise_exception::<_>(_py, "TypeError", "duplicate dataclass field name");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "duplicate dataclass field name",
+            );
         }
     }
     let desc = Box::new(DataclassDesc {
@@ -340,7 +359,11 @@ fn dataclass_new_from_value_slice(
         else {
             drop(Box::from_raw(desc_ptr));
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return raise_exception::<_>(_py, "MemoryError", "dataclass allocation failed");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::MemoryError,
+                "dataclass allocation failed",
+            );
         };
         for &val in values.iter() {
             inc_ref_bits(_py, val);
@@ -359,7 +382,11 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
         let idx = match obj_from_bits(index_bits).as_int() {
             Some(val) => val,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "dataclass field index must be int");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "dataclass field index must be int",
+                );
             }
         };
         if let Some(ptr) = obj.as_ptr() {
@@ -376,7 +403,7 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
                 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "dataclass field index out of range",
                     );
                 }
@@ -416,7 +443,11 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
         let idx = match obj_from_bits(index_bits).as_int() {
             Some(val) => val,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "dataclass field index must be int");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "dataclass field index must be int",
+                );
             }
         };
         if let Some(ptr) = obj.as_ptr() {
@@ -449,7 +480,7 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
                 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "dataclass field index out of range",
                     );
                 }
@@ -471,49 +502,21 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
 }
 
 fn raise_frozen_instance_error(_py: &PyToken<'_>, message: &str) -> u64 {
-    let module_name_ptr = alloc_string(_py, b"dataclasses");
-    if module_name_ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-    let module_bits = crate::molt_module_import(module_name_bits);
-    dec_ref_bits(_py, module_name_bits);
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, b"FrozenInstanceError") else {
-        dec_ref_bits(_py, module_bits);
-        return MoltObject::none().bits();
-    };
-    let missing = missing_bits(_py);
-    let class_bits = molt_getattr_builtin(module_bits, name_bits, missing);
-    dec_ref_bits(_py, name_bits);
-    dec_ref_bits(_py, module_bits);
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    if class_bits == missing {
-        return raise_exception::<u64>(_py, "RuntimeError", "FrozenInstanceError unavailable");
-    }
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        dec_ref_bits(_py, class_bits);
-        return raise_exception::<u64>(_py, "TypeError", "FrozenInstanceError class is invalid");
-    };
+    // A frozen dataclass instance exists only after `dataclasses` ran, so the
+    // owner is loaded; the class comes from its typed row, not an import.
     let message_ptr = alloc_string(_py, message.as_bytes());
     if message_ptr.is_null() {
-        dec_ref_bits(_py, class_bits);
         return MoltObject::none().bits();
     }
-    let message_bits = MoltObject::from_ptr(message_ptr).bits();
-    let exception = crate::builtins::exceptions::ExceptionValue::adopt(_py, unsafe {
-        call_class_init_with_args(_py, class_ptr, &[message_bits])
-    });
-    dec_ref_bits(_py, message_bits);
-    dec_ref_bits(_py, class_bits);
-    if exception_pending(_py) {
-        return MoltObject::none().bits();
-    }
-    crate::molt_raise(exception.bits())
+    let message = crate::builtins::exceptions::ExceptionValue::adopt(
+        _py,
+        MoltObject::from_ptr(message_ptr).bits(),
+    );
+    crate::builtins::exceptions::raise_module_exception_with_args(
+        _py,
+        crate::ModuleExc::DataclassesFrozenInstanceError,
+        &[message.bits()],
+    )
 }
 
 unsafe fn validate_dataclass_class_target(
@@ -525,28 +528,28 @@ unsafe fn validate_dataclass_class_target(
         if object_type_id(ptr) != TYPE_ID_DATACLASS {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass expects object",
             ));
         }
         if class_bits == 0 || obj_from_bits(class_bits).is_none() {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass class must be a type",
             ));
         }
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass class must be a type",
             ));
         };
         if object_type_id(class_ptr) != TYPE_ID_TYPE {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass class must be a type",
             ));
         }
@@ -565,7 +568,11 @@ unsafe fn prepare_dataclass_class_metadata(
     unsafe {
         let desc = dataclass_desc_ptr(ptr);
         if desc.is_null() {
-            raise_exception::<()>(py, "SystemError", "dataclass descriptor is missing");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "dataclass descriptor is missing",
+            );
             return Err(());
         }
         let class = obj_from_bits(class_bits)
@@ -580,7 +587,11 @@ unsafe fn prepare_dataclass_class_metadata(
         let logical_len = (*desc).field_names.len();
         let fields = dataclass_fields_ptr(ptr);
         if fields.is_null() || (*fields).len() < logical_len {
-            raise_exception::<()>(py, "SystemError", "dataclass backing is incomplete");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "dataclass backing is incomplete",
+            );
             return Err(());
         }
         let mut projection = Vec::new();
@@ -695,13 +706,13 @@ pub(crate) unsafe fn dataclass_finish_construction_unpublished(
 ) -> u64 {
     unsafe {
         if ptr.is_null() || object_type_id(ptr) != TYPE_ID_DATACLASS {
-            return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "dataclass expects object");
         }
         let header = &*crate::object::header_from_obj_ptr(ptr);
         if header.gc_is_published() || object_class_bits(ptr) != 0 {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass construction is already finalized",
             );
         }
@@ -712,7 +723,7 @@ pub(crate) unsafe fn dataclass_finish_construction_unpublished(
             if !exception_pending(_py) {
                 return raise_exception::<_>(
                     _py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "dataclass metadata preparation failed",
                 );
             }
@@ -721,7 +732,7 @@ pub(crate) unsafe fn dataclass_finish_construction_unpublished(
         if !object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) {
             return raise_exception::<_>(
                 _py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "dataclass class metadata allocation failed",
             );
         }
@@ -735,7 +746,7 @@ pub extern "C" fn molt_dataclass_set_class(obj_bits: u64, class_bits: u64) -> u6
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "dataclass expects object");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "dataclass expects object");
         };
         unsafe { dataclass_finish_construction_unpublished(_py, ptr, class_bits) }
     })

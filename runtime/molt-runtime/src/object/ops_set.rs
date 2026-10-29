@@ -3,6 +3,7 @@
 //! Each `pub extern "C" fn molt_set_*` / `molt_frozenset_*` is a separate
 //! linker symbol so that `wasm-ld --gc-sections` can drop unused entries.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_obj_model::MoltObject;
 
@@ -55,7 +56,7 @@ pub(crate) fn set_contains(
     else {
         raise_exception::<()>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "set containment requires a set or frozenset",
         );
         return Err(());
@@ -75,7 +76,11 @@ pub(crate) fn set_contains(
         return Err(());
     }
     let error = ExceptionValue::adopt(py, molt_exception_last_pending());
-    if !crate::builtins::exceptions::exception_matches_builtin_name(py, error.bits(), "TypeError") {
+    if !crate::builtins::exceptions::exception_matches_kind(
+        py,
+        error.bits(),
+        crate::BuiltinExc::TypeError,
+    ) {
         return Err(());
     }
     // This is the prescribed set protocol, not a retry of a failed lookup.
@@ -144,7 +149,7 @@ pub(crate) fn frozenset_add(_py: &PyToken<'_>, set_bits: u64, key_bits: u64) -> 
     let Some(target) = obj_from_bits(set_bits).as_ptr() else {
         return raise_exception(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "frozenset construction requires a frozenset",
         );
     };
@@ -160,7 +165,7 @@ pub(crate) fn frozenset_add(_py: &PyToken<'_>, set_bits: u64, key_bits: u64) -> 
     if !unique {
         return raise_exception(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "frozenset construction requires unique ownership",
         );
     }
@@ -229,11 +234,11 @@ pub(crate) fn set_pop(py: &PyToken<'_>, set_bits: u64) -> Result<u64, ()> {
         .as_ptr()
         .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET })
     else {
-        raise_exception::<()>(py, "SystemError", "PySet_Pop: expected a set");
+        raise_exception::<()>(py, BuiltinExc::SystemError, "PySet_Pop: expected a set");
         return Err(());
     };
     unsafe { super::ops::set_pop_owned(ptr) }.ok_or_else(|| {
-        raise_exception::<()>(py, "KeyError", "pop from an empty set");
+        raise_exception::<()>(py, BuiltinExc::KeyError, "pop from an empty set");
     })
 }
 

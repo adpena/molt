@@ -132,10 +132,10 @@ pub(crate) fn pickle_attr_optional(
             _py,
             crate::molt_exception_last_pending(),
         );
-        if crate::builtins::exceptions::exception_matches_builtin_name(
+        if crate::builtins::exceptions::exception_matches_kind(
             _py,
             error.bits(),
-            "AttributeError",
+            crate::BuiltinExc::AttributeError,
         ) {
             clear_exception(_py);
             return Ok(None);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[test]
 fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
@@ -11,7 +12,11 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
     extern "C" fn get(_self: u64, key: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
             if obj_from_bits(key).as_int() == Some(-1) {
-                return raise_exception::<u64>(py, "ValueError", "subscription body failure");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::ValueError,
+                    "subscription body failure",
+                );
             }
             inc_ref_bits(py, key);
             key
@@ -479,10 +484,10 @@ fn native_callable_declarations_own_public_identity_and_binding() {
             let dict = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
             let rejected = call_callable1(py, length, dict);
             assert!(exception_pending(py));
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             molt_exception_clear();
             dec_ref_bits(py, rejected);
@@ -785,9 +790,9 @@ fn native_spec_module_preserves_descriptors_and_retires_warning_failures() {
             for action in [b"error".as_slice(), b"ignore".as_slice()] {
                 crate::molt_warnings_resetwarnings();
                 let action_bits = crate::attr_name_bits_from_bytes(py, action).unwrap();
-                let category = crate::builtins::exceptions::exception_type_bits_from_name(
+                let category = crate::builtins::exceptions::exception_class_bits(
                     py,
-                    "DeprecationWarning",
+                    BuiltinExc::DeprecationWarning,
                 );
                 let filtered = crate::molt_warnings_simplefilter(
                     action_bits,
@@ -1234,17 +1239,17 @@ fn function_dictionary_descriptor_vars_generic_reads_and_gc_share_one_owner() {
                 Some(MoltObject::from_int(17).bits())
             );
             molt_set_attr_name(function_bits, key, receiver_bits);
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             molt_exception_clear();
             molt_del_attr_name(function_bits, key);
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             molt_exception_clear();
             assert_eq!(crate::instance_dict_bits(function), replacement);
@@ -1346,10 +1351,10 @@ fn native_callable_module_assignment_failure_preserves_the_physical_owner() {
                 dec_ref_bits(py, bad_name);
             });
             assert!(exception_pending(py));
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "SystemError"
+                crate::BuiltinExc::SystemError
             ));
             assert_eq!((*callable.cast::<PyCFunctionObject>()).m_module, original);
             molt_exception_clear();
@@ -1407,10 +1412,10 @@ fn function_typed_metadata_survives_public_dictionary_replacement_and_clears_onc
                 Some(MoltObject::from_int(999).bits())
             );
             molt_set_attr_name(bits, key, value_bits);
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception_last_bits_noinc(py).unwrap(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             molt_exception_clear();
             assert_eq!(Field::Defaults.load(function), Some(defaults_bits));
@@ -1841,7 +1846,11 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
     extern "C" fn module_key_equal(_self: u64, _other: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
             if FAIL_EQUALITY.load(Ordering::Relaxed) {
-                return raise_exception::<u64>(py, "RuntimeError", "module key equality failure");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::RuntimeError,
+                    "module key equality failure",
+                );
             }
             MoltObject::from_bool(true).bits()
         })

@@ -2,6 +2,7 @@
 // The C linker symbols are owned by the molt-cpython-abi crate.
 #![allow(non_snake_case)]
 
+use crate::BuiltinExc;
 #[cfg(target_arch = "wasm32")]
 mod cpython_abi_wasm_exports;
 mod cpython_compat;
@@ -172,7 +173,7 @@ fn none_bits() -> u64 {
 
 #[inline]
 fn runtime_error_type_bits(_py: &PyToken<'_>) -> u64 {
-    let bits = exception_type_bits_from_name(_py, "RuntimeError");
+    let bits = exception_class_bits(_py, BuiltinExc::RuntimeError);
     if bits == 0 {
         builtin_classes(_py).exception
     } else {
@@ -250,7 +251,7 @@ fn set_exception_from_message(_py: &PyToken<'_>, exc_type_bits: u64, message: &[
 }
 
 #[inline]
-fn raise_i32(_py: &PyToken<'_>, kind: &str, message: &str) -> i32 {
+fn raise_i32(_py: &PyToken<'_>, kind: crate::BuiltinExc, message: &str) -> i32 {
     let _ = raise_exception::<u64>(_py, kind, message);
     -1
 }
@@ -258,11 +259,19 @@ fn raise_i32(_py: &PyToken<'_>, kind: &str, message: &str) -> i32 {
 #[inline]
 fn require_type_handle(_py: &PyToken<'_>, type_bits: MoltHandle) -> Result<*mut u8, i32> {
     let Some(type_ptr) = obj_from_bits(type_bits).as_ptr() else {
-        return Err(raise_i32(_py, "TypeError", "type object expected"));
+        return Err(raise_i32(
+            _py,
+            BuiltinExc::TypeError,
+            "type object expected",
+        ));
     };
     unsafe {
         if object_type_id(type_ptr) != TYPE_ID_TYPE {
-            return Err(raise_i32(_py, "TypeError", "type object expected"));
+            return Err(raise_i32(
+                _py,
+                BuiltinExc::TypeError,
+                "type object expected",
+            ));
         }
     }
     Ok(type_ptr)
@@ -271,11 +280,19 @@ fn require_type_handle(_py: &PyToken<'_>, type_bits: MoltHandle) -> Result<*mut 
 #[inline]
 fn require_module_handle(_py: &PyToken<'_>, module_bits: MoltHandle) -> Result<*mut u8, i32> {
     let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
-        return Err(raise_i32(_py, "TypeError", "module object expected"));
+        return Err(raise_i32(
+            _py,
+            BuiltinExc::TypeError,
+            "module object expected",
+        ));
     };
     unsafe {
         if object_type_id(module_ptr) != TYPE_ID_MODULE {
-            return Err(raise_i32(_py, "TypeError", "module object expected"));
+            return Err(raise_i32(
+                _py,
+                BuiltinExc::TypeError,
+                "module object expected",
+            ));
         }
     }
     Ok(module_ptr)
@@ -288,11 +305,19 @@ fn require_string_handle(
     label: &str,
 ) -> Result<*mut u8, i32> {
     let Some(value_ptr) = obj_from_bits(value_bits).as_ptr() else {
-        return Err(raise_i32(_py, "TypeError", &format!("{label} must be str")));
+        return Err(raise_i32(
+            _py,
+            BuiltinExc::TypeError,
+            &format!("{label} must be str"),
+        ));
     };
     unsafe {
         if object_type_id(value_ptr) != TYPE_ID_STRING {
-            return Err(raise_i32(_py, "TypeError", &format!("{label} must be str")));
+            return Err(raise_i32(
+                _py,
+                BuiltinExc::TypeError,
+                &format!("{label} must be str"),
+            ));
         }
     }
     Ok(value_ptr)
@@ -646,7 +671,7 @@ fn c_api_method_set_attr_bytes(
     else {
         return raise_i32(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "native method metadata requires a function",
         );
     };
@@ -706,19 +731,23 @@ fn c_api_method_build_function(
     if method_target.is_null() {
         return Err(raise_i32(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "C-API method pointer must not be NULL",
         ));
     }
     if !c_api_method_flags_supported(method_flags) {
         return Err(raise_i32(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "unsupported C-API method flags (expected VARARGS, VARARGS|KEYWORDS, NOARGS, or O)",
         ));
     }
     if name_bytes.is_empty() {
-        return Err(raise_i32(_py, "TypeError", "method name must not be empty"));
+        return Err(raise_i32(
+            _py,
+            BuiltinExc::TypeError,
+            "method name must not be empty",
+        ));
     }
 
     let callback_func_ptr = alloc_function_obj(_py, 0, 0);
@@ -781,7 +810,7 @@ fn c_api_method_decode_callback_target(
     let Some(callback_ptr) = obj_from_bits(callback_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("invalid {label}: callback payload is missing"),
         ));
     };
@@ -789,7 +818,7 @@ fn c_api_method_decode_callback_target(
         if object_type_id(callback_ptr) != TYPE_ID_FUNCTION {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 &format!("invalid {label}: callback payload must be a function object"),
             ));
         }
@@ -797,7 +826,7 @@ fn c_api_method_decode_callback_target(
         if target.is_null() {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 &format!("invalid {label}: callback target is missing"),
             ));
         }
@@ -813,7 +842,7 @@ fn c_api_method_decode_closure(
     let Some(closure_ptr) = obj_from_bits(closure_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid C-API method closure: missing closure tuple",
         ));
     };
@@ -821,7 +850,7 @@ fn c_api_method_decode_closure(
         if object_type_id(closure_ptr) != TYPE_ID_TUPLE {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid C-API method closure: expected tuple",
             ));
         }
@@ -835,7 +864,7 @@ fn c_api_method_decode_closure(
         if slots.len() != 3 {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid C-API method closure: expected 3-tuple",
             ));
         }
@@ -843,21 +872,21 @@ fn c_api_method_decode_closure(
         let flags_i64 = to_i64(obj_from_bits(slots[1])).ok_or_else(|| {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid C-API method closure: flags must be int",
             )
         })?;
         let flags = u32::try_from(flags_i64).map_err(|_| {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid C-API method closure: flags out of range",
             )
         })?;
         if !c_api_method_flags_supported(flags) {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid C-API method closure: unsupported method flags",
             ));
         }
@@ -871,7 +900,7 @@ fn c_api_method_require_tuple(_py: &PyToken<'_>, args_tuple_bits: u64) -> Result
     let Some(args_ptr) = obj_from_bits(args_tuple_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "C-API method wrapper expects tuple arguments",
         ));
     };
@@ -879,7 +908,7 @@ fn c_api_method_require_tuple(_py: &PyToken<'_>, args_tuple_bits: u64) -> Result
         if object_type_id(args_ptr) != TYPE_ID_TUPLE {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "C-API method wrapper expects tuple arguments",
             ));
         }
@@ -895,7 +924,7 @@ fn c_api_method_kwargs_present(_py: &PyToken<'_>, kwargs_bits: u64) -> Result<bo
     let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "keyword arguments must be dict or None",
         ));
     };
@@ -903,7 +932,7 @@ fn c_api_method_kwargs_present(_py: &PyToken<'_>, kwargs_bits: u64) -> Result<bo
         if object_type_id(kwargs_ptr) != TYPE_ID_DICT {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "keyword arguments must be dict or None",
             ));
         }
@@ -931,12 +960,20 @@ fn callargs_builder_for_call(
         &[]
     } else {
         let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "args must be tuple or list");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "args must be tuple or list",
+            );
         };
         unsafe {
             let type_id = object_type_id(args_ptr);
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
-                return raise_exception::<u64>(_py, "TypeError", "args must be tuple or list");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "args must be tuple or list",
+                );
             }
             let Some(snapshot) = crate::object::seq_access::snapshot(
                 _py,
@@ -979,8 +1016,11 @@ fn len_bits_to_i64(_py: &PyToken<'_>, len_bits: u64) -> i64 {
     match to_i64(obj_from_bits(len_bits)) {
         Some(v) => v,
         None => {
-            let _ =
-                raise_exception::<u64>(_py, "OverflowError", "sequence length does not fit in i64");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::OverflowError,
+                "sequence length does not fit in i64",
+            );
             -1
         }
     }

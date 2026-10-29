@@ -894,8 +894,7 @@ fn native_factory_classes_finish_before_projection_and_first_instance() {
             // Bootstrap binds native exception shells. Every schema factory
             // must already be sealed, before allocating an exception instance.
             for spec in molt_obj_model::builtin_exception_specs() {
-                let class =
-                    crate::builtins::exceptions::exception_type_bits_from_name(py, spec.name());
+                let class = crate::builtins::exceptions::exception_class_bits(py, spec.kind());
                 let pointer = obj_from_bits(class).as_ptr().expect("exception class");
                 assert!(
                     crate::object::class_definition_is_finished(pointer),
@@ -909,11 +908,11 @@ fn native_factory_classes_finish_before_projection_and_first_instance() {
                     spec.name()
                 );
             }
-            // The same cache also owns synthetic exception classes, whose
-            // first C view cannot be satisfied by a prebound process shell.
-            let exception = crate::builtins::exceptions::exception_type_bits_from_name(
+            // Native module exception classes come from the same factory, and
+            // their first C view cannot be satisfied by a prebound process shell.
+            let exception = crate::builtins::exceptions::exception_class_bits(
                 py,
-                "ColdFactoryProjectionError",
+                crate::BuiltinExc::BinasciiError,
             );
             let repeat = crate::molt_itertools_repeat_type();
             assert!(

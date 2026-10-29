@@ -1,3 +1,4 @@
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{obj_from_bits, rt_dec_ref, rt_raise_str};
 
 use super::common::{
@@ -18,7 +19,10 @@ use super::common::{
 pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(tcl_str) = bits_to_string(tcl_str_bits) else {
-            return rt_raise_str("TypeError", "splitdict requires a string argument");
+            return rt_raise_str(
+                BuiltinExc::TypeError,
+                "splitdict requires a string argument",
+            );
         };
 
         // Determine cut_minus flag
@@ -37,7 +41,7 @@ pub extern "C" fn molt_tk_splitdict(tcl_str_bits: u64, cut_minus_bits: u64) -> u
 
         if !items.len().is_multiple_of(2) {
             return rt_raise_str(
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "Tcl list representing a dict is expected to contain an even number of elements",
             );
         }

@@ -1,5 +1,6 @@
 //! Namespace custody is independent of call shape, source names and suspension.
 use super::*;
+use crate::BuiltinExc;
 use crate::dict_set_in_place;
 use crate::object::layout::{
     code_set_frame_slot_id, function_builtins_bits, function_globals_bits, function_set_code_bits,
@@ -291,7 +292,7 @@ fn dict_subclass_instance(py: &PyToken<'_>) -> (u64, u64) {
 
 extern "C" fn builtins_mapping_error(_self: u64, _key: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        raise_exception::<u64>(py, "ValueError", "custom builtins lookup failed")
+        raise_exception::<u64>(py, BuiltinExc::ValueError, "custom builtins lookup failed")
     })
 }
 
@@ -327,10 +328,10 @@ fn error_mapping_instance(py: &PyToken<'_>) -> (u64, u64, u64) {
     (instance, class, function)
 }
 
-fn clear_expected_exception(py: &PyToken<'_>, name: &str) {
+fn clear_expected_exception(py: &PyToken<'_>, name: crate::BuiltinExc) {
     assert!(crate::exception_pending(py));
     let exception = crate::molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         py, exception, name
     ));
     crate::clear_exception(py);
@@ -574,9 +575,12 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
             MoltObject::from_ptr(crate::alloc_string(py, b"captured_missing")).bits();
         let (mapping, mapping_class, mapping_function) = error_mapping_instance(py);
         let cases = [
-            (MoltObject::none().bits(), "TypeError"),
-            (MoltObject::from_int(41).bits(), "TypeError"),
-            (mapping, "ValueError"),
+            (MoltObject::none().bits(), crate::BuiltinExc::TypeError),
+            (
+                MoltObject::from_int(41).bits(),
+                crate::BuiltinExc::TypeError,
+            ),
+            (mapping, crate::BuiltinExc::ValueError),
         ];
 
         for (captured_value, expected_error) in cases {

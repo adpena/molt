@@ -8,6 +8,7 @@
 //! ABI: NaN-boxed u64 in/out.  Handles are opaque i64 IDs stored in
 //! runtime-owned, mutex-protected maps shared by executor and caller threads.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
@@ -137,7 +138,7 @@ impl WorkerLimit {
                 if value <= 0 {
                     return Err(raise_exception::<u64>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "max_workers must be greater than 0",
                     ));
                 }
@@ -150,7 +151,7 @@ impl WorkerLimit {
                 if value.sign() != num_bigint::Sign::Plus {
                     return Err(raise_exception::<u64>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "max_workers must be greater than 0",
                     ));
                 }
@@ -164,7 +165,7 @@ impl WorkerLimit {
             if value <= 0.0 {
                 return Err(raise_exception::<u64>(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "max_workers must be greater than 0",
                 ));
             }
@@ -618,7 +619,11 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = max_workers_bits;
-            raise_exception::<u64>(_py, "RuntimeError", "thread pools unsupported on wasm")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "thread pools unsupported on wasm",
+            )
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -626,7 +631,7 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
             if !state.thread_borrow_admission_is_open() {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "runtime thread admission is closed",
                 );
             }
@@ -664,7 +669,7 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
                 pool.limit.release(_py);
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "runtime thread admission is closed",
                 );
             }
@@ -685,14 +690,18 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
         if !runtime.thread_borrow_admission_is_open() {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "runtime thread admission is closed",
             );
         }
         let pool_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "thread pool handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "thread pool handle must be int",
+                );
             }
         };
 
@@ -826,9 +835,13 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
                     error,
                     crate::state::lifecycle::RuntimeServiceGrowthError::Capacity
                 ) {
-                    return raise_exception::<u64>(_py, "MemoryError", "");
+                    return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "");
                 }
-                return raise_exception::<u64>(_py, "RuntimeError", "can't start new thread");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "can't start new thread",
+                );
             }
             failure @ (PoolSubmission::Rejected
             | PoolSubmission::NoCapacity
@@ -836,18 +849,18 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
                 dec_ref_bits(_py, fn_bits);
                 dec_ref_bits(_py, args_bits);
                 if matches!(failure, PoolSubmission::NoCapacity) {
-                    return raise_exception::<u64>(_py, "MemoryError", "");
+                    return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "");
                 }
                 if matches!(failure, PoolSubmission::AdmissionClosed) {
                     return raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "runtime thread admission is closed",
                     );
                 }
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "cannot submit to a shut-down executor",
                 );
             }
@@ -867,7 +880,11 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
         let pool_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "thread pool handle must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "thread pool handle must be int",
+                );
             }
         };
         let wait = is_truthy(_py, obj_from_bits(wait_bits));
@@ -895,7 +912,7 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
             if !closed {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "executor worker did not close; owner retained",
                 );
             }
@@ -1026,11 +1043,13 @@ fn read_future(
 ) -> u64 {
     let id = match to_i64(obj_from_bits(handle_bits)) {
         Some(v) => v,
-        None => return raise_exception::<u64>(py, "TypeError", "future handle must be int"),
+        None => {
+            return raise_exception::<u64>(py, BuiltinExc::TypeError, "future handle must be int");
+        }
     };
     let future = match get_future(py, id) {
         Some(f) => f,
-        None => return raise_exception::<u64>(py, "ValueError", "invalid future handle"),
+        None => return raise_exception::<u64>(py, BuiltinExc::ValueError, "invalid future handle"),
     };
     let outcome = match read_future_outcome(py, &future, timeout_bits, kind) {
         Ok(outcome) => outcome,
@@ -1091,10 +1110,16 @@ pub extern "C" fn molt_concurrent_future_done(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "future handle must be int",
+                );
+            }
         };
         match get_future(_py, id) {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid future handle"),
             Some(f) => {
                 let state = f.lock().unwrap();
                 MoltObject::from_bool(state.is_done()).bits()
@@ -1108,10 +1133,16 @@ pub extern "C" fn molt_concurrent_future_cancelled(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "future handle must be int",
+                );
+            }
         };
         match get_future(_py, id) {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid future handle"),
             Some(f) => {
                 let state = f.lock().unwrap();
                 MoltObject::from_bool(state.is_cancelled()).bits()
@@ -1125,10 +1156,16 @@ pub extern "C" fn molt_concurrent_future_cancel(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "future handle must be int",
+                );
+            }
         };
         match get_future(_py, id) {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid future handle"),
             Some(f) => MoltObject::from_bool(cancel_future(_py, &f, handle_bits)).bits(),
         }
     })
@@ -1163,10 +1200,16 @@ pub extern "C" fn molt_concurrent_future_running(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "future handle must be int",
+                );
+            }
         };
         match get_future(_py, id) {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid future handle"),
             Some(f) => {
                 let state = f.lock().unwrap();
                 MoltObject::from_bool(state.running).bits()
@@ -1180,10 +1223,16 @@ pub extern "C" fn molt_concurrent_future_add_done_callback(handle_bits: u64, fn_
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "future handle must be int"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "future handle must be int",
+                );
+            }
         };
         match get_future(_py, id) {
-            None => raise_exception::<u64>(_py, "ValueError", "invalid future handle"),
+            None => raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid future handle"),
             Some(f) => {
                 let mut state = f.lock().unwrap();
                 if state.is_done() {
@@ -1231,14 +1280,18 @@ pub extern "C" fn molt_concurrent_as_completed(futures_bits: u64, timeout_bits: 
 
         let future_ids: Vec<i64> = {
             let Some(ptr) = futures_obj.as_ptr() else {
-                return raise_exception::<u64>(_py, "TypeError", "as_completed expects iterable");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "as_completed expects iterable",
+                );
             };
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "as_completed expects list or tuple",
                     );
                 }
@@ -1322,12 +1375,16 @@ pub extern "C" fn molt_concurrent_wait(
 
         let future_ids: Vec<i64> = {
             let Some(ptr) = futures_obj.as_ptr() else {
-                return raise_exception::<u64>(_py, "TypeError", "wait expects iterable");
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "wait expects iterable");
             };
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-                    return raise_exception::<u64>(_py, "TypeError", "wait expects list or tuple");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "wait expects list or tuple",
+                    );
                 }
                 crate::object::seq_access::with_borrowed(ptr, |elems| {
                     elems
@@ -1496,7 +1553,7 @@ mod tests {
                 if std::time::Instant::now() >= deadline {
                     return raise_exception::<u64>(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "test work release timed out",
                     );
                 }
@@ -1546,7 +1603,7 @@ mod tests {
                 1 => {
                     let result = raise_exception::<u64>(
                         py,
-                        "LookupError",
+                        BuiltinExc::LookupError,
                         "original limit comparison failure",
                     );
                     LIMIT_ERROR.store(molt_exception_last_pending(), Ordering::Release);
@@ -1684,7 +1741,7 @@ mod tests {
 
     extern "C" fn worker_failure(_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception::<u64>(py, "ValueError", "original worker failure")
+            raise_exception::<u64>(py, BuiltinExc::ValueError, "original worker failure")
         })
     }
 

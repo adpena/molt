@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 /// A raw storage view must not span Python's __index__ callbacks. Promote
 /// before such a callback, including slice components; inert keys keep raw IO.
@@ -43,7 +44,11 @@ fn flat_list_int_ptr(list_bits: u64) -> Option<*mut u8> {
         return Some(ptr);
     }
     crate::with_gil_entry_nopanic!(py, {
-        raise_exception::<Option<*mut u8>>(py, "SystemError", "flat list storage contract violated")
+        raise_exception::<Option<*mut u8>>(
+            py,
+            BuiltinExc::SystemError,
+            "flat list storage contract violated",
+        )
     })
 }
 
@@ -57,14 +62,18 @@ fn list_specialized_index_from_bits(index_bits: u64) -> Option<i64> {
 #[inline]
 fn list_index_out_of_range_error() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<_>(_py, "IndexError", "list index out of range")
+        raise_exception::<_>(_py, BuiltinExc::IndexError, "list index out of range")
     })
 }
 
 #[inline]
 fn list_assignment_out_of_range_error() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<_>(_py, "IndexError", "list assignment index out of range")
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::IndexError,
+            "list assignment index out of range",
+        )
     })
 }
 

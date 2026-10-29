@@ -1,5 +1,6 @@
 //! String encoding and decoding — extracted from ops.rs for maintainability.
 
+use crate::BuiltinExc;
 use molt_obj_model::text_storage::push_backslash_bytes;
 use molt_stdlib_text::charmap_codecs_generated::{
     decode_single_byte_charmap_with_errors, encode_single_byte_charmap_byte, single_byte_charmap,
@@ -33,12 +34,14 @@ impl EncodeError {
         object_bits: u64,
     ) -> T {
         match self {
-            Self::UnknownEncoding(name) => {
-                crate::raise_exception(py, "LookupError", &format!("unknown encoding: {name}"))
-            }
+            Self::UnknownEncoding(name) => crate::raise_exception(
+                py,
+                BuiltinExc::LookupError,
+                &format!("unknown encoding: {name}"),
+            ),
             Self::UnknownErrorHandler(name) => crate::raise_exception(
                 py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 &format!("unknown error handler name '{name}'"),
             ),
             Self::InvalidSequence {
@@ -1275,7 +1278,7 @@ impl DecodeTextError {
             Self::UnknownEncoding(name) => {
                 return crate::raise_exception(
                     py,
-                    "LookupError",
+                    BuiltinExc::LookupError,
                     &format!("unknown encoding: {name}"),
                 );
             }
@@ -1286,13 +1289,13 @@ impl DecodeTextError {
                 if matches!(name.as_str(), "xmlcharrefreplace" | "namereplace") {
                     return crate::raise_exception(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "don't know how to handle UnicodeDecodeError in error callback",
                     );
                 }
                 return crate::raise_exception(
                     py,
-                    "LookupError",
+                    BuiltinExc::LookupError,
                     &format!("unknown error handler name '{name}'"),
                 );
             }
@@ -1697,10 +1700,10 @@ mod encode_tests {
                 let failure = decode_bytes_text(encoding, errors, input).unwrap_err();
                 let _: u64 = failure.raise(py, input);
                 let error = molt_exception_last_pending();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "UnicodeDecodeError"
+                    crate::BuiltinExc::UnicodeDecodeError
                 ));
                 let ptr = obj_from_bits(error).as_ptr().unwrap();
                 let args = unsafe { crate::builtins::exceptions::exception_args_bits(ptr) };
@@ -1766,10 +1769,10 @@ mod encode_tests {
                 .unwrap_err()
                 .raise(py, b"\xff");
             let error = molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "LookupError"
+                crate::BuiltinExc::LookupError
             ));
             molt_exception_clear();
             dec_ref_bits(py, error);

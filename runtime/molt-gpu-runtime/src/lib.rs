@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
+use molt_runtime_core::BuiltinExc;
 mod bridge;
 
 #[cfg(any(
@@ -266,20 +267,28 @@ fn decode_half_bytes_to_f32_object(
     decode: fn(&[u8]) -> Result<Vec<u8>, &'static str>,
 ) -> u64 {
     let Some(ptr) = obj_from_bits(data_bits).as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected bytes-like object");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected bytes-like object");
     };
     unsafe {
         let type_id = object_type_id(ptr);
         if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-            return raise_exception::<_>(_py, "TypeError", "expected bytes-like object");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected bytes-like object");
         }
         let raw = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
         let Ok(decoded) = decode(raw) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid half-float payload length");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid half-float payload length",
+            );
         };
         let out_ptr = alloc_bytes(_py, &decoded);
         if out_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate decoded bytes");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::MemoryError,
+                "failed to allocate decoded bytes",
+            );
         }
         MoltObject::from_ptr(out_ptr).bits()
     }
@@ -303,21 +312,21 @@ fn parse_i64_launch_arg(_py: &PyToken, bits: u64, role: &str) -> Result<i64, u64
     if obj_from_bits(bits).is_bool() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("GPU launch {role} must be a positive integer"),
         ));
     }
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be an integer"),
         ));
     };
     if value <= 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("GPU launch {role} must be positive"),
         ));
     }
@@ -885,7 +894,7 @@ fn parse_format(_py: &PyToken, bits: u64, role: &str) -> Result<ScalarFormat, u6
     let Some(bytes) = (unsafe { molt_runtime_core::rt_string_as_bytes(bits) }) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a format string"),
         ));
     };
@@ -894,7 +903,7 @@ fn parse_format(_py: &PyToken, bits: u64, role: &str) -> Result<ScalarFormat, u6
         Some(fmt) => Ok(fmt),
         None => Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("{role} format {:?} is unsupported", value),
         )),
     }
@@ -904,12 +913,16 @@ fn parse_usize_arg(_py: &PyToken, bits: u64, role: &str) -> Result<usize, u64> {
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be an integer"),
         ));
     };
     usize::try_from(value).map_err(|_| {
-        raise_exception::<_>(_py, "ValueError", &format!("{role} must be non-negative"))
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            &format!("{role} must be non-negative"),
+        )
     })
 }
 
@@ -927,7 +940,7 @@ fn kernel_arg_from_bits<'py>(
     let unsupported = || {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("GPU scalar parameter {name:?} requires an exact builtin numeric protocol"),
         )
     };
@@ -951,7 +964,7 @@ fn kernel_arg_from_bits<'py>(
         if type_id == TYPE_ID_TYPE {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "gpu kernel runtime launch does not support class-object arguments",
             ));
         }
@@ -974,16 +987,24 @@ fn kernel_arg_from_bits<'py>(
                 .string_bytes(_py)
                 .map(String::from_utf8_lossy)
                 .ok_or_else(|| {
-                    raise_exception::<u64>(_py, "TypeError", "buffer format must be a string")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "buffer format must be a string",
+                    )
                 })?;
             let size = parse_usize_arg(_py, size.bits(), "_size")?;
             let scalar_format = scalar_format_from_text(&format).ok_or_else(|| {
-                raise_exception::<u64>(_py, "RuntimeError", "unsupported GPU buffer format")
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "unsupported GPU buffer format",
+                )
             })?;
             let required_bytes = size.checked_mul(scalar_format.itemsize()).ok_or_else(|| {
                 raise_exception::<u64>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "GPU buffer size exceeds address space",
                 )
             })?;
@@ -991,7 +1012,7 @@ fn kernel_arg_from_bits<'py>(
             if view.len < required_bytes {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "GPU buffer payload is shorter than its declared size",
                 ));
             }
@@ -1007,7 +1028,7 @@ fn kernel_arg_from_bits<'py>(
     }
     Err(raise_exception::<_>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         &format!("unsupported gpu kernel argument for parameter {:?}", name),
     ))
 }
@@ -1320,7 +1341,7 @@ fn dispatch_browser_webgpu_bindings(
     .map_err(|err| {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("failed to encode webgpu launch record: {err}"),
         )
     })?;
@@ -1350,7 +1371,7 @@ fn dispatch_browser_webgpu_bindings(
         };
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &browser_webgpu_error_message(rc, detail.as_str()),
         ));
     }
@@ -1840,7 +1861,7 @@ fn dispatch_metal_kernel(
         .ok_or_else(|| {
             raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "Metal launch geometry is not representable",
             )
         })?;
@@ -1849,7 +1870,7 @@ fn dispatch_metal_kernel(
         Ok(None) => {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "metal gpu backend requires compiler-published code descriptor metadata",
             ));
         }
@@ -1860,12 +1881,16 @@ fn dispatch_metal_kernel(
         .string_bytes(_py)
         .map(String::from_utf8_lossy)
         .ok_or_else(|| {
-            raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "gpu kernel descriptor must be a string",
+            )
         })?;
     let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
@@ -1873,7 +1898,7 @@ fn dispatch_metal_kernel(
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "gpu kernel descriptor parameter count does not match launch args",
         ));
     }
@@ -1901,27 +1926,27 @@ fn dispatch_metal_kernel(
         threads,
         KernelShaderDialect::Metal,
     )
-    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let device = RuntimeMetalDevice::new()
-        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let pipeline = device
         .compile_pipeline(&descriptor.name, &source)
-        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let mut owned_buffers = Vec::new();
     for index in 0..plan.binding_count() {
         let bytes = plan.bytes(index);
         let buffer = device
             .alloc_buffer(bytes.len())
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+            .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
         device
             .copy_to_buffer(&buffer, bytes)
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+            .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
         owned_buffers.push(buffer);
     }
     let refs: Vec<&MetalBuffer> = owned_buffers.iter().collect();
     device
         .dispatch(&pipeline, total_threads, threads as usize, &refs)
-        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let mut outputs = BTreeMap::new();
     for index in 0..plan.binding_count() {
         if plan.writable(index) {
@@ -1929,7 +1954,7 @@ fn dispatch_metal_kernel(
                 index,
                 device
                     .copy_from_buffer(&owned_buffers[index], plan.bytes(index).len())
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?,
             );
         }
     }
@@ -1947,7 +1972,7 @@ fn dispatch_metal_kernel(
 ) -> Result<u64, u64> {
     Err(raise_exception::<_>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "metal gpu backend requested but molt-gpu was built without metal-backend",
     ))
 }
@@ -1966,14 +1991,14 @@ fn dispatch_webgpu_kernel(
     let grid = u32::try_from(grid).map_err(|_| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "WebGPU grid exceeds unsigned 32-bit geometry",
         )
     })?;
     let threads = u32::try_from(threads).map_err(|_| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "WebGPU threads exceeds unsigned 32-bit geometry",
         )
     })?;
@@ -1982,7 +2007,7 @@ fn dispatch_webgpu_kernel(
         Ok(None) => {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "webgpu backend requires compiler-published code descriptor metadata",
             ));
         }
@@ -1993,12 +2018,16 @@ fn dispatch_webgpu_kernel(
         .string_bytes(_py)
         .map(String::from_utf8_lossy)
         .ok_or_else(|| {
-            raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "gpu kernel descriptor must be a string",
+            )
         })?;
     let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
@@ -2006,7 +2035,7 @@ fn dispatch_webgpu_kernel(
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "gpu kernel descriptor parameter count does not match launch args",
         ));
     }
@@ -2034,39 +2063,39 @@ fn dispatch_webgpu_kernel(
         i64::from(threads),
         KernelShaderDialect::Wgsl,
     )
-    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let device = RuntimeWebGpuDevice::new()
-        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let pipeline = device
         .compile_pipeline(&descriptor.name, &source)
-        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let mut owned_buffers = Vec::new();
     for index in 0..plan.binding_count() {
         let bytes = plan.bytes(index);
         let (_, buffer) = device
             .alloc_buffer(bytes.len())
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+            .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
         device
             .copy_to_buffer(&buffer, bytes)
-            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+            .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
         owned_buffers.push(buffer);
     }
     let refs: Vec<&wgpu::Buffer> = owned_buffers.iter().collect();
     device
         .dispatch(&pipeline, grid, &refs)
-        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let mut outputs = BTreeMap::new();
     for index in 0..plan.binding_count() {
         if plan.writable(index) {
             let bytes = device
                 .copy_from_buffer(&owned_buffers[index], plan.bytes(index).len())
-                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
             outputs.insert(index, bytes);
         }
     }
     device
         .check_failure()
-        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     plan.publish(_py, &outputs, &args_map)?;
     Ok(MoltObject::none().bits())
 }
@@ -2085,14 +2114,14 @@ fn dispatch_webgpu_kernel(
     let grid = u32::try_from(grid).map_err(|_| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "WebGPU grid exceeds unsigned 32-bit geometry",
         )
     })?;
     let threads = u32::try_from(threads).map_err(|_| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "WebGPU threads exceeds unsigned 32-bit geometry",
         )
     })?;
@@ -2101,7 +2130,7 @@ fn dispatch_webgpu_kernel(
         Ok(None) => {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "webgpu backend requires compiler-published code descriptor metadata",
             ));
         }
@@ -2112,12 +2141,16 @@ fn dispatch_webgpu_kernel(
         .string_bytes(_py)
         .map(String::from_utf8_lossy)
         .ok_or_else(|| {
-            raise_exception::<u64>(_py, "TypeError", "gpu kernel descriptor must be a string")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "gpu kernel descriptor must be a string",
+            )
         })?;
     let mut descriptor = parse_kernel_descriptor_json(&descriptor_json).map_err(|msg| {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("invalid gpu kernel descriptor: {msg}"),
         )
     })?;
@@ -2125,7 +2158,7 @@ fn dispatch_webgpu_kernel(
     if arg_bits.len() != descriptor.params.len() {
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "gpu kernel descriptor parameter count does not match launch args",
         ));
     }
@@ -2153,7 +2186,7 @@ fn dispatch_webgpu_kernel(
         i64::from(threads),
         KernelShaderDialect::Wgsl,
     )
-    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
     let mut staging: Vec<Vec<u8>> = (0..plan.binding_count())
         .map(|index| plan.bytes(index).to_vec())
         .collect();
@@ -2165,7 +2198,7 @@ fn dispatch_webgpu_kernel(
             "kind": "buffer",
             "access": if plan.writable(index) { "read_write" } else { "read" },
             "ptr": bytes.as_mut_ptr() as usize as u32,
-            "len": u32::try_from(bytes.len()).map_err(|_| raise_exception::<u64>(_py, "OverflowError", "GPU browser binding exceeds WASM32 extent"))?,
+            "len": u32::try_from(bytes.len()).map_err(|_| raise_exception::<u64>(_py, BuiltinExc::OverflowError, "GPU browser binding exceeds WASM32 extent"))?,
         }));
     }
     dispatch_browser_webgpu_bindings(
@@ -2198,7 +2231,7 @@ fn dispatch_webgpu_kernel(
 ) -> Result<u64, u64> {
     Err(raise_exception::<u64>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "webgpu backend requested but molt-gpu was built without webgpu-backend",
     ))
 }
@@ -2207,7 +2240,7 @@ fn bytes_like_view(_py: &PyToken, bits: u64, role: &str) -> Result<ByteView, u64
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be bytes-like"),
         ));
     };
@@ -2215,7 +2248,7 @@ fn bytes_like_view(_py: &PyToken, bits: u64, role: &str) -> Result<ByteView, u64
     if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be bytes or bytearray"),
         ));
     }
@@ -2229,14 +2262,14 @@ unsafe fn require_class_ptr(_py: &PyToken, bits: u64, role: &str) -> Result<*mut
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a class object"),
         ));
     };
     if unsafe { object_type_id(ptr) } != TYPE_ID_TYPE {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a class object"),
         ));
     }
@@ -2272,7 +2305,7 @@ fn normalize_shape_bits(_py: &PyToken, bits: u64) -> Result<(u64, bool), u64> {
                 } else {
                     Err(raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "shape must be a tuple, list, or int",
                     ))
                 }
@@ -2289,7 +2322,7 @@ fn normalize_shape_bits(_py: &PyToken, bits: u64) -> Result<(u64, bool), u64> {
     } else {
         Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "shape must be a tuple, list, or int",
         ))
     }
@@ -2327,7 +2360,7 @@ unsafe fn object_attr_bits(
     if obj_from_bits(out).is_none() {
         return Err(raise_exception::<_>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             &format!("object has no attribute {:?}", name_str),
         ));
     }
@@ -2446,7 +2479,7 @@ pub extern "C" fn molt_gpu_barrier() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "GPU barrier requires a parallel hardware kernel execution context",
         )
     })
@@ -2472,7 +2505,7 @@ pub extern "C" fn molt_gpu_kernel_launch(
         let Some(total_threads) = grid.checked_mul(threads) else {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "GPU launch geometry exceeds signed 64-bit indices",
             );
         };
@@ -2484,7 +2517,7 @@ pub extern "C" fn molt_gpu_kernel_launch(
             Err(backend) => {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     &format!(
                         "requested {backend:?} Python-kernel descriptor execution is unavailable; tensor device support is separate"
                     ),

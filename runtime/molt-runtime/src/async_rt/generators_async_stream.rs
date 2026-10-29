@@ -4,6 +4,7 @@
 //! and drop hooks for stream-reader/readline/send-all futures.
 
 use super::*;
+use crate::BuiltinExc;
 
 const ASYNCIO_STREAM_READER_READ_SLOT_READER: usize = 0;
 const ASYNCIO_STREAM_READER_READ_SLOT_N: usize = 1;
@@ -54,7 +55,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_read_poll(obj_bits: u64) -> 
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid stream_reader_read payload",
                 );
             }
@@ -117,7 +118,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_reader_readline_poll(obj_bits: u64)
             if payload_bytes < 2 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid stream_reader_readline payload",
                 );
             }
@@ -181,7 +182,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_send_all_poll(obj_bits: u64) -> i64
             if payload_bytes < 3 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid stream_send_all payload",
                 );
             }

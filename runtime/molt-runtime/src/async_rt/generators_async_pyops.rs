@@ -29,17 +29,24 @@ pub(crate) unsafe fn asyncio_clear_pending_exception(_py: &PyToken<'_>) {
 pub(crate) fn asyncio_exception_is_cancelled(py: &PyToken<'_>, exception: u64) -> bool {
     // The runtime class is also the identity published by asyncio.exceptions.
     // A same-named user exception must never be mistaken for cancellation.
-    crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "CancelledError")
+    crate::builtins::exceptions::exception_matches_kind(
+        py,
+        exception,
+        crate::BuiltinExc::CancelledError,
+    )
 }
 
 #[cfg(molt_net)]
 pub(crate) fn asyncio_exception_escapes_callback(py: &PyToken<'_>, exception: u64) -> bool {
-    crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "SystemExit")
-        || crate::builtins::exceptions::exception_matches_builtin_name(
-            py,
-            exception,
-            "KeyboardInterrupt",
-        )
+    crate::builtins::exceptions::exception_matches_kind(
+        py,
+        exception,
+        crate::BuiltinExc::SystemExit,
+    ) || crate::builtins::exceptions::exception_matches_kind(
+        py,
+        exception,
+        crate::BuiltinExc::KeyboardInterrupt,
+    )
 }
 
 unsafe fn asyncio_required_method(py: &PyToken<'_>, object: u64, name: &[u8]) -> Option<u64> {
@@ -244,21 +251,36 @@ mod exception_dispatch_tests {
             for (name, base, cancelled, fatal) in [
                 (
                     b"DerivedCancellation".as_slice(),
-                    "CancelledError",
+                    crate::BuiltinExc::CancelledError,
                     true,
                     false,
                 ),
-                (b"CancelledError".as_slice(), "Exception", false, false),
+                (
+                    b"CancelledError".as_slice(),
+                    crate::BuiltinExc::Exception,
+                    false,
+                    false,
+                ),
                 (
                     b"DerivedInterrupt".as_slice(),
-                    "KeyboardInterrupt",
+                    crate::BuiltinExc::KeyboardInterrupt,
                     false,
                     true,
                 ),
-                (b"SystemExit".as_slice(), "Exception", false, false),
-                (b"DerivedExit".as_slice(), "GeneratorExit", false, false),
+                (
+                    b"SystemExit".as_slice(),
+                    crate::BuiltinExc::Exception,
+                    false,
+                    false,
+                ),
+                (
+                    b"DerivedExit".as_slice(),
+                    crate::BuiltinExc::GeneratorExit,
+                    false,
+                    false,
+                ),
             ] {
-                let class = class(py, name, exception_type_bits_from_name(py, base));
+                let class = class(py, name, exception_class_bits(py, base));
                 let args = MoltObject::from_ptr(alloc_tuple(py, &[])).bits();
                 let exception =
                     MoltObject::from_ptr(alloc_exception_from_class_bits(py, class, args)).bits();
@@ -275,7 +297,7 @@ mod exception_dispatch_tests {
     #[cfg(molt_net)]
     extern "C" fn failing_descriptor(_instance: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception::<u64>(py, "AttributeError", "descriptor-origin")
+            raise_exception::<u64>(py, crate::BuiltinExc::AttributeError, "descriptor-origin")
         })
     }
 
@@ -315,10 +337,10 @@ mod exception_dispatch_tests {
                 assert_eq!(result, none);
                 assert!(exception_pending(py));
                 let exception = molt_exception_last_pending();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
-                    "AttributeError"
+                    crate::BuiltinExc::AttributeError
                 ));
                 clear_exception(py);
                 dec_ref_bits(py, exception);
@@ -355,10 +377,10 @@ mod exception_dispatch_tests {
                     assert_eq!(result, none);
                     assert!(exception_pending(py));
                     let exception = molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
-                        "AttributeError"
+                        crate::BuiltinExc::AttributeError
                     ));
                     clear_exception(py);
                     let actual_name =
@@ -388,7 +410,11 @@ mod exception_dispatch_tests {
 
     extern "C" fn failing_runtime_descriptor(_instance: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception::<u64>(py, "RuntimeError", "waiter descriptor failure")
+            raise_exception::<u64>(
+                py,
+                crate::BuiltinExc::RuntimeError,
+                "waiter descriptor failure",
+            )
         })
     }
 
@@ -473,10 +499,10 @@ mod exception_dispatch_tests {
             let _exception_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), exception)
             };
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "RuntimeError",
+                crate::BuiltinExc::RuntimeError,
             ));
             clear_exception(py);
         });

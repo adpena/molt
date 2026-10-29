@@ -3,6 +3,7 @@
 //! Pure RFC 3492 encode/decode behavior lives in `molt-stdlib-text`; this
 //! module owns only runtime object marshaling, allocation, and exception shape.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_stdlib_text::punycode::{punycode_decode_impl, punycode_encode_impl};
 
@@ -11,7 +12,11 @@ use molt_stdlib_text::punycode::{punycode_decode_impl, punycode_encode_impl};
 pub extern "C" fn molt_punycode_encode(text_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "punycode_encode: expected str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "punycode_encode: expected str",
+            );
         };
         let encoded = punycode_encode_impl(&text);
         let ptr = alloc_bytes(_py, &encoded);
@@ -33,7 +38,7 @@ pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 
             let Some(ptr) = obj.as_ptr() else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "punycode_decode: expected str or bytes",
                 );
             };
@@ -42,7 +47,7 @@ pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "punycode_decode: expected str or bytes",
                     );
                 }
@@ -60,7 +65,7 @@ pub extern "C" fn molt_punycode_decode(data_bits: u64, errors_bits: u64) -> u64 
                 }
                 MoltObject::from_ptr(s_ptr).bits()
             }
-            Err(msg) => raise_exception::<_>(_py, "UnicodeError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::UnicodeError, &msg),
         }
     })
 }

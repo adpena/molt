@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::call::bind::test_support::*;
 use crate::call_function_obj_vec;
 use crate::object::builders::{alloc_list, alloc_tuple};
@@ -762,7 +763,7 @@ fn fixed_native_promotion_rejects_invalid_declarations_atomically_and_seals_publ
                 assert_eq!(function_fn_ptr(pointer), original_entry);
                 crate::molt_exception_clear();
             }
-            crate::raise_exception::<()>(py, "RuntimeError", "original pending failure");
+            crate::raise_exception::<()>(py, BuiltinExc::RuntimeError, "original pending failure");
             let pending = crate::exception_last_bits_noinc(py).unwrap();
             crate::builtins::functions::molt_function_set_fixed_builtin(
                 function,

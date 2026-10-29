@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 pub(super) fn importlib_reader_collect_unique_strings(
     _py: &PyToken<'_>,
@@ -50,7 +51,7 @@ pub(super) fn importlib_reader_collect_unique_paths(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     invalid_entry_message,
                 ));
             }
@@ -177,7 +178,7 @@ pub(super) fn importlib_traversable_iterdir_names(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid loader resource traversable payload: missing name",
             ));
         }
@@ -187,7 +188,7 @@ pub(super) fn importlib_traversable_iterdir_names(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid loader resource traversable payload: name must be str",
             ));
         };
@@ -236,7 +237,7 @@ pub(super) fn importlib_traversable_is_file(
     }
     Err(raise_exception::<_>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "invalid loader resource traversable payload: is_file must be bool",
     ))
 }
@@ -270,7 +271,7 @@ pub(super) fn importlib_traversable_is_dir(
         }
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid loader resource traversable payload: is_dir must be bool",
         ));
     }
@@ -317,7 +318,7 @@ pub(super) fn importlib_traversable_exists(
         }
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid loader resource traversable payload: exists must be bool",
         ));
     }
@@ -345,7 +346,7 @@ pub(super) fn importlib_traversable_open_bytes(
     else {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid loader resource traversable payload: missing open()",
         ));
     };
@@ -371,7 +372,7 @@ pub(super) fn importlib_traversable_open_bytes(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid loader open_resource payload",
             ));
         }
@@ -407,7 +408,7 @@ pub(super) fn importlib_traversable_open_bytes(
         }
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid loader open_resource payload",
         ));
     };

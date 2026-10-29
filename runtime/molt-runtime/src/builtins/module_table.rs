@@ -15,6 +15,7 @@
 //! in the same ordinary dictionary without requiring a compiled registry row.
 //! Native relocations and the WASM ModuleId dispatcher enter this same state
 //! machine. No target-specific module storage or protocol is introduced.
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -615,7 +616,7 @@ impl InterpreterSysNamespace {
         {
             raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "canonical sys initializer must publish a module",
             );
             return false;
@@ -846,7 +847,7 @@ impl ModuleLockFailure {
         match self {
             Self::Cycle => raise_exception::<_>(
                 py,
-                "_DeadlockError",
+                BuiltinExc::DeadlockError,
                 &format!("deadlock detected by module lock for {name:?}"),
             ),
             Self::Exception => none_bits(),
@@ -878,7 +879,11 @@ impl ModuleExecutionGuard {
                 .unwrap();
             if locks.retired {
                 drop(locks);
-                raise_exception::<()>(py, "ImportError", "module execution locks are retired");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::ImportError,
+                    "module execution locks are retired",
+                );
                 return Err(ModuleLockFailure::Exception);
             }
             if let Some(record) = locks.active.get(name) {
@@ -908,7 +913,11 @@ impl ModuleExecutionGuard {
                 if locks.retired {
                     drop(locks);
                     drop(guard);
-                    raise_exception::<()>(py, "ImportError", "module execution locks are retired");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::ImportError,
+                        "module execution locks are retired",
+                    );
                     return Err(ModuleLockFailure::Exception);
                 }
                 let owner = guard.record.owner.load(Ordering::Acquire);
@@ -919,7 +928,7 @@ impl ModuleExecutionGuard {
                         drop(guard);
                         raise_exception::<()>(
                             py,
-                            "OverflowError",
+                            BuiltinExc::OverflowError,
                             "module execution lock recursion exhausted",
                         );
                         return Err(ModuleLockFailure::Exception);
@@ -1061,7 +1070,7 @@ pub(crate) fn module_dictionary(py: &PyToken<'_>) -> Option<u64> {
         if is_none_bits(current) {
             raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "interpreter module dictionary is retired",
             );
             return None;
@@ -1495,7 +1504,7 @@ pub(crate) fn enter_import_recursion(py: &PyToken<'_>) -> Option<ImportDepthGuar
         ENSURE_DEPTH.fetch_sub(1, Ordering::Relaxed);
         raise_exception::<()>(
             py,
-            "RecursionError",
+            BuiltinExc::RecursionError,
             "module ensure recursion limit exceeded (registry cycle?)",
         );
         None
@@ -1569,7 +1578,7 @@ pub(crate) fn execute_private_body(py: &PyToken<'_>, name: &str) -> Result<(), u
     {
         return Err(raise_exception::<_>(
             py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "module namespace has been retired during runtime shutdown",
         ));
     }
@@ -1618,7 +1627,7 @@ impl<'a, 'py> RegisteredSpecImport<'a, 'py> {
             if state == STATE_RETIRED {
                 return Err(raise_exception::<_>(
                     py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     "module namespace has been retired during runtime shutdown",
                 ));
             }
@@ -1719,14 +1728,14 @@ pub extern "C" fn molt_module_initialization_spec(module: u64, spec: u64) -> u64
             {
                 return raise_exception::<_>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "compiler spec has no matching initializer namespace",
                 );
             }
             if table.initialization().specs[index].load(Ordering::Acquire) != 0 {
                 return raise_exception::<_>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "initializer spec was already admitted",
                 );
             }
@@ -2054,12 +2063,12 @@ pub extern "C" fn molt_module_ensure(id_bits: u64) -> u64 {
         let Some(id) = crate::to_i64(obj_from_bits(id_bits)) else {
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "module ensure expects a boxed integer module id",
             );
         };
         let Ok(id) = u32::try_from(id) else {
-            return raise_exception::<_>(_py, "SystemError", "module id out of range");
+            return raise_exception::<_>(_py, BuiltinExc::SystemError, "module id out of range");
         };
         module_ensure(_py, id)
     })
@@ -2082,7 +2091,7 @@ pub(crate) fn module_ensure_with_cache(
         }
         return raise_exception::<_>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "module registry is not installed; compiled import sites require the \
              application bootstrap to call molt_module_registry_install",
         );
@@ -2091,7 +2100,11 @@ pub(crate) fn module_ensure_with_cache(
         if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
             dec_ref_bits(_py, bits);
         }
-        return raise_exception::<_>(_py, "SystemError", "module id outside the registry");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::SystemError,
+            "module id outside the registry",
+        );
     }
     let Some(_depth) = enter_import_recursion(_py) else {
         if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
@@ -2113,7 +2126,7 @@ fn module_ensure_inner(
         if let Some(crate::builtins::modules::PublicModuleCache::Present(bits)) = observed {
             dec_ref_bits(_py, bits);
         }
-        return raise_exception::<_>(_py, "SystemError", "module table unavailable");
+        return raise_exception::<_>(_py, BuiltinExc::SystemError, "module table unavailable");
     };
     let idx = id as usize;
     if table.initialization().states[idx].load(Ordering::Acquire) == STATE_RETIRED {
@@ -2122,7 +2135,7 @@ fn module_ensure_inner(
         }
         return raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "module namespace has been retired during runtime shutdown",
         );
     }
@@ -2274,7 +2287,7 @@ fn module_ensure_inner(
             other => {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     &format!("module table state {other} is not a known ModuleState"),
                 );
             }
@@ -2386,14 +2399,14 @@ fn dispatch_module_body(_py: &PyToken<'_>, _registry: &ModuleRegistry, id: u32, 
         let Some(init_target) = crate::provenance::abi::function_ptr(init_ptr) else {
             return raise_exception::<()>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!("module '{name}' initializer exceeds the active address space"),
             );
         };
         if init_target.is_null() {
             return raise_exception::<()>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!("module '{name}' has a null initializer"),
             );
         }
@@ -2476,7 +2489,7 @@ fn run_init_transaction_body(
         unwind(_py);
         return raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!("module '{name}' init completed without publishing a module object"),
         );
     }

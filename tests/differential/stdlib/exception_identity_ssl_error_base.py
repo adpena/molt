@@ -1,4 +1,3 @@
-# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-207 expect_molt_returncode=1 expect_molt_stdout_sha256=183ea8d7980abdabbfa61eda9872ad62293a08ef79c9323f8f545d0788e3a589
 """Purpose: ssl.SSLError derives from OSError, as in CPython."""
 
 import ssl

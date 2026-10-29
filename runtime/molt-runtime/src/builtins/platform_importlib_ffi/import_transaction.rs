@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::ExceptionValue;
 use crate::runtime_flags::{self, RuntimeFlag};
 
@@ -16,7 +17,11 @@ pub(super) fn importlib_find_in_path_payload(
         allowed,
     );
     if !allowed {
-        return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::PermissionError,
+            "missing fs.read capability",
+        );
     }
     let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
         Ok(value) => value,
@@ -182,7 +187,7 @@ pub(super) fn importlib_resolve_name_arg(_py: &PyToken<'_>, name_bits: u64) -> R
     let Some(name) = string_obj_to_owned(name_obj) else {
         return Err(raise_exception::<_>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             &format!(
                 "'{}' object has no attribute 'startswith'",
                 type_name(_py, name_obj)
@@ -201,7 +206,7 @@ pub(super) fn importlib_resolve_join(
     let Some(base) = importlib_relative_base(package, level) else {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "attempted relative import beyond top-level package",
         ));
     };
@@ -219,7 +224,7 @@ pub(super) fn importlib_resolve_join(
 pub(super) fn importlib_package_required_error(_py: &PyToken<'_>, name: &str) -> u64 {
     raise_exception::<_>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!("the 'package' argument is required to perform a relative import for '{name}'"),
     )
 }
@@ -241,7 +246,7 @@ pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64)
         if !is_truthy(_py, obj_from_bits(package_bits)) {
             return raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!("no package specified for '{name}' (required for relative module names)"),
             );
         }
@@ -249,7 +254,7 @@ pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64)
         let Some(package_name) = string_obj_to_owned(package_obj) else {
             return raise_exception::<_>(
                 _py,
-                "AttributeError",
+                BuiltinExc::AttributeError,
                 &format!(
                     "'{}' object has no attribute 'rsplit'",
                     type_name(_py, package_obj)
@@ -273,7 +278,11 @@ pub(super) fn importlib_import_module_resolved_name(
 ) -> Result<String, u64> {
     let name = importlib_resolve_name_arg(_py, name_bits)?;
     if name.is_empty() {
-        return Err(raise_exception::<_>(_py, "ValueError", "Empty module name"));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "Empty module name",
+        ));
     }
     if !name.starts_with('.') {
         return Ok(name);
@@ -284,7 +293,7 @@ pub(super) fn importlib_import_module_resolved_name(
     let Some(package_name) = string_obj_to_owned(obj_from_bits(package_bits)) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "__package__ not set to a string",
         ));
     };
@@ -419,7 +428,13 @@ pub extern "C" fn molt_importlib_import_optional(module_name_bits: u64) -> u64 {
         }
         // Optional imports mirror `try: import x; except ImportError: ...`.
         // They should not propagate module absence and simply yield None.
-        if clear_pending_if_kind(_py, &["ImportError", "ModuleNotFoundError"]) {
+        if clear_pending_if_kind(
+            _py,
+            &[
+                crate::BuiltinExc::ImportError,
+                crate::BuiltinExc::ModuleNotFoundError,
+            ],
+        ) {
             if !obj_from_bits(imported_bits).is_none() {
                 dec_ref_bits(_py, imported_bits);
             }
@@ -453,7 +468,13 @@ pub extern "C" fn molt_importlib_import_or_fallback(
         if !exception_pending(_py) {
             return imported_bits;
         }
-        if clear_pending_if_kind(_py, &["ImportError", "ModuleNotFoundError"]) {
+        if clear_pending_if_kind(
+            _py,
+            &[
+                crate::BuiltinExc::ImportError,
+                crate::BuiltinExc::ModuleNotFoundError,
+            ],
+        ) {
             if !obj_from_bits(imported_bits).is_none() {
                 dec_ref_bits(_py, imported_bits);
             }
@@ -772,7 +793,7 @@ pub(super) fn importlib_transaction_package_from_globals(
     if globals_bits == crate::missing_bits(_py) {
         return Err(raise_exception::<_>(
             _py,
-            "KeyError",
+            BuiltinExc::KeyError,
             "'__name__' not in globals",
         ));
     }
@@ -781,7 +802,7 @@ pub(super) fn importlib_transaction_package_from_globals(
     let Some(globals_ptr) = globals else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "globals must be a dict",
         ));
     };
@@ -794,7 +815,7 @@ pub(super) fn importlib_transaction_package_from_globals(
         let Some(package) = string_obj_to_owned(obj_from_bits(package_bits)) else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "package must be a string",
             ));
         };
@@ -820,7 +841,7 @@ pub(super) fn importlib_transaction_package_from_globals(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "__spec__.parent must be a string",
             ));
         };
@@ -839,14 +860,14 @@ pub(super) fn importlib_transaction_package_from_globals(
     else {
         return Err(raise_exception::<_>(
             _py,
-            "KeyError",
+            BuiltinExc::KeyError,
             "'__name__' not in globals",
         ));
     };
     let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "__name__ must be a string",
         ));
     };
@@ -886,7 +907,7 @@ pub(super) fn importlib_transaction_resolved_name(
     let Some(package) = importlib_transaction_package_from_globals(_py, globals_bits)? else {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "attempted relative import with no known parent package",
         ));
     };
@@ -894,7 +915,7 @@ pub(super) fn importlib_transaction_resolved_name(
     let Some(base) = importlib_relative_base(&package, level) else {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "attempted relative import beyond top-level package",
         ));
     };
@@ -1024,7 +1045,7 @@ fn importlib_transaction_no_fromlist_value(
             }
             Ok(None) => Err(raise_exception::<_>(
                 _py,
-                "KeyError",
+                BuiltinExc::KeyError,
                 &format!(
                     "{} not in sys.modules as expected",
                     crate::format_obj(_py, obj_from_bits(return_key_bits))
@@ -1098,7 +1119,7 @@ pub(super) fn importlib_transaction_string_items(
                     format!("Item in {module_name}.__all__ must be str, not {item_type}")
                 }
             };
-            return Err(raise_exception::<_>(_py, "TypeError", &message));
+            return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &message));
         };
         out.push(text);
     }
@@ -1123,7 +1144,7 @@ pub(super) fn importlib_transaction_module_all_items(
         }
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "fromlist star expects module",
         ));
     };
@@ -1133,7 +1154,7 @@ pub(super) fn importlib_transaction_module_all_items(
         }
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "fromlist star expects module",
         ));
     }
@@ -1284,13 +1305,13 @@ pub extern "C" fn molt_importlib_import_transaction(
             Err(bits) => return bits,
         };
         let Some(level) = to_i64(obj_from_bits(level_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "level must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "level must be an integer");
         };
         if level < 0 {
-            return raise_exception::<_>(_py, "ValueError", "level must be >= 0");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "level must be >= 0");
         }
         if name.is_empty() && level == 0 {
-            return raise_exception::<_>(_py, "ValueError", "Empty module name");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "Empty module name");
         }
         let resolved = match importlib_transaction_resolved_name(_py, &name, globals_bits, level) {
             Ok(value) => value,

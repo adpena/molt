@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::object::{HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_HAS_ABI_VIEW};
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -138,7 +139,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
         let Some(total) = initial_len.checked_mul(count) else {
             let _ = raise_exception::<u64>(
                 self.py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "cannot fit 'int' into an index-sized integer",
             );
             return false;
@@ -246,7 +247,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
             if conflict_is_error {
                 let _ = raise_exception::<u64>(
                     self.py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "list mutated during mutation transaction",
                 );
             }
@@ -317,7 +318,11 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
         if unsafe { seq_vec_ptr(ptr) } != base {
             drop(mutation_guard);
             unsafe { drop(crate::object::backing::tracked_vec_box_from_raw(detached)) };
-            let _ = raise_exception::<u64>(py, "RuntimeError", "list storage changed before sort");
+            let _ = raise_exception::<u64>(
+                py,
+                BuiltinExc::RuntimeError,
+                "list storage changed before sort",
+            );
             return None;
         }
         let has_view = unsafe { (*header_from_obj_ptr(ptr)).load_synchronized_flags() }
@@ -490,7 +495,11 @@ pub(crate) unsafe fn insert_with_projection(
         || unsafe { (&*base).len() } != len
     {
         drop(mutation_guard);
-        let _ = raise_exception::<u64>(py, "RuntimeError", "list mutated during insertion");
+        let _ = raise_exception::<u64>(
+            py,
+            BuiltinExc::RuntimeError,
+            "list mutated during insertion",
+        );
         return false;
     }
     let Some(required) = len.checked_add(1) else {
@@ -514,7 +523,7 @@ pub(crate) unsafe fn insert_with_projection(
         dec_ref_bits(py, item);
         let _ = raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "list projection changed during insertion",
         );
         return false;
@@ -678,7 +687,11 @@ pub(crate) unsafe fn replace_one_with_projection(
         || unsafe { (&*base).len() } != len
     {
         drop(mutation_guard);
-        let _ = raise_exception::<u64>(py, "RuntimeError", "list mutated during indexed store");
+        let _ = raise_exception::<u64>(
+            py,
+            BuiltinExc::RuntimeError,
+            "list mutated during indexed store",
+        );
         return false;
     }
     inc_ref_bits(py, item);
@@ -690,7 +703,7 @@ pub(crate) unsafe fn replace_one_with_projection(
             dec_ref_bits(py, item);
             let _ = raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "list projection changed during indexed store",
             );
             return false;
@@ -745,8 +758,11 @@ pub(crate) unsafe fn pop(py: &PyToken<'_>, ptr: *mut u8, index: usize) -> Option
             unsafe { (&mut *base).insert(index, value) };
             drop(mutation_guard);
             dec_ref_bits(py, value);
-            let _ =
-                raise_exception::<u64>(py, "RuntimeError", "list projection changed during pop");
+            let _ = raise_exception::<u64>(
+                py,
+                BuiltinExc::RuntimeError,
+                "list projection changed during pop",
+            );
             return None;
         };
         Some(retired)
@@ -829,7 +845,7 @@ pub(crate) unsafe fn reverse(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
         drop(mutation_guard);
         let _ = raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "list projection changed during reverse",
         );
         return false;
@@ -882,7 +898,11 @@ pub(crate) unsafe fn replace_range_with_projection(
         return false;
     };
     if future_pointers.is_some_and(|pointers| pointers.len() != result_len) {
-        let _ = raise_exception::<u64>(py, "SystemError", "list slice projection length mismatch");
+        let _ = raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "list slice projection length mismatch",
+        );
         return false;
     }
     if removed_len == 0 && items.is_empty() {
@@ -1258,7 +1278,7 @@ pub(crate) unsafe fn repeat(py: &PyToken<'_>, ptr: *mut u8, count: usize) -> boo
     let Some(total) = len.checked_mul(count) else {
         let _ = raise_exception::<u64>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "cannot fit 'int' into an index-sized integer",
         );
         return false;

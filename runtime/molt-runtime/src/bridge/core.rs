@@ -6,9 +6,13 @@ use molt_runtime_core::prelude::*;
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-pub fn raise_exception<T: ExceptionSentinel>(_py: &CoreGilToken, type_name: &str, msg: &str) -> T {
+pub fn raise_exception<T: ExceptionSentinel>(
+    _py: &CoreGilToken,
+    kind: impl Into<ExcKind>,
+    msg: &str,
+) -> T {
     crate::with_gil_entry_nopanic!(py, {
-        T::from_bits(crate::raise_exception::<u64>(py, type_name, msg))
+        T::from_bits(crate::raise_exception::<u64>(py, kind, msg))
     })
 }
 

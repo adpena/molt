@@ -1,4 +1,5 @@
 //! Watcher lookup/error semantics use the real runtime, not stub capabilities.
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{errors, mapping, numbers, refcount::OwnedPyObject, strings, typeobj};
 use std::cell::Cell;
@@ -217,8 +218,11 @@ fn best_effort_version_tags_preserve_errors_for_malformed_physical_bases() {
         expect_no_error(&py);
         assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 0);
         expect_no_error(&py);
-        let runtime =
-            crate::builtins::exceptions::alloc_exception(&py, "LookupError", "runtime original");
+        let runtime = crate::builtins::exceptions::alloc_exception(
+            &py,
+            BuiltinExc::LookupError,
+            "runtime original",
+        );
         assert!(!runtime.is_null());
         let runtime = crate::bits_from_ptr(runtime);
         errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"original".as_ptr());
