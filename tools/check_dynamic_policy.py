@@ -49,7 +49,7 @@ RUNTIME_POLICY_EVIDENCE: dict[str, tuple[str, ...]] = {
     "runtime/molt-runtime/src/builtins/modules.rs": (
         'if name == "exec" || name == "eval"',
         "dynamic code execution is outside the verified subset",
-        'return raise_exception::<_>(py, "RuntimeError", &message);',
+        "return raise_exception::<_>(py, BuiltinExc::RuntimeError, &message);",
     ),
     "runtime/molt-runtime/src/builtins/platform.rs": (
         "fn importlib_extension_exec_unavailable(",

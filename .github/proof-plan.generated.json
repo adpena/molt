@@ -545,6 +545,7 @@
         "tests/test_gen_cpython_abi_layout.py/**",
         "tests/tools/test_perf_release_integrity.py/**",
         "tests/tools/test_finding_tests.py/**",
+        "tests/test_gen_exception_kinds.py/**",
         "tests/test_runtime_build_python.py/**",
         "tests/test_dead_code_allow_ratchet.py/**",
         "tests/tools/test_advisory_classifier.py/**",
@@ -3676,6 +3677,7 @@
       "id": "repository.tooling-tests",
       "pytest": [
         "tests/tools/test_finding_tests.py",
+        "tests/test_gen_exception_kinds.py",
         "tests/test_runtime_build_python.py",
         "tests/test_dead_code_allow_ratchet.py",
         "tests/tools/test_advisory_classifier.py",
