@@ -13,15 +13,23 @@ finding exactly. Any other failure names the open rows whose text mentions it.
 Completed job logs are immutable, so the tool caches them by job ID under the
 system temporary directory and downloads each log at most once.
 
+`--junit FILE` reads a local or farm pytest JUnit report instead of a CI run
+and groups its failures by cause: the most specific error line with paths,
+temporary names and numbers removed. Each cause names its owning open rows,
+the rows that name its test files, and how many of those files no proof-plan
+command runs (`tools/check_test_ownership.py`).
+
 Usage:
     python3 tools/ci_triage.py RUN_ID
     python3 tools/ci_triage.py --branch verify/train-32
     python3 tools/ci_triage.py RUN_ID --compare none --json
     python3 tools/ci_triage.py RUN_ID --verify
+    python3 tools/ci_triage.py --junit junit.xml [--json]
 
 Exit status: 0 completed successful CI (and verified coverage with --verify),
 1 failed CI/proofs, 2 unavailable verification, 3 unfinished CI. NEW/main
-classification does not turn a known failure into success.
+classification does not turn a known failure into success. With --junit: 0 no
+failures, 1 failures.
 """
 
 from __future__ import annotations
@@ -35,6 +43,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
+from xml.etree import ElementTree
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -72,6 +81,10 @@ _CARGO_NOISE = (
     "target failed",
 )
 _TEST_LINE_LIMIT = 240
+# A cause groups on its whole normalized line, so two refusals that differ only
+# in the operation they name stay apart; reports print a shorter prefix.
+_CAUSE_KEY_LIMIT = 600
+_CAUSE_LINE_LIMIT = 320
 
 
 def clean_log(text: str) -> list[str]:
@@ -161,6 +174,134 @@ def parse_job_log(name: str, text: str) -> JobReport:
             short = test.rsplit("::", 1)[-1]
             report.tests[test] = assertions.get(test) or assertions.get(short, "")
     return report
+
+
+_JUNIT_TIMEOUT = re.compile(r"^Failed: Timeout\b")
+_JUNIT_CAUSE = re.compile(
+    r"\w*(?:Error|Exception)\b|\b(?:error|panicked|refused|rejected)\b"
+)
+# pytest's own wrappers around a child's failure; the cause is inside them.
+_JUNIT_WRAPPERS = ("AssertionError:", "Failed:")
+_VOLATILE = (
+    (re.compile(r"(?:[A-Za-z]:)?[\\/][^\s'\"`]+"), "<path>"),
+    (re.compile(r"\btmp\w+"), "<tmp>"),
+    (re.compile(r"\b0x[0-9a-fA-F]+\b|\b[0-9a-f]{12,}\b"), "<hex>"),
+    (re.compile(r"\d+(?:\.\d+)?"), "N"),
+)
+
+
+def _junit_test_id(classname: str, name: str) -> str:
+    """`tests/a/test_b.py::Class::name` from pytest's dotted classname."""
+    parts = classname.split(".")
+    stems = [index for index, part in enumerate(parts) if part.startswith("test_")]
+    if not stems:
+        return "::".join(part for part in (classname, name) if part)
+    end = stems[-1] + 1
+    return "::".join(["/".join(parts[:end]) + ".py", *parts[end:], name])
+
+
+def _junit_detail(message: str, text: str) -> str:
+    """The most specific cause line of one pytest failure.
+
+    pytest prefixes the failure message with `E` and then prints its rewritten
+    `assert` expression. The cause is the last message line that names an error
+    outside pytest's own wrappers, else the last message line (a child's stderr
+    tail), else the first `E` line.
+    """
+    first = message.strip().splitlines()[0] if message.strip() else ""
+    if _JUNIT_TIMEOUT.match(first):
+        return first
+    lines = [line[1:].strip() for line in text.splitlines() if line.startswith("E ")]
+    body = []
+    for line in lines:
+        if line.startswith("assert "):
+            break
+        if line:
+            body.append(line)
+    named = [
+        line
+        for line in body
+        if _JUNIT_CAUSE.search(line) and not line.startswith(_JUNIT_WRAPPERS)
+    ]
+    if named:
+        return named[-1]
+    return body[-1] if body else (lines[0] if lines else first)
+
+
+def parse_junit(name: str, text: str) -> tuple[JobReport, int]:
+    """The failing tests of one pytest JUnit report and its test count. Pure."""
+    report = JobReport(name)
+    total = 0
+    for case in ElementTree.fromstring(text).iter("testcase"):
+        total += 1
+        for kind in ("failure", "error"):
+            element = case.find(kind)
+            if element is not None:
+                test = _junit_test_id(case.get("classname", ""), case.get("name", ""))
+                detail = _junit_detail(element.get("message", ""), element.text or "")
+                report.tests.setdefault(test, detail)
+    return report, total
+
+
+def cause_key(detail: str) -> str:
+    """A failure detail without paths, temporary names or numbers."""
+    for pattern, token in _VOLATILE:
+        detail = pattern.sub(token, detail)
+    return detail[:_CAUSE_KEY_LIMIT]
+
+
+@dataclass
+class Cause:
+    cause: str
+    tests: list[str]
+    owners: list[str]
+    files: list[str]
+    files_without_proof_cell: int
+
+
+def group_causes(
+    items: list[Classified],
+    rows: list[tuple[str, str]],
+    unowned_files: set[str],
+) -> list[Cause]:
+    """Failures grouped by cause, largest first, with test and file owners."""
+    groups: dict[str, list[Classified]] = {}
+    for item in items:
+        groups.setdefault(cause_key(item.detail), []).append(item)
+    causes = []
+    for cause, members in groups.items():
+        files = sorted({item.key.split("::", 1)[0] for item in members})
+        owners = {owner for item in members for owner in item.owners}
+        owners.update(owner for path in files for owner in ledger_owners(path, rows))
+        causes.append(
+            Cause(
+                cause,
+                sorted(item.key for item in members),
+                sorted(owners),
+                files,
+                sum(path in unowned_files for path in files),
+            )
+        )
+    return sorted(causes, key=lambda cause: (-len(cause.tests), cause.cause))
+
+
+def render_causes(source: str, total: int, causes: list[Cause]) -> str:
+    failing = sum(len(cause.tests) for cause in causes)
+    lines = [f"{source}: {failing} failing of {total} tests, {len(causes)} causes"]
+    for cause in causes:
+        owners = f" ({', '.join(cause.owners)})" if cause.owners else ""
+        text = (cause.cause or "(no detail)")[:_CAUSE_LINE_LIMIT]
+        lines.append(f"  {len(cause.tests)} {text}{owners}")
+        shown = ", ".join(cause.files[:3])
+        more = f" +{len(cause.files) - 3}" if len(cause.files) > 3 else ""
+        bare = (
+            f"; {cause.files_without_proof_cell} without a proof cell"
+            if cause.files_without_proof_cell
+            else ""
+        )
+        lines.append(f"    files: {shown}{more}{bare}")
+        lines.append(f"    e.g. {cause.tests[0]}")
+    return "\n".join(lines)
 
 
 def open_ledger_rows(ledger_text: str) -> list[tuple[str, str]]:
@@ -326,6 +467,26 @@ def _latest_run(
     return None
 
 
+def _triage_junit(path: Path, *, as_json: bool) -> int:
+    from tools.check_test_ownership import unowned
+
+    report, total = parse_junit(path.name, path.read_text(encoding="utf-8"))
+    ledger = LEDGER.read_text(encoding="utf-8") if LEDGER.is_file() else ""
+    rows = open_ledger_rows(ledger)
+    items = classify([report], None, rows, expectation_owners())
+    causes = group_causes(items, rows, unowned(ROOT))
+    if as_json:
+        payload = {
+            "source": str(path),
+            "total": total,
+            "causes": [asdict(cause) for cause in causes],
+        }
+        print(json.dumps(payload, indent=2))
+    else:
+        print(render_causes(str(path), total, causes))
+    return 1 if items else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("run_id", nargs="?", type=int)
@@ -343,7 +504,16 @@ def main(argv: list[str] | None = None) -> int:
         help="retrieve and verify selected proof coverage for this exact committed "
         "source (requires a completed successful CI run with selection artifact)",
     )
+    parser.add_argument(
+        "--junit",
+        type=Path,
+        help="group the failures of this pytest JUnit report by cause instead",
+    )
     args = parser.parse_args(argv)
+    if args.junit is not None:
+        if args.run_id is not None or args.branch or args.verify:
+            parser.error("--junit takes no RUN_ID, --branch or --verify")
+        return _triage_junit(args.junit, as_json=args.json)
     run_id = args.run_id
     if run_id is None:
         if not args.branch:
