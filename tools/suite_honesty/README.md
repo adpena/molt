@@ -23,7 +23,7 @@ known-bad list — is exactly what the parity contract forbids. This ratchet mak
 
 | File | Role |
 |---|---|
-| `differential_expectations.json` | **Single source of truth** for every KNOWN-failing differential test, dimensioned by backend (`native`/`llvm`/`wasm`/`luau`) × CPython version. Each `fail` dimension carries `tracking` + `root_cause` + `evidence`. |
+| `differential_expectations.json` | **Single source of truth** for every KNOWN-failing differential test, dimensioned by backend (`native`/`llvm`/`wasm`/`luau`) × CPython version. Each `fail` dimension carries its owner + `root_cause` + `evidence`. The owner is `finding`, an open row of the findings ledger as the typed identity of `tests/findings/finding_ids.py`; entries of families that have not migrated keep a legacy free-text `tracking` owner (exactly one of the two). The `regrtest` block keys CPython's own tests (`test.<module>[::<Class>::<method>]`, dimensions `<backend>@<version>`); its entries always name a `finding`, and `tools/cpython_regrtest.py` classifies every run against them. |
 | `honesty_baseline.json` | The committed one-way ratchet: per-backend `expected_fail_ceiling` (may only **decrease**). |
 | `native_calibration.jsonl` | The committed NATIVE reality snapshot: one JSON line per test with its **raw** status (before the xfail/xpass overlay), produced by `tests/molt_diff.py` with `MOLT_DIFF_RESULTS_JSONL` set. |
 | `../check_suite_honesty.py` | The guard. Reconciles the manifest against the snapshot in **both directions** and against the baseline. |
@@ -59,7 +59,7 @@ have a `fail` entry here, and every `fail` entry must still be failing.
 | Status | Meaning |
 |---|---|
 | (absent) | The implicit default: the test is expected to **pass** on every calibrated dimension. The manifest only lists known-bad dimensions, so it stays small and every line is a debt. |
-| `fail` | A tracked debt. **Requires** `tracking`, `root_cause`, `evidence`. |
+| `fail` | A tracked debt. **Requires** its owner (`finding`, or legacy `tracking`), `root_cause`, `evidence`. |
 | `uncalibrated` | We have not run this dimension yet and refuse to assert anything. **Loud, never silently absent.** Reality-checks skip it; the lint still validates its shape. |
 
 ## What the ratchet enforces (fail-closed)
@@ -68,7 +68,8 @@ The guard (`uv run --python 3.12 python tools/check_suite_honesty.py`) exits non
 
 **Manifest lint** (always fatal):
 - a dimension status is invalid, or a backend is unknown;
-- a `fail` dimension is missing `tracking`, `root_cause`, or `evidence`
+- a `fail` dimension is missing its owner (`finding`, or legacy `tracking`),
+  `root_cause`, or `evidence`, or names a `finding` that is not open
   (**anti-parking-lot**: every debt names its owner, a one-line cause, and how it
   was verified — a failure can never be silently parked);
 - a test path does not exist on disk (a stale entry can never be matched);
@@ -102,7 +103,7 @@ or expired entry.
      "dimensions": {
        "native": {
          "status": "fail",
-         "tracking": "#NN  (or memory/project_xyz_baton.md)",
+         "finding": "HF-NNN  (an open findings-ledger row)",
          "root_cause": "one line: what actually breaks",
          "evidence": "calibrated-run 2026-06-05  (or verified-report <source>)"
        }
@@ -193,8 +194,8 @@ The test suite is `tests/test_check_suite_honesty.py`.
 | Channel | Owns | Tracking | Mechanism |
 |---|---|---|---|
 | per-test `verified_subset_scope=dynamic_execution_policy` + `expect_fail=molt` + `expect_fail_reason=too_dynamic_policy` | exec/eval/compile — **excluded by design** | source metadata | `molt_diff` xfails; verified-subset projection excludes |
-| inline `# MOLT_META: expect_fail=molt` | per-test known gaps with an inline `expect_fail_reason` | the inline reason | `molt_diff` xfails → resolved `pass` |
-| **this ratchet** | **silent fixable debts** | `tracking` + `root_cause` + `evidence`, machine-checked | down-only manifest gate |
+| inline `# MOLT_META: expect_fail=molt` | per-test known gaps with an inline `expect_fail_reason`; `expect_fail_reason=open_finding finding=HF-n` with a pinned exit status and stdout names the open ledger row that owns the gap | the inline reason, or the typed `finding` | `molt_diff` xfails → resolved `pass`; a pin mismatch or a pass fails |
+| **this ratchet** | **silent fixable debts** | owner (`finding` or legacy `tracking`) + `root_cause` + `evidence`, machine-checked | down-only manifest gate |
 
 The first two are *runtime suppressions* (they make a fail resolve to a green
 `pass` inside `molt_diff`). This ratchet is a *contract* over what remains — the

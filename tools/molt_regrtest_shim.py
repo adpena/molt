@@ -127,11 +127,15 @@ def build_env(cpython_dir: Path) -> dict[str, str]:
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     repo_src = str(REPO_ROOT / "src")
     cpython_lib = Path(cpython_dir / "Lib").resolve()
+    # Expose only CPython's `test` package. A root of all of Lib would put
+    # CPython's stdlib sources (`_sitebuiltins`, ...) beside Molt's own, and the
+    # compiled program then fails at startup before any test runs.
+    test_root = f"test={cpython_lib / 'test'}"
     extra_roots = env.get("MOLT_MODULE_ROOTS", "")
     if extra_roots:
-        env["MOLT_MODULE_ROOTS"] = os.pathsep.join([str(cpython_lib), extra_roots])
+        env["MOLT_MODULE_ROOTS"] = os.pathsep.join([test_root, extra_roots])
     else:
-        env["MOLT_MODULE_ROOTS"] = str(cpython_lib)
+        env["MOLT_MODULE_ROOTS"] = test_root
     existing = env.get("PYTHONPATH", "")
     entries = []
     for entry in existing.split(os.pathsep):
@@ -216,7 +220,7 @@ def build_junit_xml(
     )
 
 
-def compat_skip_reason(stdout: str, stderr: str) -> str | None:
+def compat_refusal(stdout: str, stderr: str) -> str | None:
     text = "\n".join([stdout, stderr])
     if "MOLT_COMPAT_ERROR:" not in text:
         return None
@@ -317,7 +321,6 @@ def run_molt_test(
         else time.perf_counter() - start,
         1e-6,
     )
-    skip_reason = None
     if result.timed_out:
         state = "TIMEOUT"
         reason = "timeout"
@@ -327,28 +330,24 @@ def run_molt_test(
         reason = ""
         errors = None
     else:
-        skip_reason = compat_skip_reason(result.stdout, result.stderr)
-        if skip_reason:
-            state = "SKIPPED"
-            reason = skip_reason
-            errors = None
-        else:
-            state = "FAILED"
-            reason = f"molt rc={result.returncode}"
-            errors = [
-                (
-                    test_name,
-                    f"molt rc={result.returncode}\nstdout:\n{result.stdout}\n"
-                    f"stderr:\n{result.stderr}",
-                )
-            ]
+        # A compatibility refusal is Molt failing to build CPython's test, not
+        # a CPython skip: it fails, and an expectation must name its finding.
+        refusal = compat_refusal(result.stdout, result.stderr)
+        state = "FAILED"
+        reason = refusal or f"molt rc={result.returncode}"
+        errors = [
+            (
+                test_name,
+                f"molt rc={result.returncode}\nstdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}",
+            )
+        ]
     xml_data = build_junit_xml(
         test_name,
         duration,
         state,
         result.stdout,
         result.stderr,
-        skip_reason=skip_reason,
     )
     return test_result(test_name, state, duration, xml_data, errors), reason
 

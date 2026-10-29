@@ -1,4 +1,5 @@
 # MOLT_ENV: PYTHONPATH=src:tests/differential/stdlib
+# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-530 expect_molt_returncode=1 expect_molt_stdout_sha256=a9ac0c3ac83c40e1b4c3416066d63d324ee9f8c144641dfeed72d140b6557245
 """Purpose: differential coverage for importlib spec from file."""
 
 import importlib.util

@@ -22,7 +22,9 @@ def test_build_env_enables_hermetic_module_roots(monkeypatch, tmp_path: Path) ->
     assert env["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
     assert env["PYTHONNOUSERSITE"] == "1"
     assert env["MOLT_REGRTEST_CPYTHON_DIR"] == str(cpython_dir)
-    assert env["MOLT_MODULE_ROOTS"] == str(cpython_lib.resolve())
+    # Only CPython's `test` package is a module root: all of Lib would shadow
+    # Molt's own stdlib sources and fail every compiled test at startup.
+    assert env["MOLT_MODULE_ROOTS"] == f"test={cpython_lib.resolve() / 'test'}"
 
 
 def _cpython_with_test(tmp_path: Path, name: str) -> Path:
@@ -100,3 +102,25 @@ def test_worker_runs_and_records_an_admitted_test(tmp_path: Path, capsys) -> Non
     assert result["state"] == "PASSED"
     assert row["state"] == "PASSED" and row["reason"] == ""
     assert row["duration_s"] > 0
+
+
+def test_worker_fails_a_test_that_molt_refuses_to_compile(
+    tmp_path: Path, capsys
+) -> None:
+    # A compatibility refusal is not a CPython skip; reading it as one would
+    # hide every test Molt cannot build.
+    refusal = (
+        "import sys; "
+        "print('MOLT_COMPAT_ERROR: unsupported construct', file=sys.stderr); "
+        "print('  feature: call to non-allowlisted function', file=sys.stderr); "
+        "print('  location: Lib/test/support/__init__.py:1:1', file=sys.stderr); "
+        "sys.exit(2)"
+    )
+    result, row = _worker(tmp_path, capsys, refusal, timeout=60)
+
+    assert result["state"] == "FAILED"
+    assert row["state"] == "FAILED"
+    assert row["reason"] == (
+        "MOLT_COMPAT_ERROR: call to non-allowlisted function "
+        "@ Lib/test/support/__init__.py:1:1"
+    )

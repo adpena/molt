@@ -88,6 +88,18 @@ until landed; a dirty checkout or remembered handoff cannot replace published
 state. Counts and finding states come from `tools/finding_status.py`, including
 the published/selected projections in `context`; do not maintain manual totals.
 
+Finding tests are this ledger's executable form
+([testing contract](../spec/areas/testing/0007-testing.md), "Finding tests").
+A row's identity is the generated `OpenFindingId` type of
+`tests/findings/finding_ids.py`; regenerate it (`python tools/generators.py
+write`) in every change that adds, renames or closes a row. A finding test,
+finding program or regrtest expectation names exactly one open row and fails
+strictly: a fix that makes it pass fails the run until the expectation is
+removed. A row closes when its finding tests pass and the same change removes
+their expectations. `python tools/finding_coverage.py` reports the remaining
+expected failures per finding and enforced family; an expectation is evidence
+and ownership, never a waiver.
+
 Proactively update the owning rows and relevant frontier/dependency sections when
 evidence changes scope, priority, a blocker, source integration or qualification.
 Include that reconciliation in the same landing as the material change. Record
