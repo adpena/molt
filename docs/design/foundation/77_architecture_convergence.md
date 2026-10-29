@@ -1,7 +1,7 @@
 # 77. Architecture convergence: one typed IR and one runtime boundary
 
 Status: accepted 2026-10-14; staged per workstream below. Owner: compiler and
-runtime integrators. Ledger: HF-197 to HF-213, HF-185, HF-189, HF-190, HF-195,
+runtime integrators. Ledger: HF-197 to HF-213, HF-185, HF-490, HF-190, HF-195,
 HF-198.
 
 ## Finding
@@ -272,7 +272,7 @@ producer/consumer invariant (HF-211).
 
 ### F. Build and artifact
 
-The runtime splits along feature boundaries (HF-189) so that reachability on the
+The runtime splits along feature boundaries (HF-490) so that reachability on the
 typed IR selects linked code without stubs (HF-195); proof receipts are keyed by
 input digest (HF-190, HF-211).
 
