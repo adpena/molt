@@ -1798,9 +1798,7 @@ def test_current_namespace_read_keeps_imported_callable_source(
     sources = {
         "entry": "import holder\n",
         "holder": "from actions import action\nglobals()['callback'] = action\n"
-        "def unused():\n    import unused_namespace_leaf\n"
-        + read
-        + "()\n",
+        "def unused():\n    import unused_namespace_leaf\n" + read + "()\n",
         "actions": "def action():\n    import namespace_callback_leaf\n",
         "namespace_callback_leaf": "VALUE = 1\n",
         "unused_namespace_leaf": "VALUE = 1\n",
