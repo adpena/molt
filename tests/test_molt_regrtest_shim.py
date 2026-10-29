@@ -16,6 +16,7 @@ def test_build_env_enables_hermetic_module_roots(monkeypatch, tmp_path: Path) ->
     cpython_lib.mkdir(parents=True)
 
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "ambient"))
+    monkeypatch.delenv("MOLT_EXTERNAL_STATIC_PACKAGES", raising=False)
 
     env = shim.build_env(cpython_dir)
 
@@ -25,6 +26,14 @@ def test_build_env_enables_hermetic_module_roots(monkeypatch, tmp_path: Path) ->
     # Only CPython's `test` package is a module root: all of Lib would shadow
     # Molt's own stdlib sources and fail every compiled test at startup.
     assert env["MOLT_MODULE_ROOTS"] == f"test={cpython_lib.resolve() / 'test'}"
+    # An external root admits only direct entry imports; `test` is admitted as
+    # a package so `test.support` compiles wherever a test module reaches it.
+    assert env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "test"
+
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "numpy,scipy")
+    assert shim.build_env(cpython_dir)["MOLT_EXTERNAL_STATIC_PACKAGES"] == (
+        "test numpy,scipy"
+    )
 
 
 def _cpython_with_test(tmp_path: Path, name: str) -> Path:
@@ -112,7 +121,7 @@ def test_worker_fails_a_test_that_molt_refuses_to_compile(
     refusal = (
         "import sys; "
         "print('MOLT_COMPAT_ERROR: unsupported construct', file=sys.stderr); "
-        "print('  feature: call to non-allowlisted function', file=sys.stderr); "
+        "print('  feature: Invalid module name', file=sys.stderr); "
         "print('  location: Lib/test/support/__init__.py:1:1', file=sys.stderr); "
         "sys.exit(2)"
     )
@@ -121,8 +130,7 @@ def test_worker_fails_a_test_that_molt_refuses_to_compile(
     assert result["state"] == "FAILED"
     assert row["state"] == "FAILED"
     assert row["reason"] == (
-        "MOLT_COMPAT_ERROR: call to non-allowlisted function "
-        "@ Lib/test/support/__init__.py:1:1"
+        "MOLT_COMPAT_ERROR: Invalid module name @ Lib/test/support/__init__.py:1:1"
     )
 
 

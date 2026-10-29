@@ -22,7 +22,6 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_bindings,
 )
-from molt.compiler_analysis.python_imports import resolve_relative_import
 from molt.compiler_analysis.python_syntax import require_python_syntax_target
 from molt.compiler_analysis.python_lexical_scope import python_scope_syntax_error
 from molt.compiler_analysis.python_source_keys import python_ast_digest
@@ -606,44 +605,24 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         module_name = node.module
         transaction_name = node.module or ""
         transaction_level = node.level
+        # A relative import in a function body resolves against the function's
+        # globals when it runs, as CPython's IMPORT_NAME does, so it keeps the
+        # runtime anchor. `binding_module` is the module the bound names come
+        # from: the module that every possible anchor names, or None. It is
+        # never the unanchored spelling `node.module`, which names another
+        # (top-level) module.
         runtime_relative = node.level > 0 and self.current_func_name != "molt_main"
+        binding_module = node.module
         if node.level:
+            resolved, error_kind = self._static_relative_import_target(node)
+            binding_module = resolved
             if not runtime_relative:
-                resolutions = tuple(
-                    resolve_relative_import(node.module, node.level, context)
-                    for context in self._module_import_contexts(node)
-                )
-                resolved_modules = {
-                    resolution.module
-                    for resolution in resolutions
-                    if resolution.module is not None and not resolution.requires_runtime
-                }
-                error_kinds = {resolution.error for resolution in resolutions}
-                if (
-                    any(resolution.requires_runtime for resolution in resolutions)
-                    or len(resolved_modules) != 1
-                    or any(
-                        error
-                        in {
-                            "invalid_package",
-                            "unknown_package",
-                            "invalid_spec",
-                            "unknown_spec",
-                            "missing_name",
-                            "invalid_name",
-                            "unknown_name",
-                        }
-                        for error in error_kinds
-                    )
-                ):
-                    runtime_relative = True
-                elif error_kinds == {None}:
-                    resolved = next(iter(resolved_modules))
+                if resolved is not None:
                     module_name = resolved
                     transaction_name = resolved
                     transaction_level = 0
-                elif len(error_kinds) == 1:
-                    self._emit_relative_import_error(next(iter(error_kinds)))
+                elif error_kind is not None:
+                    self._emit_relative_import_error(error_kind)
                     return None
                 else:
                     runtime_relative = True
@@ -742,8 +721,24 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
             attr_name = alias.name
             bind_name = alias.asname or attr_name
             attr_val = self._emit_module_import_from_value(
-                module_val, attr_name, module_name=module_name
+                module_val, attr_name, module_name=binding_module
             )
+            if binding_module is None:
+                # Only the executing frame's package anchor names the module,
+                # so the binding carries no import origin: a call through it
+                # is an ordinary call on the imported value.
+                self._clear_import_binding_origin(bind_name)
+                self._publish_import_binding(bind_name, attr_val)
+                if self._binding_targets_module_namespace(bind_name):
+                    self._record_imported_app_callable(
+                        bind_name,
+                        module_name="." * node.level + (node.module or ""),
+                        attr_name=attr_name,
+                        value=attr_val,
+                        relative=True,
+                    )
+                continue
+            module_name = binding_module
             imported_child_module = f"{module_name}.{attr_name}"
             imported_child_is_module = (
                 imported_child_module in self.known_modules
