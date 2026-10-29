@@ -92,7 +92,9 @@ _PASSTHROUGH_ENV_PREFIXES = (
 
 def _default_output_root() -> Path:
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return REPO_ROOT / "bench" / "results" / "friends" / timestamp
+    from tools.bench_evidence import benchmark_evidence_root
+
+    return benchmark_evidence_root(REPO_ROOT, os.environ) / "friends" / timestamp
 
 
 def _project_python() -> str:

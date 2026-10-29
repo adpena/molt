@@ -48,13 +48,13 @@ SRC_ROOT = REPO_ROOT / "src"
 
 from tools import harness_memory_guard  # noqa: E402
 from tools import perf_authority  # noqa: E402
-from molt.dx import configured_artifact_root, development_artifact_env  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 
 def _results_root() -> Path:
-    """Reports go to the tracked bench/results unless the operator names a root."""
-    base = configured_artifact_root(os.environ, relative_to=REPO_ROOT) or REPO_ROOT
-    return base / "bench" / "results"
+    from tools.bench_evidence import benchmark_evidence_root
+
+    return benchmark_evidence_root(REPO_ROOT, os.environ)
 
 
 GENERATOR_SOURCE = """\

@@ -47,7 +47,9 @@ CheckoutStateKind = Literal[
     "build-control",
     "scratch",
 ]
-EvidenceClass = Literal["lane-evidence", "integration-receipts", "diagnostics"]
+EvidenceClass = Literal[
+    "lane-evidence", "integration-receipts", "diagnostics", "benchmark-evidence"
+]
 ToolchainStateKind = Literal["toolchains"]
 ProviderCacheKind = Literal["pip-cache", "ruff-cache"]
 PackageEnvironmentKind = Literal["browser-environment", "edgebox-environment"]
@@ -242,6 +244,10 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 ("evidence", "integration"),
                 DurableEvidence(),
             )
+        case "benchmark-evidence":
+            return StorageRule(
+                "artifact", "benchmark tools", ("bench", "results"), DurableEvidence()
+            )
         case "diagnostics":
             return StorageRule(
                 "artifact", "process/maintenance guards", ("logs",), DurableEvidence()
@@ -394,6 +400,24 @@ def enclosing_checkouts(path: str | Path) -> tuple[Path, ...]:
         for candidate in (root, *root.parents)
         if git_directories(candidate) is not None
     )
+
+
+def coordination_state_root(source: Path) -> Path:
+    """The existing coordination lock namespace must outlive linked source.
+
+    Named families already have an external custody root. An unconfigured
+    linked checkout borrows its primary's custody instead of materializing
+    control files inside the checkout that retirement is removing.
+    """
+    selected = custody_root(source)
+    if selected == source:
+        try:
+            directories = git_directories(source)
+        except (OSError, ValueError, RuntimeError):
+            directories = None
+        if directories is not None and directories[0] != directories[1]:
+            selected = custody_root(directories[1].parent)
+    return selected
 
 
 def custody_root(repo_root: str | Path) -> Path:

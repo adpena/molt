@@ -246,7 +246,10 @@ def package_environment_coordinate(
         relative = storage_rule(kind).relative
         if len(root.parts) > len(relative) and root.parts[-len(relative) :] == relative:
             checkout = root.parents[len(relative) - 1]
-            directories = git_directories(checkout)
+            try:
+                directories = git_directories(checkout)
+            except (OSError, ValueError, RuntimeError):
+                continue  # Optional resource claims do not replace native diagnostics.
             if directories is not None:
                 return kind, checkout, directories[1]
     return None
@@ -256,6 +259,9 @@ def _global_storage_coordinate(root: Path) -> _ManagedStateRoot | None:
     """Finite authority placements; no owner or preimage adoption."""
     from .file_publication import resolve_owned_path
 
+    if package := package_environment_coordinate(root):
+        kind, _checkout, common = package
+        return _ManagedStateRoot(resolve_owned_path(root), common / "molt", kind)
     for kind in ("compile-cache", "uv-cache", "pip-cache", "ruff-cache", "sccache"):
         if root.name == storage_rule(kind).relative[0]:
             physical = resolve_owned_path(root)
@@ -307,25 +313,24 @@ def legacy_target_kind_of(
 def _managed_coordinate(root: Path) -> _ManagedStateRoot | None:
     """Bind existing placement with the canonical no-link custody identity."""
     root = root.expanduser().absolute()
-    if package := package_environment_coordinate(root):
-        from .file_publication import resolve_owned_path
-
-        kind, checkout, _common = package
-        return _ManagedStateRoot(resolve_owned_path(root), checkout, kind)
     if global_state := _global_storage_coordinate(root):
         return global_state
     if root.name == "agents" and root.parent.name == "logs":
-        from .custody_layout import custody_root
+        from .custody_layout import coordination_state_root
         from .file_publication import resolve_owned_path
 
         root = resolve_owned_path(root)
-        return _ManagedStateRoot(root, custody_root(root.parents[1]), "agent-evidence")
+        return _ManagedStateRoot(
+            root, coordination_state_root(root.parents[1]), "agent-evidence"
+        )
     if root.parent.name == "agents" and root.parent.parent.name == "logs":
-        from .custody_layout import custody_root
+        from .custody_layout import coordination_state_root
         from .file_publication import resolve_owned_path
 
         root = resolve_owned_path(root)
-        return _ManagedStateRoot(root, custody_root(root.parents[2]), "agent-evidence")
+        return _ManagedStateRoot(
+            root, coordination_state_root(root.parents[2]), "agent-evidence"
+        )
     names = tuple(os.path.normcase(part) for part in root.parts)
     containers = (
         *(
@@ -384,12 +389,6 @@ _STATE_LOCK_NAME = re.compile(r"[0-9a-f]{64}\.lock")
 
 def _state_metadata_root(root: Path) -> Path:
     """Mutable use metadata stays outside a published Python generation."""
-    if package := package_environment_coordinate(root):
-        from .build_state_layout import build_state_address
-
-        return (
-            package[2] / "molt" / "package-environment-use" / build_state_address(root)
-        )
     if (toolchain_root := _toolchain_owner_root(root)) is not None:
         from .build_state_layout import build_state_address
 
@@ -495,11 +494,6 @@ def _state_lock_plan(
         for path in paths:
             known = qualify(path)
             if known is not None and known.root not in locks:
-                if package_environment_coordinate(known.root) is not None:
-                    locks[known.root] = _state_metadata_root(known.root).with_suffix(
-                        ".lock"
-                    )
-                    continue
                 locks[known.root] = known.artifact.joinpath(
                     *_STATE_LOCK_DIR, build_state_address(known.root) + ".lock"
                 )
@@ -807,7 +801,11 @@ def checkout_state_command_roots(
                 break
     from .custody_layout import enclosing_checkouts
 
-    for checkout in dict.fromkeys((source_root, *enclosing_checkouts(working))):
+    try:
+        checkouts = enclosing_checkouts(working)
+    except (OSError, ValueError, RuntimeError):
+        checkouts = ()  # The unchanged native launch decides invalid cwd/Git inputs.
+    for checkout in dict.fromkeys((source_root, *checkouts)):
         for kind in get_args(PackageEnvironmentKind):
             path = checkout.joinpath(*storage_rule(kind).relative)
             owner = read_checkout_owner(path)
@@ -1818,11 +1816,11 @@ def compact_evidence(
         # External sidecar survives even a failed checkout-index publication.
         external_index = archive.with_suffix(".index.json")
         write_exact(external_index, record)
+        if not remove_source:
+            return archive
         write_exact(
             index, {key: value for key, value in record.items() if key != "files"}
         )
-        if not remove_source:
-            return archive
         for path in reversed(paths):
             relative = path.relative_to(base).as_posix()
             if relative in kept:

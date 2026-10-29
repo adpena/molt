@@ -26,6 +26,7 @@ when a capacity-selected output volume changes.
 | Scratch/temp | Existing per-checkout run scratch root | Existing last-use/shared-use protocol for regenerable scratch |
 | Provisioned executable toolchains | Canonical `MOLT_TARGET_ROOT` | Current pinned versions and live users stay; attested old versions retire by last use |
 | Guard/pytest run control | Existing artifact-root temp control namespaces | Durable diagnostics under existing guard custody |
+| Benchmark reports | Artifact root `bench/results` | Durable; source baselines remain source inputs |
 | Backend sockets | Existing short host socket selector when required by OS path limits | Existing daemon liveness; no payload-cache exception |
 | User installation | Existing selected installation root | User owned; never automatic deletion |
 
@@ -53,7 +54,9 @@ source payload. Small selected coordination/report files remain. Interruption
 can retain duplicate bytes, but every removed payload has a recovery index.
 Later compactions point to their previous external manifest, so the recovery
 chain keeps earlier archives discoverable. Historical soft retirements of
-evidence no longer expire into hard deletion.
+evidence no longer expire into hard deletion. Retired guard markers also keep
+every record; moving them out of the active namespace bounds active-reader
+cost without deleting history or scanning it on each retirement.
 Generic cleanup preserves evidence, unrecognized provider caches and selected
 user installations; an extra path cannot escape its declared build outputs.
 Explicit checkout retirement holds registry/package leases, refuses live
@@ -61,6 +64,10 @@ coordination and guarded source, verifies an archive when ignored/WIP payload
 exists, and publishes a recovery index in the surviving common Git directory.
 Raw source stays until Git removal succeeds. No test applies a migration to
 the running repository.
+Coordination lifetime locks for a linked checkout live in the surviving family
+root rather than creating state inside a checkout being removed. Package
+environments use the same checkout-state lock namespace and descriptor handoff
+as Python environments.
 
 The two volume assignments are artifact and checkout custody. The latter
 retains the existing executable-toolchain, user-installation and short host
@@ -96,12 +103,16 @@ moving a venv would leave absolute interpreter/script paths stale.
 The autouse owning-test check observes actual Python file mutations against
 typed claims, including code bypassing `storage_path`; an unknown artifact-root
 sibling fails. `ty` exhaustiveness rejects an added state identity without its
-policy. This is a Python development check, not an OS sandbox for external
+policy. Typed selectors admit deliberate per-call overrides, and a caught
+violation still fails the enclosing check. This is a Python development check,
+not an OS sandbox for external
 native tools or emitted user programs.
 
 Landing gates receive `RunContext.canonical_env`, including `UV_CACHE_DIR`,
 `MOLT_CACHE`, provider caches and scratch `TMPDIR`/`TMP`/`TEMP`. Their interpreter
 and bytecode policy still come from the existing gate/image owner.
+Actual gate preparation materializes provider roots with producer provenance;
+the dry-run projection does not create them.
 
 ## Upstream decisions reused
 
