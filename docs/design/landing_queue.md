@@ -412,13 +412,13 @@ One runner owns main. Agents enqueue and continue.
   a row one side deleted stays deleted, and a row both sides changed is a
   conflict. A family row of the dependency order is keyed by its letter:
   since every lane that opens or closes a row edits one, its name and cause
-  merge cell by cell and its key list merges as a set. The same driver merges
-  the generated `tests/findings/finding_ids.py` by identity sets, ordered by
-  `finding_status.finding_sort_key`, so the result equals the generator's
-  output for the merged ledger. On 2026-10-29 both families conflicted as
-  text and the queue rejected the graph-selection lane. Prose that both sides
-  changed falls back to `git merge-file`, as does a checkout without the
-  driver.
+  merge cell by cell and its key list merges as a set; on 2026-10-29 one such
+  edit on each side rejected the graph-selection lane. Generated projections
+  (`tests/findings/finding_ids.py`, `docs/agent/PROOF_PLAN.generated.md`) are
+  not merged here: the driver stays stdlib-only, and the runner should
+  regenerate projections after it merges a batch (open under HF-334). Prose
+  that both sides changed falls back to `git merge-file`, as does a checkout
+  without the driver.
 - **Cost.** One parse of the three 1.1 MB versions per merged ledger: 70 to
   80 ms through `uv run --no-project --offline`, measured 2026-10-21.
 
