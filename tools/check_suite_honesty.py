@@ -157,6 +157,10 @@ SKIP_RAW_STATUS = "skip"
 # A `fail` entry MUST carry these provenance fields (anti-parking-lot doctrine)
 # and exactly one owner field.
 REQUIRED_FAIL_FIELDS = ("root_cause", "evidence")
+# A regrtest `fail` entry also names the exact failure reason the run reports
+# (tools/compat/regrtest_expectations.py compares it), so a different failure
+# of an owned test is a new defect.
+REGRTEST_FAILURE_FIELD = "failure"
 # The owner of a debt: an open findings-ledger row, typed by
 # tests/findings/finding_ids.py. LEGACY_OWNER_FIELD is the free-text owner of
 # entries whose family has not migrated; the regrtest block never accepts it.
@@ -454,6 +458,14 @@ def _validate_dimensions(
                         "its owner, a one-line root_cause, and the evidence it "
                         "was verified by. A failure can never be silently parked."
                     )
+            failure = status.get(REGRTEST_FAILURE_FIELD)
+            if regrtest and not (isinstance(failure, str) and failure.strip()):
+                problems.append(
+                    f"[{path}] dimension {dim_key!r} is `fail` but names no "
+                    f"`{REGRTEST_FAILURE_FIELD}`: the exact failure reason the "
+                    "regrtest run reports, so a different failure of this test "
+                    "is a new defect."
+                )
             problems += _validate_owner(path, dim_key, status, regrtest=regrtest)
     return problems
 

@@ -778,10 +778,19 @@ python = bootstrap['_prepare_environment'](
 )
 print(python)
 """
+    # Offline installation reads uv's cache. Name the run context's canonical
+    # cache, which dx installs for every managed run, instead of whatever cache
+    # the ambient environment happens to leave for uv's default lookup.
+    from molt import dx
+
+    setup_env = dict(os.environ)
+    setup_env.setdefault(
+        "UV_CACHE_DIR", str(dx.artifact_root(root, setup_env) / ".uv-cache")
+    )
     setup = run_cli_test_process(
         [sys.executable, "-I", "-B", "-c", setup_script],
         cwd=tmp_path,
-        env=os.environ,
+        env=setup_env,
         capture_output=True,
         text=True,
         timeout=60,

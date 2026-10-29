@@ -1048,8 +1048,9 @@ isolation/warnings behavior.
 Regrtest runs set `MOLT_MODULE_ROOTS` and `MOLT_REGRTEST_CPYTHON_DIR` to pull
 CPython `Lib/test` sources into the static module graph without mutating host
 `PYTHONPATH`.
-Regrtest runs set `MOLT_CAPABILITIES=fs.read,env.read` by default; override with
-`--molt-capabilities` when needed.
+Regrtest runs set `MOLT_CAPABILITY_TIER=full` by default, the host access CPython's
+tests assume (`--molt-capability-tier` selects another tier); `--molt-capabilities`
+grants more names beyond the tier.
 
 Benchmarks that cannot survive a disconnect are not acceptable.
 

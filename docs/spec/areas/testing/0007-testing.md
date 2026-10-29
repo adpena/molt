@@ -255,7 +255,9 @@ and CPython's `expectedFailure` tests named for their issue.
   - an entry of `tools/suite_honesty/differential_expectations.json` names its
     owner as `finding`; its `regrtest` block keys CPython's own tests as
     `test.<module>[::<Class>::<method>]` per `<backend>@<version>` dimension,
-    and `tools/cpython_regrtest.py` classifies each run against it.
+    and `tools/cpython_regrtest.py` classifies each run against it. A regrtest
+    `fail` entry also names `failure`, the exact reason the run reports, so the
+    classifier can tell the owned failure from any other.
 - **Strict in both directions.** A failure that the expectation owns passes the
   run. A different failure (another exception, another exit status or stdout,
   a test with no owning entry) fails it as a new defect. A pass fails it as an

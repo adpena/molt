@@ -810,6 +810,58 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
     })
 }
 
+/// `float.__getformat__(typestr)` names the storage layout of the C `double`
+/// or `float` type; every supported CPython keeps the same contract. Rust's `f64`
+/// and `f32` are IEEE 754 binary64 and binary32 on every target, so only the
+/// target's byte order varies. Argument Clinic admits a str (subclasses too),
+/// exports it as strict UTF-8 and rejects an embedded NUL before it compares
+/// the name. The class receiver does not change the answer.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_getformat(_cls_bits: u64, typestr_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let typestr = obj_from_bits(typestr_bits);
+        let Some(typestr_ptr) = typestr
+            .as_ptr()
+            .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+        else {
+            // _PyArg_BadArgument names None as "None", else tp_name at %.50s.
+            let actual = if typestr.is_none() {
+                "None".to_string()
+            } else {
+                crate::object::ops::protocol_type_name(_py, typestr_bits, 50)
+            };
+            let message = format!("__getformat__() argument must be str, not {actual}");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
+        };
+        if !crate::object::ops_string::require_strict_utf8(_py, typestr_bits) {
+            return MoltObject::none().bits();
+        }
+        let name = unsafe {
+            std::slice::from_raw_parts(string_bytes(typestr_ptr), string_len(typestr_ptr))
+        };
+        if name.contains(&0) {
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "embedded null character");
+        }
+        if name != b"double" && name != b"float" {
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "__getformat__() argument 1 must be 'double' or 'float'",
+            );
+        }
+        let layout: &[u8] = if cfg!(target_endian = "big") {
+            b"IEEE, big-endian"
+        } else {
+            b"IEEE, little-endian"
+        };
+        let ptr = alloc_string(_py, layout);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_float_from_number(cls_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
