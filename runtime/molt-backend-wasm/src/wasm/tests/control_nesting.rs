@@ -1,20 +1,24 @@
 //! HF-546: structured control nesting stays bounded in every non-linear
-//! dispatch mode, independently of how many physical blocks a function has.
+//! dispatch mode, independently of how many blocks and far targets a
+//! function has.
 
 use super::support::*;
-use crate::wasm::state_dispatch::with_test_scope_fanout_log2;
+use crate::wasm::state_dispatch::with_test_scope_shape;
 use crate::wasm::test_execution::{run_node_test_script, wasm_test_temp_dir};
 use serde_json::json;
 use std::{fs, path::PathBuf};
 use wasmparser::Operator;
 
-/// Consumers cap or recurse on nesting depth: WABT's binary reader rejects
-/// 16,384 nested labels, and Binaryen's stack writer overflowed a 544 KiB
-/// macOS worker stack at 2,128 levels (HF-546). A function keeps at most 512
-/// block scopes (flat up to 512 blocks, a radix-128 tree beyond), inside at
-/// most 16 frame, dispatch-loop and conditional wrapper levels. The layout it
-/// replaced nested one scope per block: about 800 for the tree guests here.
-const NESTING_BOUND: usize = 512 + 16;
+/// Binaryen's `-Oz` rebuilds far-targeted block scopes as nested `if`s and
+/// its stack writer recurses once per level: 2,128 levels overflowed a
+/// 544 KiB macOS worker stack (HF-546). A flat function keeps at most 1,024
+/// overlapping far-targeted scopes, a tree at most three levels of 128; the
+/// return scope and selector trap blocks add a few more.
+const FAR_NESTING_BOUND: usize = 1024 + 16;
+/// WABT's binary reader rejects 16,384 nested labels. A flat function keeps
+/// at most 8,192 block scopes, inside at most 16 frame, dispatch-loop and
+/// conditional wrapper levels.
+const EMITTED_NESTING_BOUND: usize = 8192 + 16;
 /// The line that a statement's own cleanup pad records.
 const PAD_LINE: i64 = 1_000_000;
 
@@ -62,16 +66,97 @@ fn max_control_depth(wasm: &[u8]) -> usize {
     deepest
 }
 
-fn loop_count(wasm: &[u8]) -> usize {
-    let mut loops = 0;
+/// The most far-targeted `block` scopes open at once in any body, measured
+/// from the bytes alone. A branch is far when another `block` lies between it
+/// and its target `block` (a fallthrough `br` to the innermost block, even from
+/// inside an `if` arm, is adjacent). A far-targeted scope counts from its
+/// first far branch to its `end`: the nested `if` an optimizer can rebuild.
+fn max_far_scope_nesting(wasm: &[u8]) -> usize {
+    let mut deepest = 0;
+    for payload in Parser::new(0).parse_all(wasm) {
+        let Payload::CodeSectionEntry(body) = payload.unwrap() else {
+            continue;
+        };
+        // (label id, is block) for each open structure.
+        let mut stack: Vec<(usize, bool)> = Vec::new();
+        let mut first_far: Vec<Option<usize>> = Vec::new();
+        let mut ends: Vec<usize> = Vec::new();
+        let far_branch =
+            |stack: &[(usize, bool)], depth: u32, at: usize, first_far: &mut Vec<Option<usize>>| {
+                let target = stack.len() - 1 - depth as usize;
+                let (id, is_block) = stack[target];
+                if is_block && stack[target + 1..].iter().any(|&(_, block)| block) {
+                    first_far[id] = Some(first_far[id].map_or(at, |first| first.min(at)));
+                }
+            };
+        for (at, op) in body.get_operators_reader().unwrap().into_iter().enumerate() {
+            match op.unwrap() {
+                Operator::Block { .. } => {
+                    stack.push((first_far.len(), true));
+                    first_far.push(None);
+                    ends.push(usize::MAX);
+                }
+                Operator::Loop { .. } | Operator::If { .. } | Operator::TryTable { .. } => {
+                    stack.push((first_far.len(), false));
+                    first_far.push(None);
+                    ends.push(usize::MAX);
+                }
+                Operator::End => {
+                    if let Some((id, _)) = stack.pop() {
+                        ends[id] = at;
+                    }
+                }
+                Operator::Br { relative_depth } | Operator::BrIf { relative_depth } => {
+                    far_branch(&stack, relative_depth, at, &mut first_far);
+                }
+                Operator::BrTable { targets } => {
+                    for depth in targets
+                        .targets()
+                        .chain(std::iter::once(Ok(targets.default())))
+                    {
+                        far_branch(&stack, depth.unwrap(), at, &mut first_far);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut events: Vec<(usize, isize)> = Vec::new();
+        for (id, first) in first_far.iter().enumerate() {
+            if let Some(first) = *first {
+                events.push((first, 1));
+                events.push((ends[id], -1));
+            }
+        }
+        events.sort();
+        let mut open = 0isize;
+        for (_, change) in events {
+            open += change;
+            deepest = deepest.max(open as usize);
+        }
+    }
+    deepest
+}
+
+fn count_ops(wasm: &[u8], matches: impl Fn(&Operator<'_>) -> bool) -> usize {
+    let mut count = 0;
     for payload in Parser::new(0).parse_all(wasm) {
         if let Payload::CodeSectionEntry(body) = payload.unwrap() {
             for op in body.get_operators_reader().unwrap() {
-                loops += usize::from(matches!(op.unwrap(), Operator::Loop { .. }));
+                count += usize::from(matches(&op.unwrap()));
             }
         }
     }
-    loops
+    count
+}
+
+fn loop_count(wasm: &[u8]) -> usize {
+    count_ops(wasm, |op| matches!(op, Operator::Loop { .. }))
+}
+
+/// A forward-only flat function has no selector; the tree selects with
+/// `br_table`.
+fn uses_scope_tree(wasm: &[u8]) -> bool {
+    count_ops(wasm, |op| matches!(op, Operator::BrTable { .. })) > 0
 }
 
 /// The HF-546 shape: each statement check leaves for its own cleanup pad, and
@@ -87,7 +172,8 @@ fn statements(first_line: i64, count: i64, body: &mut Vec<OpIR>, pads: &mut Vec<
 }
 
 /// Forward-only Jumpful: no dispatch loop. Each statement ends one block and
-/// each pad holds two (`label` is a block of its own): `3 * count + 2` blocks.
+/// each pad holds two (`label` is a block of its own): `3 * count + 2` blocks,
+/// and all `count` pads are far targets open after the last statement.
 fn forward_guest(count: i64) -> Vec<u8> {
     let (mut ops, mut pads) = (vec![marked("label", 0)], Vec::new());
     statements(1, count, &mut ops, &mut pads);
@@ -114,6 +200,22 @@ fn dispatch_guest(head: i64, tail: i64) -> Vec<u8> {
     emit(wasm_test_function("molt_main", vec![], None, ops))
 }
 
+/// Many statements share one pad: few far targets, `count + 4` blocks.
+fn shared_pad_guest(count: i64) -> Vec<u8> {
+    let mut ops = vec![marked("label", 0)];
+    for line in 1..=count {
+        ops.push(marked("line", line));
+        ops.push(marked("check_exception", PAD_LINE));
+    }
+    ops.extend([
+        wasm_test_op("ret_void", None, vec![]),
+        marked("label", PAD_LINE),
+        marked("line", PAD_LINE),
+        wasm_test_op("ret_void", None, vec![]),
+    ]);
+    emit(wasm_test_function("molt_main", vec![], None, ops))
+}
+
 /// Stateful: the saved state resumes at a label after every pad.
 fn stateful_guest(count: i64, state: i64) -> Vec<u8> {
     let mut ops = vec![OpIR {
@@ -134,8 +236,9 @@ fn stateful_guest(count: i64, state: i64) -> Vec<u8> {
 
 #[test]
 fn control_nesting_stays_bounded_across_dispatch_modes() {
-    const FORWARD: i64 = 400;
-    const HEAD: i64 = 300;
+    // 1,200 pads open at once exceed the production flat limit of 1,024.
+    const FORWARD: i64 = 1_200;
+    const HEAD: i64 = 1_100;
     const TAIL: i64 = 100;
     const STATE: i64 = 7;
     let guests = || {
@@ -145,22 +248,27 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
             ("stateful", stateful_guest(FORWARD, STATE)),
         ]
     };
-    // Production shape: 128-way nodes above 512 blocks, two levels for these
-    // 1,202-block guests. A shape of four reaches six levels in the same
-    // guests, so every selector depth executes.
+    // Production shape: two levels of 128 for these 3,602-block guests. A
+    // shape of four reaches six levels in the same guests, so every selector
+    // depth executes.
     let mut cases = Vec::new();
     for (name, wasm) in guests() {
         cases.push((format!("{name}-128"), wasm));
     }
-    for (name, wasm) in with_test_scope_fanout_log2(2, guests) {
+    for (name, wasm) in with_test_scope_shape(8, 64, 2, guests) {
         cases.push((format!("{name}-4"), wasm));
     }
     for (name, wasm) in &cases {
         wasmparser::Validator::new().validate_all(wasm).unwrap();
+        let far = max_far_scope_nesting(wasm);
+        assert!(
+            far <= FAR_NESTING_BOUND,
+            "{name}: {far} far-targeted scopes overlap, above {FAR_NESTING_BOUND}"
+        );
         let depth = max_control_depth(wasm);
         assert!(
-            depth <= NESTING_BOUND,
-            "{name}: control nests {depth} deep, above {NESTING_BOUND}"
+            depth <= EMITTED_NESTING_BOUND,
+            "{name}: control nests {depth} deep, above {EMITTED_NESTING_BOUND}"
         );
         if name.starts_with("forward") {
             assert_eq!(
@@ -170,19 +278,36 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
             );
         }
     }
-    // 512 blocks stay flat; 515 blocks take the tree at its smallest size.
-    for (statements, flat) in [(170, true), (171, false)] {
-        let wasm = forward_guest(statements);
-        let depth = max_control_depth(&wasm);
-        assert!(
-            depth <= NESTING_BOUND,
-            "{statements} statements nest {depth} deep"
-        );
-        assert_eq!(
-            depth > 3 * statements as usize,
-            flat,
-            "{statements} statements nest {depth} deep"
-        );
+    // Only a measured excess leaves the flat layout: 1,024 open pads stay
+    // flat, 1,025 take the tree. With limits of 8 far scopes and 64 blocks,
+    // either limit alone moves a function.
+    for (wasm, tree, label) in [
+        (forward_guest(1_024), false, "1,024 pads"),
+        (forward_guest(1_025), true, "1,025 pads"),
+        (
+            with_test_scope_shape(8, 64, 2, || forward_guest(8)),
+            false,
+            "8 pads",
+        ),
+        (
+            with_test_scope_shape(8, 64, 2, || forward_guest(9)),
+            true,
+            "9 pads",
+        ),
+        (
+            with_test_scope_shape(8, 64, 2, || shared_pad_guest(60)),
+            false,
+            "64 blocks",
+        ),
+        (
+            with_test_scope_shape(8, 64, 2, || shared_pad_guest(61)),
+            true,
+            "65 blocks",
+        ),
+    ] {
+        assert_eq!(uses_scope_tree(&wasm), tree, "{label}");
+        let far = max_far_scope_nesting(&wasm);
+        assert!(far <= FAR_NESTING_BOUND, "{label}: {far} far scopes");
     }
 
     let node = PathBuf::from("node");
@@ -239,7 +364,7 @@ for (const test of config.cases) {
   // both fan-outs leave from the first and last block of a node and must
   // reach exactly their own pad.
   const failures = [1, 2, 3, 4, 5, 15, 16, 17, 63, 64, 65, 127, 128, 129, 255, 256, 257,
-    config.head, config.head + 1, total].filter((failure) => failure <= total);
+    1023, 1024, 1025, config.head, config.head + 1, total].filter((failure) => failure <= total);
   for (const failure of failures) {
     if (mode === 'stateful') run(failure, 64n); else run(failure);
     assert.deepEqual(lines, [...range(1, failure), config.pad + failure], `${test.name} fail@${failure}`);

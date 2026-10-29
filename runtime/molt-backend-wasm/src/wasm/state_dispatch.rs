@@ -15,4 +15,4 @@ enum DispatchMode {
 pub(super) use emit::emit_non_linear_control;
 pub(super) use plan::NonLinearControlPlan;
 #[cfg(test)]
-pub(super) use scope_tree::with_test_scope_fanout_log2;
+pub(super) use scope_tree::with_test_scope_shape;

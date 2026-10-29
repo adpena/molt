@@ -138,7 +138,7 @@ impl NonLinearControlPlan {
                 remap_table,
             }
         });
-        let scopes = ScopeTree::new(block_starts.len());
+        let block_count = block_starts.len();
         let mut plan = Self {
             block_starts,
             block_for_op,
@@ -147,19 +147,79 @@ impl NonLinearControlPlan {
             transparent_region_ends,
             dispatch_targets,
             state_resume,
-            scopes,
+            scopes: ScopeTree::flat(block_count),
             selecting_nodes: BTreeSet::new(),
         };
-        plan.selecting_nodes = plan.plan_selecting_nodes();
+        let forward_edges = plan.forward_block_edges();
+        plan.scopes = ScopeTree::new(block_count, plan.far_scope_nesting(&forward_edges));
+        plan.selecting_nodes = plan.plan_selecting_nodes(&forward_edges);
         Some(plan)
+    }
+
+    /// Every forward transfer between physical blocks, as `(source, target)`
+    /// blocks, over every executable edge of every reachable operation.
+    /// Emission draws its edges from this set; consumers that size or route
+    /// scopes may over-approximate it, never miss an edge.
+    fn forward_block_edges(&self) -> Vec<(usize, usize)> {
+        let mut edges = Vec::new();
+        for (source, outgoing) in self.flow.edges.iter().enumerate() {
+            if !self.reachable[source] {
+                continue;
+            }
+            let source_block = self.block_for_op[source];
+            for edge in outgoing {
+                let Ok(target) = self.resolve_physical_target(edge.target) else {
+                    continue;
+                };
+                let Some(&target_block) = self.block_for_op.get(target) else {
+                    continue;
+                };
+                if target_block > source_block {
+                    edges.push((source_block, target_block));
+                }
+            }
+        }
+        edges
+    }
+
+    /// The most far-targeted block scopes that the flat layout keeps open at
+    /// one position. A scope is far-targeted when a transfer reaches it from
+    /// before the adjacent block, or from the dispatch selector at the top;
+    /// its interval runs from the first such transfer to the block. This is
+    /// the depth of the nested `if`s an optimizer can rebuild from the flat
+    /// layout (CFGStackify's minimal nesting for this block order).
+    fn far_scope_nesting(&self, forward_edges: &[(usize, usize)]) -> usize {
+        let block_count = self.block_starts.len();
+        let mut opened_at = vec![usize::MAX; block_count];
+        for &target in &self.dispatch_targets {
+            opened_at[target] = 0;
+        }
+        for &(source, target) in forward_edges {
+            if target > source + 1 {
+                opened_at[target] = opened_at[target].min(source);
+            }
+        }
+        let mut delta = vec![0isize; block_count + 1];
+        for (target, &start) in opened_at.iter().enumerate() {
+            if start < target {
+                delta[start] += 1;
+                delta[target] -= 1;
+            }
+        }
+        let mut open = 0isize;
+        let mut deepest = 0isize;
+        for change in delta {
+            open += change;
+            deepest = deepest.max(open);
+        }
+        deepest as usize
     }
 
     /// Every scope node that a transfer enters at a child other than its
     /// first. Dynamic targets descend from the root selector; static edges
     /// enter below their lowest common node. Over-approximation only costs a
-    /// selector; a missing node would misroute, so every executable edge of
-    /// every reachable operation is planned.
-    fn plan_selecting_nodes(&self) -> BTreeSet<(u32, usize)> {
+    /// selector; a missing node would misroute.
+    fn plan_selecting_nodes(&self, forward_edges: &[(usize, usize)]) -> BTreeSet<(u32, usize)> {
         let scopes = self.scopes;
         let mut nodes = BTreeSet::new();
         if scopes.levels() == 1 {
@@ -168,22 +228,8 @@ impl NonLinearControlPlan {
         for &target in &self.dispatch_targets {
             nodes.extend(scopes.selecting_nodes(target, scopes.levels()));
         }
-        for (source, edges) in self.flow.edges.iter().enumerate() {
-            if !self.reachable[source] {
-                continue;
-            }
-            let source_block = self.block_for_op[source];
-            for edge in edges {
-                let Ok(target) = self.resolve_physical_target(edge.target) else {
-                    continue;
-                };
-                let Some(&target_block) = self.block_for_op.get(target) else {
-                    continue;
-                };
-                if target_block > source_block {
-                    nodes.extend(scopes.routed_entry_nodes(source_block, target_block));
-                }
-            }
+        for &(source, target) in forward_edges {
+            nodes.extend(scopes.routed_entry_nodes(source, target));
         }
         nodes
     }
