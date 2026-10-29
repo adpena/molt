@@ -39,11 +39,11 @@ from molt.cli.cargo_resource_custody import (
     CargoResourceRoot,
 )
 from molt.cli.cargo_search_path import cargo_search_path, derives_cargo_search_path
+from molt.cli.runtime_c_resources import _resolve_c_build_resources
 from molt.cli.runtime_cargo_plan import (
     RuntimeCargoPlan,
     _cargo_build_directory_base,
     _resolve_rust_flag_resources,
-    _resolve_c_build_resources,
 )
 from molt.cli.runtime_tool_selection import select_host_c_tools
 from molt.cli.runtime_wasm_build_support import runtime_reloc_publication_action

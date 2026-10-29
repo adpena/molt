@@ -74,8 +74,8 @@ for the crate-extraction and incremental-build routing plan.
   implementation, so the precompiled-per-import library model below is the
   target architecture rather than a completed current guarantee.
 - `release-fast` disables LTO and uses high codegen-unit parallelism for
-  compiler iteration. Shipping profiles use one memory-bounded ThinLTO/16-CGU,
-  debug-free authority; `dev-release` is the explicit symbol-bearing profile.
+  compiler iteration. Shipping profiles follow the measured target policies in
+  `Cargo.toml` and the [WASM optimization plan](../spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md); `dev-release` is the explicit symbol-bearing profile.
 - The runtime intrinsic resolver source is split by generated category:
   `runtime/molt-runtime/src/intrinsics/generated.rs` remains the canonical
   `INTRINSICS` manifest table, and

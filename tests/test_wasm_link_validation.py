@@ -2482,7 +2482,9 @@ def test_wasm_link_external_tool_preserves_timeout_semantics(monkeypatch) -> Non
     assert exc_info.value.stderr == "memory_guard: timeout after 1.00s\n"
 
 
-def test_wasm_link_default_artifact_paths_use_canonical_dist(monkeypatch) -> None:
+def test_wasm_link_default_artifact_paths_use_canonical_dist(
+    monkeypatch, unbound_checkout_family
+) -> None:
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
 
