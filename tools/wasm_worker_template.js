@@ -8,7 +8,7 @@ const lifetimeExports = {{RUNTIME_LIFETIME_EXPORTS}};
 const deploymentManifest = globalThis.MoltWasmLoaderBridge.requireMoltDeploymentManifest({{DEPLOYMENT_MANIFEST}});
 class ProcExit { constructor(code) { this.code = code; } }
 
-const CAPABILITIES = {{CAPABILITIES}};
+const DEBUG_STDERR = {{DEBUG_STDERR}};
 const TMP_QUOTA_MB = {{TMP_QUOTA_MB}};
 
 // Molt env and raw preview1 are separate generated protocols.
@@ -18,6 +18,11 @@ const { ENOSYS, ENOENT, EINVAL } = GUEST_ERRNO;
 
 const UTF8_DECODER = new TextDecoder('utf-8');
 const UTF8_ENCODER = new TextEncoder();
+const launchEnvironment = globalThis.MoltWasmLoaderBridge.deploymentLaunchEnvironment(deploymentManifest, {});
+launchEnvironment.MOLT_EXECUTION_TARGET = 'cloudflare';
+const WASI_ENV_BYTES = Object.entries(launchEnvironment)
+    .map(([name, value]) => UTF8_ENCODER.encode(`${name}=${value}\0`));
+const WASI_ENV_SIZE = WASI_ENV_BYTES.reduce((size, entry) => size + entry.length, 0);
 
 const stubI32 = () => -ENOSYS;
 const stubI64 = () => -BigInt(ENOSYS);
@@ -219,11 +224,24 @@ function buildWasiShim(state, stdio) {
         },
         args_get: () => 0,
         environ_sizes_get: (countPtr, bufSizePtr) => {
-            if (!writeU32(countPtr, 0)) return WASI_ERRNO.ENOSYS;
-            if (!writeU32(bufSizePtr, 0)) return WASI_ERRNO.ENOSYS;
+            if (!writeU32(countPtr, WASI_ENV_BYTES.length)) return WASI_ERRNO.ENOSYS;
+            if (!writeU32(bufSizePtr, WASI_ENV_SIZE)) return WASI_ERRNO.ENOSYS;
             return 0;
         },
-        environ_get: () => 0,
+        environ_get: (environPtr, bufPtr) => {
+            const memory = state.memory;
+            if (!memory) return WASI_ERRNO.ENOSYS;
+            const view = new DataView(memory.buffer);
+            let entryPtr = Number(environPtr);
+            let dataPtr = Number(bufPtr);
+            for (const bytes of WASI_ENV_BYTES) {
+                view.setUint32(entryPtr, dataPtr >>> 0, true);
+                new Uint8Array(memory.buffer, dataPtr, bytes.length).set(bytes);
+                entryPtr += 4;
+                dataPtr += bytes.length;
+            }
+            return 0;
+        },
         fd_write: (fd, iovsPtr, iovsLen, outWrittenPtr) => {
             const memory = state.memory;
             if (!memory) return WASI_ERRNO.ENOSYS;
@@ -415,8 +433,8 @@ export default {
             const output = stdio.getStdout();
             const stderr = stdio.getStderr();
             const headers = { 'content-type': 'text/plain; charset=utf-8' };
-            // Only expose stderr to clients when debug capability is enabled.
-            if (stderr && CAPABILITIES.includes('debug')) {
+            // Response stderr is an explicit deployment diagnostic option.
+            if (stderr && DEBUG_STDERR) {
                 headers['x-molt-stderr'] = encodeURIComponent(stderr);
             } else if (stderr) {
                 console.error('molt worker stderr:', stderr);

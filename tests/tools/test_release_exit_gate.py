@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from tests.tools.perf_scoreboard_fixtures import synthetic_workload
 
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
@@ -213,6 +215,7 @@ def _write_e1_receipt(
             json.dumps(
                 {
                     "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "launch": wasm_execution_launch(),
                     "mode": "split-runtime",
                     "modules": {
                         "app": {

@@ -114,7 +114,7 @@ consumer migrations. A source checkpoint is not a completed finding.
 | Module ownership and callback-safe IO (HF-276, V1-18) | The joined module source uses one interpreter-owned module dictionary, scoped initializer/private execution, ordered public finder transactions and role-bound compiled providers. Source and generated-consumer reconciliation, actual native/WASM public-import execution, and provenance-bound startup, import-cost and memory qualification remain required before closure. Earlier donor source/static or mixed-image results do not qualify these joined bytes. Luau import capability remains an explicit gap. Codec/IO remains with V1-18. |
 | Codec state, errors and registry (V1-18) | Current native state/error/map controls pass, but public, scalar and IO consumers still disagree about registry authority. Reconcile the existing registry/TextIO design and complete that one migration before landing this family. Retain the measured kernel/cache costs and existing semantic evidence; do not start another registry or claim whole-codec conformance from the current slice. |
 | Installed product and accepted measurements (V1-01/V1-02/V1-06/V1-07/V1-24/V1-28) | Reuse the existing installed candidate/consumer machinery for compile, edit/rebuild and standalone native/WASM execution without Cargo provisioning or host-Python fallback. The release caller currently supplies empty full-matrix performance shards/toolchain identities; the receiver reports authenticated compiler/runtime used-byte admission unavailable. Complete one genuine producer-to-receiver measurement path with omission/substitution negatives before the full campaign. Local diagnostic measurements remain useful but do not close acceptance. LLVM is in the declared production feature set; installed execution still needs qualification. |
-| Representative application measurements (V1-07) | The sealed application migration is integrated at `c2f0b1147` through the canonical corpus catalog and benchmark/scoreboard consumers; representative target execution and release measurement admission remain open. Workload v2 binds package/source/data identity, exact argv, import roots and semantic oracle; one typed guard observation owns child completion, direct-child timing, RSS and binary capture decoded losslessly. Refuse incomplete samples, retain failure output and close preparation/output owners before publication. Native sealed package/data/argv execution matches CPython. LLVM now reaches the canonical managed SDK after removal of the benchmark-only Homebrew selector, compiles, then fails the public `pathlib` → `itertools` → `typing` import at `_MOLT_KWD_MARK`; retain this actual consumer counterexample under V1-02/V1-18. The minimal package/data/argv witness passes native and LLVM. A current replay of the exact minimal source/data/argv seal builds for Node/WASM and exposes the actual failure: the workload opens its dataset without declaring `fs.read`. The corrected shared observer preserves the guest PermissionError and original-byte identity through cleanup, separately from host warnings. The denial is expected security behavior; do not weaken runtime defaults. Complete explicit compiler arguments in the existing typed application catalog and check the same sealed workload with its declared permission. The historical bundle/raw capture was reclaimed, so current evidence does not relabel that historical run. The larger WASM build also exceeds a bounded four-minute diagnostic run. Preserve those failures under V1-02/V1-07/V1-18; do not report an application timing or full target qualification. The full HTML workload still reaches unsupported dynamic `exec` in its pinned dependency; do not patch that package or widen the execution policy to make a benchmark pass. These protocol controls and local diagnostics do not close authenticated measured-metric admission or the required performance matrix. |
+| Representative application measurements (V1-07) | The sealed application migration is integrated at `c2f0b1147` through the canonical corpus catalog and benchmark/scoreboard consumers; representative target execution and release measurement admission remain open. Workload v2 binds package/source/data identity, exact argv, import roots and semantic oracle; one typed guard observation owns child completion, direct-child timing, RSS and binary capture decoded losslessly. Refuse incomplete samples, retain failure output and close preparation/output owners before publication. Native sealed package/data/argv execution matches CPython. LLVM now reaches the canonical managed SDK after removal of the benchmark-only Homebrew selector, compiles, then fails the public `pathlib` → `itertools` → `typing` import at `_MOLT_KWD_MARK`; retain this actual consumer counterexample under V1-02/V1-18. The minimal package/data/argv witness passes native and LLVM. A current replay of the exact minimal source/data/argv seal builds for Node/WASM and exposes the actual failure: the workload opens its dataset without declaring `fs.read`. The corrected shared observer preserves the guest PermissionError and original-byte identity through cleanup, separately from host warnings. The initial undeclared denial is expected security behavior; do not weaken runtime defaults. The typed catalog and build-request consumers now carry explicit compiler arguments. Deployment manifest v4 transports the existing resolved policy to Node, both browser hosts, Rust and both Cloudflare generators; actual host controls pass. The final compiled-Molt replay remains pending, so do not claim the authorized application witness or its performance yet. The historical bundle/raw capture was reclaimed, so current evidence does not relabel that historical run. The larger WASM build also exceeds a bounded four-minute diagnostic run. Preserve those failures under V1-02/V1-07/V1-18; do not report an application timing or full target qualification. The full HTML workload still reaches unsupported dynamic `exec` in its pinned dependency; do not patch that package or widen the execution policy to make a benchmark pass. These protocol controls and local diagnostics do not close authenticated measured-metric admission or the required performance matrix. |
 | Scientific witness and remaining matrix (HF-04 and E1/E3) | Reproduce NumPy/SciPy extension seals through the current source-extension producer. Preserved schema-4 native seals are historical; schema-7 admission additionally binds consumed Python providers and Meson dependency facts. Historical digests cannot supply current registry entries. Reuse compatible products for native/WASM witness execution and the remaining declared platform/version/profile consumers. |
 
 Asyncio remains a P0 product outcome: integrated park/wake code does not qualify
@@ -474,48 +474,42 @@ independent literal target layout; production selection is unchanged. The first
 integration's Clippy command is cancelled after that assertion fails and grants
 no passing Clippy evidence.
 
-At `change:I38d00a1f037901797601d82d7f9cf0baf3c95d8e`, the shared run observation
-also derives failure tails from semantic guest stderr, preserving host diagnostics
-separately. Failed original-byte captures carry immutable byte-length/SHA-256
-evidence through the existing bounded failure payload and log before scratch
-cleanup. Normalized text and unavailable captures remain unknown; parity-only
-failures cannot borrow another run's byte identity. Classification stays bounded,
-each stream decodes once, and successful samples add no stream hashing. Thirty-nine
-focused capture/publication controls pass, followed by three parent publication
-controls and 38 methodology/schema controls. An earlier accidental slow-integration
-selection hit its RSS cap and remains rejected with closed descendants. Methodology
-v17 retains the changed failure-classification and explicit application-invocation
-boundaries; old reports are not upgraded. Executable application recipes require
-immutable compiler arguments, with explicit empty lists permitted. Both dataset
-readers declare only `fs.read`; the existing selector supplies those arguments to
-every runner and the sealed workload records them. All 117 catalog, runner-argument
-and workload-identity controls pass. Actual preparation then exposes a second
-consumer gap before compilation: the shared typed benchmark build adapter rejects
-the declared capability flag. That adapter now fills the existing BuildRequest
-capabilities field, and the legacy harness seals and executes the same canonical
-per-workload arguments. The benchmark-tool cohort passes 127 controls; the final
-legacy cohort passes 25, including admission and execution argument checks. One
-stale host-placement fixture is repaired to select its own explicit artifact root
-rather than ignore durable family bindings. No runtime permission default changes.
+The shared run observer now derives failure tails from semantic guest stderr,
+preserving host diagnostics separately. Known original-byte failure captures
+retain immutable byte-length/SHA-256 evidence through bounded publication and
+cleanup; normalized or unavailable captures remain unknown. Each stream decodes
+once and successful samples add no hashing. Methodology v17 separates this
+classification and explicit application-invocation contract from older reports.
+Executable application recipes require immutable compiler arguments; both dataset
+readers declare only `fs.read`. The typed build adapter and legacy harness consume
+and seal those same arguments. Capture, recipe, admission and execution controls
+pass; runtime permission defaults are unchanged.
 
-The exact historical source-package seal and argv are reconstructed for a current
-WASM diagnostic. Its nested receipts distinguish 161.368 seconds provisioning the
-compiler from 101.754 seconds in the backend probe child interval; both children
-return 0. A birth- and lineage-checked operator interrupt makes the probe guard
-report SIGINT/130 and closes the outer CLI at 418.532 seconds before guest
-execution. The earlier process sample belongs to Cargo, so it does not diagnose
-a probe deadlock. The remaining interval and probe CPU/input/OS-admission costs
-are unresolved. This establishes neither a WASM guest regression nor accepted
-compilation latency; compiler provisioning is a separate product-state cost.
-The next compiler-ready diagnostic completes its probe in 0.209 seconds and
-builds in 445.929 seconds, including 370.000 seconds of runtime/backend
-preparation and 31.037 seconds of WASM linking. Both actual guest observations
-return the expected missing-`fs.read` PermissionError: the recipe omitted the
-permission required to open its declared data file. Their guards close and the
-337-byte semantic stderr identity survives cleanup. This is a workload-invocation
-defect, not evidence for loosening the security policy. Preserve that negative
-control and qualify the explicitly authorized invocation separately. Raw-byte
-digests do not substitute for completion, closure or an admitted probe.
+An actual replay of the exact minimal source/package/data/argv seal exposed the
+complete public WASM policy transport defect: even with the compiler receiving
+`--capabilities fs.read`, Node initialized WASI only from its ambient environment.
+Deployment manifest v4 now transports the existing resolved policy's environment
+projection. Linked and split producers, snapshot admission, Node, both browser
+hosts, Rust including manifest-bound WASI commands and precompiled loading, and
+both Cloudflare generators use that contract. Generated required names come from
+the ABI manifest; hosts validate transport without resolving policy again. Emitted
+entries overwrite ambient values as on native launches; omitted optional entries
+remain ambient, and the actual host assigns its execution target last. Raw generic
+WASI commands preserve their separate environment behavior. Retired v3 deployments
+fail before module reads. Cloudflare embeds the full manifest without rescanning
+inserted strings as template tokens, preserving Unicode and own `__proto__` keys.
+Browser embed encodes the environment once for both memory owners and accepts
+valid preview1 scalar outputs at offset zero.
+
+Actual host controls pass for policy denial/grants, ambient overlay, required-field
+refusal and generated Worker environment delivery; 47 Rust host controls pass.
+These host controls do not substitute for the final compiled-Molt witness, which
+remains pending at this source. Earlier negative and interrupted attempts remain
+private diagnostic evidence. The current-main authorized diagnostic built in
+463.064 seconds but still denied the dataset read before this transport repair;
+it establishes neither accepted compile latency nor application performance.
+The historical bundle/raw capture was reclaimed, so later evidence cannot relabel
+that historical run. Full target execution and release admission remain open.
 
 Next attribute ordinary first-compile and edit costs through the existing phase
 and guarded-command telemetry before changing backend preparation, process

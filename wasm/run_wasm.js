@@ -13,6 +13,7 @@ const {
 } = require('./target_feature_manifest.json').constants;
 const {
   requireMoltDeploymentManifest,
+  deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callIsolateImportExport,
   callReservedRuntimeCallable,
@@ -275,7 +276,7 @@ const initWasmAssets = (manifestPath) => {
   });
   runtimePath = resolved.runtimePath;
   runtimeBuffer = resolved.runtimeBuffer;
-  wasmEnv = { ...process.env };
+  wasmEnv = deploymentLaunchEnvironment(runtimeManifest, process.env);
   wasmEnv.MOLT_EXECUTION_TARGET = 'wasi';
   implicitBundlePreopen = null;
   if (!Object.prototype.hasOwnProperty.call(wasmEnv, 'MOLT_VFS_BUNDLE')) {

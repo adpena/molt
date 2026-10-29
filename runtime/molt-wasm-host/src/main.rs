@@ -322,6 +322,7 @@ enum LoadedGuestKind<'a> {
 
 struct LoadedGuestOptions<'a> {
     kind: LoadedGuestKind<'a>,
+    launch_environment: &'a [(String, String)],
     vfs_envs: &'a [(String, String)],
     guest_args: &'a [String],
     wasm_table_base: Option<u64>,
@@ -335,6 +336,7 @@ fn execute_loaded_guest(
 ) -> Result<GuestTermination> {
     let LoadedGuestOptions {
         kind,
+        launch_environment,
         vfs_envs,
         guest_args,
         wasm_table_base,
@@ -404,7 +406,12 @@ fn execute_loaded_guest(
     let mut store = Store::new(
         engine,
         HostState {
-            wasi: build_wasi_ctx(vfs_envs, guest_args)?,
+            wasi: build_wasi_ctx(
+                launch_environment,
+                vfs_envs,
+                guest_args,
+                (!matches!(kind, LoadedGuestKind::WasiCommand)).then_some("wasi"),
+            )?,
             memory: None,
             call_indirect: Arc::default(),
             isolate_bootstrap_export: None,
@@ -649,14 +656,29 @@ fn run() -> Result<GuestTermination> {
     ));
 
     let resolved = resolve_execution(execution)?;
-    let (manifest_path, main_source, runtime_source, use_linked, is_wasi_command) = match resolved {
+    let (
+        manifest_path,
+        main_source,
+        runtime_source,
+        use_linked,
+        is_wasi_command,
+        launch_environment,
+    ) = match resolved {
         ResolvedExecution::MoltApplication(ResolvedExecutionModules {
             manifest_path,
             main,
             runtime,
             linked,
-        }) => (Some(manifest_path), main, runtime, linked, false),
-        ResolvedExecution::WasiCommand { module } => (None, module, None, true, true),
+            launch_environment,
+        }) => (
+            Some(manifest_path),
+            main,
+            runtime,
+            linked,
+            false,
+            launch_environment,
+        ),
+        ResolvedExecution::WasiCommand { module } => (None, module, None, true, true, Vec::new()),
         ResolvedExecution::WasiCommandManifest(command) => {
             let engine = build_engine()?;
             let command = command.load(&engine)?;
@@ -671,6 +693,7 @@ fn run() -> Result<GuestTermination> {
                 None,
                 LoadedGuestOptions {
                     kind: LoadedGuestKind::WasiCommandManifest(&command),
+                    launch_environment: command.launch_environment(),
                     vfs_envs: &vfs_envs,
                     guest_args: &guest_args,
                     wasm_table_base: None,
@@ -726,6 +749,7 @@ fn run() -> Result<GuestTermination> {
                 LoadedGuestKind::MoltApplication { linked: use_linked }
             },
             vfs_envs: &vfs_envs,
+            launch_environment: &launch_environment,
             guest_args: &guest_args,
             wasm_table_base,
         },

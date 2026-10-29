@@ -6463,7 +6463,7 @@ globs = [
 ]
 gates = [
   "cargo build --locked --profile release-fast -p molt-wasm-host",
-  "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ --nocapture --test-threads=1",
+  "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ main_tests::deployment_environment_ main_tests::manifest_bound_command_ --nocapture --test-threads=1",
 ]
 
 # --- GPU object-runtime integration --------------------------------------

@@ -3444,6 +3444,12 @@ export const resolveMoltWasmUrls = (manifest, manifestUrl) => {
 
 export const loadMoltWasm = async (options = {}) => {
   const { manifest: runtimeManifest, manifestUrl } = await loadRuntimeManifest(options);
+  const wasiOptions = {
+    ...options,
+    env: globalThis.MoltWasmLoaderBridge.deploymentLaunchEnvironment(
+      runtimeManifest, options.env || {},
+    ),
+  };
   const { wasmUrl, runtimeUrl, linkedUrl } = resolveMoltWasmUrls(
     runtimeManifest,
     manifestUrl,
@@ -3481,7 +3487,7 @@ export const loadMoltWasm = async (options = {}) => {
   const runtimeImportAbi = options.runtimeImportAbi || runtimeManifest?.abi?.runtime_imports || null;
   const stdioStates = [];
   const buildOwnedWasiStub = (ownerState) => {
-    const stub = buildWasiStub(ownerState, logFn, options);
+    const stub = buildWasiStub(ownerState, logFn, wasiOptions);
     stdioStates.push(ownerState);
     return stub;
   };

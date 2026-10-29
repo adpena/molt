@@ -9,7 +9,6 @@ from tests.wasm_execution_manifest import (
 
 import importlib
 import ast
-import json
 import re
 from pathlib import Path
 from types import ModuleType
@@ -294,26 +293,39 @@ def test_literal_runtime_audit_relations_are_registry_owned() -> None:
         assert capabilities == registered[operation]
 
 
-def test_generated_split_worker_is_default_deny() -> None:
+def test_generated_split_worker_is_default_deny(tmp_path: Path) -> None:
     from molt.cli.wasm import _generate_split_worker_js
-    from molt.capability_manifest import CapabilityManifest
+    from tests.test_generate_worker import _observe_generated_worker_environment
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 
+    empty = attested_empty_callable_table(EMPTY_WASM_MODULE)
+    deployment = split_wasm_execution_manifest(empty, empty)
     source = _generate_split_worker_js(
-        deployment_manifest=split_wasm_execution_manifest(
-            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
-        ),
-        resolved_capability_policy=CapabilityManifest().resolve(),
+        deployment_manifest=deployment,
         shared_memory_initial_pages=1,
         shared_table_initial=1,
         shared_table_base=None,
     )
-    assert '"MOLT_CAPABILITY_TIER=none"' in source
+    observed = _observe_generated_worker_environment(
+        tmp_path, source, mode="split", deployment=deployment
+    )
+    assert observed["MOLT_CAPABILITIES"] == ""
+    assert observed["MOLT_CAPABILITY_TIER"] == "none"
+    assert observed["MOLT_EXECUTION_TARGET"] == "cloudflare"
+    assert set(observed) == {
+        "MOLT_CAPABILITIES",
+        "MOLT_CAPABILITY_TIER",
+        "MOLT_CAPABILITY_POLICY_DIGEST",
+        "MOLT_EXECUTION_TARGET",
+    }
     assert "MOLT_TRUSTED" not in source
 
 
-def test_generated_split_worker_embeds_complete_resolved_policy() -> None:
+def test_generated_split_worker_embeds_complete_resolved_policy(tmp_path: Path) -> None:
     from molt.capability_manifest import AuditConfig, CapabilityManifest, ResourceLimits
     from molt.cli.wasm import _generate_split_worker_js
+    from tests.test_generate_worker import _observe_generated_worker_environment
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
 
     policy = CapabilityManifest(
         allow=["net.connect"],
@@ -326,37 +338,29 @@ def test_generated_split_worker_embeds_complete_resolved_policy() -> None:
         ),
         audit=AuditConfig(enabled=True, sink="jsonl", output="stdout"),
     ).resolve(tier="safe")
-    expected_env = [
-        f"{name}={value}"
-        for name, value in sorted(
-            {**policy.to_env_vars(), "MOLT_EXECUTION_TARGET": "cloudflare"}.items()
-        )
-    ]
-
+    empty = attested_empty_callable_table(EMPTY_WASM_MODULE)
+    deployment = split_wasm_execution_manifest(empty, empty, policy=policy)
     source = _generate_split_worker_js(
-        deployment_manifest=split_wasm_execution_manifest(
-            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
-        ),
-        resolved_capability_policy=policy,
+        deployment_manifest=deployment,
         shared_memory_initial_pages=1,
         shared_table_initial=1,
         shared_table_base=None,
     )
-
-    assert json.dumps(expected_env, ensure_ascii=True) in source
-    assert '"MOLT_CAPABILITY_TIER=safe"' in source
-    assert '"MOLT_EXECUTION_TARGET=cloudflare"' in source
-    assert '"MOLT_CAPABILITIES=' in source
-    assert "net.connect" in source
-    assert '"MOLT_AUDIT_ENABLED=1"' in source
-    assert '"MOLT_AUDIT_SINK=jsonl"' in source
-    assert '"MOLT_AUDIT_OUTPUT=stdout"' in source
-    assert '"MOLT_RESOURCE_MAX_MEMORY=1048576"' in source
-    assert '"MOLT_RESOURCE_MAX_DURATION_MS=1250"' in source
-    assert '"MOLT_RESOURCE_MAX_ALLOCATIONS=4096"' in source
-    assert '"MOLT_RESOURCE_MAX_RECURSION_DEPTH=256"' in source
-    assert '"MOLT_RESOURCE_MAX_POW_RESULT=8192"' in source
-    assert f'"MOLT_CAPABILITY_POLICY_DIGEST={policy.digest()}"' in source
+    observed = _observe_generated_worker_environment(
+        tmp_path, source, mode="split", deployment=deployment
+    )
+    assert observed == {**policy.to_env_vars(), "MOLT_EXECUTION_TARGET": "cloudflare"}
+    assert observed["MOLT_CAPABILITY_TIER"] == "safe"
+    assert "net.connect" in observed["MOLT_CAPABILITIES"].split(",")
+    assert observed["MOLT_AUDIT_ENABLED"] == "1"
+    assert observed["MOLT_AUDIT_SINK"] == "jsonl"
+    assert observed["MOLT_AUDIT_OUTPUT"] == "stdout"
+    assert observed["MOLT_RESOURCE_MAX_MEMORY"] == "1048576"
+    assert observed["MOLT_RESOURCE_MAX_DURATION_MS"] == "1250"
+    assert observed["MOLT_RESOURCE_MAX_ALLOCATIONS"] == "4096"
+    assert observed["MOLT_RESOURCE_MAX_RECURSION_DEPTH"] == "256"
+    assert observed["MOLT_RESOURCE_MAX_POW_RESULT"] == "8192"
+    assert observed["MOLT_CAPABILITY_POLICY_DIGEST"] == policy.digest()
 
 
 def test_schema_rejects_forward_tier_inheritance_and_ambient_explicit_tier(

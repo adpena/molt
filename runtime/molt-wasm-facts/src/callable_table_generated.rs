@@ -7,5 +7,10 @@ pub(crate) const CALLABLE_TABLE_SECTION_NAME: &str = "molt.callable_table";
 pub(crate) const CALLABLE_TABLE_SECTION_VERSION: u32 = 1;
 pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = "molt.callable_table.layout";
 pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = 1;
-pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = 3;
+pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = 4;
+pub const WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: &[&str] = &[
+    "MOLT_CAPABILITIES",
+    "MOLT_CAPABILITY_TIER",
+    "MOLT_CAPABILITY_POLICY_DIGEST",
+];
 pub(crate) const CALLABLE_TABLE_VALUE_TYPE_FORMAT: u32 = 1;
