@@ -6,8 +6,10 @@ use object::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 struct TempFile(PathBuf);
 impl Drop for TempFile {
@@ -16,15 +18,26 @@ impl Drop for TempFile {
     }
 }
 fn temporary(bytes: &[u8]) -> TempFile {
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "molt-native-facts-{}-{nonce}.o",
-        std::process::id()
+        "molt-native-facts-{}-{nonce}-{}.o",
+        std::process::id(),
+        NEXT_FILE.fetch_add(1, Ordering::Relaxed),
     ));
-    fs::write(&path, bytes).unwrap();
+    // Clock precision does not reserve a filename for parallel test owners.
+    // The counter separates this process's files; exclusive creation also
+    // refuses any pre-existing path rather than replacing another payload.
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap()
+        .write_all(bytes)
+        .unwrap();
     TempFile(path)
 }
 fn command(path: &TempFile) -> Command {

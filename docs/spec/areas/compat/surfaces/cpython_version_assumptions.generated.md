@@ -8,7 +8,7 @@ The inventory includes older and future Python 3 minor spellings, full eight-dig
 
 - `authority-routed` files: 69
 - `operational-tooling` files: 62
-- `scattered-assumption` files: 352
+- `scattered-assumption` files: 351
 
 ## Files
 

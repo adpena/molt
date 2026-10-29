@@ -23,6 +23,7 @@ fn loop_continue_in_if_compiles() {
     const_step.out = Some("v2".to_string());
     ops.push(const_step);
 
+    ops.push(op(molt_ir::OpKind::LoopStart));
     let mut loop_index_start = op(molt_ir::OpKind::LoopIndexStart);
     loop_index_start.args = Some(vec!["v0".to_string()]);
     loop_index_start.out = Some("v3".to_string());
@@ -53,7 +54,7 @@ fn loop_continue_in_if_compiles() {
 
     let mut loop_index_next = op(molt_ir::OpKind::LoopIndexNext);
     loop_index_next.args = Some(vec!["v6".to_string()]);
-    loop_index_next.out = Some("v6".to_string());
+    loop_index_next.out = Some("v3".to_string());
     ops.push(loop_index_next);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));
@@ -66,7 +67,7 @@ fn loop_continue_in_if_compiles() {
 
     let mut loop_index_next_fallthrough = op(molt_ir::OpKind::LoopIndexNext);
     loop_index_next_fallthrough.args = Some(vec!["v7".to_string()]);
-    loop_index_next_fallthrough.out = Some("v7".to_string());
+    loop_index_next_fallthrough.out = Some("v3".to_string());
     ops.push(loop_index_next_fallthrough);
 
     ops.push(op(molt_ir::OpKind::LoopContinue));
