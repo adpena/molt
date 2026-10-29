@@ -307,7 +307,7 @@ wasm-tools validate "$RUNTIME"
 # Confirm the canonical profile contract before investigating compiler/toolchain
 # drift. `wasm-release` is the only shipping WASM codegen authority.
 uv run --python 3.12 pytest -q \
-  tests/cli/test_backend_manifest_contract.py::test_shipping_profiles_share_one_memory_bounded_codegen_policy \
+  tests/cli/test_backend_manifest_contract.py::test_shipping_profiles_use_measured_target_codegen_policy \
   tests/cli/test_backend_manifest_contract.py::test_runtime_wasm_shipping_has_no_fallback_compiler_authority \
   tests/cli/test_cli_wasm_artifact_validation.py::test_ensure_runtime_wasm_fails_closed_on_invalid_cargo_artifact \
   tests/cli/test_runtime_wasm_single_compile.py::test_app_path_freestanding_also_requires_atomic_pair
