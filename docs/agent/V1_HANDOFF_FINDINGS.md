@@ -489,7 +489,14 @@ boundaries; old reports are not upgraded. Executable application recipes require
 immutable compiler arguments, with explicit empty lists permitted. Both dataset
 readers declare only `fs.read`; the existing selector supplies those arguments to
 every runner and the sealed workload records them. All 117 catalog, runner-argument
-and workload-identity controls pass. No runtime permission default changes.
+and workload-identity controls pass. Actual preparation then exposes a second
+consumer gap before compilation: the shared typed benchmark build adapter rejects
+the declared capability flag. That adapter now fills the existing BuildRequest
+capabilities field, and the legacy harness seals and executes the same canonical
+per-workload arguments. The benchmark-tool cohort passes 127 controls; the final
+legacy cohort passes 25, including admission and execution argument checks. One
+stale host-placement fixture is repaired to select its own explicit artifact root
+rather than ignore durable family bindings. No runtime permission default changes.
 
 The exact historical source-package seal and argv are reconstructed for a current
 WASM diagnostic. Its nested receipts distinguish 161.368 seconds provisioning the

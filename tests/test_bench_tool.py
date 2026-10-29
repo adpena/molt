@@ -1368,7 +1368,14 @@ def test_prepare_molt_binary_uses_batch_build_server(
 
     binary = bench_tool.prepare_molt_binary(
         str(script),
-        ["--type-hints", "trust", "--stdlib-profile", "full"],
+        [
+            "--type-hints",
+            "trust",
+            "--stdlib-profile",
+            "full",
+            "--capabilities",
+            "fs.read",
+        ],
         env={},
         build_profile="release",
         batch_server=_FakeBatchServer(),
@@ -1385,6 +1392,7 @@ def test_prepare_molt_binary_uses_batch_build_server(
         assert params["profile"] == "release"
         assert params["type_hint_policy"] == "trust"
         assert params["stdlib_profile"] == "full"
+        assert params["capabilities"] == "fs.read"
         assert params["trusted"] is True
         assert params["json_output"] is True
         assert params["cache"] is True
@@ -2252,6 +2260,37 @@ def test_batch_benchmark_build_preserves_explicit_oracle_minor(tmp_path):
         env={},
     )
     assert params["python_version"] == "3.14"
+
+
+@pytest.mark.parametrize("target", ["native", "wasm"])
+@pytest.mark.parametrize(
+    "args", [["--capabilities", "fs.read"], ["--capabilities=fs.read"]]
+)
+def test_benchmark_build_request_preserves_declared_capabilities(
+    tmp_path, target, args
+):
+    params = bench_tool._molt_build_params(
+        script="probe.py",
+        out_dir=tmp_path,
+        build_profile="release",
+        extra_args=args,
+        env={},
+        build_target=target,
+    )
+    assert params["capabilities"] == "fs.read"
+    assert params["target"] == target
+    assert params["trusted"] is (target == "native")
+
+
+def test_benchmark_build_request_rejects_missing_capabilities_value(tmp_path):
+    with pytest.raises(ValueError, match="--capabilities requires a value"):
+        bench_tool._molt_build_params(
+            script="probe.py",
+            out_dir=tmp_path,
+            build_profile="release",
+            extra_args=["--capabilities"],
+            env={},
+        )
 
 
 def test_failed_baseline_diagnostics_precede_missing_clock(monkeypatch, capsys):
