@@ -1061,9 +1061,9 @@ class WatchCoordinates:
     Watch roots are canonical directories, and every watcher reports events
     beneath them: inotify and ReadDirectoryChangesW under the registered root,
     FSEvents under real paths. A lexical spelling through a symlink or
-    junction, such as uv's minor-version installation link
-    (``cpython-3.12-<platform>`` -> ``cpython-3.12.15-<platform>``), lies
-    beneath no root. It selects its input through entries named inside their
+    junction, such as uv's minor-version installation link (the
+    ``cpython-<major>.<minor>-<platform>`` entry that points at its patch
+    release directory), lies beneath no root. It selects its input through entries named inside their
     canonical parents: every alias on the path (a retarget changes the
     selection), the path's own entry, and the entry's resolved target (whose
     bytes are the input). Watch selection and the armed-coverage check use
