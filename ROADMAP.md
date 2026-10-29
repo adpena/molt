@@ -26,7 +26,8 @@ executable tests and generated evidence win when prose drifts.
 
 ## First Release Milestone
 
-Version 1.0 is Molt's first public release. It must be useful for real work,
+Molt's first public release is numbered v0.0.1 and must meet the v1.0 quality
+standard: the version number does not lower the bar. It must be useful for real work,
 and measured correctness, conformance, performance and security evidence must
 back every claim it makes. Release acceptance follows the
 [packaging authority](packaging/PACKAGING.md) and the
