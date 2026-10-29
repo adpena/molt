@@ -23,7 +23,7 @@ a bridge: retire it when the type enforces the same fact.
 
 | Identity | Source | State |
 | --- | --- | --- |
-| Op kinds | `runtime/molt-ir/src/tir/op_kinds.toml` | Rust `OpKind` landed (HF-197 step 4a); Python `Literal` in progress (step 4b) |
+| Op kinds | `runtime/molt-ir/src/tir/op_kinds.toml` | Rust `OpKind` (HF-197 step 4a) and Python `FrontendOpKind`, `WireOpKind` (step 4b) landed |
 | Runtime functions | runtime-call contract | planned (HF-485, HF-384) |
 | Exceptions | `runtime/exception_kinds.toml` | `BuiltinExc`, `ModuleExc`, `ExcKind` landed (HF-207); remaining edges HF-560 |
 | Op facts and attribute keys | op-kind registry | open (HF-202) |

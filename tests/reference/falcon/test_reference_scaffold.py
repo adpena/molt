@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from tests.process_guard_common import run_guarded_test_process
@@ -13,7 +14,7 @@ MANIFEST_FILE = REPO_ROOT / "bench/results/reference_manifest.json"
 
 def _run_tool(*args: str):
     return run_guarded_test_process(
-        ["python3", *args],
+        [sys.executable, *args],
         prefix="MOLT_BENCH_TEST",
         cwd=REPO_ROOT,
         text=True,

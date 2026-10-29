@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+)
+
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntFlag
@@ -10,8 +15,16 @@ from typing import Any, Protocol, Sequence
 from molt.frontend.lowering.try_regions import try_region_id
 
 
+_COMPUTE_SUCCESSORS_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"LOOP_BREAK_IF_FALSE", "LOOP_BREAK_IF_TRUE"}
+)
+_COMPUTE_SUCCESSORS_KINDS_2: frozenset[FrontendOpKind] = frozenset({"ret_void", "ret"})
+
+
 class OpLike(Protocol):
-    kind: str
+    @property
+    def kind(self) -> FrontendOpKind: ...
+
     args: list[Any]
 
 
@@ -192,7 +205,7 @@ class CFGGraph:
         )
 
 
-def _collect_control_maps(kinds: Sequence[str]) -> ControlMaps:
+def _collect_control_maps(kinds: Sequence[FrontendOpKind]) -> ControlMaps:
     if_stack: list[int] = []
     if_to_else: dict[int, int] = {}
     if_to_end: dict[int, int] = {}
@@ -206,22 +219,22 @@ def _collect_control_maps(kinds: Sequence[str]) -> ControlMaps:
     for idx, kind in enumerate(kinds):
         if loop_stack:
             loop_owner[idx] = loop_stack[-1]
-        if kind == "IF":
+        if kind == FrontendKinds.IF:
             if_stack.append(idx)
-        elif kind == "ELSE":
+        elif kind == FrontendKinds.ELSE:
             if if_stack:
                 if_to_else[if_stack[-1]] = idx
-        elif kind == "END_IF":
+        elif kind == FrontendKinds.END_IF:
             if if_stack:
                 if_idx = if_stack.pop()
                 if_to_end[if_idx] = idx
                 else_idx = if_to_else.get(if_idx)
                 if else_idx is not None:
                     else_to_end[else_idx] = idx
-        elif kind == "LOOP_START":
+        elif kind == FrontendKinds.LOOP_START:
             loop_stack.append(idx)
             loop_owner[idx] = idx
-        elif kind == "LOOP_END":
+        elif kind == FrontendKinds.LOOP_END:
             if loop_stack:
                 start_idx = loop_stack.pop()
                 loop_start_to_end[start_idx] = idx
@@ -238,12 +251,12 @@ def _collect_control_maps(kinds: Sequence[str]) -> ControlMaps:
 
 
 def _build_basic_blocks(
-    kinds: Sequence[str], operands: Mapping[int, str | None]
+    kinds: Sequence[FrontendOpKind], operands: Mapping[int, str | None]
 ) -> tuple[list[BasicBlock], tuple[int, ...], dict[str, int], dict[int, str]]:
     if not kinds:
         return [], (), {}, {}
 
-    leader_kinds = {
+    leader_kinds: set[FrontendOpKind] = {
         "IF",
         "ELSE",
         "END_IF",
@@ -303,7 +316,7 @@ def _build_basic_blocks(
 
 def _compute_successors(
     *,
-    kinds: Sequence[str],
+    kinds: Sequence[FrontendOpKind],
     operands: Mapping[int, str | None],
     blocks: list[BasicBlock],
     op_blocks: tuple[int, ...],
@@ -321,12 +334,12 @@ def _compute_successors(
     state_yield_resume_blocks: list[int] = []
     for block in blocks:
         for idx in range(block.start, block.end):
-            if kinds[idx] == "STATE_YIELD" and idx + 1 < len(kinds):
+            if kinds[idx] == FrontendKinds.STATE_YIELD and idx + 1 < len(kinds):
                 resume_block = op_blocks[idx + 1]
                 state_yield_resume_blocks.append(resume_block)
     # Also collect STATE_LABEL blocks as resume targets (for async state machines).
     for block in blocks:
-        if kinds[block.start] == "STATE_LABEL":
+        if kinds[block.start] == FrontendKinds.STATE_LABEL:
             state_yield_resume_blocks.append(block.id)
 
     def add_succ(block_id: int, succ: int | None, kind: int = _NORMAL_EDGE) -> None:
@@ -352,10 +365,10 @@ def _compute_successors(
         kind = kinds[op_idx]
         next_block = block_id + 1 if block_id + 1 < len(blocks) else None
 
-        if kind == "JUMP":
+        if kind == FrontendKinds.JUMP:
             add_succ(block_id, label_to_block.get(operands[op_idx]))
             continue
-        if kind == "IF":
+        if kind == FrontendKinds.IF:
             add_succ(block_id, next_block)
             false_idx = control.if_to_else.get(op_idx)
             if false_idx is not None:
@@ -370,7 +383,7 @@ def _compute_successors(
                 false_idx = control.if_to_end.get(op_idx)
                 add_succ(block_id, block_for_index(false_idx))
             continue
-        if kind == "ELSE":
+        if kind == FrontendKinds.ELSE:
             end_if_idx = control.else_to_end.get(op_idx)
             # Target the END_IF block itself (not end_if_idx + 1) — END_IF
             # is a block leader so it starts its own block which falls through
@@ -381,7 +394,7 @@ def _compute_successors(
             # incorrectly eliminate ops inside else branches.
             add_succ(block_id, block_for_index(end_if_idx))
             continue
-        if kind == "LOOP_BREAK":
+        if kind == FrontendKinds.LOOP_BREAK:
             owner = control.loop_owner.get(op_idx)
             end_idx = (
                 control.loop_start_to_end.get(owner) if owner is not None else None
@@ -389,10 +402,7 @@ def _compute_successors(
             exit_idx = None if end_idx is None else end_idx + 1
             add_succ(block_id, block_for_index(exit_idx))
             continue
-        if kind in {
-            "LOOP_BREAK_IF_TRUE",
-            "LOOP_BREAK_IF_FALSE",
-        }:
+        if kind in _COMPUTE_SUCCESSORS_KINDS_1:
             add_succ(block_id, next_block)
             owner = control.loop_owner.get(op_idx)
             end_idx = (
@@ -401,28 +411,28 @@ def _compute_successors(
             exit_idx = None if end_idx is None else end_idx + 1
             add_succ(block_id, block_for_index(exit_idx))
             continue
-        if kind == "LOOP_CONTINUE":
+        if kind == FrontendKinds.LOOP_CONTINUE:
             owner = control.loop_owner.get(op_idx)
             add_succ(block_id, block_for_index(owner))
             continue
-        if kind == "LOOP_END":
+        if kind == FrontendKinds.LOOP_END:
             add_succ(block_id, next_block)
             add_succ(block_id, block_for_index(control.loop_end_to_start.get(op_idx)))
             continue
-        if kind == "TRY_START":
+        if kind == FrontendKinds.TRY_START:
             add_succ(block_id, next_block)
             # Region markers describe path-local custody, not textual brackets.
             # Keep handler reachability conservative until shared TIR exception
             # analysis can prove the actual exceptional edges.
             add_succ(block_id, label_to_block.get(operands[op_idx]), _EXCEPTION_EDGE)
             continue
-        if kind == "CHECK_EXCEPTION":
+        if kind == FrontendKinds.CHECK_EXCEPTION:
             add_succ(block_id, next_block)
             add_succ(block_id, label_to_block.get(operands[op_idx]), _EXCEPTION_EDGE)
             continue
-        if kind in {"ret", "ret_void"}:
+        if kind in _COMPUTE_SUCCESSORS_KINDS_2:
             continue
-        if kind == "RAISE":
+        if kind == FrontendKinds.RAISE:
             # molt's exception model lowers `raise` to "set the pending
             # exception flag and CONTINUE" (the native/WASM/LLVM `raise` op calls
             # `molt_raise` and falls through — it does NOT branch). The frontend
@@ -437,13 +447,13 @@ def _compute_successors(
             # the real lowering and keeps the explicit routing live.
             add_succ(block_id, next_block)
             continue
-        if kind == "STATE_YIELD":
+        if kind == FrontendKinds.STATE_YIELD:
             # STATE_YIELD suspends the generator (returns to caller).
             # The block after it is only reachable via STATE_SWITCH on
             # the next call to next()/send()/throw(), NOT via fall-through.
             # Treat it like a return (no successors).
             continue
-        if kind == "STATE_SWITCH":
+        if kind == FrontendKinds.STATE_SWITCH:
             # STATE_SWITCH dispatches to any resume block in the function:
             # blocks after STATE_YIELD ops and STATE_LABEL blocks.
             add_succ(block_id, next_block, _RESUME_EDGE)
@@ -488,10 +498,17 @@ def _reachable_blocks(successors: dict[int, list[int]]) -> set[int]:
 # The CFG reads every op's kind and the first operand of these kinds only. The
 # projection carries exactly that, so it is both the builder's sole input and
 # the key under which equal op lists share one graph.
-_LABEL_KINDS = frozenset({"LABEL", "STATE_LABEL"})
-_OPERAND_KINDS = _LABEL_KINDS | {"JUMP", "CHECK_EXCEPTION", "TRY_START"}
+_LABEL_KINDS: frozenset[FrontendOpKind] = frozenset({"LABEL", "STATE_LABEL"})
+_CONTROL_TRANSFER_OPERAND_KINDS: frozenset[FrontendOpKind] = frozenset(
+    {"JUMP", "CHECK_EXCEPTION", "TRY_START"}
+)
+_OPERAND_KINDS: frozenset[FrontendOpKind] = (
+    _LABEL_KINDS | _CONTROL_TRANSFER_OPERAND_KINDS
+)
 
-_ControlProjection = tuple[tuple[str, ...], tuple[tuple[int, str | None], ...]]
+_ControlProjection = tuple[
+    tuple[FrontendOpKind, ...], tuple[tuple[int, str | None], ...]
+]
 
 
 def _control_operand(op: OpLike) -> str | None:
@@ -499,7 +516,7 @@ def _control_operand(op: OpLike) -> str | None:
     if op.kind in _LABEL_KINDS:
         # An operand-less label names no block.
         return str(op.args[0]) if op.args else None
-    if op.kind == "TRY_START":
+    if op.kind == FrontendKinds.TRY_START:
         handler = try_region_id(op)
         return str(handler) if handler is not None else ""
     return str(op.args[0]) if op.args else ""

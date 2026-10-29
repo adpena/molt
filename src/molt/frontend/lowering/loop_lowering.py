@@ -17,6 +17,8 @@ state on the same iterator or index, so nothing is evaluated twice.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+
 import ast
 from typing import Callable
 
@@ -41,7 +43,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
     # iterator and the current accumulator and loop target, and returns
     # ``(result, last, count, more)`` from an exact runtime kernel that consumes
     # at most one bounded chunk of the iterator.
-    _VECTOR_REDUCTION_OPS = {
+    _VECTOR_REDUCTION_OPS: dict[str, FrontendOpKind] = {
         "sum": "VEC_SUM",
         "prod": "VEC_PROD",
         "min": "VEC_MIN",

@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,19 +22,9 @@ def _base_env() -> dict[str, str]:
     return env
 
 
-def _python_executable() -> str:
-    exe = sys.executable
-    if exe and os.path.exists(exe) and os.access(exe, os.X_OK):
-        return exe
-    fallback = shutil.which("python3") or shutil.which("python")
-    if fallback:
-        return fallback
-    return exe
-
-
 def _run_cli(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return run_cli_test_process(
-        [_python_executable(), "-m", "molt.cli", *args],
+        [sys.executable, "-m", "molt.cli", *args],
         cwd=cwd,
         env=_base_env(),
         capture_output=True,
@@ -223,19 +212,21 @@ def test_scan_backend_kinds_parses_alternating_match_arms() -> None:
     module = _load_verify_module()
     kinds = module._scan_backend_kinds(
         """
-        "call_bind" | "call_indirect" => {}
-        "guard_type" | "guard_tag" => {}
+        OpKind::CallBind | OpKind::CallIndirect => {}
+        molt_ir::OpKind::GuardType | molt_ir::OpKind::GuardTag => {}
+        "call_func" => {}
+        let kind = OpKind::InvokeFfi;
         """
     )
-    assert {"call_bind", "call_indirect", "guard_type", "guard_tag"} <= kinds
+    assert kinds == {"call_bind", "call_indirect", "guard_type", "guard_tag"}
 
 
 @pytest.mark.parametrize(
     "removed",
     [
-        '"dec_ref"',
-        '"release"',
-        '"del_boundary"',
+        "molt_ir::OpKind::DecRef",
+        "molt_ir::OpKind::Release",
+        "molt_ir::OpKind::DelBoundary",
         "emit_dec_ref_like",
         "WasmRuntimeImport::DecRefObj",
         "emit_none",
@@ -248,12 +239,16 @@ def test_semantic_assertions_detect_each_release_contract_regression(
     source = (
         ROOT / "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/refcount_ops.rs"
     ).read_text(encoding="utf-8")
+    expected = "[wasm] dec_ref/release/del_boundary call dec_ref_obj import and write None on out"
+    assert expected not in module.check_semantic_assertions(
+        native_backend_text="", wasm_backend_text=source
+    )
     assert removed in source
     failures = module.check_semantic_assertions(
         native_backend_text="",
         wasm_backend_text=source.replace(removed, "broken_contract"),
     )
-    assert any("dec_ref/release/del_boundary" in failure for failure in failures)
+    assert expected in failures
 
 
 def test_required_diff_probes_exist_in_repo() -> None:

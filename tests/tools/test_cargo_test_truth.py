@@ -3206,3 +3206,41 @@ def test_known_failure_cannot_mask_incomplete_binary_cohort(
     rows, problems = runner.receipt_test_rows([receipt], expected, {})
     assert rows == []
     assert len(problems) == 1 and "not semantic or known-red evidence" in problems[0]
+
+
+def test_feature_gated_test_targets_must_run_with_their_features() -> None:
+    import copy
+    import tomllib
+
+    plan = tomllib.loads(MODULE.PROOF_PLAN.read_text(encoding="utf-8"))
+    unrun = MODULE.unrun_gated_targets(plan)
+    # HF-565: the default-feature workspace run skips these targets silently.
+    assert unrun["molt-backend::wasm_fastcall_lowering"] == {"wasm-backend"}
+    # molt-backend enables native-backend by default, so its run covers them.
+    assert "molt-backend::daemon_server" not in unrun
+    # Every unrun target sits in the shrinking baseline under its finding.
+    assert MODULE.gated_target_violations(plan) == []
+
+    def with_gate(gate: str) -> dict:
+        edited = copy.deepcopy(plan)
+        edited["rule"].append({"name": "probe", "globs": [], "gates": [gate]})
+        return edited
+
+    target = "molt-backend::wasm_fastcall_lowering"
+    joined = "cargo test --locked -p molt-backend --features {} --test wasm_fastcall_lowering"
+    assert target not in MODULE.unrun_gated_targets(
+        with_gate(joined.format("molt-backend/wasm-backend"))
+    )
+    # A lib-only run, a run without the feature and a build without running
+    # do not join the target.
+    for gate in (
+        "cargo test --locked -p molt-backend --features wasm-backend --lib",
+        joined.format("molt-backend/llvm"),
+        joined.format("wasm-backend") + " --no-run",
+    ):
+        assert target in MODULE.unrun_gated_targets(with_gate(gate)), gate
+    # The baseline only shrinks: a joined target must leave it.
+    assert MODULE.gated_target_violations(with_gate(joined.format("wasm-backend"))) == [
+        f"{target}: now run with its features (or removed); delete it from "
+        "tools/cargo_gated_test_targets_baseline.json"
+    ]

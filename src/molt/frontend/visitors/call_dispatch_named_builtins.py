@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+
 import ast
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
@@ -28,15 +30,21 @@ from molt.frontend.visitors.call_dispatch_builtin_scalar import (
 from molt.frontend.visitors.call_dispatch_common import CALL_NOT_HANDLED
 from molt.frontend._mixin_base import GeneratorMixinBase
 
-_EMPTY_CONTAINER_OPS = {
+_EMPTY_CONTAINER_OPS: dict[str, FrontendOpKind] = {
     "list": "LIST_NEW",
     "tuple": "TUPLE_NEW",
     "dict": "DICT_NEW",
     "set": "SET_NEW",
     "frozenset": "FROZENSET_NEW",
 }
-_BYTES_FROM_STR_OPS = {"bytes": "BYTES_FROM_STR", "bytearray": "BYTEARRAY_FROM_STR"}
-_BYTES_FROM_OBJ_OPS = {"bytes": "BYTES_FROM_OBJ", "bytearray": "BYTEARRAY_FROM_OBJ"}
+_BYTES_FROM_STR_OPS: dict[str, FrontendOpKind] = {
+    "bytes": "BYTES_FROM_STR",
+    "bytearray": "BYTEARRAY_FROM_STR",
+}
+_BYTES_FROM_OBJ_OPS: dict[str, FrontendOpKind] = {
+    "bytes": "BYTES_FROM_OBJ",
+    "bytearray": "BYTEARRAY_FROM_OBJ",
+}
 
 
 class CallNamedBuiltinDispatchMixin(

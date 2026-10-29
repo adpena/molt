@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast, TYPE_CHECKING
 
 from molt.frontend import SimpleTIRGenerator
+from molt.frontend._types import SimpleIROp
+from molt.frontend.lowering.op_kinds_generated import WireOpKind
 from molt.frontend.lowering.function_metadata import (
     FunctionMetadataEmitter,
     MaterializedFunctionMetadata,
@@ -76,7 +78,7 @@ class _PreparedBackendIR:
 def _build_version_info_ops(
     *,
     target_python: TargetPythonVersion,
-) -> list[dict[str, Any]]:
+) -> list[SimpleIROp]:
     major = target_python.major
     minor = target_python.minor
     micro = target_python.micro
@@ -104,8 +106,8 @@ def _build_version_info_ops(
 def _build_entry_main_ops(
     *,
     entry_init: str,
-    version_ops: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    version_ops: Sequence[SimpleIROp],
+) -> list[SimpleIROp]:
     # NOTE: molt_runtime_init is called here for WASM targets where
     # there is no C main stub.  For native targets the C stub calls
     # molt_runtime_init before molt_main, so this is a harmless no-op
@@ -140,7 +142,7 @@ def _build_entry_main_ops(
     ]
 
 
-def _entry_call_index(entry_ops: Sequence[dict[str, Any]], entry_init: str) -> int:
+def _entry_call_index(entry_ops: Sequence[Mapping[str, Any]], entry_init: str) -> int:
     return next(
         idx
         for idx, op in enumerate(entry_ops)
@@ -148,7 +150,7 @@ def _entry_call_index(entry_ops: Sequence[dict[str, Any]], entry_init: str) -> i
     )
 
 
-def _next_tir_var_index(ops: Sequence[dict[str, Any]]) -> int:
+def _next_tir_var_index(ops: Sequence[Mapping[str, Any]]) -> int:
     used_vars: set[int] = set()
     for op in ops:
         out = op.get("out")
@@ -161,7 +163,7 @@ def _next_tir_var_index(ops: Sequence[dict[str, Any]]) -> int:
 
 
 def _append_entry_sys_init_op(
-    entry_ops: list[dict[str, Any]],
+    entry_ops: list[SimpleIROp],
     *,
     entry_init: str,
     next_var: int,
@@ -214,7 +216,7 @@ def _append_entry_sys_init_op(
 
 
 def _replace_entry_call_with_spawn_override(
-    entry_ops: list[dict[str, Any]],
+    entry_ops: list[SimpleIROp],
     *,
     entry_init: str,
     next_var: int,
@@ -255,11 +257,11 @@ def _replace_entry_call_with_spawn_override(
 
 
 def _guard_initialization_ops(
-    ops: Sequence[dict[str, Any]],
+    ops: Sequence[SimpleIROp],
     *,
     failure_label: int | None = None,
     failure_returns_object: bool = False,
-) -> list[dict[str, Any]]:
+) -> list[SimpleIROp]:
     """Preserve pending setup failure before any subsequent initialization work.
 
     Check every initialization operation rather than maintaining a second
@@ -273,15 +275,15 @@ def _guard_initialization_ops(
             (int(op["value"]) for op in ops if op.get("kind") == "label"),
             default=0,
         )
-    check = {"kind": "check_exception", "value": failure_label}
-    guarded: list[dict[str, Any]] = []
+    check: SimpleIROp = {"kind": "check_exception", "value": failure_label}
+    guarded: list[SimpleIROp] = []
     for op in ops:
         if op == check and guarded and guarded[-1] == check:
             continue
-        guarded.append(dict(op))
+        guarded.append(op.copy())
         kind = op.get("kind")
         if kind != "check_exception" and kind not in SIMPLEIR_STRUCTURAL_KINDS:
-            guarded.append(dict(check))
+            guarded.append(check.copy())
     if owns_failure_exit:
         guarded.append({"kind": "label", "value": failure_label})
         if failure_returns_object:
@@ -300,9 +302,9 @@ def _guard_initialization_ops(
 def _build_isolate_bootstrap_ops(
     *,
     code_slot_count: int,
-    version_ops: Sequence[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    ops = [
+    version_ops: Sequence[SimpleIROp],
+) -> list[SimpleIROp]:
+    ops: list[SimpleIROp] = [
         {"kind": "code_slots_init", "value": code_slot_count},
         *version_ops,
     ]
@@ -322,14 +324,14 @@ def _build_isolate_bootstrap_ops(
 def _build_isolate_import_ops(
     *,
     code_slot_count: int,
-    version_ops: Sequence[dict[str, Any]],
+    version_ops: Sequence[SimpleIROp],
     module_init_symbols: Sequence[tuple[str, str]],
-) -> list[dict[str, Any]]:
+) -> list[SimpleIROp]:
     # Runtime-side module imports can reach this function before either
     # `molt_main` or `molt_isolate_bootstrap` has initialized the global
     # code-slot table or committed the compiler target. Establish both before
     # accessing a module; each body owns its CODE_NEW/CODE_SLOT_SET sequence.
-    import_ops: list[dict[str, Any]] = [
+    import_ops: list[SimpleIROp] = [
         {"kind": "code_slots_init", "value": code_slot_count},
         *version_ops,
     ]
@@ -587,7 +589,7 @@ def _module_ensure_call_ops(
     id_var: str,
     boxed_var: str,
     out_var: str,
-) -> list[dict[str, Any]]:
+) -> list[SimpleIROp]:
     """Resolve a symbolic module slot at final emission, then ensure its ModuleId.
 
     Runtime-call arguments are NaN-boxed values (the same convention every
@@ -681,7 +683,7 @@ def _rewrite_native_import_lanes(
             if kind == "const_str" and isinstance(op.get("s_value"), str):
                 const_str_by_var[out] = op["s_value"]
         next_var = _next_tir_var_index([op for op in ops if isinstance(op, dict)])
-        new_ops: list[dict[str, Any]] = []
+        new_ops: list[SimpleIROp] = []
         changed = False
         for op in ops:
             if not isinstance(op, dict):
@@ -762,7 +764,7 @@ def _parent_module_parts(module_name: str) -> tuple[str, str] | None:
 
 
 def _append_static_native_module_metadata_ops(
-    ops: list[dict[str, Any]],
+    ops: list[SimpleIROp],
     *,
     module_var: str,
     module_name: str,
@@ -793,7 +795,7 @@ def _append_static_native_module_metadata_ops(
 
 
 def _append_static_native_parent_binding_ops(
-    ops: list[dict[str, Any]],
+    ops: list[SimpleIROp],
     *,
     module_var: str,
     module_name: str,
@@ -856,7 +858,7 @@ def _native_callable_wrapper_function(
     uses_callargs = native_callable_uses_callargs(export.abi)
     if uses_callargs:
         params = ["args", "kwargs"]
-        ops: list[dict[str, Any]] = [
+        ops: list[SimpleIROp] = [
             {"kind": "callargs_new", "out": "v0"},
             {"kind": "check_exception", "value": 2},
             {
@@ -876,7 +878,7 @@ def _native_callable_wrapper_function(
         result = "v3"
     else:
         params = [f"p{index}" for index in range(export.wrapper_payload_arity)]
-        ops = []
+        ops: list[SimpleIROp] = []
         payload = list(params)
         result = "v0"
     ops.append(
@@ -920,7 +922,7 @@ class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
 
     def __init__(
         self,
-        ops: list[dict[str, Any]],
+        ops: list[SimpleIROp],
         *,
         module_var: str,
         register_global_code_id: Callable[[str], int],
@@ -936,7 +938,7 @@ class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
         self.next_var += 1
         return value
 
-    def _result(self, kind: str, **fields: Any) -> str:
+    def _result(self, kind: WireOpKind, **fields: Any) -> str:
         result = self.alloc()
         self.ops.append({"kind": kind, **fields, "out": result})
         return result
@@ -989,7 +991,7 @@ class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
 
 
 def _append_native_callable_function_metadata_ops(
-    ops: list[dict[str, Any]],
+    ops: list[SimpleIROp],
     *,
     module_var: str,
     export: NativeCallableExport,
@@ -1066,7 +1068,7 @@ def _append_native_callable_function_metadata_ops(
 
 
 def _append_static_native_direct_symbol_export_ops(
-    ops: list[dict[str, Any]],
+    ops: list[SimpleIROp],
     *,
     module_var: str,
     spec: _ExternalNativeModuleInitSpec,
@@ -1109,7 +1111,7 @@ def _append_static_native_callable_wrapper_functions(
 
 
 def _append_static_native_module_attr_export_ops(
-    ops: list[dict[str, Any]],
+    ops: list[SimpleIROp],
     *,
     module_var: str,
     spec: _ExternalNativeModuleInitSpec,
@@ -1179,7 +1181,7 @@ def _append_static_native_module_attr_export_ops(
 
 
 def _append_static_native_callable_publication_ops(
-    ops: list[dict[str, Any]],
+    ops: list[SimpleIROp],
     *,
     module_var: str,
     spec: _ExternalNativeModuleInitSpec,
@@ -1205,11 +1207,11 @@ def _append_static_native_callable_publication_ops(
 
 
 def _guard_generated_native_module_init_ops(
-    before_publication: Sequence[dict[str, Any]],
-    after_publication: Sequence[dict[str, Any]],
+    before_publication: Sequence[SimpleIROp],
+    after_publication: Sequence[SimpleIROp],
     *,
     module_name_var: str,
-) -> list[dict[str, Any]]:
+) -> list[SimpleIROp]:
     """Separate pre-publication failures from an owned cache transaction.
 
     Namespace bodies publish through ``module_cache_set``; static extensions
@@ -1234,7 +1236,7 @@ def _build_registry_native_module_init_ops(
     spec: _ExternalNativeModuleInitSpec,
     *,
     register_global_code_id: Callable[[str], int],
-) -> list[dict[str, Any]]:
+) -> list[SimpleIROp]:
     """Static-native module init body for the registry (import bedrock) lane.
 
     Pure body executor: no cache-probe preamble (init-exactly-once is the
@@ -1253,7 +1255,7 @@ def _build_registry_native_module_init_ops(
     next_var = 0
     module_name_var = f"v{next_var}"
     next_var += 1
-    ops: list[dict[str, Any]] = [
+    ops: list[SimpleIROp] = [
         {"kind": "const_str", "s_value": spec.module, "out": module_name_var},
     ]
     module_var: str
@@ -1281,7 +1283,7 @@ def _build_registry_native_module_init_ops(
         next_var += 1
         ops.append({"kind": "module_new", "args": [module_name_var], "out": module_var})
     before_publication = ops
-    ops = []
+    ops: list[SimpleIROp] = []
     if not spec.is_extension:
         cache_set_var = f"v{next_var}"
         next_var += 1
@@ -1319,11 +1321,11 @@ def _build_static_native_module_init_ops(
     spec: _ExternalNativeModuleInitSpec,
     *,
     register_global_code_id: Callable[[str], int],
-) -> list[dict[str, Any]]:
+) -> list[SimpleIROp]:
     next_var = 0
     module_name_var = f"v{next_var}"
     next_var += 1
-    ops: list[dict[str, Any]] = [
+    ops: list[SimpleIROp] = [
         {"kind": "const_str", "s_value": spec.module, "out": module_name_var},
     ]
     # The init function owns the init-exactly-once invariant: every call
@@ -1404,7 +1406,7 @@ def _build_static_native_module_init_ops(
         next_var += 1
         ops.append({"kind": "module_new", "args": [module_name_var], "out": module_var})
     before_publication = ops
-    ops = []
+    ops: list[SimpleIROp] = []
     if not spec.is_extension:
         cache_set_var = f"v{next_var}"
         next_var += 1
@@ -1524,7 +1526,7 @@ def _attach_static_native_publication_to_source_init(
             "publication"
         )
 
-    publication_ops: list[dict[str, Any]] = []
+    publication_ops: list[SimpleIROp] = []
     _append_static_native_callable_publication_ops(
         publication_ops,
         module_var=module_var,

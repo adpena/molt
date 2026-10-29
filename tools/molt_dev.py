@@ -1341,6 +1341,19 @@ def _integrate_exclusive(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
+    graph_selection = config.graph_selection(touched)
+    if graph_selection is not None:
+        _say(
+            f"    dependency graph: {len(graph_selection.selected)} test file(s) "
+            f"read a touched path; {len(graph_selection.run)} run in this landing"
+        )
+        if graph_selection.deferred:
+            _say(
+                f"    deferred to their build or later proof cells "
+                f"({len(graph_selection.deferred)}):"
+            )
+            for test, cells in sorted(graph_selection.deferred.items()):
+                _say(f"      {test}  ({', '.join(cells) or 'no proof cell owns it'})")
     env = gate_environment(repo, session_id=args.session_id)
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}

@@ -8,6 +8,12 @@ call, function, class, and module visitors.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+)
+
+
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 from molt.compiler_analysis.python_call_arguments import call_form
@@ -36,6 +42,21 @@ from molt.compiler_analysis.python_function_kind import (
     FunctionKind,
     normalize_function_kind,
 )
+
+_MARK_SOURCE_CALL_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"CALL_INDIRECT", "CALL_BIND"}
+)
+_MARK_SOURCE_CALL_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {
+        "CALL_METHOD",
+        "CALL_FUNC",
+        "CALL_GUARDED",
+        "CALL_LOADED_METHOD",
+        "CALL_INDIRECT",
+        "CALL_BIND",
+    }
+)
+
 
 if TYPE_CHECKING:
     from molt.frontend._protocol import _GeneratorProtocol
@@ -253,7 +274,9 @@ class _FrontendFunctionMetadataEmitter(FunctionMetadataEmitter[MoltValue]):
     def __init__(self, owner: _GeneratorProtocol) -> None:
         self._owner = owner
 
-    def _result(self, kind: str, *, type_hint: str, args: list[Any]) -> MoltValue:
+    def _result(
+        self, kind: FrontendOpKind, *, type_hint: str, args: list[Any]
+    ) -> MoltValue:
         value = MoltValue(self._owner.next_var(), type_hint=type_hint)
         self._owner.emit(MoltOp(kind=kind, args=args, result=value))
         return value
@@ -623,14 +646,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         if not isinstance(value, MoltValue):
             return
         producer = self._op_by_result.get(value.name)
-        if producer is None or producer.kind not in {
-            "CALL_FUNC",
-            "CALL_GUARDED",
-            "CALL_METHOD",
-            "CALL_LOADED_METHOD",
-            "CALL_BIND",
-            "CALL_INDIRECT",
-        }:
+        if producer is None or producer.kind not in _MARK_SOURCE_CALL_KINDS_2:
             return
         callee = producer.args[0]
         callee_producer = (
@@ -638,14 +654,19 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             if isinstance(callee, MoltValue)
             else None
         )
-        if callee_producer is not None and callee_producer.kind == "BUILTIN_FUNC":
+        if (
+            callee_producer is not None
+            and callee_producer.kind == FrontendKinds.BUILTIN_FUNC
+        ):
             builtin_name = (callee_producer.metadata or {}).get("builtin_name")
             if builtin_name not in BUILTIN_FUNC_SPECS:
                 return
         # A loaded method call takes the pair's two words, then its arguments.
-        operand_count = len(producer.args) + (producer.kind == "CALL_LOADED_METHOD")
+        operand_count = len(producer.args) + (
+            producer.kind == FrontendKinds.CALL_LOADED_METHOD
+        )
         custody = ["transferred"] * operand_count
-        if producer.kind in {"CALL_BIND", "CALL_INDIRECT"}:
+        if producer.kind in _MARK_SOURCE_CALL_KINDS_1:
             if self._sema is None:
                 raise AssertionError(
                     "module sema must be populated before lowering calls"

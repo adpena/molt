@@ -1,6 +1,0 @@
-{
-  "schema": "molt.op-kind-audit.v2",
-  "authority": "Python wire membership and normalized runtime ABI facts; Rust domains are checked by rustc",
-  "unregistered_frontend_wire": [],
-  "llvm_boxed_runtime_abi_mismatch": []
-}

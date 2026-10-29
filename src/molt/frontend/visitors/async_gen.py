@@ -8,6 +8,12 @@ the SimpleTIRGenerator MRO via self.<method>.
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    FrontendOpKind,
+    FRONTEND_FIRST_TRAILING_RESULT_ARG,
+)
+
 from molt.compiler_analysis.python_lexical_scope import (
     function_contains_yield,
 )
@@ -20,9 +26,6 @@ from typing import (
 )
 
 from molt.frontend.cfg_analysis import build_cfg
-from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
-)
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     GEN_SEND_OFFSET,
@@ -53,6 +56,14 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 
 
 # Names that are frame state rather than SSA values.
+_INIT_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"CALLARGS_PUSH_METHOD_RECEIVER", "CALL_LOADED_METHOD"}
+)
+_INIT_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {"LOAD_METHOD", "LOAD_SUPER_METHOD"}
+)
+
+
 _RESUME_LIVENESS_EXEMPT = frozenset({"self", "none", ""})
 
 
@@ -93,16 +104,16 @@ class _ResumeLiveness:
                 op = ops[idx]
                 # The generated field authority names the ops whose trailing
                 # args are outputs (UNPACK_SEQUENCE's targets), not operands.
-                first_output = SIMPLEIR_FIRST_TRAILING_RESULT_ARG.get(
-                    op.kind.lower(), len(op.args)
+                first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(
+                    op.kind, len(op.args)
                 )
                 operands = [
                     arg for arg in op.args[:first_output] if isinstance(arg, MoltValue)
                 ]
                 outputs = [op.result, *op.args[first_output:]]
-                if op.kind in {"CALL_LOADED_METHOD", "CALLARGS_PUSH_METHOD_RECEIVER"}:
+                if op.kind in _INIT_KINDS_1:
                     operands.append(MoltValue(loaded_method_self_name(op)))
-                elif op.kind in {"LOAD_METHOD", "LOAD_SUPER_METHOD"}:
+                elif op.kind in _INIT_KINDS_2:
                     self_name = loaded_method_self_name(op)
                     self.loaded_method_selves.add(self_name)
                     outputs.append(MoltValue(self_name))
@@ -1229,9 +1240,16 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         """
         ops = self.current_ops
         switch_idx = next(
-            (idx for idx, op in enumerate(ops) if op.kind == "STATE_SWITCH"), None
+            (
+                idx
+                for idx, op in enumerate(ops)
+                if op.kind == FrontendKinds.STATE_SWITCH
+            ),
+            None,
         )
-        label_indices = [idx for idx, op in enumerate(ops) if op.kind == "STATE_LABEL"]
+        label_indices = [
+            idx for idx, op in enumerate(ops) if op.kind == FrontendKinds.STATE_LABEL
+        ]
         if switch_idx is None or not label_indices:
             # Only STATE_SWITCH resumes into a label.
             return
@@ -1287,7 +1305,10 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
 
         def after_exception_check(idx: int) -> int:
             # A store must not run while its definition's exception is pending.
-            if idx + 1 < len(ops) and ops[idx + 1].kind == "CHECK_EXCEPTION":
+            if (
+                idx + 1 < len(ops)
+                and ops[idx + 1].kind == FrontendKinds.CHECK_EXCEPTION
+            ):
                 return idx + 1
             return idx
 
@@ -1303,7 +1324,10 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         for label_idx, names in label_spills.items():
             anchor = label_idx
             # A generator resume re-enters its try regions before any load.
-            while anchor + 1 < len(ops) and ops[anchor + 1].kind == "TRY_START":
+            while (
+                anchor + 1 < len(ops)
+                and ops[anchor + 1].kind == FrontendKinds.TRY_START
+            ):
                 anchor += 1
             loads_after.setdefault(anchor, []).extend(names)
 
