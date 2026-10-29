@@ -421,6 +421,11 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         native = admission(baseline_env, RustCpuPolicy.NATIVE)
         assert native is not baseline
         assert len(seen) == 2
+        # A caller value that is not UTF-8 (libregrtest sets one in every
+        # worker) keys reuse like any other value instead of failing (HF-556).
+        undecodable = {**baseline_env, "UNRELATED": "ab\udcffcd"}
+        assert admission(undecodable) is admission(dict(undecodable))
+        assert len(seen) == 3
     remaps = (
         f"--remap-path-prefix={tmp_path}=/molt/source",
         f"--remap-path-prefix={tmp_path / 'target'}=/molt/build",
