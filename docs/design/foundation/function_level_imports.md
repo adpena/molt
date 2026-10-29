@@ -109,6 +109,7 @@ frontend and backend compilation. HF-126 measured eager admission of
   one more resolution over states that the module flow already holds.
 - CPython's `test.support` now compiles. In `regrtest.import-system.native`,
   `test_pkgutil` and `test_zipimport` run and stop at `sysconfig`, a generated
-  stub (HF-273). `test_importlib` still lacks `test.support` because the
-  regrtest shim exposes CPython's `test` package as an external root; with
-  `MOLT_EXTERNAL_STATIC_PACKAGES=test` it reaches the same `sysconfig` stub.
+  stub (HF-273). `test_importlib` reaches `test.support` from its package
+  `__init__`, a transitive import from an external root, so the regrtest shim
+  now admits the `test` package with `MOLT_EXTERNAL_STATIC_PACKAGES=test`; it
+  then reaches the same `sysconfig` stub.

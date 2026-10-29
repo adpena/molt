@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import NoReturn, cast
 
-from molt.compat import CompatibilityReporter, compatibility_feature_category
+from molt.compat import CompatibilityReporter
 from molt.frontend.frontend_diagnostics_generated import (
     FRONTEND_DIAGNOSTIC_METADATA,
     FrontendDiagnostic,
@@ -39,7 +39,6 @@ def raise_compatibility_error(
         alternative=alternative,
         detail=detail,
         diagnostic_code=diagnostic.value,
-        diagnostic_category=compatibility_feature_category(message),
     ) from rejection
 
 
