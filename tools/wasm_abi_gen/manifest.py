@@ -1756,12 +1756,11 @@ def _validate_op_loop_runtime_arg(
     )
 
 
-def runtime_contract_op_loop_specs(data: dict) -> list[dict]:
+def runtime_contract_op_loop_specs(data: dict, op_data: dict) -> list[dict]:
     """Project the op authority into the existing WASM realization schema."""
     projected: list[dict] = []
     from tools.op_kinds.runtime_calls import runtime_call_rows
 
-    op_data = tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
     imports = {runtime_export_name(entry): entry for entry in data["runtime_import"]}
     for row in runtime_call_rows(op_data):
         entry = imports.get(row["function"])
@@ -1791,10 +1790,9 @@ def runtime_contract_op_loop_specs(data: dict) -> list[dict]:
 
 
 def _expand_op_loop_runtime_calls(
-    data: dict, *, allow_contract_projections: bool = False
+    data: dict, contract_rows: list[dict], *, allow_contract_projections: bool = False
 ) -> list[dict]:
     expanded: list[dict] = []
-    contract_rows = runtime_contract_op_loop_specs(data)
     contract_by_kind = {row["kind"]: row for row in contract_rows}
     explicit = data.get("op_loop_runtime_call", [])
     if not isinstance(explicit, list):
@@ -2655,8 +2653,11 @@ def validate_loaded_manifest(
             )
         seen_lir_preserved_copy_imports.add(import_name)
 
+    op_data = tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
     op_loop_runtime_calls = _expand_op_loop_runtime_calls(
-        data, allow_contract_projections=not reject_manual_runtime_cfgs
+        data,
+        runtime_contract_op_loop_specs(data, op_data),
+        allow_contract_projections=not reject_manual_runtime_cfgs,
     )
     seen_op_loop_runtime_kinds: set[str] = set()
     seen_op_loop_lir_variants: set[str] = set()

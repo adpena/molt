@@ -131,6 +131,14 @@ Stages are complete migrations of their covered operations:
    provenance. Unknown carriers refuse before source publication. The dict
    specialization checks its deterministic storage before writing, bypasses
    metatable assignment hooks and returns that same table.
+   Iterator states are active, size-failed or exhausted. Size failure is sticky;
+   exhaustion releases the container and never revives after mutation. Dict
+   iterators permit same-size replacement but end with a keys-changed error if
+   more live keys remain than expected. These transitions follow CPython
+   `Objects/dictobject.c:dictiter_iternextkey` and
+   `Objects/setobject.c:setiter_iternext`; sequence exhaustion follows
+   `Objects/listobject.c:listiter_next` and
+   `Objects/unicodeobject.c:unicodeiter_next`.
    Prove agreement, borrowed-result custody, the negative compile
    experiment and the independent differential programs. The Luau support
    matrix projects these same rows, including the canonical `get_iter` wire
