@@ -182,6 +182,8 @@ def test_harness_setup_binds_every_test_and_requested_fixtures_bind_their_users(
     assert _select(graph, "src/pkg/core.py") == every
     assert _select(graph, "src/pkg/plugin.py") == every
     assert _select(graph, "tests/conftest.py") == every
+    # pytest reads pyproject's configuration for every run.
+    assert _select(graph, "pyproject.toml") == every
     assert "tests/test_heavy.py" in _select(graph, "src/pkg/heavy.py")
 
 

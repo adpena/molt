@@ -142,7 +142,12 @@ class GateConfig:
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
-        """The checkout's own policy, selecting tests over its working tree."""
+        """A policy file; a checkout's own plan selects over its working tree.
+
+        The dependency graph belongs to the checkout that owns the plan, at
+        ``tools/proof_plan.toml``. Another manifest file (a driver test's
+        synthetic policy) names no checkout, so its rules alone select.
+        """
         if not path.exists():
             raise DriverError(
                 f"gate manifest missing: {path}. The change-class->gates manifest "
@@ -152,10 +157,11 @@ class GateConfig:
         config = GateConfig.parse(
             path.read_text(encoding="utf-8"), str(path), root=path.parent.parent
         )
-        from tools.test_dependency_graph import cached_graph
-
         root = config.root
-        config.dependency_graph = lambda: cached_graph(root)
+        if path.resolve() == (root / "tools" / GATES_CONFIG_NAME).resolve():
+            from tools.test_dependency_graph import cached_graph
+
+            config.dependency_graph = lambda: cached_graph(root)
         return config
 
     @staticmethod
