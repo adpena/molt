@@ -785,6 +785,11 @@ warnoptions: list[str] = []
 # CPython -X options dict; Molt has none.
 _xoptions: dict[str, object] = {}
 
+# CPython publishes its macOS framework name on darwin, "" for a build that is
+# not a framework. A Molt binary is never a framework build.
+if globals().get("platform") == "darwin":
+    _framework = ""
+
 
 # Finalize shaped metadata before the initializer returns. Attribute reads
 # never rerun producers or resurrect a deleted public key.
