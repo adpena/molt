@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
@@ -23710,7 +23712,10 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
             manifest = json.loads(
                 output.with_name("manifest.json").read_text(encoding="utf-8")
             )
-            assert manifest["capability_policy_digest"] == policy_b.digest()
+            assert (
+                manifest["launch"]["environment"]["MOLT_CAPABILITY_POLICY_DIGEST"]
+                == policy_b.digest()
+            )
             assert (
                 manifest["modules"]["app"]["sha256"]
                 == hashlib.sha256(payload_b).hexdigest()
@@ -23746,7 +23751,10 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
     assert receipt is not None
     manifest = json.loads(output.with_name("manifest.json").read_text(encoding="utf-8"))
     assert output.with_name("app.wasm").read_bytes() == expected_payload
-    assert manifest["capability_policy_digest"] == expected_policy.digest()
+    assert (
+        manifest["launch"]["environment"]["MOLT_CAPABILITY_POLICY_DIGEST"]
+        == expected_policy.digest()
+    )
     assert (
         manifest["modules"]["app"]["sha256"]
         == hashlib.sha256(expected_payload).hexdigest()
@@ -24120,23 +24128,18 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     assert "webnn.graph" in target_features["excluded_features"]
     assert manifest["assets"]["bundle"]["path"] == "bundle.tar"
     assert manifest["assets"]["bundle"]["file_count"] == len(bundle_manifest["files"])
-    assert manifest["capability_policy"] == resolved_policy.canonical_payload()
-    assert manifest["capability_policy_digest"] == resolved_policy.digest()
-    worker_source = (output_wasm.parent / "worker.js").read_text(encoding="utf-8")
+    assert manifest["launch"]["environment"] == resolved_policy.to_env_vars()
+    assert "capability_policy" not in manifest
+    assert "capability_policy_digest" not in manifest
+    assert (
+        manifest["launch"]["environment"]["MOLT_CAPABILITY_POLICY_DIGEST"]
+        == resolved_policy.digest()
+    )
+    assert (output_wasm.parent / "worker.js").is_file()
     assert (
         f'"compatibility_date": "{cli_non_native_output.WASM_WORKER_COMPATIBILITY_DATE}"'
         in (output_wasm.parent / "wrangler.jsonc").read_text(encoding="utf-8")
     )
-    expected_worker_env = [
-        f"{name}={value}"
-        for name, value in sorted(
-            {
-                **resolved_policy.to_env_vars(),
-                "MOLT_EXECUTION_TARGET": "cloudflare",
-            }.items()
-        )
-    ]
-    assert json.dumps(expected_worker_env, ensure_ascii=True) in worker_source
     native_callables = manifest["abi"]["browser_embed"]["native_callables"]
     assert native_callables["module"] == "molt_native"
     assert native_callables["symbols"] == {}
@@ -27627,6 +27630,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     linked_wasm.write_bytes(linked_bytes)
     manifest_payload = {
         "version": WASM_EXECUTION_MANIFEST_VERSION,
+        "launch": wasm_execution_launch(),
         "mode": "linked",
         "modules": {
             "linked": {

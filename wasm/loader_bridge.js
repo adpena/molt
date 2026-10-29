@@ -1324,7 +1324,40 @@
     if (!manifest || typeof manifest !== 'object' || manifest.version !== callableTableAbi.execution_manifest_version) {
       throw new Error(`Molt deployment manifest version must be ${callableTableAbi.execution_manifest_version}; rebuild this deployment with the current Molt compiler`);
     }
+    const launch = manifest.launch;
+    if (!launch || typeof launch !== 'object' || Array.isArray(launch) ||
+        Object.keys(launch).length !== 1 || !Object.hasOwn(launch, 'environment')) {
+      throw new Error('WASM deployment launch requires exactly environment');
+    }
+    const environment = launch.environment;
+    if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
+      throw new Error('WASM deployment launch.environment must be a string map');
+    }
+    for (const [name, value] of Object.entries(environment)) {
+      if (!name || name.includes('=') || name.includes('\0')) {
+        throw new Error('WASM deployment launch environment name is invalid');
+      }
+      if (typeof value !== 'string' || value.includes('\0')) {
+        throw new Error('WASM deployment launch environment value is invalid');
+      }
+    }
+    if (!Array.isArray(callableTableAbi.execution_manifest_required_environment) ||
+        callableTableAbi.execution_manifest_required_environment.length === 0 ||
+        callableTableAbi.execution_manifest_required_environment.some(name => !Object.hasOwn(environment, name))) {
+      throw new Error('WASM deployment launch environment lacks required policy entries');
+    }
     return manifest;
+  };
+
+  // Match native launch semantics: emitted policy keys override the host's
+  // values; optional omitted keys and unrelated environment remain ambient.
+  // A null prototype keeps every transported name a data entry.
+  const deploymentLaunchEnvironment = (manifest, ambient = {}) => {
+    requireMoltDeploymentManifest(manifest);
+    const result = Object.create(null);
+    for (const [name, value] of Object.entries(ambient)) result[name] = value;
+    for (const [name, value] of Object.entries(manifest.launch.environment)) result[name] = value;
+    return result;
   };
 
   const manifestModuleUrl = (manifestUrl, descriptor, label) => {
@@ -1400,6 +1433,7 @@
   };
   return {
     requireMoltDeploymentManifest,
+    deploymentLaunchEnvironment,
     manifestModuleUrl,
     verifyManifestModuleBytes,
     CALLABLE_TABLE_SECTION_NAME,

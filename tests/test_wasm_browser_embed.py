@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from tests.wasm_execution_manifest import split_wasm_execution_manifest
 
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
@@ -129,7 +131,6 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
     """Real Wasm calls distinguish canonical producers from old substitutes."""
     if shutil.which("node") is None:
         pytest.skip("node is required for runtime import binding")
-    from molt.capability_manifest import CapabilityManifest
     from molt.cli.wasm import _generate_split_worker_js
 
     root = Path(__file__).resolve().parents[1]
@@ -204,7 +205,6 @@ def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
         deployment_manifest=split_wasm_execution_manifest(
             app, (tmp_path / "molt_runtime.wasm").read_bytes()
         ),
-        resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -307,7 +307,9 @@ _LIFETIME_IMPORTS = (
 )
 
 
-def _runtime_lifetime_wasm() -> bytes:
+def _runtime_lifetime_wasm(
+    *, environment_probe: bool = False, own_memory: bool = False
+) -> bytes:
     types = []
     exports = []
     bodies = []
@@ -315,16 +317,52 @@ def _runtime_lifetime_wasm() -> bytes:
         params, results = WASM_IMPORT_SIGNATURE_BY_NAME[name]
         assert all(value == "i64" for value in (*params, *results))
         types.append(_wasm_func_type([0x7E] * len(params), [0x7E] * len(results)))
-        exports.append(_wasm_export(WASM_RUNTIME_EXPORT_BY_IMPORT[name], 0, index))
+        exports.append(
+            _wasm_export(
+                WASM_RUNTIME_EXPORT_BY_IMPORT[name],
+                0,
+                index + (2 if environment_probe else 0),
+            )
+        )
         value = (
             _wasm_i64_const(0 if name == "exception_pending" else 1) if results else b""
         )
         body = _wasm_u32(0) + value + b"\x0b"
         bodies.append(_wasm_u32(len(body)) + body)
+    defined_types = [_wasm_u32(i) for i in range(len(types))]
+    imports = []
+    if environment_probe:
+        preview1_type = len(types)
+        types.append(_wasm_func_type([0x7F, 0x7F], [0x7F]))
+        types.append(_wasm_func_type([], [0x7F]))
+        for name in ("environ_sizes_get", "environ_get"):
+            imports.append(
+                _wasm_import_func("wasi_snapshot_preview1", name, preview1_type)
+            )
+        if not own_memory:
+            imports.append(_wasm_import_memory("env", "memory", 1))
+        for name, left, right, callee in (
+            ("sizes", 0, 4, 0),
+            ("environment", 16, 4096, 1),
+        ):
+            exports.append(_wasm_export(name, 0, 2 + len(bodies)))
+            defined_types.append(_wasm_u32(preview1_type + 1))
+            body = (
+                b"\x00"
+                + _wasm_i32_const(left)
+                + _wasm_i32_const(right)
+                + b"\x10"
+                + _wasm_u32(callee)
+                + b"\x0b"
+            )
+            bodies.append(_wasm_u32(len(body)) + body)
+        exports.append(_wasm_export("memory", 2, 0))
     return attested_empty_callable_table(
         b"\x00asm\x01\x00\x00\x00"
         + _wasm_section(1, _wasm_vec(types))
-        + _wasm_section(3, _wasm_vec([_wasm_u32(i) for i in range(len(types))]))
+        + (_wasm_section(2, _wasm_vec(imports)) if imports else b"")
+        + _wasm_section(3, _wasm_vec(defined_types))
+        + (_wasm_section(5, b"\x01\x00\x02") if own_memory else b"")
         + _wasm_section(7, _wasm_vec(exports))
         + _wasm_section(10, _wasm_vec(bodies))
     )
@@ -343,6 +381,7 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
 
     return {
         "version": WASM_EXECUTION_MANIFEST_VERSION,
+        "launch": wasm_execution_launch(),
         "mode": "split-runtime",
         "shared_memory_initial_pages": 1,
         "shared_table_initial": 1,
@@ -380,10 +419,7 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
                 ),
             },
         },
-        "modules": {
-            "app": {"path": "app.wasm"},
-            "runtime": {"path": "molt_runtime.wasm"},
-        },
+        "modules": split_wasm_execution_manifest(app_wasm, runtime_wasm)["modules"],
         "target_features": {
             "authority": "target_feature_manifest",
             "profile": "wasm-browser-webgpu",
@@ -1481,6 +1517,118 @@ try {{
         }
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize("grant", ["", "fs.read"])
+def test_browser_embed_delivers_manifest_policy_to_both_wasi_memories(
+    tmp_path: Path, grant: str
+) -> None:
+    """Read real preview1 pointers from distinct app/runtime guest memories."""
+    if shutil.which("node") is None:
+        pytest.skip("node is required for browser embed WASI environment")
+    from molt.capability_manifest import CapabilityManifest
+
+    root = Path(__file__).resolve().parents[1]
+    app = _runtime_lifetime_wasm(environment_probe=True, own_memory=True)
+    runtime = _runtime_lifetime_wasm(environment_probe=True)
+    policy = CapabilityManifest(allow=[grant] if grant else []).resolve()
+    manifest = _webgpu_embed_manifest(app, runtime)
+    manifest["launch"] = wasm_execution_launch(policy)
+    manifest["launch"]["environment"].update(
+        {
+            "FIXTURE_UNICODE": "héllo=世界",
+            "__proto__": "ordinary data",
+            "MOLT_EXECUTION_TARGET": "native",
+        }
+    )
+    manifest["target_features"] = {
+        "authority": "target_feature_manifest",
+        "profile": "wasm-browser",
+        "required_host_imports": {"webgpu": []},
+        "browser_probes": {"webgpu": {"required": False}},
+    }
+    expected = {
+        "MOLT_CAPABILITIES": grant,
+        "MOLT_CAPABILITY_TIER": "none",
+        "MOLT_CAPABILITY_POLICY_DIGEST": policy.digest(),
+        "MOLT_EXECUTION_TARGET": "browser",
+        "MOLT_MAX_THREADS": "7",
+        "AMBIENT_ONLY": "retained",
+        "FIXTURE_UNICODE": "héllo=世界",
+        "__proto__": "ordinary data",
+    }
+    (tmp_path / "app.wasm").write_bytes(app)
+    (tmp_path / "molt_runtime.wasm").write_bytes(runtime)
+    handler = type("_EnvironmentEmbedHandler", (_StaticDirHandler,), {"root": tmp_path})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        script = tmp_path / "embed_environment.mjs"
+        uri = (root / "wasm/browser_embed.js").as_uri()
+        base = f"http://127.0.0.1:{server.server_address[1]}/"
+        script.write_text(
+            f"import {{loadMoltBrowserEmbed}} from {json.dumps(uri)};\n"
+            "import assert from 'node:assert/strict';\n"
+            f"const manifest = JSON.parse({json.dumps(json.dumps(manifest))});\n"
+            f"const expected = JSON.parse({json.dumps(json.dumps(expected))});\n"
+            f"const embed = await loadMoltBrowserEmbed({{baseUrl:{json.dumps(base)}, manifest,\n"
+            "  env: {MOLT_CAPABILITIES:'env.read', MOLT_CAPABILITY_TIER:'full',\n"
+            "    MOLT_CAPABILITY_POLICY_DIGEST:'ambient', MOLT_EXECUTION_TARGET:'native',\n"
+            "    MOLT_MAX_THREADS:'7', AMBIENT_ONLY:'retained'}});\n"
+            """
+try {
+  const runtime = embed.runtimeInstance.exports;
+  const app = embed.appInstance.exports;
+  assert.notEqual(runtime.memory, app.memory, 'fixture must have separate WASI owners');
+  function inspect(exports, other) {
+    const otherBytes = new Uint8Array(other.memory.buffer);
+    otherBytes.fill(0xa5, 0, 8192);
+    embed.execute(() => {
+      assert.equal(exports.sizes(), 0);
+      assert.equal(exports.environment(), 0);
+    });
+    assert.ok(otherBytes.subarray(0, 8192).every(byte => byte === 0xa5),
+      'environment calls must only write their owning memory');
+    const bytes = new Uint8Array(exports.memory.buffer);
+    const view = new DataView(exports.memory.buffer);
+    const count = view.getUint32(0, true);
+    assert.equal(count, Object.keys(expected).length);
+    const entries = [];
+    let size = 0;
+    for (let index = 0; index < count; index++) {
+      const pointer = view.getUint32(16 + index * 4, true);
+      assert.equal(pointer, 4096 + size, 'preview1 pointer addresses next UTF8 entry');
+      const end = bytes.indexOf(0, pointer);
+      assert.ok(end >= pointer, 'each entry has a NUL terminator');
+      const value = new TextDecoder('utf-8', {fatal:true}).decode(bytes.subarray(pointer, end));
+      const separator = value.indexOf('=');
+      assert.ok(separator > 0);
+      entries.push([value.slice(0, separator), value.slice(separator + 1)]);
+      size += end - pointer + 1;
+    }
+    assert.equal(new Set(entries.map(([name]) => name)).size, count);
+    assert.equal(view.getUint32(4, true), size, 'size counts UTF8 bytes including NULs');
+    assert.deepEqual(Object.fromEntries(entries), expected);
+  }
+  inspect(runtime, app);
+  inspect(app, runtime);
+} finally { embed.dispose(); }
+""",
+            encoding="utf-8",
+        )
+        result = _run_wasm_test_process(
+            ["node", str(script)],
+            role="guest-host",
+            cwd=root,
+            env=os.environ,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate(

@@ -37,6 +37,10 @@ def render_py(
     lines.append(
         f"WASM_EXECUTION_MANIFEST_VERSION: int = {data['deployment_manifest']['version']}\n\n"
     )
+    lines.append(
+        "WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: tuple[str, ...] = "
+        f"{_py_tuple(data['deployment_manifest']['launch_environment_required_names'])}\n\n"
+    )
     for constant, alias, values in (
         ("WASM_SYNTHETIC_ERRNO", "WasmSyntheticErrnoName", synthetic_errno_table(data)),
         ("WASM_RESOLVER_ERROR", "WasmResolverErrorName", resolver_error_table(data)),
