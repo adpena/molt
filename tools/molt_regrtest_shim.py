@@ -136,6 +136,14 @@ def build_env(cpython_dir: Path) -> dict[str, str]:
         env["MOLT_MODULE_ROOTS"] = os.pathsep.join([test_root, extra_roots])
     else:
         env["MOLT_MODULE_ROOTS"] = test_root
+    # An external root admits only the entry's direct imports; transitive
+    # closure needs package admission (import_system_contract.md). A test
+    # module reaches `test.support` and its helpers through its package
+    # `__init__` and function bodies, as CPython imports them.
+    extra_packages = env.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
+    env["MOLT_EXTERNAL_STATIC_PACKAGES"] = " ".join(
+        part for part in ("test", extra_packages) if part
+    )
     existing = env.get("PYTHONPATH", "")
     entries = []
     for entry in existing.split(os.pathsep):
