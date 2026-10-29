@@ -4,10 +4,9 @@ author: portfolio-architect
 date: 2026-06-23
 status: design only / executable plan
 doc: 67
-companions: docs/superpowers/specs/2026-04-14-tinygrad-gpu-primitives-design.md;
-  docs/superpowers/plans/2026-04-14-tinygrad-gpu-primitives-plan-{1..4}.md;
-  docs/superpowers/archive/2026-04-25-tinygrad-gpu-canonicalization{,-design}.md;
-  docs/design/foundation/51_ten_year_roadmap.md (north star);
+companions: docs/architecture/gpu-primitive-stack.md (primitive architecture);
+  docs/spec/areas/perf/0520_DFLASH_CONTRACT.md (DFlash provenance);
+  ROADMAP.md (direction);
   docs/design/foundation/46_semantic_control_plane.md (fact-plane);
   docs/design/foundation/16_cpython-surface-stdlib-gpu-gap-audit.md;
   docs/design/foundation/21*_decomposition (god-file split);
@@ -75,10 +74,11 @@ The current state, verified against the tree on 2026-06-23:
 
 ### 1.1 What exists and is load-bearing (keep, build on)
 
-- **The primitive design + plans** — `docs/superpowers/specs/2026-04-14-tinygrad-gpu-primitives-design.md`
+- **The primitive design** — `docs/architecture/gpu-primitive-stack.md`
   (the "3 OpTypes / 26 primitives / ShapeTracker / LazyOp / fusion / renderers / MLIR"
-  architecture) and Plans 1–4. Plan 4 §Task 4 already states the DFlash provenance and
-  the no-fake rule. **Status: implemented in substantial part** (below).
+  architecture). The April 2026 session plans that built it were retired after
+  execution; `docs/spec/areas/perf/0520_DFLASH_CONTRACT.md` owns the DFlash
+  provenance and the no-fake rule. **Status: implemented in substantial part** (below).
 - **The Rust GPU crate** `runtime/molt-gpu/` exists with the intended module shape:
   `ops.rs`, `dtype.rs`, `shapetracker.rs`, `lazy.rs`, `schedule.rs`, `fuse.rs`,
   `dce.rs`, `mlir.rs`, `render/`, `device/`. This matches the spec §6 target layout

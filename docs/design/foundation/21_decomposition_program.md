@@ -28,8 +28,8 @@ Companion: `08_DX-buildspeed.md` (the build-speed sub-arc, partially landed — 
 > **CORRECTIONS — read these for the authoritative plan.** This doc's original move #1
 > and crate granularity were written before the dependency DAG was measured and are
 > SUPERSEDED:
-> - **Move #1** → [`21a_function_compiler_function_split_PLAN.md`](21a_function_compiler_function_split_PLAN.md):
->   the *function*-split of `compile_func_inner`, not a file-split (a file-split buys ~0
+> - **Move #1** → the *function*-split of `compile_func_inner` (complete; its plan,
+>   21a, was retired), not a file-split (a file-split buys ~0
 >   build win — a function is rustc's atomic codegen unit; see `dx_baseline.md` §8).
 > - **Crate graph** → [`21b_crate_graph_blueprint.md`](21b_crate_graph_blueprint.md):
 >   split `molt-tir` into `molt-ir` ← `molt-passes` ← `molt-lower`; one crate *per*
@@ -39,7 +39,9 @@ Companion: `08_DX-buildspeed.md` (the build-speed sub-arc, partially landed — 
 > - **Crate graph execution** → [`21f_crate_graph_smove_execution_specs.md`](21f_crate_graph_smove_execution_specs.md):
 >   the live-state, per-S-move execution spec for 21b's S1-S8 crate moves, including
 >   file partitions, feature wiring, visibility widening, and per-commit gates.
-> - **Frontend move #2** → [`21c_frontend_mixin_decomposition_PLAN.md`](21c_frontend_mixin_decomposition_PLAN.md).
+> - **Frontend move #2** → visitor mixins (complete; `src/molt/frontend/__init__.py`
+>   is now a small package entry). The `cli/` package split (21d) and the runtime
+>   satellite dedup (21e) are also complete; their plans were retired.
 Methodology precedent: `fd58a0a93` (the `lib.rs` god-file split: 6,928→264 lines,
 move-only, 0-warning build + byte-identical diagnostics + lib tests + symbol identity +
 e2e). This program continues that arc.

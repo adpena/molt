@@ -22,9 +22,8 @@ Root is reserved for:
   - `README.md`
   - `AGENTS.md`
   - `LICENSE`
-  - `ROADMAP.md`
+  - `ROADMAP.md` (the one forward plan)
   - `SUPPORTED.md` (thin pointer doc only)
-  - `OPTIMIZATIONS_PLAN.md`
 - repo config
   - `.gitignore`
   - `.github/`
@@ -43,6 +42,7 @@ The following do not belong at root:
 - personal tool blobs or editor-specific exports
 - one-off patch files and patch-application scripts
 - session notes and historical scratch documents
+- a second roadmap, or a dated plan or session document (`YYYY-MM-DD-*plan*.md`)
 - local denial/test output files
 
 ## Canonical Homes

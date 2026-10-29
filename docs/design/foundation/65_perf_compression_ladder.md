@@ -506,11 +506,20 @@ a half-rung). The facts and their homes:
   count selection + the loop-bound that proves no-overflow.
 - **Overflow/lane stability:** `Repr::RawI64Safe` (Rung 3) → only raw/float values enter
   SIMD lanes (doc 05 §2 axis 1); `MaybeBigInt` never does.
-- **Re-enable the three exception-gated loop passes** (`loop_unroll.rs:250`,
-  `block_versioning.rs:378`, `type_guard_hoist.rs:90`) by gating on
+- **Re-enable the exception-gated loop passes** by gating on
   `has_exception_handlers()` not `has_exception_handling` (doc 04 §2 — the `licm.rs`
-  model, already correct), and switch back-edge detection to `TerminatorOnlyPredMap`
-  (doc 04 §1, the phantom-back-edge hazard).
+  model, already correct). `loop_unroll` already uses the narrow gate;
+  `block_versioning` (`block_versioning/runner.rs`) and `type_guard_hoist`
+  (`type_guard_hoist/engine.rs`) still bail on the wide flag, which nearly every
+  function sets. Loop headers already come from the canonical `LoopForest`, so the
+  old phantom-back-edge hazard is retired.
+- **Give the guard passes a producer.** No pass turns `isinstance` into a
+  `TypeGuard`, so versioning and hoisting have little to consume even after the gate
+  fix. A producer may fire only for exact-type primitives (`int`, `float`, `bool`,
+  `str`, `bytes`, `NoneType`): `isinstance` walks the MRO, registered ABCs and
+  `__instancecheck__`, so a wider rewrite changes observable behavior. The producer
+  also needs a sound lowering: `lower_to_simple` emits a surviving `TypeGuard` as a
+  `CopyVar` of its operand (`lower_to_simple/op_lowering.rs`), not as a Boolean check.
 - **Wire the dead SIMD lowering:** `vectorize.rs` annotates but every backend reads zero
   attrs (doc 05 §1). Add the three `Dialect::Simd` ops (`VecLoad`/`VecAdd`/`VecReduce`,
   doc 05 §2) + a `vectorize_lower.rs` pass + per-backend SIMD ISA lowering
@@ -528,8 +537,11 @@ re-enable" + "induction/range/overflow/lane-stability."
 - 5a — re-enable the three loop passes (gate flip + `TerminatorOnlyPredMap`). Gate: the
   passes fire on real functions (they currently produce zero work, doc 04 §1); unroll/
   versioning differential parity; no red.
-- 5b — IV strength reduction (the `strength_reduction.rs` `FloorDiv`/`Mod` Phase-3
-  deferral). Gate: array-indexing loops stop re-multiplying; `bench_matrix_math` improves.
+- 5b — IV strength reduction: replace a loop-body `Mul(iv, stride)` with a header
+  accumulator when SCEV proves an `AddRec` IV and an invariant stride; skip
+  `MaybeBigInt` strides and degree-2 shapes. (The power-of-two `FloorDiv`/`Mod`
+  reduction in `strength_reduction.rs` is done.) Gate: array-indexing loops stop
+  re-multiplying; `bench_matrix_math` improves.
 - 5c — SIMD: `Dialect::Simd` ops + `vectorize_lower` + per-backend ISA (conservative cut:
   `FlatListInt` sum/product reductions first, doc 05 §2). Gate: `bench_sum`/`bench_prod_list`
   warm GREEN approach Codon on native AND WASM (the simd128 lane — ties Rung 7);
@@ -762,8 +774,8 @@ surfaced by `perf_causality`).
 ## 9. Definition of done (the ladder, not a rung)
 
 The ladder is complete when, on `tools/perf_scoreboard.py` run authoritatively against
-`origin/main`, across all 69 `BENCHMARKS` × {native, LLVM, WASM, Luau} × {dev-fast,
-release-fast, release-output}: **zero `FAIL_ENGINE` cells**; PyPy ratios recorded and
+`origin/main`, across all 69 `BENCHMARKS` × {native, LLVM, WASM, JIT} × {dev-fast,
+release-fast, release-output} (experimental Luau cells join once admitted): **zero `FAIL_ENGINE` cells**; PyPy ratios recorded and
 ≥1.0 on the dynamic subset or the missing fact named; Codon ratios recorded and
 approaching/≥1.0 on the static subset or marked non-equivalent; the cold/RSS/binary
 dimensions within their v0→Y1 budgets; and every green cell *stays* green because the
@@ -772,3 +784,19 @@ generated, validated IR fact, not a heuristic the next refactor can lose.
 
 At that point "make this Python program faster on molt" is answered the same way every
 time: name the missing fact, add it to the ladder, validate it, watch the row go green.
+
+## 10. Unscheduled candidates from retired plans
+
+The 2026 optimization plans and research queues were retired on 2026-10-29. These
+mechanisms from them have no rung yet and no measurement. Each needs a measured
+case before it joins a rung. Read the retired source with
+`git show a0303366c0:<path>`.
+
+| Candidate | Reference | Retired source |
+| --- | --- | --- |
+| Partial escape analysis (scalar replacement on non-escaping branches) | Stadler et al., CGO 2014 | `docs/spec/areas/compiler/OPTIMIZATION_ROADMAP_P1.md` |
+| WASM exception handling for `StopIteration` loops (zero-cost happy path) | Wasm 3.0 exception handling | `docs/spec/areas/compiler/OPTIMIZATION_ROADMAP_P1.md` |
+| Cranelift ISLE rules for NaN-box tag checks | Cranelift ISLE | `docs/spec/areas/compiler/OPTIMIZATION_ROADMAP_P1.md` |
+| Function-level object caching: relink unchanged functions without recompiling them | — | `docs/superpowers/specs/2026-03-30-per-function-caching-design.md` |
+| SIMD string hashing, comparison, search and UTF-8 counting; Swiss-table probing; header cache-line alignment | — | `docs/spec/areas/runtime/SIMD_OPTIMIZATION_PLAN.md` |
+| Size-class segregated free lists; biased reference counting under the GIL | — | `docs/spec/areas/runtime/MEMORY_OPTIMIZATION_PLAN.md` |

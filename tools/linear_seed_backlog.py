@@ -27,7 +27,6 @@ TODO_RE = re.compile(
 DOC_SOURCE_FILES = [
     "ROADMAP.md",
     "docs/spec/STATUS.md",
-    "OPTIMIZATIONS_PLAN.md",
     "AGENTS.md",
 ]
 SOURCE_ROOTS = [
