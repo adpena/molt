@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
@@ -92,7 +93,7 @@ impl ImportLockGuard<'_> {
             ExceptionCleanupPolicy, finish_exception_cleanup, take_raised,
         };
         let saved = exception_pending(py).then(|| take_raised(py));
-        raise_exception::<()>(py, "RuntimeError", "not holding the import lock");
+        raise_exception::<()>(py, BuiltinExc::RuntimeError, "not holding the import lock");
         finish_exception_cleanup(py, saved, ExceptionCleanupPolicy::Chain);
         Err(MoltObject::none().bits())
     }
@@ -454,21 +455,21 @@ fn sys_bootstrap_state_from_module_file(
     }
 }
 
-fn pending_exception_matches_any(_py: &PyToken<'_>, kinds: &[&str]) -> bool {
+fn pending_exception_matches_any(_py: &PyToken<'_>, kinds: &[crate::BuiltinExc]) -> bool {
     if !exception_pending(_py) {
         return false;
     }
     let exc_bits = molt_exception_last_pending();
-    let matches = kinds.iter().any(|kind| {
-        crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, kind)
-    });
+    let matches = kinds
+        .iter()
+        .any(|kind| crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, *kind));
     if !obj_from_bits(exc_bits).is_none() {
         dec_ref_bits(_py, exc_bits);
     }
     matches
 }
 
-pub(super) fn clear_pending_if_kind(_py: &PyToken<'_>, kinds: &[&str]) -> bool {
+pub(super) fn clear_pending_if_kind(_py: &PyToken<'_>, kinds: &[crate::BuiltinExc]) -> bool {
     if pending_exception_matches_any(_py, kinds) {
         clear_exception(_py);
         return true;
@@ -512,7 +513,7 @@ fn importlib_extension_exec_unavailable(
 ) -> u64 {
     raise_exception::<u64>(
         _py,
-        "ImportError",
+        BuiltinExc::ImportError,
         &format!(
             "{kind} module {module_name:?} at {path:?} has no compiler-emitted body in this binary"
         ),
@@ -660,7 +661,7 @@ fn importlib_exec_compiled_module(
     } else {
         Err(raise_exception::<_>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "compiled loader execution did not preserve module identity",
         ))
     };
@@ -698,7 +699,7 @@ fn importlib_try_exec_compiled_module(
     } else {
         Err(raise_exception::<_>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "compiled loader execution did not preserve module identity",
         ))
     };
@@ -721,7 +722,10 @@ fn linecache_loader_get_source_impl(
     dec_ref_bits(_py, module_name_bits);
     dec_ref_bits(_py, call_bits);
     if exception_pending(_py) {
-        if clear_pending_if_kind(_py, &["ImportError", "OSError"]) {
+        if clear_pending_if_kind(
+            _py,
+            &[crate::BuiltinExc::ImportError, crate::BuiltinExc::OSError],
+        ) {
             return Ok(None);
         }
         return Err(MoltObject::none().bits());
@@ -735,7 +739,7 @@ fn linecache_loader_get_source_impl(
         }
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "loader.get_source() must return str or None",
         ));
     };
@@ -753,7 +757,7 @@ fn importlib_reader_lookup_callable(
     let missing = missing_bits(_py);
     let attr_bits = molt_getattr_builtin(target_bits, name_bits, missing);
     if exception_pending(_py) {
-        if clear_pending_if_kind(_py, &["AttributeError"]) {
+        if clear_pending_if_kind(_py, &[crate::BuiltinExc::AttributeError]) {
             return Ok(None);
         }
         return Err(MoltObject::none().bits());
@@ -787,7 +791,7 @@ pub(crate) fn getattr_optional_bits(
         if let Ok(bits) = result {
             molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, bits));
         }
-        if clear_pending_if_kind(_py, &["AttributeError"]) {
+        if clear_pending_if_kind(_py, &[crate::BuiltinExc::AttributeError]) {
             return Ok(None);
         }
         return Err(MoltObject::none().bits());
@@ -861,7 +865,7 @@ fn module_file_from_bits(_py: &PyToken<'_>, module_file_bits: u64) -> Result<Opt
         Some(value) => Ok(Some(value)),
         None => Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "module file must be str or None",
         )),
     }
@@ -1044,7 +1048,7 @@ fn string_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<Stri
         Some(value) => Ok(value),
         None => Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{name} must be str"),
         )),
     }
@@ -1054,14 +1058,14 @@ fn bytes_arg_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<Vec<u
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{name} must be bytes-like"),
         ));
     };
     let Some(slice) = (unsafe { bytes_like_slice(ptr) }) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{name} must be bytes-like"),
         ));
     };
@@ -1080,7 +1084,7 @@ fn optional_string_arg_from_bits(
         Some(value) => Ok(Some(value)),
         None => Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{name} must be str or None"),
         )),
     }
@@ -1193,7 +1197,7 @@ pub(crate) fn raise_known_import_absence(py: &PyToken<'_>, absence: KnownImportA
 fn importlib_modules_runtime_error(_py: &PyToken<'_>) -> u64 {
     raise_exception::<_>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "invalid importlib runtime state payload: modules",
     )
 }
@@ -1316,7 +1320,7 @@ fn importlib_required_callable(
         Some(bits) => Ok(bits),
         None => Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("{owner}.{} is unavailable", String::from_utf8_lossy(name)),
         )),
     }
@@ -1334,7 +1338,7 @@ fn importlib_required_attribute(
         Some(bits) => Ok(bits),
         None => Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!("{owner}.{} is unavailable", String::from_utf8_lossy(name)),
         )),
     }
@@ -1381,7 +1385,7 @@ fn importlib_machinery_member(
         }
         return Err(raise_exception::<_>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format!(
                 "importlib.machinery.{} is unavailable",
                 String::from_utf8_lossy(name)
@@ -1491,7 +1495,7 @@ fn importlib_find_spec_object_bits(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid importlib find-spec payload: zip source archive missing",
                 ));
             };
@@ -1504,7 +1508,7 @@ fn importlib_find_spec_object_bits(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid importlib find-spec payload: zip source inner path missing",
                 ));
             };
@@ -1571,7 +1575,7 @@ fn importlib_find_spec_object_bits(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 &format!("unsupported importlib loader kind: {kind}"),
             ));
         }
@@ -1846,7 +1850,7 @@ fn importlib_module_support_bits(
         if obj_from_bits(cached_bits).is_none() {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!("import of {module_name} halted; None in sys.modules"),
             ));
         }
@@ -1868,7 +1872,7 @@ fn importlib_module_support_bits(
         | crate::builtins::modules::ModuleImportOutcome::Missing { .. } => {
             Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 &format!("runtime support module unavailable: {module_name}"),
             ))
         }
@@ -1975,10 +1979,10 @@ fn importlib_import_via_spec(
                     ExceptionCleanupPolicy, finish_exception_cleanup, take_raised,
                 };
                 let error = ExceptionValue::adopt(_py, molt_exception_last_pending());
-                if !crate::builtins::exceptions::exception_matches_builtin_name(
+                if !crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     error.bits(),
-                    "AttributeError",
+                    crate::BuiltinExc::AttributeError,
                 ) {
                     return Err(MoltObject::none().bits());
                 }
@@ -2005,10 +2009,10 @@ fn importlib_import_via_spec(
                             resolved_bits,
                         );
                         let missing = ExceptionValue::adopt(_py, molt_exception_last_pending());
-                        if crate::builtins::exceptions::exception_matches_builtin_name(
+                        if crate::builtins::exceptions::exception_matches_kind(
                             _py,
                             missing.bits(),
-                            "ModuleNotFoundError",
+                            crate::BuiltinExc::ModuleNotFoundError,
                         ) {
                             let _ = crate::builtins::exceptions::exception_replace_suppress_context(
                                 _py,
@@ -2235,7 +2239,7 @@ fn importlib_warn_legacy_loader(
         return Err(MoltObject::none().bits());
     }
     let message = ExceptionValue::adopt(py, MoltObject::from_ptr(pointer).bits());
-    let category = crate::builtins::exceptions::exception_type_bits_from_name(py, "ImportWarning");
+    let category = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::ImportWarning);
     if category == 0
         || exception_pending(py)
         || !crate::builtins::warnings_ext::emit_warning_object(py, message.bits(), category, 1)
@@ -2316,7 +2320,7 @@ fn importlib_spec_execution_transaction(
         };
         if missing_exec {
             if !options.allow_load_module_fallback {
-                return Err(raise_exception::<_>(py, "ImportError", ""));
+                return Err(raise_exception::<_>(py, BuiltinExc::ImportError, ""));
             }
             importlib_warn_legacy_loader(py, read_loader()?)?;
             let loader = read_loader()?;
@@ -2535,7 +2539,7 @@ pub extern "C" fn molt_importlib_load_module_from_spec(
             Err(bits) => return bits,
         };
         if obj_from_bits(loader_bits).is_none() {
-            return raise_exception::<_>(_py, "ImportError", "");
+            return raise_exception::<_>(_py, BuiltinExc::ImportError, "");
         }
         let modules_bits = match importlib_runtime_modules_bits(_py) {
             Ok(bits) => bits,
@@ -2616,7 +2620,7 @@ fn string_sequence_arg_from_bits(
         let Some(text) = string_obj_to_owned(obj_from_bits(value.bits())) else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{name} entries must be str"),
             ));
         };

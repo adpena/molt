@@ -3,6 +3,7 @@
 //! Each `pub extern "C" fn molt_bytes_*` / `molt_bytearray_*` is a separate
 //! linker symbol so that `wasm-ld --gc-sections` can drop unused entries.
 
+use crate::BuiltinExc;
 use crate::object::buffer_exports::bytearray_mutate;
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -51,7 +52,7 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
     };
     if let Some(number) = number {
         if !(0..=255).contains(&number) {
-            return raise_exception(py, "ValueError", "byte must be in range(0, 256)");
+            return raise_exception(py, BuiltinExc::ValueError, "byte must be in range(0, 256)");
         }
         let ptr = obj_from_bits(container).as_ptr().unwrap();
         let hay = unsafe { std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)) };
@@ -69,7 +70,7 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
     if !supported {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "a bytes-like object is required, not '{}'",
                 type_name(py, obj_from_bits(needle)),
@@ -116,7 +117,11 @@ where
     if !crate::object::buffer_exports::supports_buffer(py, source)
         .map_err(|error| error.raise(py, "invalid buffer preparation"))?
     {
-        return Err(raise_exception(py, "TypeError", &make_type_error()));
+        return Err(raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            &make_type_error(),
+        ));
     }
     crate::object::buffer_exports::ScopedBuffer::simple(py, source)
         .map_err(|error| error.raise(py, "invalid contiguous buffer"))
@@ -136,7 +141,7 @@ pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Op
             if type_id == TYPE_ID_STRING {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "can assign only bytes, buffers, or iterables of ints in range(0, 256)",
                 );
             }
@@ -164,13 +169,17 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.extend expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.extend expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "bytearray.extend expects bytearray",
                 );
             }
@@ -195,7 +204,7 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
                     clear_exception(_py);
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "can't set bytearray slice from {}",
                             type_name(_py, obj_from_bits(other_bits))
@@ -216,7 +225,11 @@ pub extern "C" fn molt_bytearray_extend(bytearray_bits: u64, other_bits: u64) ->
         };
         unsafe {
             let Some(required_len) = bytearray_len(bytearray_ptr).checked_add(payload.len()) else {
-                return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::MemoryError,
+                    "bytearray allocation failed",
+                );
             };
             if bytearray_mutate(_py, bytearray_ptr, required_len, |vec| {
                 vec.extend_from_slice(&payload)
@@ -235,13 +248,17 @@ pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.append expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.append expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "bytearray.append expects bytearray",
                 );
             }
@@ -251,7 +268,11 @@ pub extern "C" fn molt_bytearray_append(bytearray_bits: u64, val_bits: u64) -> u
         };
         unsafe {
             let Some(required_len) = bytearray_len(bytearray_ptr).checked_add(1) else {
-                return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::MemoryError,
+                    "bytearray allocation failed",
+                );
             };
             if bytearray_mutate(_py, bytearray_ptr, required_len, |vec| vec.push(byte)).is_none() {
                 return MoltObject::none().bits();
@@ -273,7 +294,7 @@ pub extern "C" fn molt_bytearray_fill_range(
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bytearray_fill_range expects bytearray",
             );
         };
@@ -281,7 +302,7 @@ pub extern "C" fn molt_bytearray_fill_range(
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "bytearray_fill_range expects bytearray",
                 );
             }
@@ -311,7 +332,7 @@ pub extern "C" fn molt_bytearray_fill_range(
             if start < 0 || stop < start || stop > len {
                 return raise_exception::<_>(
                     _py,
-                    "IndexError",
+                    BuiltinExc::IndexError,
                     "bytearray fill range out of range",
                 );
             }
@@ -326,11 +347,19 @@ pub extern "C" fn molt_bytearray_clear(bytearray_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.clear expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.clear expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
-                return raise_exception::<_>(_py, "TypeError", "bytearray.clear expects bytearray");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "bytearray.clear expects bytearray",
+                );
             }
             let _ = bytearray_mutate(_py, bytearray_ptr, 0, Vec::clear);
         }
@@ -343,11 +372,19 @@ pub extern "C" fn molt_bytearray_copy(bytearray_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.copy expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.copy expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
-                return raise_exception::<_>(_py, "TypeError", "bytearray.copy expects bytearray");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "bytearray.copy expects bytearray",
+                );
             }
             let data = bytes_like_slice(bytearray_ptr).unwrap_or(&[]);
             let ptr = alloc_bytearray(_py, data);
@@ -368,13 +405,17 @@ pub extern "C" fn molt_bytearray_insert(
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.insert expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.insert expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "bytearray.insert expects bytearray",
                 );
             }
@@ -396,7 +437,11 @@ pub extern "C" fn molt_bytearray_insert(
                 idx = len;
             }
             let Some(required_len) = bytearray_len(bytearray_ptr).checked_add(1) else {
-                return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::MemoryError,
+                    "bytearray allocation failed",
+                );
             };
             if bytearray_mutate(_py, bytearray_ptr, required_len, |vec| {
                 vec.insert(idx as usize, byte)
@@ -415,11 +460,19 @@ pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u6
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.pop expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
-                return raise_exception::<_>(_py, "TypeError", "bytearray.pop expects bytearray");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "bytearray.pop expects bytearray",
+                );
             }
             let mut idx = crate::builtins::numbers::index_ssize_from_obj(_py, index_bits);
             if exception_pending(_py) {
@@ -427,13 +480,17 @@ pub extern "C" fn molt_bytearray_pop(bytearray_bits: u64, index_bits: u64) -> u6
             }
             let len = bytearray_len(bytearray_ptr) as i64;
             if len == 0 {
-                return raise_exception::<_>(_py, "IndexError", "pop from empty bytearray");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "pop from empty bytearray",
+                );
             }
             if idx < 0 {
                 idx += len;
             }
             if idx < 0 || idx >= len {
-                return raise_exception::<_>(_py, "IndexError", "pop index out of range");
+                return raise_exception::<_>(_py, BuiltinExc::IndexError, "pop index out of range");
             }
             let Some(out) = bytearray_mutate(_py, bytearray_ptr, len as usize - 1, |elems| {
                 elems.remove(idx as usize)
@@ -450,13 +507,17 @@ pub extern "C" fn molt_bytearray_remove(bytearray_bits: u64, val_bits: u64) -> u
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.remove expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.remove expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "bytearray.remove expects bytearray",
                 );
             }
@@ -469,7 +530,7 @@ pub extern "C" fn molt_bytearray_remove(bytearray_bits: u64, val_bits: u64) -> u
                 let _ = bytearray_mutate(_py, bytearray_ptr, len - 1, |elems| elems.remove(pos));
                 return MoltObject::none().bits();
             }
-            raise_exception::<_>(_py, "ValueError", "value not found in bytearray")
+            raise_exception::<_>(_py, BuiltinExc::ValueError, "value not found in bytearray")
         }
     })
 }
@@ -479,13 +540,17 @@ pub extern "C" fn molt_bytearray_reverse(bytearray_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let bytearray_obj = obj_from_bits(bytearray_bits);
         let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.reverse expects bytearray");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bytearray.reverse expects bytearray",
+            );
         };
         unsafe {
             if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "bytearray.reverse expects bytearray",
                 );
             }
@@ -504,12 +569,12 @@ pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> 
         }
         if size < 0 {
             let msg = format!("Can only resize to positive sizes, got {size}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
         let Ok(size) = usize::try_from(size) else {
             return raise_exception::<_>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "cannot fit 'int' into an index-sized integer",
             );
         };
@@ -600,7 +665,7 @@ fn bytes_replace_protocol(
             )
         };
         let Some(pointer) = value.as_ptr() else {
-            return raise_exception(py, "TypeError", &message());
+            return raise_exception(py, BuiltinExc::TypeError, &message());
         };
         arguments[index] = match bytes_like_arg_or_type_error(py, pointer, message) {
             Ok(buffer) => Some(buffer),
@@ -662,7 +727,7 @@ fn bytes_hex_sep_from_bits(_py: &PyToken<'_>, sep_bits: u64) -> Result<Option<St
     let Some(sep_ptr) = sep_obj.as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "sep must be str or bytes",
         ));
     };
@@ -673,14 +738,14 @@ fn bytes_hex_sep_from_bits(_py: &PyToken<'_>, sep_bits: u64) -> Result<Option<St
             let Ok(sep_str) = std::str::from_utf8(bytes) else {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "sep must be str or bytes",
                 ));
             };
             if sep_str.chars().count() != 1 {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "sep must be length 1",
                 ));
             }
@@ -691,7 +756,7 @@ fn bytes_hex_sep_from_bits(_py: &PyToken<'_>, sep_bits: u64) -> Result<Option<St
             if bytes.len() != 1 {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "sep must be length 1",
                 ));
             }
@@ -701,7 +766,7 @@ fn bytes_hex_sep_from_bits(_py: &PyToken<'_>, sep_bits: u64) -> Result<Option<St
     }
     Err(raise_exception::<_>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "sep must be str or bytes",
     ))
 }
@@ -943,7 +1008,7 @@ fn bytes_translate_protocol(
             )
         };
         let Some(pointer) = value.as_ptr() else {
-            return raise_exception(py, "TypeError", &message());
+            return raise_exception(py, BuiltinExc::TypeError, &message());
         };
         arguments[index] =
             if kind == TYPE_ID_BYTES && unsafe { object_type_id(pointer) } == TYPE_ID_BYTES {
@@ -959,7 +1024,7 @@ fn bytes_translate_protocol(
         if index == 0 && arguments[0].as_ref().unwrap().as_slice().len() != 256 {
             return raise_exception(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "translation table must be 256 characters long",
             );
         }
@@ -1044,7 +1109,7 @@ pub extern "C" fn molt_bytes_maketrans(from_bits: u64, to_bits: u64) -> u64 {
                 )
             };
             let Some(pointer) = value.as_ptr() else {
-                return raise_exception(py, "TypeError", &message());
+                return raise_exception(py, BuiltinExc::TypeError, &message());
             };
             arguments[index] = match bytes_like_arg_or_type_error(py, pointer, message) {
                 Ok(buffer) => Some(buffer),
@@ -1056,7 +1121,7 @@ pub extern "C" fn molt_bytes_maketrans(from_bits: u64, to_bits: u64) -> u64 {
         if from.len() != to.len() {
             return raise_exception(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "maketrans arguments must have same length",
             );
         }
@@ -1105,7 +1170,7 @@ fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
         }
         let Some(hi) = fromhex_nibble(text[idx]) else {
             let msg = format!("non-hexadecimal number found in fromhex() arg at position {idx}");
-            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+            return Err(raise_exception::<_>(_py, BuiltinExc::ValueError, &msg));
         };
         idx += 1;
         // The low nibble must immediately follow the high nibble; whitespace is
@@ -1119,11 +1184,11 @@ fn bytes_fromhex_parse(_py: &PyToken<'_>, text: &[u8]) -> Result<Vec<u8>, u64> {
             } else {
                 format!("non-hexadecimal number found in fromhex() arg at position {idx}")
             };
-            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+            return Err(raise_exception::<_>(_py, BuiltinExc::ValueError, &msg));
         }
         let Some(lo) = fromhex_nibble(text[idx]) else {
             let msg = format!("non-hexadecimal number found in fromhex() arg at position {idx}");
-            return Err(raise_exception::<_>(_py, "ValueError", &msg));
+            return Err(raise_exception::<_>(_py, BuiltinExc::ValueError, &msg));
         };
         idx += 1;
         out.push((hi << 4) | lo);
@@ -1140,7 +1205,7 @@ pub extern "C" fn molt_bytes_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                 "fromhex() argument must be str, not {}",
                 type_name(_py, text_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         unsafe {
             if object_type_id(text_ptr) != TYPE_ID_STRING {
@@ -1148,7 +1213,7 @@ pub extern "C" fn molt_bytes_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                     "fromhex() argument must be str, not {}",
                     type_name(_py, text_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let text = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
             let out = match bytes_fromhex_parse(_py, text) {
@@ -1168,7 +1233,7 @@ pub extern "C" fn molt_bytes_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                 dec_ref_bits(_py, bytes_bits);
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "fromhex() requires a bytes subclass",
                 );
             }
@@ -1191,7 +1256,7 @@ pub extern "C" fn molt_bytearray_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                 "fromhex() argument must be str, not {}",
                 type_name(_py, text_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         unsafe {
             if object_type_id(text_ptr) != TYPE_ID_STRING {
@@ -1199,7 +1264,7 @@ pub extern "C" fn molt_bytearray_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                     "fromhex() argument must be str, not {}",
                     type_name(_py, text_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let text = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
             let out = match bytes_fromhex_parse(_py, text) {
@@ -1219,7 +1284,7 @@ pub extern "C" fn molt_bytearray_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                 dec_ref_bits(_py, ba_bits);
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "fromhex() requires a bytearray subclass",
                 );
             }
@@ -1352,7 +1417,7 @@ pub(super) fn bytes_item_to_u8(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind
     let msg = format!("'{}' object cannot be interpreted as an integer", type_name);
     let val = crate::builtins::numbers::index_bigint_from_obj(_py, bits, &msg)?;
     val.to_u8()
-        .or_else(|| raise_exception::<_>(_py, "ValueError", kind.range_error()))
+        .or_else(|| raise_exception::<_>(_py, BuiltinExc::ValueError, kind.range_error()))
 }
 
 fn bytes_collect_from_iter(
@@ -1380,11 +1445,11 @@ fn collect_byte_items(
 ) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     if out.try_reserve(capacity).is_err() {
-        return raise_exception::<_>(_py, "MemoryError", "bytes allocation failed");
+        return raise_exception::<_>(_py, BuiltinExc::MemoryError, "bytes allocation failed");
     }
     while let Some(byte) = next()? {
         if out.try_reserve(1).is_err() {
-            return raise_exception::<_>(_py, "MemoryError", "bytes allocation failed");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "bytes allocation failed");
         }
         out.push(byte);
     }
@@ -1411,7 +1476,7 @@ fn native_bytes_iterable(py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Op
             let name = unsafe {
                 molt_cpython_abi::api::typeobj::object_type_name_with_precision(source, 200)
             };
-            return raise_exception(py, "TypeError", &kind.non_iterable_message(&name));
+            return raise_exception(py, BuiltinExc::TypeError, &kind.non_iterable_message(&name));
         }
         crate::cpython_abi_hooks::propagate_native_failure(py, "bytes native iterator acquisition");
         return None;
@@ -1448,7 +1513,7 @@ fn native_bytes_iterable(py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Op
         }
         match u8::try_from(value) {
             Ok(byte) => Some(Some(byte)),
-            Err(_) => raise_exception(py, "ValueError", kind.range_error()),
+            Err(_) => raise_exception(py, BuiltinExc::ValueError, kind.range_error()),
         }
     })
 }
@@ -1461,8 +1526,11 @@ fn bytes_constructor_iter<'a, 'py>(
     let iter = crate::object::iterable::OwnedIterator::new(py, source);
     if iter.is_none() && exception_pending(py) {
         let error = molt_exception_last_pending();
-        let replace =
-            crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
+        let replace = crate::builtins::exceptions::exception_matches_kind(
+            py,
+            error,
+            crate::BuiltinExc::TypeError,
+        );
         if replace {
             clear_exception(py);
         }
@@ -1470,7 +1538,7 @@ fn bytes_constructor_iter<'a, 'py>(
         if replace {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &kind.non_iterable_message(&type_name(py, obj_from_bits(source))),
             );
         }
@@ -1489,7 +1557,7 @@ pub(crate) extern "C" fn bytes_bytes(bits: u64) -> u64 {
         else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "descriptor '__bytes__' requires a 'bytes' object",
             );
         };
@@ -1522,8 +1590,11 @@ fn byte_count(py: &PyToken<'_>, bits: u64) -> Result<Option<usize>, ()> {
     );
     let Some(value) = value else {
         let error = molt_exception_last_pending();
-        let fallback =
-            crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
+        let fallback = crate::builtins::exceptions::exception_matches_kind(
+            py,
+            error,
+            crate::BuiltinExc::TypeError,
+        );
         if fallback {
             clear_exception(py);
         }
@@ -1531,7 +1602,7 @@ fn byte_count(py: &PyToken<'_>, bits: u64) -> Result<Option<usize>, ()> {
         return if fallback { Ok(None) } else { Err(()) };
     };
     if value.is_negative() {
-        raise_exception::<()>(py, "ValueError", "negative count");
+        raise_exception::<()>(py, BuiltinExc::ValueError, "negative count");
         return Err(());
     }
     let Some(count) = value
@@ -1540,7 +1611,7 @@ fn byte_count(py: &PyToken<'_>, bits: u64) -> Result<Option<usize>, ()> {
     else {
         raise_exception::<()>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "cannot fit 'int' into an index-sized integer",
         );
         return Err(());
@@ -1586,7 +1657,11 @@ pub(in crate::object) fn byte_buffer(
     let bytes = unsafe { memoryview_collect_bytes(ptr) };
     let Some(bytes) = bytes else {
         if !exception_pending(py) {
-            raise_exception::<()>(py, "BufferError", "invalid constructor buffer geometry");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::BufferError,
+                "invalid constructor buffer geometry",
+            );
         }
         return None;
     };
@@ -1648,7 +1723,7 @@ fn bytes_from_obj_impl(
             };
             let failure = raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("__bytes__ returned non-bytes (type {name})"),
             );
             dec_ref_bits(py, result);
@@ -1660,13 +1735,17 @@ fn bytes_from_obj_impl(
         .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
     {
         if allow_count {
-            return raise_exception::<_>(py, "TypeError", "string argument without an encoding");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "string argument without an encoding",
+            );
         }
         let name = type_name(py, obj_from_bits(bits)).into_owned();
         let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]);
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("cannot convert '{name}' object to bytes"),
         );
     }
@@ -1736,7 +1815,7 @@ pub(crate) fn bytearray_init_from_arguments(
     else {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "descriptor '__init__' requires a 'bytearray' object",
         );
     };
@@ -1747,7 +1826,7 @@ pub(crate) fn bytearray_init_from_arguments(
         if bound[1].is_some() || bound[2].is_some() {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 if bound[1].is_some() {
                     "encoding without a string argument"
                 } else {
@@ -1762,7 +1841,11 @@ pub(crate) fn bytearray_init_from_arguments(
         .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING });
     if string {
         let Some(encoding) = bound[1] else {
-            return raise_exception::<_>(py, "TypeError", "string argument without an encoding");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::TypeError,
+                "string argument without an encoding",
+            );
         };
         let encoded = molt_bytes_from_str(
             source,
@@ -1780,7 +1863,7 @@ pub(crate) fn bytearray_init_from_arguments(
     if bound[1].is_some() || bound[2].is_some() {
         return raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             if bound[1].is_some() {
                 "encoding without a string argument"
             } else {
@@ -1871,7 +1954,7 @@ pub(crate) fn bytearray_init_from_arguments(
             break;
         };
         let Some(len) = (unsafe { bytearray_len(ptr) }).checked_add(1) else {
-            raise_exception::<()>(py, "MemoryError", "bytearray allocation failed");
+            raise_exception::<()>(py, BuiltinExc::MemoryError, "bytearray allocation failed");
             break;
         };
         if unsafe { bytearray_mutate(py, ptr, len, |bytes| bytes.push(value)) }.is_none() {
@@ -1905,7 +1988,7 @@ fn bytes_from_str_impl(
             class_name_for_error(type_of_bits(_py, bits))
         };
         let msg = kind.arg_type_message(arg, &type_name);
-        Err(raise_exception::<_>(_py, "TypeError", &msg))
+        Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg))
     };
     let encoding = match codec_arg(encoding_bits, "encoding") {
         Ok(encoding) => encoding,
@@ -1918,10 +2001,18 @@ fn bytes_from_str_impl(
     let src_obj = obj_from_bits(src_bits);
     let Some(src_ptr) = src_obj.as_ptr() else {
         if encoding.is_some() {
-            return raise_exception::<_>(_py, "TypeError", "encoding without a string argument");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "encoding without a string argument",
+            );
         }
         if errors.is_some() {
-            return raise_exception::<_>(_py, "TypeError", "errors without a string argument");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "errors without a string argument",
+            );
         }
         return MoltObject::none().bits();
     };
@@ -1930,18 +2021,26 @@ fn bytes_from_str_impl(
             if encoding.is_some() {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "encoding without a string argument",
                 );
             }
             if errors.is_some() {
-                return raise_exception::<_>(_py, "TypeError", "errors without a string argument");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "errors without a string argument",
+                );
             }
             return MoltObject::none().bits();
         }
     }
     let Some(encoding) = encoding else {
-        return raise_exception::<_>(_py, "TypeError", "string argument without an encoding");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "string argument without an encoding",
+        );
     };
     let bytes = unsafe { std::slice::from_raw_parts(string_bytes(src_ptr), string_len(src_ptr)) };
     let out = match encode_string_with_errors(bytes, &encoding, errors.as_deref()) {

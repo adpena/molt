@@ -6,6 +6,7 @@
 
 use super::class_storage::{ClassDeclaration, class_declares};
 use super::layout::{ClassSlotDeclaration, class_slot_declaration};
+use crate::BuiltinExc;
 use crate::object::ops_compare::string_storage_equal;
 use crate::*;
 use std::collections::{HashMap, HashSet};
@@ -121,7 +122,7 @@ pub(crate) unsafe fn prepare_slot_admission(
                 .as_ptr()
                 .filter(|&class| object_type_id(class) == TYPE_ID_TYPE)
             else {
-                raise_exception::<()>(py, "TypeError", "base must be a type object");
+                raise_exception::<()>(py, BuiltinExc::TypeError, "base must be a type object");
                 return Err(());
             };
             inc_ref_bits(py, base);
@@ -131,7 +132,11 @@ pub(crate) unsafe fn prepare_slot_admission(
         let policy = |base| {
             super::layout::class_slot_policy(obj_from_bits(base).as_ptr().unwrap()).ok_or_else(
                 || {
-                    raise_exception::<()>(py, "TypeError", "base has no live slot policy");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::TypeError,
+                        "base has no live slot policy",
+                    );
                 },
             )
         };
@@ -178,7 +183,7 @@ impl SlotAdmission {
                     let name = class_name_for_error(base.direct);
                     raise_exception::<()>(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("nonempty __slots__ not supported for subtype of '{name}'"),
                     );
                     return Err(());
@@ -190,7 +195,7 @@ impl SlotAdmission {
                     else {
                         raise_exception::<()>(
                             py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             &format!(
                                 "__slots__ items must be strings, not '{}'",
                                 type_name(py, obj_from_bits(name)),
@@ -200,14 +205,18 @@ impl SlotAdmission {
                     };
                     let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
                     if !super::ops_string::is_identifier_bytes(py, bytes) {
-                        raise_exception::<()>(py, "TypeError", "__slots__ must be identifiers");
+                        raise_exception::<()>(
+                            py,
+                            BuiltinExc::TypeError,
+                            "__slots__ must be identifiers",
+                        );
                         return Err(());
                     }
                     if bytes == b"__dict__" {
                         if !may_add_dict || add_dict {
                             raise_exception::<()>(
                                 py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "__dict__ slot disallowed: we already got one",
                             );
                             return Err(());
@@ -218,7 +227,7 @@ impl SlotAdmission {
                         if !may_add_weak || add_weak {
                             raise_exception::<()>(
                                 py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "__weakref__ slot disallowed: we already got one",
                             );
                             return Err(());
@@ -442,7 +451,7 @@ impl BaseSelection {
             if !self.active.insert(bits) {
                 raise_exception::<()>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "a __bases__ item causes an inheritance cycle",
                 );
                 return Err(());
@@ -477,11 +486,11 @@ impl BaseSelection {
             let mut pins = Vec::with_capacity(bases.len());
             for &bits in bases {
                 let Some(class) = obj_from_bits(bits).as_ptr() else {
-                    raise_exception::<()>(py, "TypeError", "base must be a type object");
+                    raise_exception::<()>(py, BuiltinExc::TypeError, "base must be a type object");
                     return Err(());
                 };
                 if object_type_id(class) != TYPE_ID_TYPE {
-                    raise_exception::<()>(py, "TypeError", "base must be a type object");
+                    raise_exception::<()>(py, BuiltinExc::TypeError, "base must be a type object");
                     return Err(());
                 }
                 inc_ref_bits(py, bits);
@@ -506,7 +515,7 @@ impl BaseSelection {
                         Err(_) => {
                             raise_exception::<()>(
                                 py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "multiple bases have instance lay-out conflict",
                             );
                             return Err(());
@@ -691,7 +700,11 @@ impl PreparedLayout {
 }
 
 fn overflow(py: &PyToken<'_>) {
-    raise_exception::<()>(py, "OverflowError", "class instance layout is too large");
+    raise_exception::<()>(
+        py,
+        BuiltinExc::OverflowError,
+        "class instance layout is too large",
+    );
 }
 
 unsafe fn next_offset(py: &PyToken<'_>, rows: &[ClassField], prefix: usize) -> Result<usize, ()> {
@@ -725,7 +738,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             .ok_or_else(|| {
                 raise_exception::<()>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "class namespace is absent during sealing",
                 );
             })?;
@@ -761,7 +774,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                     .ok_or_else(|| {
                         raise_exception::<()>(
                             py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "__molt_field_offsets__ must be dict",
                         );
                     })?,
@@ -894,7 +907,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                     if inherited.offset != field.offset {
                         raise_exception::<()>(
                             py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "explicit field offset disagrees with inherited fixed storage",
                         );
                         return Err(());
@@ -904,7 +917,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                 if rows.iter().any(|existing| existing.offset == field.offset) {
                     raise_exception::<()>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "explicit field offset overlaps inherited fixed storage",
                     );
                     return Err(());
@@ -949,7 +962,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
                 if rows.iter().any(|field| field.offset == hint.offset) {
                     raise_exception::<()>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "explicit slot offset overlaps inherited storage",
                     );
                     return Err(());
@@ -996,7 +1009,11 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
             if (*super::header_from_obj_ptr(original_ptr.unwrap()))
                 .has_flag(super::HEADER_FLAG_FROZEN_LAYOUT_MAP)
             {
-                raise_exception::<()>(py, "TypeError", "class field map is already sealed");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "class field map is already sealed",
+                );
                 return Err(());
             }
             bits
@@ -1168,7 +1185,7 @@ pub(crate) unsafe fn scalar_value_offset(
         if field.is_none() {
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "scalar class has no matching intrinsic value word",
             );
         }
@@ -1290,7 +1307,7 @@ mod tests {
             unsafe {
                 let native = builtin_classes(py);
                 let cached_exception =
-                    crate::builtins::exceptions::exception_type_bits_from_name(py, "ValueError");
+                    crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::ValueError);
                 let cached_exception = obj_from_bits(cached_exception).as_ptr().unwrap();
                 let published_policy =
                     crate::builtins::attr::class_slots_info(py, cached_exception)
@@ -1339,10 +1356,10 @@ mod tests {
                     let result = molt_class_set_base(admitted, base);
                     dec_ref_bits(py, result);
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "TypeError",
+                        crate::BuiltinExc::TypeError,
                     ));
                     assert_eq!(
                         crate::builtins::exceptions::format_exception_message(
@@ -1471,10 +1488,10 @@ mod tests {
                 );
                 REENTERED_SLOT_CLASS.store(0, std::sync::atomic::Ordering::SeqCst);
                 let error = crate::builtins::exceptions::molt_exception_last_pending();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "RuntimeError"
+                    crate::BuiltinExc::RuntimeError
                 ));
                 assert_eq!(
                     crate::builtins::exceptions::format_exception_message(
@@ -1513,13 +1530,19 @@ mod tests {
     fn exception_slot_admission_preserves_incoming_raised_identity() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception::<()>(py, "ValueError", "incoming class construction context");
-            let incoming = crate::builtins::exceptions::molt_exception_last_pending();
-            let class = crate::builtins::exceptions::exception_type_bits_from_name(
+            // Force a cold builtin factory so admission runs under the error.
+            let kind = BuiltinExc::BinasciiIncomplete;
+            let slot = &crate::runtime_state(py).exception_kind_slots
+                [crate::ExcKind::from(kind).code() as usize];
+            let previous = slot.swap(0, std::sync::atomic::Ordering::AcqRel);
+            raise_exception::<()>(
                 py,
-                "SlotAdmissionPendingException",
+                BuiltinExc::ValueError,
+                "incoming class construction context",
             );
-            let class = obj_from_bits(class)
+            let incoming = crate::builtins::exceptions::molt_exception_last_pending();
+            let class_bits = crate::builtins::exceptions::exception_class_bits(py, kind);
+            let class = obj_from_bits(class_bits)
                 .as_ptr()
                 .expect("class admitted under pending error");
             assert!(unsafe { super::super::layout::class_slot_policy(class) }.is_some());
@@ -1529,6 +1552,14 @@ mod tests {
             clear_exception(py);
             dec_ref_bits(py, incoming);
             dec_ref_bits(py, restored);
+            if previous != 0 {
+                assert_eq!(
+                    slot.swap(previous, std::sync::atomic::Ordering::AcqRel),
+                    class_bits
+                );
+                unsafe { crate::object::heap_lifecycle::clear_cycle_edges(py, class) };
+                dec_ref_bits(py, class_bits);
+            }
         });
     }
 

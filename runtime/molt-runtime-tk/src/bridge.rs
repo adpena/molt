@@ -5,9 +5,10 @@
 //! `tkinter_core.rs` consume this boundary instead of carrying local shim
 //! copies.
 
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{
-    MoltObject, OwnedBridgeHandleSnapshot, OwnedRuntimeValue, PyToken, TYPE_ID_LIST, TYPE_ID_TUPLE,
-    bridge_owned_handle_snapshot, obj_from_bits, rt_dec_ref, rt_exception_clear,
+    ExcKind, MoltObject, OwnedBridgeHandleSnapshot, OwnedRuntimeValue, PyToken, TYPE_ID_LIST,
+    TYPE_ID_TUPLE, bridge_owned_handle_snapshot, obj_from_bits, rt_dec_ref, rt_exception_clear,
     rt_exception_pending, rt_inc_ref, rt_is_truthy, rt_list, rt_raise_str, rt_str,
     rt_string_as_bytes, rt_string_from, rt_tuple,
 };
@@ -58,7 +59,7 @@ pub(crate) fn clear_exception(_py: &PyToken) {
     rt_exception_clear();
 }
 
-pub(crate) fn raise_exception_u64(_py: &PyToken, kind: &str, msg: &str) -> u64 {
+pub(crate) fn raise_exception_u64(_py: &PyToken, kind: impl Into<ExcKind>, msg: &str) -> u64 {
     rt_raise_str(kind, msg)
 }
 
@@ -142,7 +143,7 @@ pub(crate) fn format_obj_str(_py: &PyToken, obj: MoltObject) -> String {
 pub(crate) fn alloc_string_result(value: &str, error_msg: &str) -> Result<u64, u64> {
     let bits = rt_string_from(value);
     if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str("MemoryError", error_msg));
+        return Err(rt_raise_str(BuiltinExc::MemoryError, error_msg));
     }
     Ok(bits)
 }
@@ -150,7 +151,7 @@ pub(crate) fn alloc_string_result(value: &str, error_msg: &str) -> Result<u64, u
 pub(crate) fn alloc_list_result(elems: &[u64], error_msg: &str) -> Result<u64, u64> {
     let bits = rt_list(elems);
     if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str("MemoryError", error_msg));
+        return Err(rt_raise_str(BuiltinExc::MemoryError, error_msg));
     }
     Ok(bits)
 }
@@ -158,7 +159,7 @@ pub(crate) fn alloc_list_result(elems: &[u64], error_msg: &str) -> Result<u64, u
 pub(crate) fn alloc_tuple_result(elems: &[u64], error_msg: &str) -> Result<u64, u64> {
     let bits = rt_tuple(elems);
     if bits == 0 || rt_exception_pending() {
-        return Err(rt_raise_str("MemoryError", error_msg));
+        return Err(rt_raise_str(BuiltinExc::MemoryError, error_msg));
     }
     Ok(bits)
 }

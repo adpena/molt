@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 const LOOKUP_HIT: u64 = 0;
 const LOOKUP_KEY_ERROR: u64 = 1;
@@ -12,9 +13,9 @@ extern "C" fn namespace_lookup_callback(_self: u64, _key: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         LOOKUP_CALLS.fetch_add(1, Ordering::SeqCst);
         match LOOKUP_MODE.load(Ordering::SeqCst) {
-            LOOKUP_KEY_ERROR => raise_exception::<u64>(_py, "KeyError", "callback miss"),
+            LOOKUP_KEY_ERROR => raise_exception::<u64>(_py, BuiltinExc::KeyError, "callback miss"),
             LOOKUP_VALUE_ERROR => {
-                raise_exception::<u64>(_py, "ValueError", "callback lookup failed")
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "callback lookup failed")
             }
             _ => {
                 let result = LOOKUP_RESULT.load(Ordering::SeqCst);
@@ -82,10 +83,10 @@ fn callback_dict_subclass(_py: &PyToken<'_>) -> (u64, u64, u64) {
     (instance, class, function)
 }
 
-fn assert_and_clear_exception(_py: &PyToken<'_>, expected: &str, message: &str) {
+fn assert_and_clear_exception(_py: &PyToken<'_>, expected: crate::BuiltinExc, message: &str) {
     assert!(exception_pending(_py));
     let exception = molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         _py, exception, expected
     ));
     let rendered = obj_from_bits(exception)
@@ -122,7 +123,11 @@ fn relative_import_reads_subclass_globals_backing_without_mapping_callbacks() {
         );
         assert!(obj_from_bits(result).is_none());
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 0);
-        assert_and_clear_exception(_py, "ImportError", "no known parent package");
+        assert_and_clear_exception(
+            _py,
+            crate::BuiltinExc::ImportError,
+            "no known parent package",
+        );
         for bits in [globals, class, function, package_key, empty] {
             dec_ref_bits(_py, bits);
         }
@@ -319,7 +324,7 @@ fn global_dict_subclass_value_error_propagates_without_builtins_fallback() {
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(refcount(fallback), fallback_before);
         assert_eq!(refcount(globals), globals_before);
-        assert_and_clear_exception(_py, "ValueError", "callback lookup failed");
+        assert_and_clear_exception(_py, crate::BuiltinExc::ValueError, "callback lookup failed");
 
         for bits in [globals, class, function, builtins, fallback, key] {
             dec_ref_bits(_py, bits);
@@ -367,13 +372,17 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
         assert!(obj_from_bits(missing).is_none());
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(refcount(value), value_before);
-        assert_and_clear_exception(_py, "NameError", "name 'len' is not defined");
+        assert_and_clear_exception(
+            _py,
+            crate::BuiltinExc::NameError,
+            "name 'len' is not defined",
+        );
 
         LOOKUP_MODE.store(LOOKUP_VALUE_ERROR, Ordering::SeqCst);
         assert_eq!(lookup_builtin_global(_py, key, builtins), Err(()));
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 3);
         assert_eq!(refcount(value), value_before);
-        assert_and_clear_exception(_py, "ValueError", "callback lookup failed");
+        assert_and_clear_exception(_py, crate::BuiltinExc::ValueError, "callback lookup failed");
 
         assert_eq!(lookup_builtin_global(_py, key, 0), Ok(None));
         assert_eq!(LOOKUP_CALLS.load(Ordering::SeqCst), 3);
@@ -394,7 +403,11 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
                 dec_ref_bits(_py, found);
             }
             if mode == LOOKUP_VALUE_ERROR {
-                assert_and_clear_exception(_py, "ValueError", "callback lookup failed");
+                assert_and_clear_exception(
+                    _py,
+                    crate::BuiltinExc::ValueError,
+                    "callback lookup failed",
+                );
             } else {
                 assert!(!exception_pending(_py));
             }
@@ -416,7 +429,7 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
             crate::builtins::functions::lookup_builtin_name(_py, "len"),
             Err(())
         );
-        assert_and_clear_exception(_py, "TypeError", "not subscriptable");
+        assert_and_clear_exception(_py, crate::BuiltinExc::TypeError, "not subscriptable");
         crate::builtins::frames::frame_stack_pop(_py);
 
         LOOKUP_RESULT.store(0, Ordering::SeqCst);

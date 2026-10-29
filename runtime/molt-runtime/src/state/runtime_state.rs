@@ -402,7 +402,8 @@ pub(crate) struct RuntimeState {
     /// initialization/transaction metadata. Owned by builtins::module_table.
     pub(crate) module_table: OnceLock<crate::builtins::module_table::ModuleTable>,
     pub(crate) intrinsic_registry_module: AtomicPtr<u8>,
-    pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
+    /// Owned exception classes indexed by `ExcKind` code (slot 0 is invalid).
+    pub(crate) exception_kind_slots: [AtomicU64; molt_obj_model::ExcKind::SLOTS],
     pub(crate) exceptions: ExceptionsRuntimeState,
     pub(crate) codec_error_handlers: Mutex<HashMap<String, u64>>,
     pub(crate) argv: Mutex<Vec<Vec<u8>>>,
@@ -557,7 +558,7 @@ impl RuntimeState {
             ),
             module_table: OnceLock::new(),
             intrinsic_registry_module: AtomicPtr::new(std::ptr::null_mut()),
-            exception_type_cache: Mutex::new(HashMap::new()),
+            exception_kind_slots: [const { AtomicU64::new(0) }; molt_obj_model::ExcKind::SLOTS],
             exceptions: ExceptionsRuntimeState::new(),
             codec_error_handlers: Mutex::new({
                 let mut handlers = HashMap::new();
@@ -2358,7 +2359,11 @@ mod tests {
                     &py,
                     &serde_json::json!({"startup_sink_canary": 73}),
                 );
-                let exception = crate::alloc_exception(&py, "RuntimeError", "startup sink canary");
+                let exception = crate::alloc_exception(
+                    &py,
+                    crate::BuiltinExc::RuntimeError,
+                    "startup sink canary",
+                );
                 assert!(!exception.is_null());
                 let bits = MoltObject::from_ptr(exception).bits();
                 crate::builtins::exceptions::molt_raise(bits);

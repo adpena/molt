@@ -3,6 +3,7 @@
 //! objects retain them. Cache rollback preserves errors; semantic owners retire ordinarily.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::object::foreign::{NativeObjectOwner, retire_native_reference};
 
 thread_local! {
@@ -64,14 +65,14 @@ unsafe fn run_extension_init(
     let Some(name) = crate::string_obj_to_owned(MoltObject::from_bits(name_bits)) else {
         return crate::raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "extension module name must be a str",
         );
     };
     if name.is_empty() {
         return crate::raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "extension module name must not be empty",
         );
     }
@@ -126,21 +127,21 @@ pub extern "C" fn molt_cpython_abi_run_static_extension_init(
             }
             return crate::raise_exception::<u64>(
                 &py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "C extension runtime hook registration failed",
             );
         }
         let Ok(address) = usize::try_from(init_address) else {
             return crate::raise_exception::<u64>(
                 &py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "extension initializer address is out of range",
             );
         };
         if address == 0 {
             return crate::raise_exception::<u64>(
                 &py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "extension initializer is NULL",
             );
         }
@@ -541,14 +542,14 @@ fn initialization_failure(_py: &crate::PyToken<'_>, message: &str) -> u64 {
         // loader diagnostics. Preserve their type, identity and traceback.
         return MoltObject::none().bits();
     }
-    crate::raise_exception::<u64>(_py, "ImportError", message)
+    crate::raise_exception::<u64>(_py, BuiltinExc::ImportError, message)
 }
 
 fn initialization_contract_violation(_py: &crate::PyToken<'_>, message: &str) -> u64 {
     let _ = transfer_pending_cpython_exception();
     let prior_bits = crate::builtins::exceptions::molt_exception_last_pending();
     let Some(prior_ptr) = crate::obj_from_bits(prior_bits).as_ptr() else {
-        return crate::raise_exception::<u64>(_py, "SystemError", message);
+        return crate::raise_exception::<u64>(_py, BuiltinExc::SystemError, message);
     };
     let detail = crate::format_exception_message(_py, prior_ptr);
     let combined = if detail.is_empty() || message.contains(&detail) {
@@ -560,7 +561,8 @@ fn initialization_contract_violation(_py: &crate::PyToken<'_>, message: &str) ->
     // A non-NULL result with an error set violates the C API. CPython reports
     // SystemError while retaining the original exception as its context.
     crate::clear_exception(_py);
-    let wrapper_ptr = crate::builtins::exceptions::alloc_exception(_py, "SystemError", &combined);
+    let wrapper_ptr =
+        crate::builtins::exceptions::alloc_exception(_py, BuiltinExc::SystemError, &combined);
     if wrapper_ptr.is_null() {
         crate::dec_ref_bits(_py, prior_bits);
         return MoltObject::none().bits();
@@ -612,7 +614,7 @@ fn initialize_result(
         }
         return crate::raise_exception::<u64>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "extension PyInit returned NULL without setting an exception",
         );
     }
@@ -656,9 +658,9 @@ fn initialize_result(
         return crate::raise_exception::<u64>(
             py,
             if name.is_none() {
-                "TypeError"
+                crate::BuiltinExc::TypeError
             } else {
-                "ValueError"
+                crate::BuiltinExc::ValueError
             },
             "extension module name must be a nonempty str",
         );
@@ -812,14 +814,14 @@ pub(crate) fn execute_prepared_extension(
         if def.is_null() {
             return crate::raise_exception::<u64>(
                 &py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 "extension exec requires a module created from a C module definition",
             );
         }
         let Some(name) = crate::string_obj_to_owned(MoltObject::from_bits(name_bits)) else {
             return crate::raise_exception::<u64>(
                 &py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "extension module name must be a str",
             );
         };

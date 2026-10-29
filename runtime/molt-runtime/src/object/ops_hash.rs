@@ -1,5 +1,6 @@
 //! Hash functions — extracted from ops.rs.
 
+use crate::BuiltinExc;
 use crate::randomness::{fill_os_random, os_random_supported};
 use crate::*;
 use molt_cpython_abi::abi_types::{Py_hash_t, Py_uhash_t};
@@ -776,7 +777,7 @@ fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
 fn hash_unhashable(_py: &PyToken<'_>, obj: MoltObject) -> i64 {
     let name = type_name(_py, obj);
     let msg = format!("unhashable type: '{name}'");
-    raise_exception::<()>(_py, "TypeError", &msg);
+    raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
     -1
 }
 
@@ -834,7 +835,11 @@ fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         // Writable views are unhashable. Checked before the format restriction so
         // a writable, non-byte-format view still reports "writable" (CPython order).
         if !memoryview_readonly(ptr) {
-            raise_exception::<()>(_py, "ValueError", "cannot hash writable memoryview object");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::ValueError,
+                "cannot hash writable memoryview object",
+            );
             return -1;
         }
 
@@ -846,7 +851,7 @@ fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
         if !is_byte_format {
             raise_exception::<()>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "memoryview: hashing is restricted to formats 'B', 'b' or 'c'",
             );
             return -1;
@@ -874,7 +879,7 @@ fn hash_memoryview(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
             None => {
                 raise_exception::<()>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "operation forbidden on released memoryview object",
                 );
                 -1
@@ -1111,7 +1116,7 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
             }
             let name = type_name(_py, obj);
             let msg = format!("unhashable type: '{name}'");
-            raise_exception::<()>(_py, "TypeError", &msg);
+            raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
             return Some(-1);
         }
         let res_bits = call_callable0(_py, call_bits);
@@ -1135,7 +1140,7 @@ unsafe fn hash_from_dunder(_py: &PyToken<'_>, obj: MoltObject, obj_ptr: *mut u8)
         } else {
             let msg = "__hash__ method should return an integer";
             dec_ref_bits(_py, res_bits);
-            raise_exception::<()>(_py, "TypeError", msg);
+            raise_exception::<()>(_py, BuiltinExc::TypeError, msg);
             return Some(-1);
         };
         dec_ref_bits(_py, res_bits);
@@ -1153,7 +1158,7 @@ fn hash_descriptor_type_error(_py: &PyToken<'_>, self_bits: u64, expected: &str)
         "descriptor '__hash__' requires a '{}' object but received '{}'",
         expected, type_label
     );
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 #[unsafe(no_mangle)]
@@ -1269,7 +1274,7 @@ pub(crate) fn ensure_hashable(_py: &PyToken<'_>, key_bits: u64, ctx: HashContext
             {
                 let name = type_name(_py, obj);
                 let msg = unhashable_type_message(_py, &name, ctx);
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
     }

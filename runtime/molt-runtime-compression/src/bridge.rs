@@ -101,7 +101,7 @@ pub fn runtime_state_get_or_init(
 
 /// Raise an exception and return a sentinel u64.
 #[inline]
-pub fn raise_exception(_py: &PyToken, kind: &str, msg: &str) -> u64 {
+pub fn raise_exception(_py: &PyToken, kind: impl Into<ExcKind>, msg: &str) -> u64 {
     molt_runtime_core::rt_raise_str(kind, msg)
 }
 

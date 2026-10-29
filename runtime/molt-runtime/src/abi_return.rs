@@ -63,7 +63,7 @@ const _: [AbiReturnKind; 4] = [
 #[inline]
 pub(crate) fn fail<D: AbiReturnDomain>(
     py: &PyToken<'_>,
-    exception: &'static str,
+    exception: crate::BuiltinExc,
     message: &'static str,
 ) -> D::Repr {
     let _ = D::KIND;
@@ -227,7 +227,8 @@ mod tests {
     fn warm_runtime_raw_failures_never_return_boxed_object_sentinels() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let _ = crate::raise_exception::<u64>(py, "ValueError", "warm runtime");
+            let _ =
+                crate::raise_exception::<u64>(py, crate::BuiltinExc::ValueError, "warm runtime");
             crate::clear_exception(py);
         });
 

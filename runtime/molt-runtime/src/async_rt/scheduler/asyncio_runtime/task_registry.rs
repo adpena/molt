@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -133,7 +134,7 @@ fn asyncio_task_registry_pop_impl(_py: &PyToken<'_>, token_bits: u64) -> u64 {
 
 fn asyncio_task_last_exception_clear_impl(_py: &PyToken<'_>, task_bits: u64) -> u64 {
     let Some(task_ptr) = resolve_task_ptr(task_bits) else {
-        return raise_exception::<u64>(_py, "TypeError", "object is not awaitable");
+        return raise_exception::<u64>(_py, BuiltinExc::TypeError, "object is not awaitable");
     };
     if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TASK_LAST_EXCEPTION_CLEAR) {
         eprintln!(
@@ -372,7 +373,7 @@ fn asyncio_enter_task_impl(_py: &PyToken<'_>, loop_bits: u64, task_bits: u64) ->
     if obj_from_bits(loop_bits).is_none() || obj_from_bits(task_bits).is_none() {
         return raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "_enter_task requires non-None loop and task",
         );
     }
@@ -384,7 +385,7 @@ fn asyncio_enter_task_impl(_py: &PyToken<'_>, loop_bits: u64, task_bits: u64) ->
         drop(guard);
         return raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "Cannot enter into task while another task is being executed",
         );
     }
@@ -400,7 +401,7 @@ fn asyncio_leave_task_impl(_py: &PyToken<'_>, loop_bits: u64, task_bits: u64) ->
     if obj_from_bits(loop_bits).is_none() || obj_from_bits(task_bits).is_none() {
         return raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "_leave_task requires non-None loop and task",
         );
     }
@@ -418,7 +419,7 @@ fn asyncio_leave_task_impl(_py: &PyToken<'_>, loop_bits: u64, task_bits: u64) ->
             drop(guard);
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "Leaving a task that is not the current task",
             )
         }

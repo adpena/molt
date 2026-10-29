@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::{BuiltinExc, ModuleExc};
 
 pub(super) fn urllib_request_set_attr(
     _py: &molt_runtime_core::CoreGilToken,
@@ -34,7 +35,7 @@ pub(super) fn urllib_request_ensure_handlers_list(
         let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "opener handler registry is invalid",
             ));
         };
@@ -42,7 +43,7 @@ pub(super) fn urllib_request_ensure_handlers_list(
             if object_type_id(list_ptr) != crate::bridge::type_id_list() {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "opener handler registry is invalid",
                 ));
             }
@@ -254,7 +255,7 @@ pub(super) fn urllib_response_headers_list_bits(
     if unsafe { object_type_id(cached_ptr) } != crate::bridge::type_id_list() {
         return Err(raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "response headers cache is invalid",
         ));
     }
@@ -393,8 +394,9 @@ fn http_client_encode_text<'a>(
         }
         let bits = MoltObject::from_ptr(ptr).bits();
         let text = unsafe { ProtectedRuntimeValue::from_owned_bits(py, bits) };
-        let method = attr_optional(py, text.bits(), b"encode")?
-            .ok_or_else(|| raise_exception::<u64>(py, "AttributeError", "str has no encode"))?;
+        let method = attr_optional(py, text.bits(), b"encode")?.ok_or_else(|| {
+            raise_exception::<u64>(py, BuiltinExc::AttributeError, "str has no encode")
+        })?;
         let method = unsafe { ProtectedRuntimeValue::from_owned_bits(py, method) };
         let encoding_ptr = alloc_string(py, encoding_name);
         if encoding_ptr.is_null() {
@@ -417,7 +419,7 @@ fn http_client_encode_text<'a>(
                 .ok_or_else(|| {
                     raise_exception::<u64>(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "request encoding must return bytes-like data",
                     )
                 })?
@@ -435,7 +437,7 @@ pub(super) fn http_client_validate_method(
     if method.bytes().any(|byte| byte < 0x20) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "method can't contain control characters",
         ));
     }
@@ -466,7 +468,7 @@ pub(super) fn http_client_validate_header_name(
     if invalid_name {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "Invalid header name",
         ));
     }
@@ -484,7 +486,7 @@ pub(super) fn http_client_validate_header_value(
     }) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "Invalid header value",
         ));
     }
@@ -590,14 +592,14 @@ pub(super) fn http_message_handle_from_bits(
     let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "http message handle is invalid",
         ));
     };
     if handle <= 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "http message handle is invalid",
         ));
     }
@@ -959,7 +961,7 @@ pub(super) fn urllib_http_extract_headers_mapping(
         }
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "headers must be a mapping",
         ));
     }
@@ -987,7 +989,7 @@ pub(super) fn urllib_http_extract_headers_mapping(
             let Some(item_ptr) = obj_from_bits(item_bits).as_ptr() else {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "headers mapping items must be pairs",
                 ));
             };
@@ -997,7 +999,7 @@ pub(super) fn urllib_http_extract_headers_mapping(
             {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "headers mapping items must be pairs",
                 ));
             }
@@ -1005,7 +1007,7 @@ pub(super) fn urllib_http_extract_headers_mapping(
             if fields.len() != 2 {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "headers mapping items must be pairs",
                 ));
             }
@@ -1097,7 +1099,7 @@ pub(super) fn urllib_cookiejar_store_headers_for_url(
 }
 
 pub(super) fn urllib_http_timeout_error(_py: &molt_runtime_core::CoreGilToken) -> u64 {
-    raise_exception::<_>(_py, "TimeoutError", "timed out")
+    raise_exception::<_>(_py, BuiltinExc::TimeoutError, "timed out")
 }
 
 pub(super) fn urllib_http_request_timeout(
@@ -1117,14 +1119,14 @@ pub(super) fn urllib_http_request_timeout(
     let Some(value) = timeout else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "timeout must be a number",
         ));
     };
     if value < 0.0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "timeout value out of range",
         ));
     }
@@ -1272,7 +1274,7 @@ pub(super) fn http_client_response_handle_from_bits(
     let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "response handle is invalid",
         ));
     };
@@ -1286,14 +1288,14 @@ pub(super) fn http_client_connection_handle_from_bits(
     let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "connection handle is invalid",
         ));
     };
     if handle <= 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "connection handle is invalid",
         ));
     }
@@ -1314,9 +1316,17 @@ pub(super) fn http_client_execute_wire(
             Ok(value) => value,
             Err(err) => {
                 if err.kind() == ErrorKind::TimedOut || err.kind() == ErrorKind::WouldBlock {
-                    return Err(raise_exception::<u64>(py, "TimeoutError", "timed out"));
+                    return Err(raise_exception::<u64>(
+                        py,
+                        BuiltinExc::TimeoutError,
+                        "timed out",
+                    ));
                 }
-                return Err(raise_exception::<u64>(py, "OSError", &err.to_string()));
+                return Err(raise_exception::<u64>(
+                    py,
+                    BuiltinExc::OSError,
+                    &err.to_string(),
+                ));
             }
         };
     let scheme = if use_tls { "https" } else { "http" };
@@ -1385,13 +1395,13 @@ pub(super) fn urllib_http_extract_method_and_body(
     }
     drop(name);
     let method = string_obj_to_owned(obj_from_bits(method.bits()))
-        .ok_or_else(|| raise_exception::<u64>(py, "TypeError", "method must be str"))?;
+        .ok_or_else(|| raise_exception::<u64>(py, BuiltinExc::TypeError, "method must be str"))?;
     let body = if obj_from_bits(data.bits()).is_none() {
         Vec::new()
     } else {
         unsafe { bytes_like_slice(data.bits()) }
             .ok_or_else(|| {
-                raise_exception::<u64>(py, "TypeError", "Request data must be bytes-like")
+                raise_exception::<u64>(py, BuiltinExc::TypeError, "Request data must be bytes-like")
             })?
             .to_vec()
     };
@@ -1727,8 +1737,8 @@ fn urllib_http_try_inmemory_dispatch(
     let module_bits = crate::bridge::molt_module_import(module_name_bits);
     dec_ref_bits(_py, module_name_bits);
     if exception_pending(_py) {
-        if pending_exception_matches_builtin(_py, "ImportError")
-            || pending_exception_matches_builtin(_py, "TypeError")
+        if pending_exception_matches_builtin(_py, BuiltinExc::ImportError)
+            || pending_exception_matches_builtin(_py, BuiltinExc::TypeError)
         {
             clear_exception(_py);
             if !obj_from_bits(module_bits).is_none() {
@@ -1822,7 +1832,7 @@ fn urllib_http_try_inmemory_dispatch(
         }
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "socketserver dispatch must return bytes-like payload",
         ));
     };
@@ -1831,7 +1841,7 @@ fn urllib_http_try_inmemory_dispatch(
         dec_ref_bits(_py, response_bits);
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "socketserver dispatch must return bytes-like payload",
         ));
     };
@@ -1839,7 +1849,7 @@ fn urllib_http_try_inmemory_dispatch(
     dec_ref_bits(_py, response_bits);
     match urllib_http_parse_response_bytes(&raw) {
         Ok(parsed) => Ok(Some(parsed)),
-        Err(msg) => Err(raise_exception::<u64>(_py, "ValueError", &msg)),
+        Err(msg) => Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)),
     }
 }
 
@@ -1998,7 +2008,7 @@ pub(super) fn urllib_request_response_handle_from_bits(
     let Some(ptr) = obj_from_bits(response_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "response object is invalid",
         ));
     };
@@ -2006,7 +2016,7 @@ pub(super) fn urllib_request_response_handle_from_bits(
     if ty != crate::bridge::type_id_tuple() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "response object is invalid",
         ));
     }
@@ -2014,66 +2024,44 @@ pub(super) fn urllib_request_response_handle_from_bits(
     if fields.len() != 2 {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "response object is invalid",
         ));
     }
     let Some(tag) = string_obj_to_owned(obj_from_bits(fields[0])) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "response object is invalid",
         ));
     };
     if tag != "__molt_urllib_response__" {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "response object is invalid",
         ));
     }
     let Some(handle) = to_i64(obj_from_bits(fields[1])) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "response object handle is invalid",
         ));
     };
     Ok(handle)
 }
 
+/// The owned class of a module exception row. Its owner (`http.client` or
+/// `urllib.error`) is already loaded by the module calling into this crate; the
+/// runtime takes the class from it once and keeps it (HF-207).
 pub(super) fn http_module_error_class_bits(
     _py: &molt_runtime_core::CoreGilToken,
-    module_name: &[u8],
-    class_name: &[u8],
+    kind: ModuleExc,
 ) -> Result<u64, u64> {
-    let module_name_ptr = alloc_string(_py, module_name);
-    if module_name_ptr.is_null() {
-        return Err(MoltObject::none().bits());
-    }
-    let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-    let module_bits = crate::bridge::molt_module_import(module_name_bits);
-    dec_ref_bits(_py, module_name_bits);
+    let class_bits = molt_runtime_core::rt_exception_class(kind);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
-    }
-    let Some(name_bits) = attr_name_bits_from_bytes(_py, class_name) else {
-        dec_ref_bits(_py, module_bits);
-        return Err(MoltObject::none().bits());
-    };
-    let missing = missing_bits(_py);
-    let class_bits = molt_getattr_builtin(module_bits, name_bits, missing);
-    dec_ref_bits(_py, name_bits);
-    dec_ref_bits(_py, module_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
-    if class_bits == missing {
-        return Err(raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            "HTTP exception class is unavailable",
-        ));
     }
     Ok(class_bits)
 }
@@ -2082,7 +2070,7 @@ pub(super) fn http_client_raise_invalid_url(
     py: &molt_runtime_core::CoreGilToken,
     reason: &str,
 ) -> u64 {
-    let class = match http_module_error_class_bits(py, b"http.client", b"InvalidURL") {
+    let class = match http_module_error_class_bits(py, ModuleExc::HttpClientInvalidURL) {
         Ok(bits) => bits,
         Err(bits) => return bits,
     };
@@ -2104,13 +2092,13 @@ pub(super) fn http_client_raise_invalid_url(
 }
 
 pub(super) fn urllib_raise_url_error(_py: &molt_runtime_core::CoreGilToken, reason: &str) -> u64 {
-    let class_bits = match http_module_error_class_bits(_py, b"urllib.error", b"URLError") {
+    let class_bits = match http_module_error_class_bits(_py, ModuleExc::UrllibURLError) {
         Ok(bits) => bits,
         Err(bits) => return bits,
     };
     let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
         dec_ref_bits(_py, class_bits);
-        return raise_exception::<u64>(_py, "TypeError", "URLError class is invalid");
+        return raise_exception::<u64>(_py, BuiltinExc::TypeError, "URLError class is invalid");
     };
     let reason_ptr = alloc_string(_py, reason.as_bytes());
     if reason_ptr.is_null() {
@@ -2140,13 +2128,13 @@ pub(super) fn urllib_raise_http_error(
     headers: &[(String, String)],
     fp_bits: u64,
 ) -> u64 {
-    let class_bits = match http_module_error_class_bits(_py, b"urllib.error", b"HTTPError") {
+    let class_bits = match http_module_error_class_bits(_py, ModuleExc::UrllibHTTPError) {
         Ok(bits) => bits,
         Err(bits) => return bits,
     };
     let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
         dec_ref_bits(_py, class_bits);
-        return raise_exception::<u64>(_py, "TypeError", "HTTPError class is invalid");
+        return raise_exception::<u64>(_py, BuiltinExc::TypeError, "HTTPError class is invalid");
     };
     let url_ptr = alloc_string(_py, url.as_bytes());
     if url_ptr.is_null() {

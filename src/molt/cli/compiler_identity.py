@@ -240,6 +240,8 @@ def backend_build_admission(
         )
     # The complete caller environment keys operation-local reuse; semantic output
     # identity below projects only admitted Cargo/profile/toolchain selectors.
+    # The environment itself is the key: hashing it needs no text encoding, so
+    # a value that is not valid UTF-8 cannot fail the build (HF-556).
     environment = ProcessEnvironment(env)
     key = (
         os.fspath(root.resolve()),
@@ -247,9 +249,7 @@ def backend_build_admission(
         cargo_profile,
         ",".join(sorted(features)),
         rust_cpu.value,
-        canonical_json_sha256(
-            {"rule": environment.rule.value, "values": dict(environment)}
-        ),
+        environment,
     )
     if transaction is not None and key in transaction.compiler_plans:
         return cast(BackendBuildAdmission, transaction.compiler_plans[key])

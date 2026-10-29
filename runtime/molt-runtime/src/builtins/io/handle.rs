@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::native_instance::{self, NativePayload};
 use crate::runtime_flags::{self, RuntimeFlag};
 use molt_stdlib_text::codec_registry::{EncodingKind, normalize_encoding};
@@ -44,7 +45,7 @@ pub(super) fn resolve_file_handle_ptr(
         if handle_ptr.is_null() {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "file handle missing",
             ));
         }
@@ -73,7 +74,7 @@ pub(super) fn resolve_file_handle_ptr(
     }
     Err(raise_exception::<_>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "expected file handle",
     ))
 }
@@ -373,14 +374,14 @@ pub(crate) fn file_handle_require_attached(
     if handle.attachment == crate::object::FileAttachment::Uninitialized {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "I/O operation on uninitialized object",
         ));
     }
     if handle.attachment == crate::object::FileAttachment::Detached {
         Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             file_handle_detached_message(handle),
         ))
     } else {
@@ -423,7 +424,7 @@ pub(super) fn file_handle_physical_state<'a>(
     handle.state.as_ref().ok_or_else(|| {
         raise_exception::<u64>(
             py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "operation requires a physical IO backend",
         )
     })

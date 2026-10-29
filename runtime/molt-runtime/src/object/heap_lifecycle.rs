@@ -19,6 +19,7 @@ use super::{
     HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_HAS_ABI_VIEW, header_from_obj_ptr, instance_dict_bits,
     object_class_bits, object_class_edge_is_borrowed, object_type_id,
 };
+use crate::BuiltinExc;
 use crate::{MoltObject, PyToken, obj_from_bits};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -1053,7 +1054,11 @@ pub(crate) unsafe fn close_unstarted_coroutine(py: &PyToken<'_>, ptr: *mut u8) -
     }
     let (edges, resources) = unsafe { terminal_detach_capacity(py, ptr) };
     let Some(mut sink) = DetachedEdgeSink::try_with_capacities(edges, resources) else {
-        crate::raise_exception::<()>(py, "MemoryError", "cannot retire coroutine activation");
+        crate::raise_exception::<()>(
+            py,
+            BuiltinExc::MemoryError,
+            "cannot retire coroutine activation",
+        );
         return false;
     };
     crate::task_mark_done(py, ptr);
@@ -1129,7 +1134,11 @@ pub(crate) unsafe fn clear_cycle_edges(py: &PyToken<'_>, ptr: *mut u8) {
 /// after every local source has published its empty state.
 pub(crate) unsafe fn try_clear_cycle_edges(py: &PyToken<'_>, ptr: *mut u8) -> i32 {
     let Some(mut sink) = DetachedEdgeSink::try_with_capacities(0, 0) else {
-        crate::raise_exception::<()>(py, "MemoryError", "cannot reserve builtin GC clear edges");
+        crate::raise_exception::<()>(
+            py,
+            BuiltinExc::MemoryError,
+            "cannot reserve builtin GC clear edges",
+        );
         return -1;
     };
     let status = unsafe { try_clear_cycle_edges_with_sink(py, ptr, &mut sink) };
@@ -1163,7 +1172,11 @@ pub(crate) unsafe fn try_clear_cycle_edges_with_sink(
             .checked_add(resources)
             .unwrap_or_else(|| std::process::abort()),
     ) {
-        crate::raise_exception::<()>(py, "MemoryError", "cannot reserve builtin GC clear edges");
+        crate::raise_exception::<()>(
+            py,
+            BuiltinExc::MemoryError,
+            "cannot reserve builtin GC clear edges",
+        );
         return -1;
     }
     unsafe { clear_cycle_edges_with_sink(py, ptr, sink) };

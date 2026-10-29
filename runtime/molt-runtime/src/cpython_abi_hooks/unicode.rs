@@ -1,13 +1,14 @@
 //! The runtime side of the bridge-owned Unicode construction transaction.
 
 use super::*;
+use crate::BuiltinExc;
 
 pub(super) unsafe extern "C" fn hook_unicode_new(len: usize, maxchar: u32) -> OwnedHandleResult {
     with_gil(|py| {
         if maxchar > 0x10ffff || len > isize::MAX as usize {
             crate::raise_exception::<()>(
                 &py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "invalid Unicode construction size or maximum character",
             );
             return OwnedHandleResult::error();
@@ -45,7 +46,7 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
         else {
             crate::raise_exception::<()>(
                 &py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "Unicode construction requires string storage",
             );
             return -1;
@@ -56,7 +57,7 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
         if len > capacity || (len != 0 && data.is_null()) {
             crate::raise_exception::<()>(
                 &py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "Unicode construction exceeded reserved storage",
             );
             return -1;

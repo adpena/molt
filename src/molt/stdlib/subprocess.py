@@ -100,11 +100,29 @@ class CalledProcessError(SubprocessError):
         output: Any | None = None,
         stderr: Any | None = None,
     ) -> None:
-        super().__init__(f"Command {cmd!r} returned non-zero exit status {returncode}.")
-        self.returncode = int(returncode)
+        self.returncode = returncode
         self.cmd = cmd
         self.output = output
         self.stderr = stderr
+
+    def __str__(self) -> str:
+        if self.returncode and self.returncode < 0:
+            import signal
+
+            try:
+                return "Command '%s' died with %r." % (
+                    self.cmd,
+                    signal.Signals(-self.returncode),
+                )
+            except ValueError:
+                return "Command '%s' died with unknown signal %d." % (
+                    self.cmd,
+                    -self.returncode,
+                )
+        return "Command '%s' returned non-zero exit status %d." % (
+            self.cmd,
+            self.returncode,
+        )
 
 
 class CompletedProcess:

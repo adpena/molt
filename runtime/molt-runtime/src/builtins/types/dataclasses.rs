@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::seq_access::{locked_len, snapshot};
 
 mod field_runtime;
@@ -15,7 +16,7 @@ pub use projection::{
 
 fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Option<String> {
     if !isinstance_runtime(_py, name_bits, builtin_classes(_py).str)? {
-        let _ = raise_exception::<u64>(_py, "TypeError", "Field names must be strings");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "Field names must be strings");
         return None;
     }
 
@@ -35,7 +36,7 @@ fn validate_make_dataclass_field_name(_py: &PyToken<'_>, name_bits: u64) -> Opti
         dec_ref_bits(_py, repr_bits);
         dec_ref_bits(_py, name_str_bits);
         let msg = format!("Field names must be valid identifiers: {repr}");
-        let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         return None;
     }
     let out = string_obj_to_owned(obj_from_bits(name_str_bits));
@@ -63,13 +64,17 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
 
         'compute: {
             let Some(cls_name_ptr) = obj_from_bits(cls_name_bits).as_ptr() else {
-                result_bits = raise_exception::<_>(_py, "TypeError", "cls_name must be a string");
+                result_bits =
+                    raise_exception::<_>(_py, BuiltinExc::TypeError, "cls_name must be a string");
                 break 'compute;
             };
             unsafe {
                 if object_type_id(cls_name_ptr) != TYPE_ID_STRING {
-                    result_bits =
-                        raise_exception::<_>(_py, "TypeError", "cls_name must be a string");
+                    result_bits = raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "cls_name must be a string",
+                    );
                     break 'compute;
                 }
             }
@@ -181,15 +186,18 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
             };
             annotations_bits = if let Some(bits) = existing_annotations_bits {
                 let Some(existing_ptr) = obj_from_bits(bits).as_ptr() else {
-                    result_bits =
-                        raise_exception::<_>(_py, "TypeError", "__annotations__ must be a dict");
+                    result_bits = raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "__annotations__ must be a dict",
+                    );
                     break 'compute;
                 };
                 unsafe {
                     if object_type_id(existing_ptr) != TYPE_ID_DICT {
                         result_bits = raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "__annotations__ must be a dict",
                         );
                         break 'compute;
@@ -272,7 +280,8 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                 let invalid_spec_msg = "Invalid field specification: must be name, (name, type), or (name, type, Field)";
 
                 let Some(field_spec_ptr) = obj_from_bits(field_spec_bits).as_ptr() else {
-                    result_bits = raise_exception::<_>(_py, "TypeError", invalid_spec_msg);
+                    result_bits =
+                        raise_exception::<_>(_py, BuiltinExc::TypeError, invalid_spec_msg);
                     break 'compute;
                 };
 
@@ -297,14 +306,18 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                                 default_value_bits = parts[2];
                                 has_default_value = true;
                             } else {
-                                result_bits =
-                                    raise_exception::<_>(_py, "TypeError", invalid_spec_msg);
+                                result_bits = raise_exception::<_>(
+                                    _py,
+                                    BuiltinExc::TypeError,
+                                    invalid_spec_msg,
+                                );
                                 break 'compute;
                             }
                             _field_parts = Some(parts);
                         }
                         _ => {
-                            result_bits = raise_exception::<_>(_py, "TypeError", invalid_spec_msg);
+                            result_bits =
+                                raise_exception::<_>(_py, BuiltinExc::TypeError, invalid_spec_msg);
                             break 'compute;
                         }
                     }
@@ -322,7 +335,7 @@ pub extern "C" fn molt_dataclasses_make_dataclass(
                         .unwrap_or_default();
                     dec_ref_bits(_py, field_name_repr_bits);
                     let msg = format!("Field name duplicated: {field_name_repr}");
-                    result_bits = raise_exception::<_>(_py, "TypeError", &msg);
+                    result_bits = raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                     break 'compute;
                 }
                 seen.insert(field_name.clone());

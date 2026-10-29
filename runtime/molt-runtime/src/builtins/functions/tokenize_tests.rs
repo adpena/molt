@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::{ExceptionValue, molt_exception_last_pending};
 use crate::object::seq_access;
 use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
@@ -353,7 +354,11 @@ fn token_constructors_fail_atomically_and_preserve_the_original_pending_error() 
         let scan = || molt_tokenize_scan(source.bits());
         let payload = || crate::molt_token_payload();
         for constructor in [&token as &dyn Fn() -> u64, &encoding, &scan, &payload] {
-            raise_exception::<u64>(py, "ValueError", "original token construction error");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::ValueError,
+                "original token construction error",
+            );
             let original = ExceptionValue::adopt(py, molt_exception_last_pending());
             let result = constructor();
             assert!(

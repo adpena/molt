@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::object::layout::{
     CodeExecutionKind, code_callable_identity, code_cellvars_bits, code_frame_slot_id,
@@ -55,7 +56,7 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
         let Some(field_names_ptr) = obj_from_bits(field_names_bits).as_ptr() else {
             return Some(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dataclass field names must be a list/tuple of str",
             ));
         };
@@ -65,7 +66,7 @@ pub(crate) unsafe fn alloc_dataclass_for_class_ptr(
             _ => {
                 return Some(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "dataclass field names must be a list/tuple of str",
                 ));
             }
@@ -133,7 +134,7 @@ pub extern "C" fn molt_object_publish_initialized(obj_bits: u64) -> u64 {
             if (*header_from_obj_ptr(ptr)).gc_is_published() {
                 return raise_exception::<u64>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "object construction published more than once",
                 );
             }
@@ -163,7 +164,7 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
     if !super::heap_kind_has_class_shape(type_id) {
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "native payload requires its declaring constructor",
         );
     }
@@ -173,7 +174,7 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
     {
         return raise_exception::<u64>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "instance allocation is smaller than sealed class layout",
         );
     }
@@ -199,7 +200,7 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
             }
             return raise_exception::<u64>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "instance allocation cannot initialize its native prefix",
             );
         }
@@ -240,7 +241,7 @@ pub(crate) fn alloc_class_instance(_py: &PyToken<'_>, size: usize, class_bits: u
             dec_ref_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
             return raise_exception::<u64>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "instance allocation cannot initialize its class edge",
             );
         }
@@ -604,12 +605,12 @@ pub unsafe extern "C" fn molt_list_builder_append(builder_bits: u64, val: u64) -
             }
             let builder_ptr = ptr_from_bits(builder_bits);
             if builder_ptr.is_null() {
-                raise_exception::<()>(_py, "RuntimeError", "invalid list builder");
+                raise_exception::<()>(_py, BuiltinExc::RuntimeError, "invalid list builder");
                 return 1;
             }
             let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
             if vec_ptr.is_null() {
-                raise_exception::<()>(_py, "RuntimeError", "consumed list builder");
+                raise_exception::<()>(_py, BuiltinExc::RuntimeError, "consumed list builder");
                 return 1;
             }
             let required = (&*vec_ptr).len().saturating_add(1);
@@ -650,7 +651,7 @@ unsafe fn finish_sequence_builder(
         let builder_ptr = ptr_from_bits(builder_bits);
         if builder_ptr.is_null() {
             if !exception_pending(py) {
-                raise_exception::<()>(py, "RuntimeError", "invalid list builder");
+                raise_exception::<()>(py, BuiltinExc::RuntimeError, "invalid list builder");
             }
             return MoltObject::none().bits();
         }
@@ -660,7 +661,7 @@ unsafe fn finish_sequence_builder(
         }
         let vec_ptr = *(builder_ptr as *mut *mut Vec<u64>);
         if vec_ptr.is_null() {
-            return raise_exception::<_>(py, "RuntimeError", "consumed list builder");
+            return raise_exception::<_>(py, BuiltinExc::RuntimeError, "consumed list builder");
         }
         *(builder_ptr as *mut *mut Vec<u64>) = std::ptr::null_mut();
         let vec = crate::object::backing::tracked_vec_box_from_raw(vec_ptr);
@@ -692,14 +693,14 @@ pub(crate) unsafe fn borrowed_constructor_values<'a>(
     let Some(ptr) = crate::provenance::abi::const_ptr::<u64>(address) else {
         return raise_exception(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "constructor values address exceeds the active address space",
         );
     };
     let Some(values) = (unsafe { crate::provenance::abi::slice(ptr, len) }) else {
         return raise_exception(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "constructor values range is invalid for the active target",
         );
     };
@@ -1445,7 +1446,7 @@ pub(crate) fn alloc_range(
     {
         raise_exception::<u64>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "range constructor violated generated int_triplet acyclic capability",
         );
         return std::ptr::null_mut();
@@ -1668,7 +1669,7 @@ pub(crate) fn alloc_code_obj(
     {
         raise_exception::<u64>(
             _py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "code constructor violated generated code_metadata acyclic capability",
         );
         return std::ptr::null_mut();
@@ -2593,7 +2594,11 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
         if storage.format_bits == 0
             || (storage.base_bits == 0 && storage.data.is_null() && storage.span_len != 0)
         {
-            memoryview_construction_failure(py, "BufferError", "invalid memoryview storage");
+            memoryview_construction_failure(
+                py,
+                BuiltinExc::BufferError,
+                "invalid memoryview storage",
+            );
             return Err(());
         }
         inc_ref_bits(py, storage.base_bits);
@@ -2645,8 +2650,13 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
     pub(crate) fn allocate(mut self) -> *mut u8 {
         let py = self.py;
         let storage = &mut self.storage;
-        let invalid =
-            || memoryview_construction_failure(py, "BufferError", "invalid memoryview storage");
+        let invalid = || {
+            memoryview_construction_failure(
+                py,
+                BuiltinExc::BufferError,
+                "invalid memoryview storage",
+            )
+        };
         let data = unsafe {
             if !storage.data.is_null() {
                 storage.data
@@ -2745,7 +2755,11 @@ impl Drop for PinnedMemoryViewStorage<'_, '_> {
     }
 }
 
-fn memoryview_construction_failure(py: &PyToken<'_>, kind: &str, message: &str) -> *mut u8 {
+fn memoryview_construction_failure(
+    py: &PyToken<'_>,
+    kind: crate::BuiltinExc,
+    message: &str,
+) -> *mut u8 {
     if !crate::exception_pending(py) {
         let _ = crate::raise_exception::<u64>(py, kind, message);
     }
@@ -2943,7 +2957,8 @@ mod sequence_builder_tests {
                     assert!(exception_pending(py), "mode={mode}, size={size}");
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
                     drop(budget);
-                    let _ = raise_exception::<u64>(py, "ValueError", "keep the caller error");
+                    let _ =
+                        raise_exception::<u64>(py, BuiltinExc::ValueError, "keep the caller error");
                     let pending = crate::builtins::exceptions::molt_exception_last_pending();
                     let budget = deny_allocations();
                     assert!(allocate(size).is_null());
@@ -3065,7 +3080,11 @@ mod sequence_builder_tests {
                 let warm = construct();
                 assert!(!warm.is_null());
                 dec_ref_bits(py, bits_from_ptr(warm));
-                raise_exception::<()>(py, "LookupError", "admitted allocation caller error");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::LookupError,
+                    "admitted allocation caller error",
+                );
                 let original = crate::builtins::exceptions::ExceptionValue::adopt(
                     py,
                     crate::builtins::exceptions::molt_exception_last_pending(),
@@ -3115,7 +3134,7 @@ mod sequence_builder_tests {
                     crate::test_support::assert_and_clear_emergency_memory_error(py);
                     let _ = raise_exception::<u64>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "original allocation caller error",
                     );
                     let pending = crate::builtins::exceptions::molt_exception_last_pending();
@@ -3162,7 +3181,7 @@ mod sequence_builder_tests {
                 dec_ref_bits(py, bits_from_ptr(ptr));
                 assert!(!exception_pending(py));
             }
-            raise_exception::<()>(py, "ValueError", "original presize caller error");
+            raise_exception::<()>(py, BuiltinExc::ValueError, "original presize caller error");
             let pending = crate::builtins::exceptions::molt_exception_last_pending();
             let budget = deny_allocations();
             assert!(alloc_hash_aggregate_unpublished(py, usize::MAX, TYPE_ID_DICT).is_null());
@@ -3330,10 +3349,10 @@ mod sequence_builder_tests {
                     still_pending, pending,
                     "the second operation selects its own TypeError"
                 );
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     still_pending,
-                    "TypeError"
+                    crate::BuiltinExc::TypeError
                 ));
                 assert_eq!(refs(item), baseline);
                 dec_ref_bits(py, still_pending);

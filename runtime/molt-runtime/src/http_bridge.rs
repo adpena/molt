@@ -4,6 +4,7 @@
 //! internal function.  The http crate declares matching `extern "C"` imports
 //! and they are resolved at link time.
 
+use crate::BuiltinExc;
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
@@ -15,18 +16,13 @@ use num_bigint::{BigInt, Sign};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_http_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
+    kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let type_name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, type_name, msg)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 
@@ -54,16 +50,13 @@ pub extern "C" fn __molt_http_clear_attribute_error_if_pending() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_pending_exception_matches_builtin(
-    name_ptr: *const u8,
-    name_len: usize,
-) -> i32 {
+pub extern "C" fn __molt_http_pending_exception_matches_builtin(kind_code: u16) -> i32 {
     crate::with_gil_entry_nopanic!(py, {
         if !exception_pending(py) {
             return 0;
         }
-        let name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
+        let Some(kind) = crate::ExcKind::from_code(kind_code) else {
+            return 0;
         };
         // Public exception_last may substitute an outer handled exception and
         // consume the pending error. HTTP dispatch always inspects raised state.
@@ -71,10 +64,10 @@ pub extern "C" fn __molt_http_pending_exception_matches_builtin(
             py,
             crate::builtins::exceptions::molt_exception_last_pending(),
         );
-        i32::from(crate::builtins::exceptions::exception_matches_builtin_name(
+        i32::from(crate::builtins::exceptions::exception_matches_kind(
             py,
             pending.bits(),
-            name,
+            kind,
         ))
     })
 }
@@ -552,7 +545,11 @@ pub extern "C" fn __molt_http_require_operation(
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
         };
         let Some(operation) = crate::OperationId::from_name(name) else {
-            crate::raise_exception::<u64>(py, "ValueError", "unknown HTTP host operation");
+            crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::ValueError,
+                "unknown HTTP host operation",
+            );
             return 0;
         };
         let extra: &[&'static str] = if environment != 0 { &["env.read"] } else { &[] };
@@ -751,7 +748,7 @@ mod scalar_conversion_tests {
 
 #[cfg(all(test, feature = "stdlib_http", not(target_arch = "wasm32")))]
 mod request_serialization_tests {
-    use crate::builtins::exceptions::{ExceptionValue, exception_type_bits_from_name};
+    use crate::builtins::exceptions::{ExceptionValue, exception_class_bits};
     use crate::*;
     use molt_runtime_http::functions_http::*;
     use std::io::{Read, Write};
@@ -817,7 +814,7 @@ mod request_serialization_tests {
                         crate::builtins::exceptions::thread_last_exception_bits_noinc(py).unwrap();
                     assert_eq!(
                         crate::type_of_bits(py, raised),
-                        exception_type_bits_from_name(py, "ValueError")
+                        exception_class_bits(py, BuiltinExc::ValueError)
                     );
                     clear_exception(py);
                 }
@@ -922,7 +919,7 @@ mod request_serialization_tests {
     extern "C" fn forbidden_local_lookup(_host: u64, _port: u64) -> u64 {
         LOCAL_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception::<u64>(py, "ValueError", "local lookup reached")
+            raise_exception::<u64>(py, BuiltinExc::ValueError, "local lookup reached")
         })
     }
 

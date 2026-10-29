@@ -1,5 +1,6 @@
 //! Indexed sequence reads shared by IMPORT_STAR and the boxed C-API.
 //! Mapping subscription and iterator exhaustion have different contracts.
+use crate::BuiltinExc;
 use crate::object::class_storage::class_native_protocols;
 use crate::*;
 
@@ -51,7 +52,7 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         let Ok(native_index) = isize::try_from(index) else {
             return raise_exception::<_>(
                 py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "cannot fit 'int' into an index-sized integer",
             );
         };
@@ -86,7 +87,7 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         } else {
             format!("'{name}' object does not support indexing")
         };
-        return raise_exception::<_>(py, "TypeError", &message);
+        return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
     };
     if index < 0 {
         // Normalize exactly once, after sq_item admission. An inherited native
@@ -106,12 +107,16 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
             let Some(length) = to_i64(obj_from_bits(length_bits)) else {
                 return raise_exception::<_>(
                     py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "cannot fit 'int' into an index-sized integer",
                 );
             };
             if length < 0 {
-                return raise_exception::<_>(py, "ValueError", "__len__() should return >= 0");
+                return raise_exception::<_>(
+                    py,
+                    BuiltinExc::ValueError,
+                    "__len__() should return >= 0",
+                );
             }
             index += length;
         }
@@ -136,7 +141,7 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
                 let name = class_name_for_error(type_of_bits(py, receiver));
                 return raise_exception::<_>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("'{name}' object is not subscriptable"),
                 );
             };

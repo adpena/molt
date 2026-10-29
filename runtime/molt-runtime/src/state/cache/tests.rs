@@ -16,7 +16,11 @@ fn bridge_name_failure_is_distinct_from_an_unsupported_name() {
             super::intern_bridge_protocol_name(py, b"unsupported-name"),
             Ok(None)
         );
-        crate::raise_exception::<u64>(py, "MemoryError", "original bridge allocation failure");
+        crate::raise_exception::<u64>(
+            py,
+            crate::BuiltinExc::MemoryError,
+            "original bridge allocation failure",
+        );
         let original = crate::exception_last_bits_noinc(py);
         for key in [b"__float__".as_slice(), b"unsupported-name"] {
             assert_eq!(super::intern_bridge_protocol_name(py, key), Err(()));

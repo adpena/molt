@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 mod capabilities;
 mod channel;
 mod db;
@@ -14,14 +15,14 @@ fn capacity_from_object(py: &crate::PyToken<'_>, bits: u64) -> Option<usize> {
     if capacity < 0 {
         return crate::raise_exception::<Option<usize>>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "channel capacity must be non-negative",
         );
     }
     usize::try_from(capacity).ok().or_else(|| {
         crate::raise_exception::<Option<usize>>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "channel capacity is too large for this target",
         )
     })
@@ -57,7 +58,7 @@ extern "C" fn send_hook_result_fixture(ctx: *mut u8, _data: *const u8, _len: usi
         crate::MoltObject::none().bits() as i64
     } else {
         crate::with_gil_entry_nopanic!(py, {
-            crate::raise_exception::<i64>(py, "OSError", "send failed")
+            crate::raise_exception::<i64>(py, BuiltinExc::OSError, "send failed")
         })
     }
 }
@@ -149,15 +150,19 @@ mod send_result_tests {
             let closed = crate::MoltObject::none().bits();
             assert_eq!(super::send_result_into_object(py, closed as i64), closed);
 
-            crate::raise_exception::<()>(py, "ValueError", "preserve caller failure");
+            crate::raise_exception::<()>(
+                py,
+                crate::BuiltinExc::ValueError,
+                "preserve caller failure",
+            );
             let preserved = crate::builtins::exceptions::molt_exception_last_pending();
             assert_eq!(super::send_result_into_object(py, 0), closed);
             let after = crate::builtins::exceptions::molt_exception_last_pending();
             assert_eq!(after, preserved);
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 after,
-                "ValueError"
+                crate::BuiltinExc::ValueError
             ));
             crate::clear_exception(py);
             crate::dec_ref_bits(py, preserved);
@@ -187,15 +192,24 @@ mod capacity_tests {
             ];
             for constructor in constructors {
                 for (bits, exception) in [
-                    (0, "TypeError"),
-                    (crate::MoltObject::from_float(1.0).bits(), "TypeError"),
-                    (crate::MoltObject::none().bits(), "TypeError"),
-                    (crate::MoltObject::from_int(-1).bits(), "ValueError"),
-                    (too_wide, "OverflowError"),
+                    (0, crate::BuiltinExc::TypeError),
+                    (
+                        crate::MoltObject::from_float(1.0).bits(),
+                        crate::BuiltinExc::TypeError,
+                    ),
+                    (
+                        crate::MoltObject::none().bits(),
+                        crate::BuiltinExc::TypeError,
+                    ),
+                    (
+                        crate::MoltObject::from_int(-1).bits(),
+                        crate::BuiltinExc::ValueError,
+                    ),
+                    (too_wide, crate::BuiltinExc::OverflowError),
                 ] {
                     assert_eq!(constructor(bits), crate::MoltObject::none().bits());
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py, error, exception
                     ));
                     crate::clear_exception(py);

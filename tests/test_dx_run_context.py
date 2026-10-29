@@ -2758,3 +2758,16 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
     owner = read_checkout_owner(selected)
     assert owner is not None and owner.kind == "scratch" and owner.path == source
     assert (selected / ".molt-last-use").is_file()
+
+
+def test_developer_host_default_cache_uses_a_per_test_user_cache_base(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Without MOLT_CACHE a developer host's Molt cache is the user cache base;
+    the fixture gives each test its own, so no test writes the real home cache
+    (HF-562)."""
+    from molt.default_paths import _default_molt_cache
+
+    cache = _default_molt_cache()
+    assert cache.is_relative_to(tmp_path_factory.getbasetemp())
+    assert not cache.is_relative_to(Path.home() / ".cache")

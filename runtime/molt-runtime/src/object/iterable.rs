@@ -1,6 +1,7 @@
 //! Owned iteration for runtime consumers. Exhaustion, exceptions and reference
 //! transfer share the unboxed iterator protocol used by compiled loops.
 
+use crate::BuiltinExc;
 use crate::*;
 
 #[derive(Clone, Copy)]
@@ -139,7 +140,7 @@ pub(crate) fn length_hint(py: &PyToken<'_>, iterable: u64) -> Option<usize> {
     if hint.is_none() {
         raise_exception::<()>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "cannot fit length hint into an index-sized integer",
         );
     }
@@ -180,13 +181,17 @@ pub(crate) fn collect_from_owned_iterator(
     };
     let mut values = Vec::new();
     if values.try_reserve(hint).is_err() {
-        return raise_exception::<_>(py, "MemoryError", "iterable allocation failed");
+        return raise_exception::<_>(py, BuiltinExc::MemoryError, "iterable allocation failed");
     }
     loop {
         match iter.next() {
             Ok(Some(item)) => {
                 if values.try_reserve(1).is_err() {
-                    raise_exception::<()>(py, "MemoryError", "iterable allocation failed");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::MemoryError,
+                        "iterable allocation failed",
+                    );
                     dec_ref_bits(py, item);
                     drop(iter);
                     for value in values.into_iter().rev() {
@@ -227,12 +232,15 @@ pub(crate) fn materialize_sequence<'a, 'py>(
     }
     let Some(first) = OwnedIterator::new(py, iterable) else {
         let error = molt_exception_last_pending();
-        let type_error =
-            crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
+        let type_error = crate::builtins::exceptions::exception_matches_kind(
+            py,
+            error,
+            crate::BuiltinExc::TypeError,
+        );
         dec_ref_bits(py, error);
         if type_error {
             clear_exception(py);
-            raise_exception::<()>(py, "TypeError", acquisition_error);
+            raise_exception::<()>(py, BuiltinExc::TypeError, acquisition_error);
         }
         return None;
     };
@@ -268,14 +276,17 @@ pub(crate) fn finish_iteration_error(
     frame: crate::builtins::exceptions::ExceptionStackScope<'_, '_>,
 ) -> Result<SpecialIterationStep, ()> {
     let exception = molt_exception_last_pending();
-    let stop =
-        crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "StopIteration");
+    let stop = crate::builtins::exceptions::exception_matches_kind(
+        py,
+        exception,
+        crate::BuiltinExc::StopIteration,
+    );
     let exhausted = stop
         || (matches!(kind, SpecialIterationKind::SequenceItem(_))
-            && crate::builtins::exceptions::exception_matches_builtin_name(
+            && crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "IndexError",
+                crate::BuiltinExc::IndexError,
             ));
     if exhausted && matches!(exhaustion, IterationExhaustion::Normalize) {
         let payload = if stop && matches!(kind, SpecialIterationKind::Next) {

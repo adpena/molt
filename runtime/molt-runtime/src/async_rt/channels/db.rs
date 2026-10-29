@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
@@ -158,11 +159,23 @@ fn db_exec_impl(
 
 fn db_error(_py: &PyToken<'_>, op: &str, code: i32, cap: &str) -> u64 {
     match code {
-        1 => raise_exception::<_>(_py, "ValueError", &format!("{op} invalid input")),
-        2 => raise_exception::<_>(_py, "RuntimeError", &format!("{op} output pointer invalid")),
-        6 => raise_exception::<_>(_py, "PermissionError", &format!("missing {cap} capability")),
-        7 => raise_exception::<_>(_py, "RuntimeError", &format!("{op} host unavailable")),
-        _ => raise_exception::<_>(_py, "RuntimeError", &format!("{op} failed")),
+        1 => raise_exception::<_>(_py, BuiltinExc::ValueError, &format!("{op} invalid input")),
+        2 => raise_exception::<_>(
+            _py,
+            BuiltinExc::RuntimeError,
+            &format!("{op} output pointer invalid"),
+        ),
+        6 => raise_exception::<_>(
+            _py,
+            BuiltinExc::PermissionError,
+            &format!("missing {cap} capability"),
+        ),
+        7 => raise_exception::<_>(
+            _py,
+            BuiltinExc::RuntimeError,
+            &format!("{op} host unavailable"),
+        ),
+        _ => raise_exception::<_>(_py, BuiltinExc::RuntimeError, &format!("{op} failed")),
     }
 }
 
@@ -171,7 +184,7 @@ pub extern "C" fn molt_db_query_obj(req_bits: u64, token_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let send_data = match send_data_from_bits(req_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -196,7 +209,7 @@ pub extern "C" fn molt_db_exec_obj(req_bits: u64, token_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let send_data = match send_data_from_bits(req_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),

@@ -31,6 +31,7 @@
 
 #![cfg(feature = "sqlite")]
 
+use crate::BuiltinExc;
 use crate::{
     MoltObject, PyToken, TYPE_ID_BYTES, TYPE_ID_LIST, TYPE_ID_TUPLE, alloc_bytes, alloc_list,
     alloc_string, alloc_tuple, bytes_data, bytes_len, dec_ref_bits, obj_from_bits, object_type_id,
@@ -213,7 +214,7 @@ fn classify_sqlite_error(err: &rusqlite::Error) -> (&'static str, String) {
 fn raise_sqlite_error(_py: &PyToken<'_>, err: &rusqlite::Error) -> u64 {
     let (kind, msg) = classify_sqlite_error(err);
     let formatted = format!("{kind} {msg}");
-    raise_exception::<u64>(_py, "RuntimeError", &formatted)
+    raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &formatted)
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +355,7 @@ fn with_connection<R>(
             None => {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "Connection is not valid",
                 ));
             }
@@ -362,7 +363,7 @@ fn with_connection<R>(
         if state.closed {
             return Err(raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "__ProgrammingError__ Cannot operate on a closed database.",
             ));
         }
@@ -387,7 +388,7 @@ fn with_cursor<R>(
             None => Err("invalid cursor handle"),
         }
     };
-    result.map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", msg))
+    result.map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, msg))
 }
 
 /// Determine whether a SQL statement is a DML/SELECT-style query that
@@ -528,7 +529,11 @@ pub extern "C" fn molt_sqlite3_connect(database_bits: u64) -> u64 {
         let path_str = match extract_text(database_bits) {
             Some(s) => s,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "database path must be a string");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "database path must be a string",
+                );
             }
         };
 
@@ -539,7 +544,7 @@ pub extern "C" fn molt_sqlite3_connect(database_bits: u64) -> u64 {
                 let (kind, msg) = classify_sqlite_error(&e);
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     &format!("{kind} unable to open database file: {msg}"),
                 );
             }
@@ -565,7 +570,13 @@ pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid connection handle",
+                );
+            }
         };
 
         // Drop the connection state, which in turn drops the rusqlite::Connection
@@ -581,7 +592,7 @@ pub extern "C" fn molt_sqlite3_close(handle_bits: u64) -> u64 {
         if !state_was_present {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "__ProgrammingError__ Cannot operate on a closed database.",
             );
         }
@@ -594,7 +605,13 @@ pub extern "C" fn molt_sqlite3_commit(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid connection handle",
+                );
+            }
         };
         match with_connection(_py, id, |state| {
             if state.in_transaction {
@@ -614,7 +631,13 @@ pub extern "C" fn molt_sqlite3_rollback(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid connection handle",
+                );
+            }
         };
         match with_connection(_py, id, |state| {
             if state.in_transaction {
@@ -634,7 +657,13 @@ pub extern "C" fn molt_sqlite3_in_transaction(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid connection handle",
+                );
+            }
         };
         let in_txn = sqlite_state(_py)
             .connections
@@ -652,7 +681,13 @@ pub extern "C" fn molt_sqlite3_total_changes(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid connection handle",
+                );
+            }
         };
         let total = match with_connection(_py, id, |state| {
             // Subtract the baseline captured at open time so the property
@@ -676,7 +711,13 @@ pub extern "C" fn molt_sqlite3_cursor(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let conn_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid connection handle"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid connection handle",
+                );
+            }
         };
         // Validate the connection exists and is open.
         let exists = sqlite_state(_py)
@@ -689,7 +730,7 @@ pub extern "C" fn molt_sqlite3_cursor(handle_bits: u64) -> u64 {
         if !exists {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "__ProgrammingError__ Cannot operate on a closed database.",
             );
         }
@@ -716,7 +757,9 @@ pub extern "C" fn molt_sqlite3_cursor_close(cursor_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         if let Some(state) = sqlite_state(_py).cursors.lock().unwrap().get_mut(&id) {
             state.closed = true;
@@ -744,18 +787,22 @@ pub extern "C" fn molt_sqlite3_execute(cursor_bits: u64, sql_bits: u64, params_b
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let sql = match extract_text(sql_bits) {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "TypeError", "sql must be a string"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "sql must be a string");
+            }
         };
         let params = match decode_param_seq(params_bits) {
             Ok(p) => p,
             Err(msg) => {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     &format!("__InterfaceError__ {msg}"),
                 );
             }
@@ -769,13 +816,13 @@ pub extern "C" fn molt_sqlite3_execute(cursor_bits: u64, sql_bits: u64, params_b
             match cursors.get(&cursor_id) {
                 Some(state) if state.closed => Err(raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "__ProgrammingError__ Cannot operate on a closed cursor.",
                 )),
                 Some(state) => Ok(state.conn_id),
                 None => Err(raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid cursor handle",
                 )),
             }
@@ -816,11 +863,15 @@ pub extern "C" fn molt_sqlite3_executemany(
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let sql = match extract_text(sql_bits) {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "TypeError", "sql must be a string"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "sql must be a string");
+            }
         };
         let outer_obj = obj_from_bits(seq_of_params_bits);
         let outer_ptr = match outer_obj.as_ptr() {
@@ -828,7 +879,7 @@ pub extern "C" fn molt_sqlite3_executemany(
             None => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "executemany() requires an iterable of parameter sequences",
                 );
             }
@@ -837,7 +888,7 @@ pub extern "C" fn molt_sqlite3_executemany(
         if outer_tid != TYPE_ID_LIST && outer_tid != TYPE_ID_TUPLE {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "executemany() requires an iterable of parameter sequences",
             );
         }
@@ -857,7 +908,7 @@ pub extern "C" fn molt_sqlite3_executemany(
                 Err(msg) => {
                     return raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         &format!("__InterfaceError__ {msg}"),
                     );
                 }
@@ -870,13 +921,13 @@ pub extern "C" fn molt_sqlite3_executemany(
             match cursors.get(&cursor_id) {
                 Some(state) if state.closed => Err(raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "__ProgrammingError__ Cannot operate on a closed cursor.",
                 )),
                 Some(state) => Ok(state.conn_id),
                 None => Err(raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid cursor handle",
                 )),
             }
@@ -923,11 +974,19 @@ pub extern "C" fn molt_sqlite3_executescript(cursor_bits: u64, script_bits: u64)
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let script = match extract_text(script_bits) {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "TypeError", "script must be a string"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "script must be a string",
+                );
+            }
         };
 
         let sqlite = sqlite_state(_py);
@@ -936,13 +995,13 @@ pub extern "C" fn molt_sqlite3_executescript(cursor_bits: u64, script_bits: u64)
             match cursors.get(&cursor_id) {
                 Some(state) if state.closed => Err(raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "__ProgrammingError__ Cannot operate on a closed cursor.",
                 )),
                 Some(state) => Ok(state.conn_id),
                 None => Err(raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid cursor handle",
                 )),
             }
@@ -1015,7 +1074,9 @@ pub extern "C" fn molt_sqlite3_fetchone(cursor_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let row_opt = match with_cursor(_py, cursor_id, |cur| {
             if cur.cursor_pos < cur.rows.len() {
@@ -1041,7 +1102,9 @@ pub extern "C" fn molt_sqlite3_fetchall(cursor_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let drained = match with_cursor(_py, cursor_id, |cur| {
             let drained: Vec<MaterializedRow> = cur.rows.drain(cur.cursor_pos..).collect();
@@ -1073,12 +1136,20 @@ pub extern "C" fn molt_sqlite3_fetchmany(cursor_bits: u64, size_bits: u64) -> u6
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let size = match to_i64(obj_from_bits(size_bits)) {
             Some(v) if v > 0 => v as usize,
             Some(_) => 0,
-            None => return raise_exception::<u64>(_py, "TypeError", "size must be an integer"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "size must be an integer",
+                );
+            }
         };
 
         let drained = match with_cursor(_py, cursor_id, |cur| {
@@ -1117,7 +1188,9 @@ pub extern "C" fn molt_sqlite3_lastrowid(cursor_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let val = sqlite_state(_py)
             .cursors
@@ -1137,7 +1210,9 @@ pub extern "C" fn molt_sqlite3_rowcount(cursor_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let val = sqlite_state(_py)
             .cursors
@@ -1155,11 +1230,19 @@ pub extern "C" fn molt_sqlite3_arraysize_set(cursor_bits: u64, size_bits: u64) -
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let size = match to_i64(obj_from_bits(size_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "size must be an integer"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "size must be an integer",
+                );
+            }
         };
         if let Some(s) = sqlite_state(_py)
             .cursors
@@ -1178,7 +1261,9 @@ pub extern "C" fn molt_sqlite3_description(cursor_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid cursor handle");
+            }
         };
         let names = sqlite_state(_py)
             .cursors
@@ -1246,7 +1331,9 @@ pub extern "C" fn molt_sqlite3_complete_statement(sql_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let sql = match extract_text(sql_bits) {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "TypeError", "sql must be a string"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "sql must be a string");
+            }
         };
         let cstr = match std::ffi::CString::new(sql) {
             Ok(c) => c,

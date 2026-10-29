@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use molt_runtime_platform::socket_constants::{errno_constants, socket_constants};
 
@@ -7,7 +8,7 @@ pub extern "C" fn molt_uuid_getnode() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         match uuid_node() {
             Ok(node) => MoltObject::from_int(node as i64).bits(),
-            Err(err) => raise_exception::<_>(_py, "RuntimeError", &err),
+            Err(err) => raise_exception::<_>(_py, BuiltinExc::RuntimeError, &err),
         }
     })
 }
@@ -17,7 +18,7 @@ pub extern "C" fn molt_uuid_uuid4_bytes() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let payload = match uuid_v4_bytes() {
             Ok(bytes) => bytes,
-            Err(err) => return raise_exception::<_>(_py, "RuntimeError", &err),
+            Err(err) => return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &err),
         };
         let out_ptr = alloc_bytes(_py, &payload);
         if out_ptr.is_null() {
@@ -33,7 +34,11 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
     crate::with_gil_entry_nopanic!(_py, {
         let allowed = crate::operation_allowed(_py, crate::OperationId::TimeUuid1, AuditArgs::None);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing time.wall capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing time.wall capability",
+            );
         }
         let node_override = if obj_from_bits(node_bits).is_none() {
             None
@@ -45,7 +50,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
             if !(0..=0xFFFF_FFFF_FFFF_i64).contains(&value) {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "node is out of range (need a 48-bit value)",
                 );
             }
@@ -61,7 +66,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
             if !(0..=0x3FFF_i64).contains(&value) {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "clock_seq is out of range (need a 14-bit value)",
                 );
             }
@@ -69,7 +74,7 @@ pub extern "C" fn molt_uuid_uuid1_bytes(node_bits: u64, clock_seq_bits: u64) -> 
         };
         let payload = match uuid_v1_bytes(node_override, clock_seq_override) {
             Ok(bytes) => bytes,
-            Err(err) => return raise_exception::<_>(_py, "RuntimeError", &err),
+            Err(err) => return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &err),
         };
         let out_ptr = alloc_bytes(_py, &payload);
         if out_ptr.is_null() {
@@ -90,7 +95,7 @@ pub extern "C" fn molt_uuid_uuid3_bytes(namespace_bits: u64, name_bits: u64) -> 
         if namespace.len() != 16 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "namespace must be a 16-byte UUID payload",
             );
         }
@@ -118,7 +123,7 @@ pub extern "C" fn molt_uuid_uuid5_bytes(namespace_bits: u64, name_bits: u64) -> 
         if namespace.len() != 16 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "namespace must be a 16-byte UUID payload",
             );
         }
@@ -175,10 +180,18 @@ pub extern "C" fn molt_locale_setlocale(category_bits: u64, locale_bits: u64) ->
             None
         } else {
             let Some(value) = string_obj_to_owned(obj_from_bits(locale_bits)) else {
-                return raise_exception::<u64>(_py, "TypeError", "locale must be str or None");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "locale must be str or None",
+                );
             };
             if value.contains('\0') {
-                return raise_exception::<u64>(_py, "ValueError", "embedded null character");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "embedded null character",
+                );
             }
             Some(value)
         };
@@ -196,7 +209,7 @@ pub extern "C" fn molt_locale_getencoding() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         match locale_encoding() {
             Ok(value) => alloc_str_bits(_py, &value).unwrap_or_else(|error| error),
-            Err(error) => raise_exception::<u64>(_py, "RuntimeError", &error),
+            Err(error) => raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &error),
         }
     })
 }
@@ -426,7 +439,11 @@ fn env_string_from_bits(py: &PyToken<'_>, bits: u64) -> Result<std::ffi::OsStrin
         .as_ptr()
         .filter(|pointer| unsafe { object_type_id(*pointer) == TYPE_ID_STRING })
     else {
-        return Err(raise_exception::<u64>(py, "TypeError", "str expected"));
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::TypeError,
+            "str expected",
+        ));
     };
     let text = unsafe { std::slice::from_raw_parts(string_bytes(pointer), string_len(pointer)) };
     crate::builtins::io::os_string_from_text(py, text, Some(bits))
@@ -454,7 +471,7 @@ fn checked_process_env_string(
     if value.as_encoded_bytes().contains(&0) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "embedded null byte",
         ));
     }
@@ -481,7 +498,7 @@ fn raise_environment_error(
 ) -> u64 {
     match error {
         molt_runtime_platform::env_support::EnvironmentError::Value(message) => {
-            raise_exception::<u64>(py, "ValueError", message)
+            raise_exception::<u64>(py, BuiltinExc::ValueError, message)
         }
         molt_runtime_platform::env_support::EnvironmentError::Errno(errno) => {
             raise_os_error_errno::<u64>(py, i64::from(errno), "environment")
@@ -501,14 +518,14 @@ fn environment_mapping<'a>(
     if current == retired {
         return Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "environment mapping is retired",
         ));
     }
     if current == initializing {
         return Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "reentrant environment initialization",
         ));
     }
@@ -524,7 +541,7 @@ fn environment_mapping<'a>(
     {
         return Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "environment initialization state changed",
         ));
     }
@@ -605,7 +622,7 @@ fn environment_mapping<'a>(
     {
         return Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "environment mapping retired during initialization",
         ));
     }
@@ -867,7 +884,11 @@ pub extern "C" fn molt_os_need_current_directory_for_exe_path(command_bits: u64)
             };
             let mut wide: Vec<u16> = command.encode_wide().collect();
             if wide.contains(&0) {
-                return raise_exception::<u64>(py, "ValueError", "embedded null character");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::ValueError,
+                    "embedded null character",
+                );
             }
             wide.push(0);
             MoltObject::from_bool(
@@ -884,7 +905,7 @@ pub extern "C" fn molt_os_need_current_directory_for_exe_path(command_bits: u64)
             let _ = command_bits;
             raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "Windows executable directory policy is unavailable on this target",
             )
         }

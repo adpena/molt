@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{obj_from_bits, raise_exception, to_i64};
@@ -17,14 +18,14 @@ pub(super) fn asyncio_parse_token_id(_py: &PyToken<'_>, token_bits: u64) -> Resu
         }
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "token_id must be int",
         ));
     };
     if token_id < 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "token_id must be >= 0",
         ));
     }

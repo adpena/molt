@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::compatibility_error::CompatibilityError;
 use digest::Digest;
 use sha1::Sha1;
@@ -119,14 +120,14 @@ pub extern "C" fn molt_importlib_extension_loader_type_declare(class_bits: u64) 
         let Some(ptr) = obj_from_bits(class_bits).as_ptr() else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "extension loader declaration requires a type",
             );
         };
         if unsafe { object_type_id(ptr) } != TYPE_ID_TYPE {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "extension loader declaration requires a type",
             );
         }
@@ -189,7 +190,7 @@ pub(super) fn importlib_zip_source_exec_payload_checked(
     if !allowed {
         return Err(raise_exception::<_>(
             _py,
-            "PermissionError",
+            BuiltinExc::PermissionError,
             "missing fs.read capability",
         ));
     }
@@ -213,7 +214,7 @@ pub(super) fn importlib_extension_loader_resolution_checked(
     if !allowed {
         return Err(raise_exception::<_>(
             _py,
-            "PermissionError",
+            BuiltinExc::PermissionError,
             "missing fs.read capability",
         ));
     }
@@ -222,7 +223,7 @@ pub(super) fn importlib_extension_loader_resolution_checked(
         Ok(false) => {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 "extension module path must point to a file",
             ));
         }
@@ -352,7 +353,7 @@ fn importlib_admit_dynamic_extension(
         Ok(false) => {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 "extension module path must point to a file",
             ));
         }
@@ -380,7 +381,7 @@ fn importlib_extension_exec_owns_publication(
     if visible? != Some(module_bits) {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "extension exec module differs from the import transaction's sys.modules entry",
         ));
     }
@@ -415,7 +416,7 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
                 Err(msg) => {
                     return Err(raise_exception::<_>(
                         _py,
-                        "ImportError",
+                        BuiltinExc::ImportError,
                         &format!(
                             "failed to load libmolt source extension {module_name:?} from {path:?}: {msg}"
                         ),
@@ -427,7 +428,7 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
         {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "extension {module_name:?} at {path:?} requires source_extension_loader runtime support for init symbol {:?}",
                     contract.init_symbol
@@ -455,7 +456,7 @@ pub(in crate::builtins::platform) fn importlib_exec_extension_impl(
             dec_ref_bits(_py, result);
             return Err(raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "C extension execution returned a non-None result",
             ));
         }
@@ -503,7 +504,7 @@ pub extern "C" fn molt_importlib_extension_loader_create_module(
             if !crate::cpython_abi_hooks::register_cpython_hooks() {
                 return raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     "process-static C extensions require the primary runtime",
                 );
             }
@@ -523,7 +524,7 @@ pub extern "C" fn molt_importlib_extension_loader_create_module(
                     } else {
                         raise_exception::<_>(
                             _py,
-                            "ImportError",
+                            BuiltinExc::ImportError,
                             &format!(
                                 "failed to create C extension {module_name:?} from {path:?}: {error}"
                             ),
@@ -567,7 +568,7 @@ pub(super) fn importlib_loader_exec_context(
         }
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "module name must be str",
         ));
     };
@@ -719,7 +720,7 @@ pub extern "C" fn molt_importlib_sourceless_loader_exec_module(
             Err(bits) => return bits,
         };
         if importlib_is_archive_member_path(&path) {
-            return raise_exception::<_>(_py, "NotADirectoryError", &path);
+            return raise_exception::<_>(_py, BuiltinExc::NotADirectoryError, &path);
         }
         // The compiled body stands in for the bytecode this loader would run.
         importlib_loader_exec_module(_py, loader_bits, module_bits, |ctx| {
@@ -826,7 +827,7 @@ pub(super) fn importlib_coerce_module_name_bits(
 
     Err(raise_exception::<_>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "module name must be str",
     ))
 }
@@ -934,7 +935,11 @@ pub extern "C" fn molt_importlib_zip_read_entry(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let archive_path = match string_arg_from_bits(_py, archive_path_bits, "archive path") {
             Ok(value) => value,
@@ -946,7 +951,11 @@ pub extern "C" fn molt_importlib_zip_read_entry(
         };
         let normalized = inner_path.replace('\\', "/").trim_matches('/').to_string();
         if normalized.is_empty() {
-            return raise_exception::<_>(_py, "OSError", "zip archive entry path is empty");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OSError,
+                "zip archive entry path is empty",
+            );
         }
         let bytes = match zip_archive_read_entry(&archive_path, &normalized) {
             Ok(value) => value,
@@ -967,7 +976,11 @@ pub extern "C" fn molt_importlib_read_file(path_bits: u64) -> u64 {
         let allowed = has_capability(_py, "fs.read");
         audit_capability_decision("importlib.read_file", "fs.read", AuditArgs::None, allowed);
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
@@ -995,7 +1008,11 @@ pub extern "C" fn molt_importlib_cache_from_source(path_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         let Some(sys) = crate::builtins::modules::interpreter_sys_module(_py) else {
-            return raise_exception::<_>(_py, "RuntimeError", "sys module is unavailable");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "sys module is unavailable",
+            );
         };
         inc_ref_bits(_py, sys);
         let sys = ExceptionValue::adopt(_py, sys);

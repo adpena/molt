@@ -18,14 +18,19 @@ fn complex_tuple(_py: &PyToken, re: f64, im: f64) -> u64 {
     dec_ref_bits(_py, re_bits);
     dec_ref_bits(_py, im_bits);
     if tuple_ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+        return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(tuple_ptr).bits()
 }
 
 fn float_arg(_py: &PyToken, bits: u64, name: &str) -> Result<f64, u64> {
-    to_f64(obj_from_bits(bits))
-        .ok_or_else(|| raise_exception::<u64>(_py, "TypeError", &format!("{name} must be a float")))
+    to_f64(obj_from_bits(bits)).ok_or_else(|| {
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            &format!("{name} must be a float"),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +496,7 @@ pub extern "C" fn molt_cmath_polar(real_bits: u64, imag_bits: u64) -> u64 {
         dec_ref_bits(_py, r_bits);
         dec_ref_bits(_py, phi_bits);
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -616,7 +621,7 @@ pub extern "C" fn molt_cmath_constants() -> u64 {
         dec_ref_bits(_py, nanj_re);
         dec_ref_bits(_py, nanj_im);
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })

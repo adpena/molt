@@ -368,10 +368,10 @@ fn regex_text_admission_keeps_contextual_errors_at_every_entry() {
                 )
             };
             crate::clear_exception(py);
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error.bits(),
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             assert_eq!(
                 crate::builtins::exceptions::format_exception_message(

@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 use std::sync::{Arc, Mutex};
 
 /// `molt_re_execute(handle, text, pos, end, mode) -> match_result | None`.
@@ -12,13 +13,13 @@ pub extern "C" fn molt_re_execute(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(compiled) = pattern_handle_arc(handle_bits) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pos must be int");
         };
         let Some(end) = to_i64(obj_from_bits(end_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "end must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "end must be int");
         };
         // The mode protocol is strict UTF-8; arbitrary regex text is not.
         // SAFETY: the argument owns this immutable string under the core GIL.
@@ -40,7 +41,7 @@ pub extern "C" fn molt_re_execute(
             let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject_obj) }) else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "cannot use a bytes pattern on a string-like object",
                 );
             };
@@ -80,13 +81,13 @@ pub extern "C" fn molt_re_scanner_new(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(pattern) = pattern_handle_arc(handle_bits) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pos must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pos must be int");
         };
         let Some(end) = to_i64(obj_from_bits(end_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "end must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "end must be int");
         };
         let pos = usize::try_from(pos.max(0)).unwrap_or(usize::MAX);
         let end = usize::try_from(end.max(0)).unwrap_or(usize::MAX);
@@ -95,7 +96,7 @@ pub extern "C" fn molt_re_scanner_new(
             let Some(bytes) = (unsafe { bytes_obj_to_borrowed(subject) }) else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "cannot use a bytes pattern on a string-like object",
                 );
             };
@@ -127,7 +128,7 @@ pub extern "C" fn molt_re_scanner_new(
 pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(scanner) = scanner_handle_arc(scanner_bits) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex scanner");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex scanner");
         };
         let mut scanner = match scanner.lock() {
             Ok(state) => state,
@@ -144,7 +145,7 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
                 drop(scanner);
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "expected a contiguous bytes-like memoryview",
                 );
             };
@@ -154,7 +155,7 @@ pub extern "C" fn molt_re_finditer_next(scanner_bits: u64, subject_bits: u64) ->
                 drop(scanner);
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "text scanner has no prepared subject",
                 );
             };
@@ -262,14 +263,16 @@ pub(super) fn build_match_result_bits(
 
 pub(super) fn match_error_result(py: &CoreGilToken, error: MatchError) -> u64 {
     match error {
-        MatchError::Memory => {
-            raise_exception::<_>(py, "MemoryError", "regex workspace allocation failed")
-        }
+        MatchError::Memory => raise_exception::<_>(
+            py,
+            BuiltinExc::MemoryError,
+            "regex workspace allocation failed",
+        ),
         MatchError::InvalidMode => {
-            raise_exception::<_>(py, "ValueError", "invalid regex match mode")
+            raise_exception::<_>(py, BuiltinExc::ValueError, "invalid regex match mode")
         }
         MatchError::Internal => {
-            raise_exception::<_>(py, "SystemError", "invalid regex capture marks")
+            raise_exception::<_>(py, BuiltinExc::SystemError, "invalid regex capture marks")
         }
     }
 }

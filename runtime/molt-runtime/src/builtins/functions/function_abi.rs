@@ -5,6 +5,7 @@
 
 use super::wasm_callables_generated as wasm_callables;
 use super::*;
+use crate::BuiltinExc;
 use crate::ClassEdgeOwnership;
 use crate::object::layout::function_call_abi;
 use crate::object::object_init_class_edge_unpublished;
@@ -331,17 +332,25 @@ pub(crate) unsafe fn function_replace_code_bits(
 ) -> bool {
     unsafe {
         let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
-            raise_exception::<u64>(_py, "TypeError", "function __code__ must be a code object");
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "function __code__ must be a code object",
+            );
             return false;
         };
         if object_type_id(code_ptr) != TYPE_ID_CODE {
-            raise_exception::<u64>(_py, "TypeError", "function __code__ must be a code object");
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "function __code__ must be a code object",
+            );
             return false;
         }
         let Some(identity) = crate::object::layout::code_callable_identity(code_ptr) else {
             raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "function __code__ must have a published callable identity",
             );
             return false;
@@ -351,7 +360,7 @@ pub(crate) unsafe fn function_replace_code_bits(
         {
             raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "function and code object use different callable context ABIs",
             );
             return false;
@@ -365,7 +374,7 @@ pub(crate) unsafe fn function_replace_code_bits(
         let Some(call_target) = call_target else {
             raise_exception::<u64>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "replacement code has no resolvable native callable target",
             );
             return false;
@@ -426,7 +435,7 @@ unsafe fn finish_compiled_function(py: &PyToken<'_>, ptr: *mut u8, entry_custody
         Ok(()) => bits,
         Err(message) => {
             dec_ref_bits(py, bits);
-            raise_exception::<_>(py, "SystemError", message)
+            raise_exception::<_>(py, BuiltinExc::SystemError, message)
         }
     }
 }
@@ -487,11 +496,11 @@ fn molt_func_new_builtin_raw_impl(
         let msg = format!(
             "builtin func pointer missing: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
         );
-        return raise_exception::<_>(_py, "RuntimeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg);
     }
     let ptr = alloc_function_obj(_py, fn_key, arity);
     if ptr.is_null() {
-        return raise_exception::<_>(_py, "RuntimeError", "builtin func alloc failed");
+        return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "builtin func alloc failed");
     }
     unsafe {
         init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, trampoline_ptr, false);
@@ -787,7 +796,7 @@ pub extern "C" fn molt_func_new_builtin_named(
         }
         let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BUILTIN_FUNC);
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "builtin name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "builtin name must be str");
         };
         // The frontend distinguishes a public declaration name from an
         // explicit executable runtime symbol. Only the former resolves the
@@ -803,7 +812,11 @@ pub extern "C" fn molt_func_new_builtin_named(
                 }
                 return func_bits;
             }
-            return raise_exception(_py, "NameError", &format!("name '{name}' is not defined"));
+            return raise_exception(
+                _py,
+                BuiltinExc::NameError,
+                &format!("name '{name}' is not defined"),
+            );
         }
         {
             match crate::intrinsics::registry::try_resolve_intrinsic_func(_py, &name, false) {
@@ -845,12 +858,16 @@ pub extern "C" fn molt_func_new_closure(
         let call_abi = if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
             let Some(closure) = (unsafe { crate::object::cells::inspect_cell_tuple(closure_bits) })
             else {
-                return raise_exception::<_>(_py, "SystemError", "compiled closure is not a tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "compiled closure is not a tuple",
+                );
             };
             if closure.first_non_cell.is_some() {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "compiled closure contains a non-cell value",
                 );
             }
@@ -954,7 +971,7 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "function() argument 'code' must be code, not {}",
                     type_name(_py, obj_from_bits(args[0])),
@@ -965,14 +982,14 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "code object has no Molt callable target",
             );
         };
         if !callable_identity.call_abi.is_reconstructible() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "cannot create a Python function from opaque runtime-context code",
             );
         }
@@ -986,7 +1003,7 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             }
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "function() argument 'globals' must be dict, not {}",
                     type_name(_py, obj_from_bits(args[1])),
@@ -1000,14 +1017,14 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
                 let Some(name_ptr) = obj_from_bits(bits).as_ptr() else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "arg 3 (name) must be None or string",
                     );
                 };
                 if object_type_id(name_ptr) != TYPE_ID_STRING {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "arg 3 (name) must be None or string",
                     );
                 }
@@ -1021,14 +1038,14 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             let Some(defaults_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "arg 4 (defaults) must be None or tuple",
                 );
             };
             if object_type_id(defaults_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "arg 4 (defaults) must be None or tuple",
                 );
             }
@@ -1038,14 +1055,14 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         let Some(freevars_ptr) = obj_from_bits(freevars_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "code freevars metadata is not a tuple",
             );
         };
         if object_type_id(freevars_ptr) != TYPE_ID_TUPLE {
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "code freevars metadata is not a tuple",
             );
         }
@@ -1054,14 +1071,14 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             FunctionCallAbi::Positional if required_cells != 0 => {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "positional code object has lexical free variables",
                 );
             }
             FunctionCallAbi::LexicalClosureFirst if required_cells == 0 => {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "lexical-closure code object has no free variables",
                 );
             }
@@ -1071,14 +1088,18 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
         let closure_bits = args.get(4).copied().unwrap_or(none_bits);
         let closure = if obj_from_bits(closure_bits).is_none() {
             if required_cells != 0 {
-                return raise_exception::<_>(_py, "TypeError", "arg 5 (closure) must be tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "arg 5 (closure) must be tuple",
+                );
             }
             None
         } else {
             let Some(closure) = crate::object::cells::inspect_cell_tuple(closure_bits) else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "arg 5 (closure) must be None or tuple",
                 );
             };
@@ -1092,7 +1113,7 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
                 Ok(None) => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "arg 6 (kwdefaults) must be None or dict",
                     );
                 }
@@ -1106,12 +1127,12 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
                 let msg = format!(
                     "{code_name} requires closure of length {required_cells}, not {supplied_cells}"
                 );
-                return raise_exception::<_>(_py, "ValueError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
             }
             if let Some(invalid_bits) = closure.first_non_cell {
                 let found = type_name(_py, obj_from_bits(invalid_bits));
                 let msg = format!("arg 5 (closure) expected cell, found {found}");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             closure_bits
         } else {
@@ -1206,7 +1227,7 @@ pub extern "C" fn molt_function_set_fixed_builtin(func_bits: u64, positional_cou
         let Some(count) = obj_from_bits(positional_count).as_int() else {
             return raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "fixed builtin positional count must be an integer",
             );
         };
@@ -1215,7 +1236,7 @@ pub extern "C" fn molt_function_set_fixed_builtin(func_bits: u64, positional_cou
         ) else {
             return raise_exception::<_>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "fixed builtin positional count must be zero or one",
             );
         };
@@ -1240,11 +1261,11 @@ fn function_set_builtin_class_with_convention(
     fixed_convention: Option<molt_cpython_abi::api::cfunction::CFunctionConvention>,
 ) -> u64 {
     let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-        return raise_exception::<_>(_py, "TypeError", "expected function");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
     };
     unsafe {
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
         }
         let globals = function_globals_bits(func_ptr);
         let module = if globals == 0 || obj_from_bits(globals).is_none() {
@@ -1353,7 +1374,7 @@ fn function_metadata_target(py: &PyToken<'_>, func_bits: u64) -> Option<*mut u8>
     {
         return Some(ptr);
     }
-    raise_exception::<u64>(py, "TypeError", "expected function");
+    raise_exception::<u64>(py, BuiltinExc::TypeError, "expected function");
     None
 }
 
@@ -1389,17 +1410,17 @@ fn initialize_function_metadata(
         {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "task execution kind requires a code object",
             );
         }
         None
     } else {
         let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected code object");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected code object");
         };
         if unsafe { object_type_id(code_ptr) } != TYPE_ID_CODE {
-            return raise_exception::<_>(_py, "TypeError", "expected code object");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected code object");
         }
         Some(code_ptr)
     };
@@ -1561,11 +1582,11 @@ pub extern "C" fn molt_function_init_metadata_packed(
         };
 
         let Some(metadata_ptr) = obj_from_bits(metadata_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected metadata tuple");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected metadata tuple");
         };
         unsafe {
             if object_type_id(metadata_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "expected metadata tuple");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected metadata tuple");
             }
         }
         let Some(metadata) = (unsafe {
@@ -1578,7 +1599,11 @@ pub extern "C" fn molt_function_init_metadata_packed(
             return MoltObject::none().bits();
         };
         if metadata.len() != 14 {
-            return raise_exception::<_>(_py, "TypeError", "metadata tuple must contain 14 items");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "metadata tuple must contain 14 items",
+            );
         }
 
         let execution_kind = match obj_from_bits(metadata[11]).as_int() {
@@ -1589,7 +1614,7 @@ pub extern "C" fn molt_function_init_metadata_packed(
             _ => {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "metadata execution kind must be an int in range 0..=3",
                 );
             }
@@ -1660,11 +1685,11 @@ pub extern "C" fn molt_function_set_defaults(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
         };
         unsafe {
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
             }
         }
 
@@ -1715,11 +1740,11 @@ pub extern "C" fn molt_function_defaults_version(func_bits: u64) -> u64 {
 pub extern "C" fn molt_function_get_code(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
         };
         unsafe {
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
             }
             let code_bits = ensure_function_code_bits(_py, func_ptr);
             if obj_from_bits(code_bits).is_none() {
@@ -1735,11 +1760,11 @@ pub extern "C" fn molt_function_get_code(func_bits: u64) -> u64 {
 pub extern "C" fn molt_function_get_globals(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected function");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
         };
         unsafe {
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "expected function");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected function");
             }
             let globals_bits = function_globals_bits(func_ptr);
             if globals_bits == 0 || obj_from_bits(globals_bits).is_none() {
@@ -1766,39 +1791,59 @@ pub extern "C" fn molt_code_new(
     crate::with_gil_entry_nopanic!(_py, {
         let filename_obj = obj_from_bits(filename_bits);
         let Some(filename_ptr) = filename_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "code filename must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "code filename must be str");
         };
         unsafe {
             if object_type_id(filename_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "code filename must be str");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "code filename must be str",
+                );
             }
         }
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "code name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "code name must be str");
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "code name must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "code name must be str");
             }
         }
         if !crate::object::builders::acyclic_slot_edge(
             crate::object::heap_kinds_generated::HeapAcyclicSlot::CodeLinetable,
             linetable_bits,
         ) {
-            return raise_exception::<_>(_py, "TypeError", "code linetable must be bytes or None");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "code linetable must be bytes or None",
+            );
         }
         let Some(argcount) = to_i64(obj_from_bits(argcount_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "code argcount must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "code argcount must be int");
         };
         let Some(posonlyargcount) = to_i64(obj_from_bits(posonlyargcount_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "code posonlyargcount must be int");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "code posonlyargcount must be int",
+            );
         };
         let Some(kwonlyargcount) = to_i64(obj_from_bits(kwonlyargcount_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "code kwonlyargcount must be int");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "code kwonlyargcount must be int",
+            );
         };
         if argcount < 0 || posonlyargcount < 0 || kwonlyargcount < 0 {
-            return raise_exception::<_>(_py, "ValueError", "code arg counts must be >= 0");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "code arg counts must be >= 0",
+            );
         }
         let mut varnames_bits = varnames_bits;
         let mut varnames_owned = false;
@@ -1816,7 +1861,7 @@ pub extern "C" fn molt_code_new(
             ) {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "code varnames must be a tuple of str or None",
                 );
             }
@@ -1843,7 +1888,7 @@ pub extern "C" fn molt_code_new(
                 }
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "code names must be a tuple of str or None",
                 );
             }
@@ -1907,7 +1952,11 @@ pub(crate) fn bound_method_new(
                 eprintln!("molt_bound_method_new last_attr={}", name);
             }
         }
-        return raise_exception::<_>(_py, "TypeError", "bound method expects function object");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "bound method expects function object",
+        );
     };
     unsafe {
         // If func_bits is already a BOUND_METHOD, unwrap to its inner function
@@ -1932,7 +1981,11 @@ pub(crate) fn bound_method_new(
                     self_label
                 );
             }
-            return raise_exception::<_>(_py, "TypeError", "bound method expects callable object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "bound method expects callable object",
+            );
         }
     }
     allocate_bound_method(_py, func_bits, self_bits, native_binding)
@@ -2205,7 +2258,9 @@ mod function_type_execution_kind_tests {
         crate::with_gil_entry_nopanic!(py, {
             SIGNATURE_PROBE_CALLS.fetch_add(1, SeqCst);
             match SIGNATURE_PROBE_MODE.load(SeqCst) {
-                0 => raise_exception::<u64>(py, "RuntimeError", "signature lookup refused"),
+                0 => {
+                    raise_exception::<u64>(py, BuiltinExc::RuntimeError, "signature lookup refused")
+                }
                 1 => {
                     unsafe {
                         crate::object::field_storage::replace_dictionary(

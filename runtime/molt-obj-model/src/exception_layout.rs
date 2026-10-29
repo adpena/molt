@@ -97,21 +97,27 @@ impl ExceptionLayoutRoot {
         }
     }
 
-    pub const fn owner_name(self) -> &'static str {
+    /// The builtin class that introduces this layout.
+    pub const fn owner_kind(self) -> BuiltinExc {
         match self {
-            Self::Base => "BaseException",
-            Self::BaseExceptionGroup => "BaseExceptionGroup",
-            Self::SyntaxError => "SyntaxError",
-            Self::ImportError => "ImportError",
-            Self::UnicodeDecodeError => "UnicodeDecodeError",
-            Self::UnicodeEncodeError => "UnicodeEncodeError",
-            Self::UnicodeTranslateError => "UnicodeTranslateError",
-            Self::SystemExit => "SystemExit",
-            Self::OSError => "OSError",
-            Self::StopIteration => "StopIteration",
-            Self::NameError => "NameError",
-            Self::AttributeError => "AttributeError",
+            Self::Base => BuiltinExc::BaseException,
+            Self::BaseExceptionGroup => BuiltinExc::BaseExceptionGroup,
+            Self::SyntaxError => BuiltinExc::SyntaxError,
+            Self::ImportError => BuiltinExc::ImportError,
+            Self::UnicodeDecodeError => BuiltinExc::UnicodeDecodeError,
+            Self::UnicodeEncodeError => BuiltinExc::UnicodeEncodeError,
+            Self::UnicodeTranslateError => BuiltinExc::UnicodeTranslateError,
+            Self::SystemExit => BuiltinExc::SystemExit,
+            Self::OSError => BuiltinExc::OSError,
+            Self::StopIteration => BuiltinExc::StopIteration,
+            Self::NameError => BuiltinExc::NameError,
+            Self::AttributeError => BuiltinExc::AttributeError,
         }
+    }
+
+    /// The owner's spelling, for the CPython ABI's `PyExc_*` names.
+    pub const fn owner_name(self) -> &'static str {
+        self.owner_kind().name()
     }
 }
 
@@ -656,6 +662,7 @@ pub enum ExceptionStrSlot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuiltinExceptionDefinition {
     Canonical {
+        kind: BuiltinExc,
         bases: ExceptionBaseSpec,
         introduced_layout_root: Option<ExceptionLayoutRoot>,
     },
@@ -667,6 +674,8 @@ enum BuiltinExceptionDefinition {
 /// One row is the authority for builtin identity, compatibility aliases,
 /// inheritance, and physical layout. Runtime class bootstrap and the CPython
 /// ABI consume the resolved row instead of maintaining parallel name switches.
+/// `runtime/exception_kinds.toml` generates the rows
+/// (`exception_kinds_generated.rs`); `BuiltinExc` indexes them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuiltinExceptionSpec {
     name: &'static str,
@@ -674,26 +683,30 @@ pub struct BuiltinExceptionSpec {
     minimum_python_minor: u32,
     windows_only: bool,
     builtin_binding: bool,
+    name_lookup: bool,
     declared_str_slot: Option<ExceptionStrSlot>,
     declares_repr: bool,
     heap_type: bool,
     module: &'static str,
 }
 
-const fn exception_spec(
+pub(crate) const fn exception_spec(
     name: &'static str,
+    kind: BuiltinExc,
     bases: ExceptionBaseSpec,
     introduced_layout_root: Option<ExceptionLayoutRoot>,
 ) -> BuiltinExceptionSpec {
     BuiltinExceptionSpec {
         name,
         definition: BuiltinExceptionDefinition::Canonical {
+            kind,
             bases,
             introduced_layout_root,
         },
         minimum_python_minor: 12,
         windows_only: false,
         builtin_binding: true,
+        name_lookup: true,
         declared_str_slot: None,
         declares_repr: false,
         heap_type: false,
@@ -701,13 +714,17 @@ const fn exception_spec(
     }
 }
 
-const fn exception_alias(name: &'static str, canonical_name: &'static str) -> BuiltinExceptionSpec {
+pub(crate) const fn exception_alias(
+    name: &'static str,
+    canonical_name: &'static str,
+) -> BuiltinExceptionSpec {
     BuiltinExceptionSpec {
         name,
         definition: BuiltinExceptionDefinition::Alias { canonical_name },
         minimum_python_minor: 12,
         windows_only: false,
         builtin_binding: true,
+        name_lookup: true,
         declared_str_slot: None,
         declares_repr: false,
         heap_type: false,
@@ -715,284 +732,28 @@ const fn exception_alias(name: &'static str, canonical_name: &'static str) -> Bu
     }
 }
 
-const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[
-    exception_spec("BaseException", ExceptionBaseSpec::Root, None).with_base_render_slots(),
-    exception_spec(
-        "BaseExceptionGroup",
-        ExceptionBaseSpec::One("BaseException"),
-        Some(ExceptionLayoutRoot::BaseExceptionGroup),
-    )
-    .with_str_slot(ExceptionStrSlot::Group),
-    exception_spec("Exception", ExceptionBaseSpec::One("BaseException"), None),
-    exception_spec(
-        "ExceptionGroup",
-        ExceptionBaseSpec::Two("BaseExceptionGroup", "Exception"),
-        None,
-    )
-    .with_heap_class("builtins"),
-    exception_spec(
-        "GeneratorExit",
-        ExceptionBaseSpec::One("BaseException"),
-        None,
-    ),
-    exception_spec(
-        "KeyboardInterrupt",
-        ExceptionBaseSpec::One("BaseException"),
-        None,
-    ),
-    exception_spec(
-        "SystemExit",
-        ExceptionBaseSpec::One("BaseException"),
-        Some(ExceptionLayoutRoot::SystemExit),
-    ),
-    exception_spec(
-        "CancelledError",
-        ExceptionBaseSpec::One("BaseException"),
-        None,
-    )
-    .with_heap_class("asyncio.exceptions")
-    .without_builtin_binding(),
-    exception_spec("ArithmeticError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec("AssertionError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec(
-        "AttributeError",
-        ExceptionBaseSpec::One("Exception"),
-        Some(ExceptionLayoutRoot::AttributeError),
-    ),
-    exception_spec("BufferError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec("EOFError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec("PickleError", ExceptionBaseSpec::One("Exception"), None)
-        .with_heap_class("_pickle")
-        .without_builtin_binding(),
-    exception_spec("PicklingError", ExceptionBaseSpec::One("PickleError"), None)
-        .with_heap_class("_pickle")
-        .without_builtin_binding(),
-    exception_spec(
-        "UnpicklingError",
-        ExceptionBaseSpec::One("PickleError"),
-        None,
-    )
-    .with_heap_class("_pickle")
-    .without_builtin_binding(),
-    exception_spec(
-        "ImportError",
-        ExceptionBaseSpec::One("Exception"),
-        Some(ExceptionLayoutRoot::ImportError),
-    )
-    .with_str_slot(ExceptionStrSlot::Import),
-    exception_spec("LookupError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec(
-        "NameError",
-        ExceptionBaseSpec::One("Exception"),
-        Some(ExceptionLayoutRoot::NameError),
-    ),
-    exception_spec(
-        "OSError",
-        ExceptionBaseSpec::One("Exception"),
-        Some(ExceptionLayoutRoot::OSError),
-    )
-    .with_str_slot(ExceptionStrSlot::OSError),
-    exception_spec("gaierror", ExceptionBaseSpec::One("OSError"), None)
-        .with_heap_class("socket")
-        .without_builtin_binding(),
-    exception_spec("herror", ExceptionBaseSpec::One("OSError"), None)
-        .with_heap_class("socket")
-        .without_builtin_binding(),
-    exception_spec("ReferenceError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec("RuntimeError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec(
-        "_DeadlockError",
-        ExceptionBaseSpec::One("RuntimeError"),
-        None,
-    )
-    .with_heap_class("_frozen_importlib")
-    .without_builtin_binding(),
-    exception_spec(
-        "StopIteration",
-        ExceptionBaseSpec::One("Exception"),
-        Some(ExceptionLayoutRoot::StopIteration),
-    ),
-    exception_spec(
-        "StopAsyncIteration",
-        ExceptionBaseSpec::One("Exception"),
-        None,
-    ),
-    exception_spec(
-        "SyntaxError",
-        ExceptionBaseSpec::One("Exception"),
-        Some(ExceptionLayoutRoot::SyntaxError),
-    )
-    .with_str_slot(ExceptionStrSlot::Syntax),
-    exception_spec("SystemError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec("TypeError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec("ValueError", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec(
-        "StatisticsError",
-        ExceptionBaseSpec::One("ValueError"),
-        None,
-    )
-    .with_heap_class("statistics")
-    .without_builtin_binding(),
-    exception_spec("Warning", ExceptionBaseSpec::One("Exception"), None),
-    exception_spec(
-        "FloatingPointError",
-        ExceptionBaseSpec::One("ArithmeticError"),
-        None,
-    ),
-    exception_spec(
-        "OverflowError",
-        ExceptionBaseSpec::One("ArithmeticError"),
-        None,
-    ),
-    exception_spec(
-        "ZeroDivisionError",
-        ExceptionBaseSpec::One("ArithmeticError"),
-        None,
-    ),
-    exception_spec(
-        "ModuleNotFoundError",
-        ExceptionBaseSpec::One("ImportError"),
-        None,
-    ),
-    exception_spec("IndexError", ExceptionBaseSpec::One("LookupError"), None),
-    exception_spec("KeyError", ExceptionBaseSpec::One("LookupError"), None)
-        .with_str_slot(ExceptionStrSlot::KeyError),
-    exception_spec(
-        "UnboundLocalError",
-        ExceptionBaseSpec::One("NameError"),
-        None,
-    ),
-    exception_spec("ConnectionError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec(
-        "BrokenPipeError",
-        ExceptionBaseSpec::One("ConnectionError"),
-        None,
-    ),
-    exception_spec(
-        "ConnectionAbortedError",
-        ExceptionBaseSpec::One("ConnectionError"),
-        None,
-    ),
-    exception_spec(
-        "ConnectionRefusedError",
-        ExceptionBaseSpec::One("ConnectionError"),
-        None,
-    ),
-    exception_spec(
-        "ConnectionResetError",
-        ExceptionBaseSpec::One("ConnectionError"),
-        None,
-    ),
-    exception_spec("BlockingIOError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec("ChildProcessError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec("FileExistsError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec("FileNotFoundError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec("InterruptedError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec("IsADirectoryError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec(
-        "NotADirectoryError",
-        ExceptionBaseSpec::One("OSError"),
-        None,
-    ),
-    exception_spec("PermissionError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec(
-        "ProcessLookupError",
-        ExceptionBaseSpec::One("OSError"),
-        None,
-    ),
-    exception_spec("TimeoutError", ExceptionBaseSpec::One("OSError"), None),
-    exception_spec(
-        "UnsupportedOperation",
-        ExceptionBaseSpec::Two("OSError", "ValueError"),
-        None,
-    )
-    .with_heap_class("_io")
-    .without_builtin_binding(),
-    exception_spec(
-        "NotImplementedError",
-        ExceptionBaseSpec::One("RuntimeError"),
-        None,
-    ),
-    exception_spec(
-        "PythonFinalizationError",
-        ExceptionBaseSpec::One("RuntimeError"),
-        None,
-    )
-    .since_python_minor(13),
-    exception_spec(
-        "RecursionError",
-        ExceptionBaseSpec::One("RuntimeError"),
-        None,
-    ),
-    exception_spec(
-        "IndentationError",
-        ExceptionBaseSpec::One("SyntaxError"),
-        None,
-    ),
-    exception_spec("TabError", ExceptionBaseSpec::One("IndentationError"), None),
-    exception_spec("UnicodeError", ExceptionBaseSpec::One("ValueError"), None),
-    exception_spec(
-        "UnicodeDecodeError",
-        ExceptionBaseSpec::One("UnicodeError"),
-        Some(ExceptionLayoutRoot::UnicodeDecodeError),
-    )
-    .with_str_slot(ExceptionStrSlot::UnicodeDecode),
-    exception_spec(
-        "UnicodeEncodeError",
-        ExceptionBaseSpec::One("UnicodeError"),
-        Some(ExceptionLayoutRoot::UnicodeEncodeError),
-    )
-    .with_str_slot(ExceptionStrSlot::UnicodeEncode),
-    exception_spec(
-        "UnicodeTranslateError",
-        ExceptionBaseSpec::One("UnicodeError"),
-        Some(ExceptionLayoutRoot::UnicodeTranslateError),
-    )
-    .with_str_slot(ExceptionStrSlot::UnicodeTranslate),
-    exception_spec(
-        "DeprecationWarning",
-        ExceptionBaseSpec::One("Warning"),
-        None,
-    ),
-    exception_spec(
-        "PendingDeprecationWarning",
-        ExceptionBaseSpec::One("Warning"),
-        None,
-    ),
-    exception_spec("RuntimeWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("SyntaxWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("UserWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("FutureWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("ImportWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("UnicodeWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("BytesWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("ResourceWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_spec("EncodingWarning", ExceptionBaseSpec::One("Warning"), None),
-    exception_alias("EnvironmentError", "OSError"),
-    exception_alias("IOError", "OSError"),
-    exception_alias("WindowsError", "OSError").on_windows_only(),
-];
-
+/// Resolve a builtin spelling at a string boundary (the CPython ABI and the
+/// string `exception_new` op kind). Runtime raises use `BuiltinExc` directly.
 pub fn builtin_exception_spec(name: &str) -> Option<&'static BuiltinExceptionSpec> {
-    BUILTIN_EXCEPTION_SPECS
-        .iter()
-        .find(|spec| spec.name == name)
+    match BuiltinExc::from_name(name) {
+        Some(kind) => Some(kind.spec()),
+        None => builtin_exception_alias(name),
+    }
 }
 
 /// Runtime exception identities and their target-gated Python namespace projections.
-pub const fn builtin_exception_specs() -> &'static [BuiltinExceptionSpec] {
-    BUILTIN_EXCEPTION_SPECS
+pub fn builtin_exception_specs() -> &'static [BuiltinExceptionSpec] {
+    &BUILTIN_EXCEPTION_SPECS
 }
 
 impl BuiltinExceptionSpec {
-    const fn with_heap_class(mut self, module: &'static str) -> Self {
+    pub(crate) const fn with_heap_class(mut self, module: &'static str) -> Self {
         self.heap_type = true;
         self.module = module;
         self
     }
 
-    const fn without_builtin_binding(mut self) -> Self {
+    pub(crate) const fn without_builtin_binding(mut self) -> Self {
         self.builtin_binding = false;
         self
     }
@@ -1006,14 +767,20 @@ impl BuiltinExceptionSpec {
         self.canonical().module
     }
 
-    const fn with_str_slot(mut self, slot: ExceptionStrSlot) -> Self {
+    pub(crate) const fn with_str_slot(mut self, slot: ExceptionStrSlot) -> Self {
         self.declared_str_slot = Some(slot);
         self
     }
 
-    const fn with_base_render_slots(mut self) -> Self {
-        self.declared_str_slot = Some(ExceptionStrSlot::Base);
+    pub(crate) const fn with_repr(mut self) -> Self {
         self.declares_repr = true;
+        self
+    }
+
+    /// The row's `__name__` is not a builtins spelling (`binascii.Error`), so
+    /// string-boundary lookup never resolves it; only its `BuiltinExc` does.
+    pub(crate) const fn without_name_lookup(mut self) -> Self {
+        self.name_lookup = false;
         self
     }
 
@@ -1049,12 +816,12 @@ impl BuiltinExceptionSpec {
         }
     }
 
-    const fn since_python_minor(mut self, minimum_python_minor: u32) -> Self {
+    pub(crate) const fn since_python_minor(mut self, minimum_python_minor: u32) -> Self {
         self.minimum_python_minor = minimum_python_minor;
         self
     }
 
-    const fn on_windows_only(mut self) -> Self {
+    pub(crate) const fn on_windows_only(mut self) -> Self {
         self.windows_only = true;
         self
     }
@@ -1062,6 +829,11 @@ impl BuiltinExceptionSpec {
     /// The schema spelling, preserving compatibility aliases.
     pub const fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// Whether string boundaries resolve `name()` to this row.
+    pub const fn name_lookup(&self) -> bool {
+        self.name_lookup
     }
 
     /// Builtins namespace availability, using the explicit binding declaration
@@ -1099,6 +871,16 @@ impl BuiltinExceptionSpec {
         self.canonical().name
     }
 
+    /// The typed identity of the class this row (or alias) names.
+    pub fn kind(&'static self) -> BuiltinExc {
+        match self.canonical().definition {
+            BuiltinExceptionDefinition::Canonical { kind, .. } => kind,
+            BuiltinExceptionDefinition::Alias { .. } => {
+                unreachable!("canonical exception row cannot be an alias")
+            }
+        }
+    }
+
     pub fn bases(&'static self) -> ExceptionBaseSpec {
         match self.canonical().definition {
             BuiltinExceptionDefinition::Canonical { bases, .. } => bases,
@@ -1117,10 +899,12 @@ impl BuiltinExceptionSpec {
             BuiltinExceptionDefinition::Canonical {
                 bases: ExceptionBaseSpec::Root,
                 introduced_layout_root: None,
+                ..
             } => ExceptionLayoutRoot::Base,
             BuiltinExceptionDefinition::Canonical {
                 bases: ExceptionBaseSpec::One(parent) | ExceptionBaseSpec::Two(parent, _),
                 introduced_layout_root: None,
+                ..
             } => builtin_exception_spec(parent)
                 .expect("builtin exception parent must remain registered")
                 .layout_root(),
@@ -1147,6 +931,13 @@ impl BuiltinExceptionSpec {
     }
 }
 
+#[path = "exception_kinds_generated.rs"]
+mod exception_kinds_generated;
+use exception_kinds_generated::{BUILTIN_EXCEPTION_SPECS, builtin_exception_alias};
+pub use exception_kinds_generated::{
+    BuiltinExc, ExcKind, MODULE_EXCEPTION_SPECS, ModuleExc, ModuleExcOwner, ModuleExceptionSpec,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1168,7 +959,14 @@ mod tests {
                     assert!(!names.contains(internal));
                 }
                 for spec in builtin_exception_specs() {
-                    assert_eq!(builtin_exception_spec(spec.name()), Some(spec));
+                    // Native module classes such as `binascii.Error` are reached
+                    // only by their `BuiltinExc`, never by their bare `__name__`.
+                    let by_name = builtin_exception_spec(spec.name());
+                    if spec.name_lookup {
+                        assert_eq!(by_name, Some(spec));
+                    } else {
+                        assert_ne!(by_name, Some(spec));
+                    }
                     if spec.module() != "builtins" {
                         assert!(!names.contains(spec.name()));
                     } else if !matches!(spec.name(), "PythonFinalizationError" | "WindowsError") {
@@ -1344,15 +1142,19 @@ mod tests {
         let mut names = std::collections::HashSet::new();
         for spec in builtin_exception_specs() {
             assert!(
-                names.insert(spec.name),
-                "duplicate schema row: {}",
+                names.insert((spec.module(), spec.name)),
+                "duplicate schema row: {}.{}",
+                spec.module(),
                 spec.name
             );
-            assert!(
-                builtin_exception_spec(spec.canonical_name()).is_some(),
-                "missing canonical row: {}",
-                spec.canonical_name()
-            );
+            assert_eq!(spec.kind().spec().name, spec.canonical_name());
+            if spec.name_lookup {
+                assert!(
+                    builtin_exception_spec(spec.canonical_name()).is_some(),
+                    "missing canonical row: {}",
+                    spec.canonical_name()
+                );
+            }
             assert!(!spec.canonical().is_alias(), "alias chain: {}", spec.name);
             match spec.bases() {
                 ExceptionBaseSpec::Root => assert_eq!(spec.name, "BaseException"),
@@ -1407,6 +1209,8 @@ mod tests {
                 ("_DeadlockError", "_frozen_importlib"),
                 ("gaierror", "socket"),
                 ("herror", "socket"),
+                ("Error", "binascii"),
+                ("Incomplete", "binascii"),
             ])
         );
         assert_eq!(

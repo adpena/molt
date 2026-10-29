@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime-asyncio/src/asyncio_queue.rs ===
+use molt_runtime_core::{BuiltinExc, ModuleExc};
 //
 // Intrinsic implementations for asyncio.Queue, asyncio.PriorityQueue, and
 // asyncio.LifoQueue.
@@ -314,7 +315,7 @@ pub extern "C" fn molt_asyncio_queue_new(maxsize_bits: u64, queue_type_bits: u64
         let maxsize_obj = obj_from_bits(maxsize_bits);
         let maxsize_raw = to_i64(maxsize_obj).unwrap_or(0);
         if maxsize_raw < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "maxsize must be >= 0");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "maxsize must be >= 0");
         }
         let maxsize = maxsize_raw as usize;
 
@@ -327,7 +328,7 @@ pub extern "C" fn molt_asyncio_queue_new(maxsize_bits: u64, queue_type_bits: u64
             _ => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "queue_type must be 0 (FIFO), 1 (LIFO), or 2 (Priority)",
                 );
             }
@@ -374,16 +375,16 @@ pub extern "C" fn molt_asyncio_queue_put_nowait(handle_bits: u64, item_bits: u64
         match result {
             None => {
                 dec_ref_bits(_py, item_bits);
-                raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found")
+                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "asyncio queue not found")
             }
             Some(Err("QueueShutDown")) => {
                 dec_ref_bits(_py, item_bits);
-                raise_exception::<u64>(_py, "asyncio.QueueShutDown", "")
+                raise_exception::<u64>(_py, ModuleExc::AsyncioQueueShutDown, "")
             }
             Some(Err(_)) => {
                 // QueueFull
                 dec_ref_bits(_py, item_bits);
-                raise_exception::<u64>(_py, "asyncio.QueueFull", "")
+                raise_exception::<u64>(_py, ModuleExc::AsyncioQueueFull, "")
             }
             Some(Ok(())) => MoltObject::none().bits(),
         }
@@ -413,11 +414,15 @@ pub extern "C" fn molt_asyncio_queue_get_nowait(handle_bits: u64) -> u64 {
         });
 
         match result {
-            None => raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found"),
-            Some(Err("QueueShutDown")) => raise_exception::<u64>(_py, "asyncio.QueueShutDown", ""),
+            None => {
+                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "asyncio queue not found")
+            }
+            Some(Err("QueueShutDown")) => {
+                raise_exception::<u64>(_py, ModuleExc::AsyncioQueueShutDown, "")
+            }
             Some(Err(_)) => {
                 // QueueEmpty
-                raise_exception::<u64>(_py, "asyncio.QueueEmpty", "")
+                raise_exception::<u64>(_py, ModuleExc::AsyncioQueueEmpty, "")
             }
             Some(Ok(item_bits)) => item_bits,
         }
@@ -430,7 +435,11 @@ pub extern "C" fn molt_asyncio_queue_qsize(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(size) = with_queue(_py, handle, |state| state.qsize() as i64) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "asyncio queue not found",
+            );
         };
         MoltObject::from_int(size).bits()
     })
@@ -442,7 +451,11 @@ pub extern "C" fn molt_asyncio_queue_maxsize(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(maxsize) = with_queue(_py, handle, |state| state.maxsize as i64) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "asyncio queue not found",
+            );
         };
         MoltObject::from_int(maxsize).bits()
     })
@@ -454,7 +467,11 @@ pub extern "C" fn molt_asyncio_queue_empty(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(empty) = with_queue(_py, handle, |state| state.is_empty()) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "asyncio queue not found",
+            );
         };
         MoltObject::from_bool(empty).bits()
     })
@@ -466,7 +483,11 @@ pub extern "C" fn molt_asyncio_queue_full(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(full) = with_queue(_py, handle, |state| state.is_full()) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "asyncio queue not found",
+            );
         };
         MoltObject::from_bool(full).bits()
     })
@@ -490,10 +511,14 @@ pub extern "C" fn molt_asyncio_queue_task_done(handle_bits: u64) -> u64 {
         });
 
         match result {
-            None => raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found"),
-            Some(Err(())) => {
-                raise_exception::<u64>(_py, "ValueError", "task_done() called too many times")
+            None => {
+                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "asyncio queue not found")
             }
+            Some(Err(())) => raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "task_done() called too many times",
+            ),
             Some(Ok(_)) => MoltObject::none().bits(),
         }
     })
@@ -505,7 +530,11 @@ pub extern "C" fn molt_asyncio_queue_unfinished_tasks(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(count) = with_queue(_py, handle, |state| state.unfinished_tasks) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "asyncio queue not found",
+            );
         };
         MoltObject::from_int(count).bits()
     })
@@ -530,7 +559,11 @@ pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: 
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let Some(state) = map.get_mut(&handle) else {
-                return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "asyncio queue not found",
+                );
             };
 
             state.shutdown = true;
@@ -557,7 +590,11 @@ pub extern "C" fn molt_asyncio_queue_is_shutdown(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = handle_from_bits(handle_bits);
         let Some(shut) = with_queue(_py, handle, |state| state.shutdown) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "asyncio queue not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "asyncio queue not found",
+            );
         };
         MoltObject::from_bool(shut).bits()
     })

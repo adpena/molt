@@ -1,3 +1,4 @@
+# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-530 expect_molt_returncode=0 expect_molt_stdout_sha256=70752f18de988f11b53b6beff9d4b8dcbd66f56346382cb477612eec9e32870b
 """Purpose: extension exec shim lane falls through to later intrinsic candidates."""
 
 import importlib.machinery

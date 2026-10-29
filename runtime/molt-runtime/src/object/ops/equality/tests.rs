@@ -83,9 +83,9 @@ extern "C" fn descriptor_get_raises(_self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         trace(4);
         let kind = if DESCRIPTOR_ATTRIBUTE_ERROR.load(Ordering::SeqCst) != 0 {
-            "AttributeError"
+            crate::BuiltinExc::AttributeError
         } else {
-            "RuntimeError"
+            crate::BuiltinExc::RuntimeError
         };
         raise_exception::<u64>(_py, kind, "binary descriptor bind failure")
     })
@@ -372,7 +372,10 @@ fn descriptor_bind_error_follows_binary_target_version_policy() {
                     serial: 0,
                 });
 
-            for kind in ["AttributeError", "RuntimeError"] {
+            for kind in [
+                crate::BuiltinExc::AttributeError,
+                crate::BuiltinExc::RuntimeError,
+            ] {
                 let fixture_name = format!("Py3{minor}{kind}");
                 let fixture = BinaryFixture::new(_py, fixture_name.as_bytes(), false);
                 let getter = runtime_function(
@@ -398,11 +401,13 @@ fn descriptor_bind_error_follows_binary_target_version_policy() {
                 set_class_attr(_py, fixture.lhs_class, fixture.op_name, property);
                 set_class_attr(_py, fixture.rhs_class, fixture.rop_name, fallback);
 
-                DESCRIPTOR_ATTRIBUTE_ERROR
-                    .store(u64::from(kind == "AttributeError"), Ordering::SeqCst);
+                DESCRIPTOR_ATTRIBUTE_ERROR.store(
+                    u64::from(kind == crate::BuiltinExc::AttributeError),
+                    Ordering::SeqCst,
+                );
                 TRACE.store(0, Ordering::SeqCst);
                 let result = fixture.call(_py);
-                if minor >= 14 && kind == "AttributeError" {
+                if minor >= 14 && kind == crate::BuiltinExc::AttributeError {
                     assert_eq!(result, Some(MoltObject::from_int(42).bits()));
                     assert_eq!(TRACE.load(Ordering::SeqCst), 43);
                     assert!(!exception_pending(_py));
@@ -412,7 +417,7 @@ fn descriptor_bind_error_follows_binary_target_version_policy() {
                     assert_eq!(TRACE.load(Ordering::SeqCst), 4);
                     assert!(exception_pending(_py));
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         _py, error, kind
                     ));
                     crate::molt_exception_clear();

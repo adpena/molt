@@ -1,6 +1,7 @@
 //! Runtime access to the existing managed and CPython tuple storage owners.
 //! Admission is physical; explicit base slots never redispatch subclass methods.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_cpython_abi::abi_types::{PyMappingMethods, PyObject, PySequenceMethods, PyTuple_Type};
 use molt_cpython_abi::api::abstract_sequence::{BinaryFunc, ObjObjProc, SsizeArgFunc};
@@ -32,7 +33,7 @@ impl TupleSlots {
             if sequence.is_null() || mapping.is_null() {
                 return raise_exception(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "tuple physical slot tables are missing",
                 );
             }
@@ -47,7 +48,11 @@ impl TupleSlots {
                 .iter()
                 .any(|slot| slot.is_null())
             {
-                return raise_exception(py, "SystemError", "tuple physical slot is missing");
+                return raise_exception(
+                    py,
+                    BuiltinExc::SystemError,
+                    "tuple physical slot is missing",
+                );
             }
             // CPython binaryfunc, ssizeargfunc, and objobjproc respectively.
             // These exact fields are populated by the immutable tuple root's
@@ -136,7 +141,7 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
         Self::from_bits(py, bits).or_else(|| {
             raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '{method}' requires a 'tuple' object but received a '{}'",
                     type_name(py, obj_from_bits(bits)),
@@ -181,7 +186,11 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
                 unsafe { crate::object::seq_access::pin_item(self.py, ptr, index) }
                     .map(|item| item.into_bits())
                     .or_else(|| {
-                        raise_exception(self.py, "SystemError", "invalid tuple item storage")
+                        raise_exception(
+                            self.py,
+                            BuiltinExc::SystemError,
+                            "invalid tuple item storage",
+                        )
                     })
             }
             Storage::Native(ptr) => {
@@ -199,7 +208,11 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
         let (bits, owned) = match self.storage {
             Storage::Managed(ptr) => (
                 unsafe { crate::object::seq_access::item(ptr, index) }.or_else(|| {
-                    raise_exception(self.py, "SystemError", "invalid tuple comparison storage")
+                    raise_exception(
+                        self.py,
+                        BuiltinExc::SystemError,
+                        "invalid tuple comparison storage",
+                    )
                 })?,
                 false,
             ),

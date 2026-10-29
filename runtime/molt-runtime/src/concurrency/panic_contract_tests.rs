@@ -28,6 +28,7 @@
 //!   cargo test -p molt-runtime --profile release-output --lib -- \
 //!       concurrency::panic_contract_tests --test-threads=1
 
+use crate::BuiltinExc;
 use crate::builtins::exceptions::{
     molt_exception_class, molt_exception_clear, molt_exception_kind,
     molt_exception_new_builtin_one, molt_exception_pending, raise_exception,
@@ -38,9 +39,11 @@ use molt_obj_model::MoltObject;
 
 // Builtin exception tags (see the tag table in builtins/exceptions.rs:
 // 5 => ValueError, 6 => TypeError, 7 => RuntimeError).
-const TAG_VALUE_ERROR: u64 = 5;
-const TAG_TYPE_ERROR: u64 = 6;
-const TAG_RUNTIME_ERROR: u64 = 7;
+// Builtin constructor tags are `BuiltinExc` codes (runtime/exception_kinds.toml).
+const TAG_VALUE_ERROR: u64 = crate::ExcKind::Builtin(crate::BuiltinExc::ValueError).code() as u64;
+const TAG_TYPE_ERROR: u64 = crate::ExcKind::Builtin(crate::BuiltinExc::TypeError).code() as u64;
+const TAG_RUNTIME_ERROR: u64 =
+    crate::ExcKind::Builtin(crate::BuiltinExc::RuntimeError).code() as u64;
 
 /// Serialize against every other test that shares the process-global
 /// RuntimeState, and clear any stale pending exception on entry.
@@ -90,13 +93,21 @@ fn builtin_exc_type_bits(tag: u64) -> u64 {
 /// including `panic = "abort"` — and never abort the process.
 extern "C" fn ffi_raises_value_error() -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<u64>(_py, "ValueError", "recoverable python-level error")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::ValueError,
+            "recoverable python-level error",
+        )
     })
 }
 
 extern "C" fn ffi_raises_type_error() -> u64 {
     crate::with_gil_entry!(_py, {
-        raise_exception::<u64>(_py, "TypeError", "thread-local python-level error")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "thread-local python-level error",
+        )
     })
 }
 

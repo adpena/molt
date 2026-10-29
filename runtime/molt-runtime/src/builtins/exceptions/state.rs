@@ -1,9 +1,9 @@
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{GilGuard, MoltObject, PyToken, dec_ref_bits, runtime_state};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::Arc;
+#[cfg(test)]
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 
@@ -133,24 +133,10 @@ impl Drop for ThreadExceptionRelease {
     }
 }
 
-const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 15;
+const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 1;
 
 pub(crate) struct ExceptionsRuntimeState {
     pub(super) memory_error: super::memory_error::MemoryErrorReserve,
-    pub(super) base_exception_class_cache: AtomicU64,
-    pub(super) exception_class_cache: AtomicU64,
-    pub(super) key_error_class_cache: AtomicU64,
-    pub(super) index_error_class_cache: AtomicU64,
-    pub(super) value_error_class_cache: AtomicU64,
-    pub(super) type_error_class_cache: AtomicU64,
-    pub(super) runtime_error_class_cache: AtomicU64,
-    pub(super) stop_iteration_class_cache: AtomicU64,
-    pub(super) stop_async_iteration_class_cache: AtomicU64,
-    pub(super) assertion_error_class_cache: AtomicU64,
-    pub(super) import_error_class_cache: AtomicU64,
-    pub(super) name_error_class_cache: AtomicU64,
-    pub(super) unbound_local_error_class_cache: AtomicU64,
-    pub(super) not_implemented_error_class_cache: AtomicU64,
     pub(super) unraisable_hook_args_class: AtomicU64,
 }
 
@@ -158,42 +144,12 @@ impl ExceptionsRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
             memory_error: super::memory_error::MemoryErrorReserve::new(),
-            base_exception_class_cache: AtomicU64::new(0),
-            exception_class_cache: AtomicU64::new(0),
-            key_error_class_cache: AtomicU64::new(0),
-            index_error_class_cache: AtomicU64::new(0),
-            value_error_class_cache: AtomicU64::new(0),
-            type_error_class_cache: AtomicU64::new(0),
-            runtime_error_class_cache: AtomicU64::new(0),
-            stop_iteration_class_cache: AtomicU64::new(0),
-            stop_async_iteration_class_cache: AtomicU64::new(0),
-            assertion_error_class_cache: AtomicU64::new(0),
-            import_error_class_cache: AtomicU64::new(0),
-            name_error_class_cache: AtomicU64::new(0),
-            unbound_local_error_class_cache: AtomicU64::new(0),
-            not_implemented_error_class_cache: AtomicU64::new(0),
             unraisable_hook_args_class: AtomicU64::new(0),
         }
     }
 
     pub(super) fn object_slots(&self) -> [&AtomicU64; EXCEPTIONS_OBJECT_SLOT_COUNT] {
-        [
-            &self.base_exception_class_cache,
-            &self.exception_class_cache,
-            &self.key_error_class_cache,
-            &self.index_error_class_cache,
-            &self.value_error_class_cache,
-            &self.type_error_class_cache,
-            &self.runtime_error_class_cache,
-            &self.stop_iteration_class_cache,
-            &self.stop_async_iteration_class_cache,
-            &self.assertion_error_class_cache,
-            &self.import_error_class_cache,
-            &self.name_error_class_cache,
-            &self.unbound_local_error_class_cache,
-            &self.not_implemented_error_class_cache,
-            &self.unraisable_hook_args_class,
-        ]
+        [&self.unraisable_hook_args_class]
     }
 }
 
@@ -259,13 +215,4 @@ pub(crate) fn exception_clear_reason_set(reason: &'static str) {
 
 pub(super) fn exception_clear_reason_take() -> Option<&'static str> {
     EXCEPTION_CLEAR_REASON.with(|cell| cell.borrow_mut().take())
-}
-
-pub(crate) mod internals {
-    use super::{HashMap, Mutex};
-    use crate::{PyToken, runtime_state};
-
-    pub(crate) fn exception_type_cache(_py: &PyToken<'_>) -> &'static Mutex<HashMap<String, u64>> {
-        &runtime_state(_py).exception_type_cache
-    }
 }

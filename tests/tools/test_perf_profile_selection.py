@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from tests.tools.perf_scoreboard_fixtures import (
     synthetic_workload,
     measure_admitted_cell,
@@ -773,6 +775,7 @@ def test_wasm_build_uses_admitted_scratch_and_closes_failed_owners(
                 json.dumps(
                     {
                         "version": WASM_EXECUTION_MANIFEST_VERSION,
+                        "launch": wasm_execution_launch(),
                         "mode": "linked",
                         "modules": {"linked": {"path": wasm.name}},
                     }
@@ -1446,6 +1449,7 @@ def test_wasm_controller_measures_manifest_deployment_and_exact_guest_output(
             json.dumps(
                 {
                     "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "launch": wasm_execution_launch(),
                     "mode": "linked",
                     "modules": {"linked": {"path": linked.name}},
                 }

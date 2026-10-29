@@ -4,6 +4,7 @@
 //! Placing them in their own compilation unit lets `wasm-ld --gc-sections`
 //! drop the entire block when no heapq builtins are referenced.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_obj_model::MoltObject;
 use std::cmp::Ordering;
@@ -127,7 +128,7 @@ unsafe fn heapq_siftdown(
 ) -> bool {
     let size = unsafe { list_len(heap_ptr) };
     if pos >= size {
-        let _ = raise_exception::<u64>(_py, "IndexError", "index out of range");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::IndexError, "index out of range");
         return false;
     }
     while pos > startpos {
@@ -147,8 +148,11 @@ unsafe fn heapq_siftdown(
             None => return false,
         };
         if unsafe { list_len(heap_ptr) } != size {
-            let _ =
-                raise_exception::<u64>(_py, "RuntimeError", "list changed size during iteration");
+            let _ = raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "list changed size during iteration",
+            );
             return false;
         }
         if lt {
@@ -169,7 +173,7 @@ unsafe fn heapq_siftup(_py: &PyToken<'_>, heap_ptr: *mut u8, mut pos: usize) -> 
         let endpos = list_len(heap_ptr);
         let startpos = pos;
         if pos >= endpos {
-            let _ = raise_exception::<u64>(_py, "IndexError", "index out of range");
+            let _ = raise_exception::<u64>(_py, BuiltinExc::IndexError, "index out of range");
             return false;
         }
         let mut childpos = 2 * pos + 1;
@@ -192,7 +196,7 @@ unsafe fn heapq_siftup(_py: &PyToken<'_>, heap_ptr: *mut u8, mut pos: usize) -> 
                 if list_len(heap_ptr) != endpos {
                     let _ = raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "list changed size during iteration",
                     );
                     return false;
@@ -276,7 +280,7 @@ pub extern "C" fn molt_heapq_heappop(list_bits: u64) -> u64 {
             }
             let len = list_len(list_ptr);
             if len == 0 {
-                return raise_exception::<_>(_py, "IndexError", "index out of range");
+                return raise_exception::<_>(_py, BuiltinExc::IndexError, "index out of range");
             }
             let Some(last_item) = crate::object::seq_access::pin_item(_py, list_ptr, len - 1)
             else {
@@ -332,7 +336,7 @@ pub extern "C" fn molt_heapq_heapreplace(list_bits: u64, item_bits: u64) -> u64 
                 return MoltObject::none().bits();
             }
             if list_len(list_ptr) == 0 {
-                return raise_exception::<_>(_py, "IndexError", "index out of range");
+                return raise_exception::<_>(_py, BuiltinExc::IndexError, "index out of range");
             }
             let Some(return_item) = crate::object::seq_access::pin_item(_py, list_ptr, 0) else {
                 return MoltObject::none().bits();
@@ -384,7 +388,7 @@ pub extern "C" fn molt_heapq_heappushpop(list_bits: u64, item_bits: u64) -> u64 
             };
             if lt {
                 if list_len(list_ptr) == 0 {
-                    return raise_exception::<_>(_py, "IndexError", "index out of range");
+                    return raise_exception::<_>(_py, BuiltinExc::IndexError, "index out of range");
                 }
                 let Some(return_item) = crate::object::seq_access::pin_item(_py, list_ptr, 0)
                 else {
@@ -1275,7 +1279,7 @@ pub extern "C" fn molt_heapq_merge(iterables_bits: u64, key_bits: u64, reverse_b
             if object_type_id(iter_ptr) != TYPE_ID_LIST {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "heapq.merge: iterables must be a list of iterables",
                 );
             }

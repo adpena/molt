@@ -4,6 +4,7 @@ use super::super::ops::{
     simd_is_all_ascii_whitespace,
 };
 use super::*;
+use crate::BuiltinExc;
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_upper(hay_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -320,7 +321,7 @@ fn bytes_fill_byte_from_bits(_py: &PyToken<'_>, fill_bits: u64, method: &str) ->
             "{method}() argument 2 must be a byte string of length 1, not {}",
             type_name(_py, fill_obj)
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     unsafe {
         let type_id = object_type_id(fill_ptr);
@@ -329,7 +330,7 @@ fn bytes_fill_byte_from_bits(_py: &PyToken<'_>, fill_bits: u64, method: &str) ->
                 "{method}() argument 2 must be a byte string of length 1, not {}",
                 type_name(_py, fill_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let fill_slice = bytes_like_slice(fill_ptr).unwrap_or(&[]);
         if fill_slice.len() != 1 {
@@ -347,7 +348,7 @@ fn bytes_fill_byte_from_bits(_py: &PyToken<'_>, fill_bits: u64, method: &str) ->
                     type_name(_py, fill_obj)
                 )
             };
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         Some(fill_slice[0])
     }
@@ -514,7 +515,7 @@ fn bytes_remove_affix_impl(
             "a bytes-like object is required, not '{}'",
             type_name(_py, affix)
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     unsafe {
         if object_type_id(hay_ptr) != type_id {

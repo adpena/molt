@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::{
     MoltObject, alloc_bytes, alloc_class_obj, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     builtin_classes, bytes_data, bytes_len, dec_ref_bits, obj_from_bits, to_f64,
@@ -992,7 +993,7 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
             // admitted incoming error; it must not turn success into failure.
             let prior_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 "GPU metadata transport prior",
             );
             assert!(!prior_ptr.is_null());

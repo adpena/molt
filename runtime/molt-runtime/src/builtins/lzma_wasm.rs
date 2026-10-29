@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 
@@ -18,7 +19,7 @@ pub(crate) const PRESET_EXTREME: i64 = 1 << 31;
 fn lzma_unavailable(_py: &PyToken<'_>) -> u64 {
     raise_exception::<u64>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "lzma intrinsics are unavailable on wasm32-wasip1",
     )
 }

@@ -178,38 +178,45 @@ fn digits_len(n: &BigInt) -> i64 {
     }
 }
 
-fn decimal_signal_name(flags: u32) -> &'static str {
-    if flags & MPD_INVALID_OPERATION != 0
-        || flags & MPD_CONVERSION_SYNTAX != 0
-        || flags & MPD_DIVISION_IMPOSSIBLE != 0
-        || flags & MPD_DIVISION_UNDEFINED != 0
-        || flags & MPD_INVALID_CONTEXT != 0
-        || flags & MPD_NOT_IMPLEMENTED != 0
+/// The decimal signal class a trapped status raises. Conditions that CPython
+/// reports through InvalidOperation (conversion syntax, impossible or undefined
+/// division, invalid context, unimplemented operations) raise it, as
+/// `_decimal` does. FloatOperation is signaled by the constructor in
+/// `decimal.py`, never through a status word.
+fn decimal_signal_kind(flags: u32) -> ModuleExc {
+    if flags
+        & (MPD_INVALID_OPERATION
+            | MPD_CONVERSION_SYNTAX
+            | MPD_DIVISION_IMPOSSIBLE
+            | MPD_DIVISION_UNDEFINED
+            | MPD_INVALID_CONTEXT
+            | MPD_NOT_IMPLEMENTED)
+        != 0
     {
-        return "InvalidOperation";
+        return ModuleExc::DecimalInvalidOperation;
     }
     if flags & MPD_DIVISION_BY_ZERO != 0 {
-        return "DivisionByZero";
+        return ModuleExc::DecimalDivisionByZero;
     }
     if flags & MPD_OVERFLOW != 0 {
-        return "Overflow";
+        return ModuleExc::DecimalOverflow;
     }
     if flags & MPD_UNDERFLOW != 0 {
-        return "Underflow";
+        return ModuleExc::DecimalUnderflow;
     }
     if flags & MPD_SUBNORMAL != 0 {
-        return "Subnormal";
+        return ModuleExc::DecimalSubnormal;
     }
     if flags & MPD_INEXACT != 0 {
-        return "Inexact";
+        return ModuleExc::DecimalInexact;
     }
     if flags & MPD_ROUNDED != 0 {
-        return "Rounded";
+        return ModuleExc::DecimalRounded;
     }
     if flags & MPD_CLAMPED != 0 {
-        return "Clamped";
+        return ModuleExc::DecimalClamped;
     }
-    "InvalidOperation"
+    ModuleExc::DecimalInvalidOperation
 }
 
 fn apply_status(_py: &PyToken, ctx: &mut DecimalContextHandle, status: u32) -> Result<(), u64> {
@@ -220,14 +227,17 @@ fn apply_status(_py: &PyToken, ctx: &mut DecimalContextHandle, status: u32) -> R
     if status & MPD_MALLOC_ERROR != 0 {
         return Err(raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "decimal allocation failed",
         ));
     }
     let trapped = ctx.traps & status;
     if trapped != 0 {
-        let name = decimal_signal_name(trapped);
-        return Err(raise_exception::<u64>(_py, name, "decimal signal"));
+        return Err(raise_exception::<u64>(
+            _py,
+            decimal_signal_kind(trapped),
+            "decimal signal",
+        ));
     }
     Ok(())
 }
@@ -765,7 +775,7 @@ pub extern "C" fn molt_decimal_context_get_current() -> u64 {
 pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(new_ptr) = context_ptr_from_bits(ctx_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal context");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal context");
         };
         context_inc(new_ptr);
         let old_ptr = DECIMAL_CONTEXT.with(|slot| {
@@ -828,10 +838,14 @@ pub extern "C" fn molt_decimal_context_set_prec(ctx_bits: u64, prec_bits: u64) -
             None => ensure_current_context(),
         };
         let Some(prec) = obj_from_bits(prec_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "prec must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "prec must be int");
         };
         if prec <= 0 {
-            return raise_exception::<u64>(_py, "ValueError", "invalid decimal precision");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "invalid decimal precision",
+            );
         }
         // SAFETY: pointer validated above.
         unsafe {
@@ -861,10 +875,10 @@ pub extern "C" fn molt_decimal_context_set_rounding(ctx_bits: u64, round_bits: u
             None => ensure_current_context(),
         };
         let Some(rounding) = obj_from_bits(round_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "rounding must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "rounding must be int");
         };
         if !(0..=7).contains(&rounding) {
-            return raise_exception::<u64>(_py, "ValueError", "invalid rounding mode");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid rounding mode");
         }
         // SAFETY: pointer validated above.
         unsafe {
@@ -894,11 +908,15 @@ pub extern "C" fn molt_decimal_context_set_emin(ctx_bits: u64, emin_bits: u64) -
             None => ensure_current_context(),
         };
         let Some(emin) = obj_from_bits(emin_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "Emin must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "Emin must be an integer");
         };
         // CPython: Emin must be in [-inf, 0].
         if emin > 0 {
-            return raise_exception::<u64>(_py, "ValueError", "Emin must be in [-inf, 0]");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "Emin must be in [-inf, 0]",
+            );
         }
         // SAFETY: pointer validated above.
         unsafe {
@@ -928,11 +946,11 @@ pub extern "C" fn molt_decimal_context_set_emax(ctx_bits: u64, emax_bits: u64) -
             None => ensure_current_context(),
         };
         let Some(emax) = obj_from_bits(emax_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "Emax must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "Emax must be an integer");
         };
         // CPython: Emax must be in [0, inf].
         if emax < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "Emax must be in [0, inf]");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "Emax must be in [0, inf]");
         }
         // SAFETY: pointer validated above.
         unsafe {
@@ -962,11 +980,11 @@ pub extern "C" fn molt_decimal_context_set_clamp(ctx_bits: u64, clamp_bits: u64)
             None => ensure_current_context(),
         };
         let Some(clamp) = obj_from_bits(clamp_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "clamp must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "clamp must be an integer");
         };
         // CPython: clamp must be in [0, 1].
         if !(0..=1).contains(&clamp) {
-            return raise_exception::<u64>(_py, "ValueError", "clamp must be in [0, 1]");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "clamp must be in [0, 1]");
         }
         // SAFETY: pointer validated above.
         unsafe {
@@ -996,11 +1014,19 @@ pub extern "C" fn molt_decimal_context_set_capitals(ctx_bits: u64, capitals_bits
             None => ensure_current_context(),
         };
         let Some(capitals) = obj_from_bits(capitals_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "capitals must be an integer");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "capitals must be an integer",
+            );
         };
         // CPython: capitals must be in [0, 1].
         if !(0..=1).contains(&capitals) {
-            return raise_exception::<u64>(_py, "ValueError", "capitals must be in [0, 1]");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "capitals must be in [0, 1]",
+            );
         }
         // SAFETY: pointer validated above.
         unsafe {
@@ -1057,7 +1083,7 @@ pub extern "C" fn molt_decimal_context_get_flag(ctx_bits: u64, flag_bits: u64) -
             None => ensure_current_context(),
         };
         let Some(flag) = obj_from_bits(flag_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "flag must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "flag must be int");
         };
         // SAFETY: pointer validated above.
         let status = unsafe { (*ctx_ptr).status };
@@ -1077,7 +1103,7 @@ pub extern "C" fn molt_decimal_context_set_flag(
             None => ensure_current_context(),
         };
         let Some(flag) = obj_from_bits(flag_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "flag must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "flag must be int");
         };
         let set = is_truthy(_py, obj_from_bits(value_bits));
         // SAFETY: pointer validated above.
@@ -1100,7 +1126,7 @@ pub extern "C" fn molt_decimal_context_get_trap(ctx_bits: u64, flag_bits: u64) -
             None => ensure_current_context(),
         };
         let Some(flag) = obj_from_bits(flag_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "flag must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "flag must be int");
         };
         // SAFETY: pointer validated above.
         let traps = unsafe { (*ctx_ptr).traps };
@@ -1120,7 +1146,7 @@ pub extern "C" fn molt_decimal_context_set_trap(
             None => ensure_current_context(),
         };
         let Some(flag) = obj_from_bits(flag_bits).as_int() else {
-            return raise_exception::<u64>(_py, "TypeError", "flag must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "flag must be int");
         };
         let set = is_truthy(_py, obj_from_bits(value_bits));
         // SAFETY: pointer validated above.
@@ -1143,7 +1169,7 @@ pub extern "C" fn molt_decimal_from_str(ctx_bits: u64, value_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "decimal value must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "decimal value must be str");
         };
         let dec = match parse_decimal_text(text.trim()) {
             Ok(d) => d,
@@ -1153,7 +1179,7 @@ pub extern "C" fn molt_decimal_from_str(ctx_bits: u64, value_bits: u64) -> u64 {
                 if let Err(bits) = apply_status(_py, ctx, flag) {
                     return bits;
                 }
-                return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+                return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
             }
         };
         decimal_bits(dec)
@@ -1169,7 +1195,7 @@ pub extern "C" fn molt_decimal_from_int(ctx_bits: u64, value_bits: u64) -> u64 {
         };
         let obj = obj_from_bits(value_bits);
         let Some(big) = to_bigint(obj) else {
-            return raise_exception::<u64>(_py, "TypeError", "decimal value must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "decimal value must be int");
         };
         decimal_bits(DecimalHandle {
             sign: big.is_negative(),
@@ -1184,7 +1210,7 @@ pub extern "C" fn molt_decimal_from_int(ctx_bits: u64, value_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         decimal_bits(handle.clone())
     })
@@ -1209,7 +1235,7 @@ pub extern "C" fn molt_decimal_drop(value_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_to_string(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let capitals = {
             let ctx_ptr = ensure_current_context();
@@ -1229,7 +1255,7 @@ pub extern "C" fn molt_decimal_to_string(value_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_as_tuple(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         decimal_tuple_bits(_py, handle)
     })
@@ -1239,7 +1265,7 @@ pub extern "C" fn molt_decimal_as_tuple(value_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_to_float(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = decimal_handle_from_bits(value_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let parsed = match handle.special {
             DecimalSpecial::Infinity => {
@@ -1266,16 +1292,20 @@ pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let Some(b) = decimal_handle_from_bits(b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         // SAFETY: pointer validated above.
         let ctx = unsafe { &mut *ctx_ptr };
 
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         if b.coeff.is_zero() {
@@ -1303,12 +1333,20 @@ pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
         let shift = a.exp - b.exp;
         let (num_base, den_base) = if shift >= 0 {
             let Some(scale) = pow10_i64(shift) else {
-                return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+                return raise_exception::<u64>(
+                    _py,
+                    ModuleExc::DecimalInvalidContext,
+                    "decimal signal",
+                );
             };
             (&a.coeff * scale, b.coeff.clone())
         } else {
             let Some(scale) = pow10_i64(-shift) else {
-                return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+                return raise_exception::<u64>(
+                    _py,
+                    ModuleExc::DecimalInvalidContext,
+                    "decimal signal",
+                );
             };
             (a.coeff.clone(), &b.coeff * scale)
         };
@@ -1320,7 +1358,7 @@ pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
             ctx.rounding,
             a.sign ^ b.sign,
         ) else {
-            return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+            return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidContext, "decimal signal");
         };
 
         if let Err(bits) = apply_status(_py, ctx, status) {
@@ -1391,10 +1429,10 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let Some(exp_dec) = decimal_handle_from_bits(exp_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         // SAFETY: pointer validated above.
         let ctx = unsafe { &mut *ctx_ptr };
@@ -1406,14 +1444,22 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
             if a_inf && exp_inf {
                 return decimal_bits(a.clone());
             }
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let target_exp = exp_dec.exp;
 
         // exp._exp must lie within [Etiny, Emax].
         if !(ctx.etiny() <= target_exp && target_exp <= ctx.emax) {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         // Zero short-circuit: result is 0 at the target exponent, then _fix.
@@ -1429,7 +1475,7 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
                 if let Err(bits) = apply_status(_py, ctx, flag) {
                     return bits;
                 }
-                return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+                return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
             }
             if let Err(bits) = apply_status(_py, ctx, status) {
                 return bits;
@@ -1439,23 +1485,39 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
 
         let self_adjusted = a.exp + digits_len(&a.coeff) - 1;
         if self_adjusted > ctx.emax {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         if self_adjusted - target_exp + 1 > ctx.prec {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let Some(mut ans) = rescale_quiet(a, target_exp, ctx.rounding) else {
-            return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+            return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidContext, "decimal signal");
         };
         ans.sign = ans.sign && !ans.coeff.is_zero();
 
         let ans_adjusted = ans.exp + digits_len(&ans.coeff) - 1;
         if !ans.coeff.is_zero() && ans_adjusted > ctx.emax {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         if digits_len(&ans.coeff) > ctx.prec {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let mut status = 0u32;
@@ -1476,7 +1538,7 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
             if let Err(bits) = apply_status(_py, ctx, flag) {
                 return bits;
             }
-            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+            return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
         }
         if let Err(bits) = apply_status(_py, ctx, status) {
             return bits;
@@ -1493,14 +1555,18 @@ pub extern "C" fn molt_decimal_compare(ctx_bits: u64, a_bits: u64, b_bits: u64) 
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let Some(b) = decimal_handle_from_bits(b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
 
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let cmp = compare_finite(a, b);
@@ -1517,10 +1583,10 @@ pub extern "C" fn molt_decimal_compare(ctx_bits: u64, a_bits: u64, b_bits: u64) 
 pub extern "C" fn molt_decimal_compare_total(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let Some(b) = decimal_handle_from_bits(b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
 
         let cmp = if a.special == DecimalSpecial::Finite && b.special == DecimalSpecial::Finite {
@@ -1566,7 +1632,7 @@ pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
         if a.special != DecimalSpecial::Finite {
@@ -1580,7 +1646,7 @@ pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
             if let Err(bits) = apply_status(_py, ctx, flag) {
                 return bits;
             }
-            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+            return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
         }
         if let Err(bits) = apply_status(_py, ctx, status) {
             return bits;
@@ -1616,13 +1682,17 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         // SAFETY: pointer validated above.
         let ctx = unsafe { &mut *ctx_ptr };
 
         if a.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let text = decimal_to_string(a, 1);
@@ -1648,7 +1718,7 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
                 if let Err(bits) = apply_status(_py, ctx, flag) {
                     return bits;
                 }
-                return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+                return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
             }
         };
         let mut status = MPD_INEXACT | MPD_ROUNDED;
@@ -1656,7 +1726,7 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
             if let Err(bits) = apply_status(_py, ctx, flag) {
                 return bits;
             }
-            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+            return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
         }
         if let Err(bits) = apply_status(_py, ctx, status) {
             return bits;
@@ -1687,14 +1757,14 @@ fn binary_arith_setup(
     let Some(a) = decimal_handle_from_bits(a_bits) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid decimal handle",
         ));
     };
     let Some(b) = decimal_handle_from_bits(b_bits) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid decimal handle",
         ));
     };
@@ -1775,7 +1845,7 @@ fn finalize_binary(
         if let Err(bits) = apply_status(_py, ctx, flag) {
             return bits;
         }
-        return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+        return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
     }
     if let Err(bits) = apply_status(_py, ctx, status) {
         return bits;
@@ -1790,7 +1860,7 @@ fn transcendental_via_f64(
     f: impl FnOnce(f64) -> f64,
 ) -> u64 {
     if a.special != DecimalSpecial::Finite {
-        return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidOperation, "decimal signal");
     }
     let text = decimal_to_string(a, 1);
     let base = text.parse::<f64>().unwrap_or(f64::NAN);
@@ -1814,7 +1884,7 @@ fn transcendental_via_f64(
             if let Err(bits) = apply_status(_py, ctx, flag) {
                 return bits;
             }
-            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+            return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
         }
     };
     let mut status = MPD_INEXACT | MPD_ROUNDED;
@@ -1822,7 +1892,7 @@ fn transcendental_via_f64(
         if let Err(bits) = apply_status(_py, ctx, flag) {
             return bits;
         }
-        return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+        return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
     }
     if let Err(bits) = apply_status(_py, ctx, status) {
         return bits;
@@ -1842,7 +1912,11 @@ pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
             if a.special == DecimalSpecial::Infinity && b.special == DecimalSpecial::Infinity {
                 if a.sign != b.sign {
-                    return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                    return raise_exception::<u64>(
+                        _py,
+                        ModuleExc::DecimalInvalidOperation,
+                        "decimal signal",
+                    );
                 }
                 return decimal_bits(DecimalHandle {
                     sign: a.sign,
@@ -1857,7 +1931,11 @@ pub extern "C" fn molt_decimal_add(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
             if b.special == DecimalSpecial::Infinity {
                 return decimal_bits(b.clone());
             }
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let (ca, cb, common_exp) = normalize_add_operands(a, b, ctx.prec);
@@ -1882,7 +1960,11 @@ pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
             if a.special == DecimalSpecial::Infinity && b.special == DecimalSpecial::Infinity {
                 if a.sign == b.sign {
-                    return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                    return raise_exception::<u64>(
+                        _py,
+                        ModuleExc::DecimalInvalidOperation,
+                        "decimal signal",
+                    );
                 }
                 return decimal_bits(DecimalHandle {
                     sign: a.sign,
@@ -1902,7 +1984,11 @@ pub extern "C" fn molt_decimal_sub(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
                     special: DecimalSpecial::Infinity,
                 });
             }
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let (ca, cb, common_exp) = normalize_add_operands(a, b, ctx.prec);
@@ -1929,7 +2015,11 @@ pub extern "C" fn molt_decimal_mul(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
                 if (a.special == DecimalSpecial::Finite && a.coeff.is_zero())
                     || (b.special == DecimalSpecial::Finite && b.coeff.is_zero())
                 {
-                    return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                    return raise_exception::<u64>(
+                        _py,
+                        ModuleExc::DecimalInvalidOperation,
+                        "decimal signal",
+                    );
                 }
                 return decimal_bits(DecimalHandle {
                     sign: a.sign ^ b.sign,
@@ -1938,7 +2028,11 @@ pub extern "C" fn molt_decimal_mul(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
                     special: DecimalSpecial::Infinity,
                 });
             }
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let coeff = &a.coeff * &b.coeff;
@@ -1958,11 +2052,19 @@ pub extern "C" fn molt_decimal_floordiv(ctx_bits: u64, a_bits: u64, b_bits: u64)
         let ctx = unsafe { &mut *ctx_ptr };
 
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         if b.coeff.is_zero() {
             if a.coeff.is_zero() {
-                return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                return raise_exception::<u64>(
+                    _py,
+                    ModuleExc::DecimalInvalidOperation,
+                    "decimal signal",
+                );
             }
             if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
                 return bits;
@@ -1997,16 +2099,28 @@ pub extern "C" fn molt_decimal_mod(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
         let ctx = unsafe { &mut *ctx_ptr };
 
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         if b.coeff.is_zero() {
             if a.coeff.is_zero() {
-                return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+                return raise_exception::<u64>(
+                    _py,
+                    ModuleExc::DecimalInvalidOperation,
+                    "decimal signal",
+                );
             }
             if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
                 return bits;
             }
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         let (ca, cb, common_exp) = align_add_sub(a, b);
@@ -2026,13 +2140,21 @@ pub extern "C" fn molt_decimal_pow(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
         let ctx = unsafe { &mut *ctx_ptr };
 
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
 
         // Integer exponent fast path
         if b.exp >= 0 {
             let Some(scale) = pow10_i64(b.exp) else {
-                return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+                return raise_exception::<u64>(
+                    _py,
+                    ModuleExc::DecimalInvalidContext,
+                    "decimal signal",
+                );
             };
             let full_exp = &b.coeff * scale;
             if let Some(exp_i64) = full_exp.to_i64().filter(|e| (0..=999_999_999).contains(e)) {
@@ -2061,7 +2183,7 @@ pub extern "C" fn molt_decimal_abs(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let _ctx = unsafe { &mut *ctx_ptr };
         decimal_bits(DecimalHandle {
@@ -2081,7 +2203,7 @@ pub extern "C" fn molt_decimal_neg(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let _ctx = unsafe { &mut *ctx_ptr };
         decimal_bits(DecimalHandle {
@@ -2101,7 +2223,7 @@ pub extern "C" fn molt_decimal_pos(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
         if a.special != DecimalSpecial::Finite {
@@ -2250,7 +2372,7 @@ pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
         let (out, status) = match sqrt_decimal(ctx, a) {
@@ -2259,7 +2381,7 @@ pub extern "C" fn molt_decimal_sqrt(ctx_bits: u64, a_bits: u64) -> u64 {
                 if let Err(bits) = apply_status(_py, ctx, flag) {
                     return bits;
                 }
-                return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+                return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
             }
         };
         if let Err(bits) = apply_status(_py, ctx, status) {
@@ -2277,11 +2399,15 @@ pub extern "C" fn molt_decimal_ln(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
         if a.sign && !a.coeff.is_zero() {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         if a.coeff.is_zero() {
             if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
@@ -2306,11 +2432,15 @@ pub extern "C" fn molt_decimal_log10(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
         if a.sign && !a.coeff.is_zero() {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         if a.coeff.is_zero() {
             if let Err(bits) = apply_status(_py, ctx, MPD_DIVISION_BY_ZERO) {
@@ -2389,7 +2519,7 @@ pub extern "C" fn molt_decimal_is_signed(a_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_hash(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Decimal handle");
         };
         let hash = match a.special {
             DecimalSpecial::Infinity => {
@@ -2413,7 +2543,11 @@ pub extern "C" fn molt_decimal_hash(a_bits: u64) -> u64 {
             DecimalSpecial::Nan | DecimalSpecial::SNan => {
                 // Defensive: the Python shim guards NaN before calling. Raise
                 // rather than fabricate a numeric hash for a non-numeric value.
-                return raise_exception::<u64>(_py, "TypeError", "Cannot hash a NaN value.");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "Cannot hash a NaN value.",
+                );
             }
         };
         int_bits_from_i64(_py, hash)
@@ -2468,7 +2602,7 @@ pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let class = match a.special {
             DecimalSpecial::Nan => "NaN",
@@ -2509,10 +2643,14 @@ pub extern "C" fn molt_decimal_number_class(ctx_bits: u64, a_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_adjusted(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         if a.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         let adjusted = a.exp + digits_len(&a.coeff) - 1;
         int_bits_from_i64(_py, adjusted)
@@ -2607,7 +2745,7 @@ pub extern "C" fn molt_decimal_to_integral_value(ctx_bits: u64, a_bits: u64) -> 
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &*ctx_ptr };
         if a.special != DecimalSpecial::Finite || a.exp >= 0 {
@@ -2616,7 +2754,7 @@ pub extern "C" fn molt_decimal_to_integral_value(ctx_bits: u64, a_bits: u64) -> 
         }
         // CPython to_integral_value: quiet _rescale(0) — NO Inexact/Rounded.
         let Some(mut ans) = rescale_quiet(a, 0, ctx.rounding) else {
-            return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+            return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidContext, "decimal signal");
         };
         ans.sign = ans.sign && !ans.coeff.is_zero();
         decimal_bits(ans)
@@ -2631,7 +2769,7 @@ pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> 
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
         if a.special != DecimalSpecial::Finite || a.exp >= 0 {
@@ -2648,7 +2786,7 @@ pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> 
         }
         // CPython to_integral_exact: _rescale(0), then Inexact (if changed) + Rounded.
         let Some(mut ans) = rescale_quiet(a, 0, ctx.rounding) else {
-            return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+            return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidContext, "decimal signal");
         };
         ans.sign = ans.sign && !ans.coeff.is_zero();
         let mut status = MPD_ROUNDED;
@@ -2666,7 +2804,7 @@ pub extern "C" fn molt_decimal_to_integral_exact(ctx_bits: u64, a_bits: u64) -> 
 pub extern "C" fn molt_decimal_to_eng_string(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         match a.special {
             DecimalSpecial::Infinity | DecimalSpecial::Nan | DecimalSpecial::SNan => {
@@ -2755,7 +2893,7 @@ fn decimal_next(
         return decimal_bits(prec_nines(ctx, a.sign));
     }
     if a.special != DecimalSpecial::Finite {
-        return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+        return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidOperation, "decimal signal");
     }
 
     // Round toward the requested infinity under a flag-suppressed context copy.
@@ -2768,7 +2906,7 @@ fn decimal_next(
     let mut fixed = a.clone();
     let mut scratch = 0u32; // _ignore_all_flags(): rounding signals are discarded.
     if fix_decimal(&local, &mut fixed, &mut scratch).is_err() {
-        return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+        return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidContext, "decimal signal");
     }
 
     // If _fix produced a different numeric value, that is the neighbour.
@@ -2815,7 +2953,7 @@ fn decimal_next(
     };
     let mut scratch2 = 0u32;
     if fix_decimal(&local, &mut result, &mut scratch2).is_err() {
-        return raise_exception::<u64>(_py, "InvalidContext", "decimal signal");
+        return raise_exception::<u64>(_py, ModuleExc::DecimalInvalidContext, "decimal signal");
     }
     decimal_bits(result)
 }
@@ -2828,7 +2966,7 @@ pub extern "C" fn molt_decimal_next_plus(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &*ctx_ptr };
         decimal_next(_py, ctx, a, true)
@@ -2843,7 +2981,7 @@ pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &*ctx_ptr };
         decimal_next(_py, ctx, a, false)
@@ -2856,7 +2994,7 @@ pub extern "C" fn molt_decimal_next_minus(ctx_bits: u64, a_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_copy_abs(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         decimal_bits(DecimalHandle {
             sign: false,
@@ -2871,7 +3009,7 @@ pub extern "C" fn molt_decimal_copy_abs(a_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_copy_negate(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         decimal_bits(DecimalHandle {
             sign: !a.sign,
@@ -2886,10 +3024,10 @@ pub extern "C" fn molt_decimal_copy_negate(a_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_copy_sign(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let Some(b) = decimal_handle_from_bits(b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         decimal_bits(DecimalHandle {
             sign: b.sign,
@@ -2906,12 +3044,12 @@ pub extern "C" fn molt_decimal_copy_sign(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_decimal_as_integer_ratio(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         if a.special != DecimalSpecial::Finite {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot convert non-finite Decimal to integer ratio",
             );
         }
@@ -2947,7 +3085,7 @@ pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64
         };
         let obj = obj_from_bits(value_bits);
         let Some(f) = obj.as_float() else {
-            return raise_exception::<u64>(_py, "TypeError", "argument must be float");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be float");
         };
         let _ctx = unsafe { &*ctx_ptr };
         if f.is_nan() {
@@ -2969,7 +3107,11 @@ pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64
         let text = format!("{}", f);
         match parse_decimal_text(&text) {
             Ok(dec) => decimal_bits(dec),
-            Err(_) => raise_exception::<u64>(_py, "ValueError", "cannot convert float to Decimal"),
+            Err(_) => raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "cannot convert float to Decimal",
+            ),
         }
     })
 }
@@ -2978,12 +3120,12 @@ pub extern "C" fn molt_decimal_from_float(ctx_bits: u64, value_bits: u64) -> u64
 pub extern "C" fn molt_decimal_to_int(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         if a.special != DecimalSpecial::Finite {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot convert non-finite Decimal to int",
             );
         }
@@ -3010,25 +3152,41 @@ pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -
         // NaN second argument is an InvalidOperation; NaN first propagates (handled
         // by the Python shim's NaN routing). The second argument must be integral.
         if b.special != DecimalSpecial::Finite || b.exp != 0 {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         // Shift must satisfy |shift| <= 2*(Emax + prec) (CPython scaleb bounds).
         let limit = 2i64.saturating_mul(ctx.emax.saturating_add(ctx.prec));
         let Some(mut shift) = b.coeff.to_i64() else {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         };
         if b.sign {
             shift = -shift;
         }
         if !(-limit <= shift && shift <= limit) {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         // Infinite first argument is returned unchanged.
         if a.special == DecimalSpecial::Infinity {
             return decimal_bits(a.clone());
         }
         if a.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         let mut dec = DecimalHandle {
             sign: a.sign,
@@ -3041,7 +3199,7 @@ pub extern "C" fn molt_decimal_scaleb(ctx_bits: u64, a_bits: u64, b_bits: u64) -
             if let Err(bits) = apply_status(_py, ctx, flag) {
                 return bits;
             }
-            return raise_exception::<u64>(_py, decimal_signal_name(flag), "decimal signal");
+            return raise_exception::<u64>(_py, decimal_signal_kind(flag), "decimal signal");
         }
         if let Err(bits) = apply_status(_py, ctx, status) {
             return bits;
@@ -3059,10 +3217,18 @@ pub extern "C" fn molt_decimal_remainder_near(ctx_bits: u64, a_bits: u64, b_bits
         };
         let ctx = unsafe { &mut *ctx_ptr };
         if a.special != DecimalSpecial::Finite || b.special != DecimalSpecial::Finite {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         if b.coeff.is_zero() {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         let (ca, cb, common_exp) = align_add_sub(a, b);
         let rem = &ca % &cb;
@@ -3087,20 +3253,24 @@ pub extern "C" fn molt_decimal_fma(ctx_bits: u64, a_bits: u64, b_bits: u64, c_bi
             None => ensure_current_context(),
         };
         let Some(a) = decimal_handle_from_bits(a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let Some(b) = decimal_handle_from_bits(b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let Some(c) = decimal_handle_from_bits(c_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid decimal handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid decimal handle");
         };
         let ctx = unsafe { &mut *ctx_ptr };
         if a.special != DecimalSpecial::Finite
             || b.special != DecimalSpecial::Finite
             || c.special != DecimalSpecial::Finite
         {
-            return raise_exception::<u64>(_py, "InvalidOperation", "decimal signal");
+            return raise_exception::<u64>(
+                _py,
+                ModuleExc::DecimalInvalidOperation,
+                "decimal signal",
+            );
         }
         let product_coeff = &a.coeff * &b.coeff;
         let product_exp = a.exp + b.exp;

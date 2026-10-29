@@ -1366,5 +1366,47 @@
         }
       }
     }
+  },
+  "regrtest": {
+    "test.test_import": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-559",
+          "root_cause": "The binary runs and fails: cannot import name '_get_sourcefile' from importlib._bootstrap_external.",
+          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+        }
+      }
+    },
+    "test.test_importlib": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-557",
+          "root_cause": "The binary runs but test.support has no compiler-emitted body: the package reaches it only from a function body.",
+          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+        }
+      }
+    },
+    "test.test_pkgutil": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-557",
+          "root_cause": "The build refuses test.support: MOLT_COMPAT_ERROR call to non-allowlisted function 'temp_cwd' (Lib/test/support/__init__.py:2315).",
+          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+        }
+      }
+    },
+    "test.test_zipimport": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-557",
+          "root_cause": "The build refuses test.support: MOLT_COMPAT_ERROR call to non-allowlisted function 'temp_cwd' (Lib/test/support/__init__.py:2315).",
+          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+        }
+      }
+    }
   }
 }

@@ -545,6 +545,8 @@
         "tests/tools/test_rust_toolchain_contract.py/**",
         "tests/test_gen_cpython_abi_layout.py/**",
         "tests/tools/test_perf_release_integrity.py/**",
+        "tests/tools/test_finding_tests.py/**",
+        "tests/test_gen_exception_kinds.py/**",
         "tests/test_runtime_build_python.py/**",
         "tests/test_dead_code_allow_ratchet.py/**",
         "tests/tools/test_advisory_classifier.py/**",
@@ -2966,6 +2968,31 @@
         "uv",
         "run",
         "python3",
+        "tools/finding_coverage.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.finding-coverage",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/generators.py",
         "check"
       ],
@@ -3650,6 +3677,8 @@
       "family": "repository_policy",
       "id": "repository.tooling-tests",
       "pytest": [
+        "tests/tools/test_finding_tests.py",
+        "tests/test_gen_exception_kinds.py",
         "tests/test_runtime_build_python.py",
         "tests/test_dead_code_allow_ratchet.py",
         "tests/tools/test_advisory_classifier.py",
@@ -5154,7 +5183,8 @@
         "run",
         "ty",
         "check",
-        "src"
+        "src",
+        "tests/findings"
       ],
       "cache_domain": "uv",
       "cell": "linux-x86_64-py312-static",
@@ -9193,12 +9223,12 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1800,
-        "headroom_seconds": 660,
+        "headroom_seconds": 600,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2820,
-        "required_job_seconds": 2940,
+        "projected_makespan_seconds": 2880,
+        "required_job_seconds": 3000,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2670
+          "repository-policy": 2745
         }
       },
       "rust": {
@@ -9487,6 +9517,7 @@
       "python tools/canonicalization_contract.py --check",
       "python tools/check_subprocess_guard_coverage.py",
       "python tools/encoding_gate.py --check",
+      "python tools/finding_coverage.py --check",
       "python tools/check_cargo_test_truth.py",
       "python tools/check_github_actions.py",
       "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
@@ -9524,7 +9555,8 @@
       "local.always.20",
       "local.always.21",
       "local.always.22",
-      "local.always.23"
+      "local.always.23",
+      "local.always.24"
     ],
     "cargo_target_access": {
       "local.always.0": "none",
@@ -9544,6 +9576,7 @@
       "local.always.21": "none",
       "local.always.22": "none",
       "local.always.23": "none",
+      "local.always.24": "none",
       "local.always.3": "none",
       "local.always.4": "none",
       "local.always.5": "none",
@@ -9707,19 +9740,20 @@
       "local.always.1": "python -m ruff format --check .",
       "local.always.10": "python tools/check_subprocess_guard_coverage.py",
       "local.always.11": "python tools/encoding_gate.py --check",
-      "local.always.12": "python tools/check_cargo_test_truth.py",
-      "local.always.13": "python tools/check_github_actions.py",
-      "local.always.14": "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
-      "local.always.15": "python tools/public_contract_gate.py --check",
-      "local.always.16": "python tools/check_stdlib_intrinsic_surface.py --check",
-      "local.always.17": "python tools/build_graph_audit.py --check",
-      "local.always.18": "python tools/check_runtime_symbol_owners.py",
-      "local.always.19": "python tools/check_runtime_serial_bridge_imports.py",
+      "local.always.12": "python tools/finding_coverage.py --check",
+      "local.always.13": "python tools/check_cargo_test_truth.py",
+      "local.always.14": "python tools/check_github_actions.py",
+      "local.always.15": "python tools/check_commit_attribution.py --range {integration_upstream_commit}..HEAD",
+      "local.always.16": "python tools/public_contract_gate.py --check",
+      "local.always.17": "python tools/check_stdlib_intrinsic_surface.py --check",
+      "local.always.18": "python tools/build_graph_audit.py --check",
+      "local.always.19": "python tools/check_runtime_symbol_owners.py",
       "local.always.2": "python tools/check_rust_toolchain.py",
-      "local.always.20": "python tools/check_perf_gate_wiring.py",
-      "local.always.21": "python tools/check_ratio_direction.py",
-      "local.always.22": "python tools/check_subagent_contract.py",
-      "local.always.23": "python tools/check_perf_plane_gate.py",
+      "local.always.20": "python tools/check_runtime_serial_bridge_imports.py",
+      "local.always.21": "python tools/check_perf_gate_wiring.py",
+      "local.always.22": "python tools/check_ratio_direction.py",
+      "local.always.23": "python tools/check_subagent_contract.py",
+      "local.always.24": "python tools/check_perf_plane_gate.py",
       "local.always.3": "python tools/check_rustfmt.py --changed --base {integration_upstream_commit}",
       "local.always.4": "python tools/generators.py check",
       "local.always.5": "python tools/check_environment_registry.py --check",
@@ -9875,7 +9909,7 @@
       "local.wasm-facts-host-tool.0": "cargo test --locked --profile release-fast -p molt-wasm-facts -p molt-artifact-publish -p molt-host-process --features molt-wasm-facts/host-tool --lib --bins --test wasm_link_facts_cli --no-fail-fast",
       "local.wasm-facts-host-tool.1": "python -m pytest -q tests/test_wasm_link_validation.py -k 'rust_facts or wasm_artifact_state'",
       "local.wasm-host.0": "cargo build --locked --profile release-fast -p molt-wasm-host",
-      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ --nocapture --test-threads=1",
+      "local.wasm-host.1": "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ main_tests::deployment_environment_ main_tests::manifest_bound_command_ --nocapture --test-threads=1",
       "local.wasm-optimizer-policy.0": "python -m pytest -q tests/test_wasm_optimization_policy.py tests/test_wasm_optimization_imported_memory.py"
     },
     "rules": [
@@ -10354,6 +10388,8 @@
         "globs": [
           "tools/gen_op_kinds.py",
           "tools/audit_op_kinds.py",
+          "runtime/molt-passes/src/tir/**/*.rs",
+          "runtime/molt-tir/src/tir/**/*.rs",
           "tools/op_kinds/**/*.py",
           "runtime/molt-ir/src/tir/op_kinds.toml",
           "runtime/molt-ir/src/tir/op_kinds_generated.rs",
@@ -12866,7 +12902,7 @@
         "description": "Wasmtime host Rust: release-fast link build and actual host-error ABI binary tests.",
         "gates": [
           "cargo build --locked --profile release-fast -p molt-wasm-host",
-          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ --nocapture --test-threads=1"
+          "cargo test --locked --profile dev-fast -p molt-wasm-host --bin molt-wasm-host -- socket_host::tests:: main_tests::runtime_manifest_ main_tests::explicit_wasi_command_ main_tests::deployment_environment_ main_tests::manifest_bound_command_ --nocapture --test-threads=1"
         ],
         "globs": [
           "runtime/molt-wasm-host/**/*.rs",
@@ -13377,6 +13413,13 @@
         "node"
       ],
       "local.always.23": [
+        "python",
+        "git",
+        "rustfmt",
+        "browser-acorn",
+        "node"
+      ],
+      "local.always.24": [
         "python",
         "git",
         "rustfmt",

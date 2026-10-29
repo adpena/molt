@@ -165,7 +165,11 @@ impl OrderedDictState {
 fn od_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
     let Some(id) = to_i64(obj) else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "OrderedDict handle must be an int");
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "OrderedDict handle must be an int",
+        );
         return None;
     };
     Some(id)
@@ -193,26 +197,38 @@ pub extern "C" fn molt_ordereddict_from_pairs(pairs_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let obj = obj_from_bits(pairs_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "expected a list of pairs");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected a list of pairs");
         };
         let type_id = unsafe { object_type_id(ptr) };
         if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "expected a list of pairs");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected a list of pairs");
         }
         let elems = unsafe { seq_snapshot(ptr) };
         let mut state = OrderedDictState::new();
         for &elem_bits in elems.iter() {
             let elem_obj = obj_from_bits(elem_bits);
             let Some(elem_ptr) = elem_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "each pair must be a tuple",
+                );
             };
             let elem_type = unsafe { object_type_id(elem_ptr) };
             if elem_type != TYPE_ID_TUPLE && elem_type != TYPE_ID_LIST {
-                return raise_exception::<_>(_py, "TypeError", "each pair must be a tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "each pair must be a tuple",
+                );
             }
             let pair = unsafe { seq_snapshot(elem_ptr) };
             if pair.len() < 2 {
-                return raise_exception::<_>(_py, "ValueError", "each pair must have 2 elements");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "each pair must have 2 elements",
+                );
             }
             state.insert(pair[0], pair[1]);
         }
@@ -262,7 +278,7 @@ pub extern "C" fn molt_ordereddict_getitem(handle_bits: u64, key_bits: u64) -> u
             .and_then(|s| s.get(key_bits));
         match val {
             Some(v) => v,
-            None => raise_exception::<_>(_py, "KeyError", "key not found"),
+            None => raise_exception::<_>(_py, BuiltinExc::KeyError, "key not found"),
         }
     })
 }
@@ -281,7 +297,7 @@ pub extern "C" fn molt_ordereddict_delitem(handle_bits: u64, key_bits: u64) -> u
             .get_mut(&id)
             .and_then(|s| s.remove(key_bits));
         if removed.is_none() {
-            return raise_exception::<_>(_py, "KeyError", "key not found");
+            return raise_exception::<_>(_py, BuiltinExc::KeyError, "key not found");
         }
         MoltObject::none().bits()
     })
@@ -343,7 +359,7 @@ pub extern "C" fn molt_ordereddict_keys(handle_bits: u64) -> u64 {
         };
         let ptr = alloc_list(_py, &keys);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "failed to allocate list");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -367,7 +383,7 @@ pub extern "C" fn molt_ordereddict_values(handle_bits: u64) -> u64 {
         };
         let ptr = alloc_list(_py, &vals);
         if ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "failed to allocate list");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -393,13 +409,17 @@ pub extern "C" fn molt_ordereddict_items(handle_bits: u64) -> u64 {
         for (k, v) in pairs {
             let tptr = alloc_tuple(_py, &[k, v]);
             if tptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::MemoryError,
+                    "failed to allocate tuple",
+                );
             }
             tuple_bits.push(MoltObject::from_ptr(tptr).bits());
         }
         let lptr = alloc_list(_py, &tuple_bits);
         if lptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate list");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "failed to allocate list");
         }
         MoltObject::from_ptr(lptr).bits()
     })
@@ -431,7 +451,7 @@ pub extern "C" fn molt_ordereddict_move_to_end(
             }
         };
         if !found {
-            return raise_exception::<_>(_py, "KeyError", "key not found");
+            return raise_exception::<_>(_py, BuiltinExc::KeyError, "key not found");
         }
         MoltObject::none().bits()
     })
@@ -452,11 +472,11 @@ pub extern "C" fn molt_ordereddict_popitem(handle_bits: u64, last_bits: u64) -> 
             .get_mut(&id)
             .and_then(|s| s.popitem(last));
         let Some((k, v)) = item else {
-            return raise_exception::<_>(_py, "KeyError", "dictionary is empty");
+            return raise_exception::<_>(_py, BuiltinExc::KeyError, "dictionary is empty");
         };
         let tptr = alloc_tuple(_py, &[k, v]);
         if tptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "failed to allocate tuple");
         }
         MoltObject::from_ptr(tptr).bits()
     })
@@ -487,7 +507,7 @@ pub extern "C" fn molt_ordereddict_pop(handle_bits: u64, key_bits: u64, default_
                     // The Python wrapper handles this; at intrinsic level we just return
                     // None and let the wrapper detect the KeyError path via the missing
                     // sentinel they pass.
-                    raise_exception::<_>(_py, "KeyError", "key not found")
+                    raise_exception::<_>(_py, BuiltinExc::KeyError, "key not found")
                 } else {
                     default_bits
                 }
@@ -546,10 +566,10 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
                     }
                 }
             } else {
-                return raise_exception::<_>(_py, "TypeError", "update requires a dict");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "update requires a dict");
             }
         } else {
-            return raise_exception::<_>(_py, "TypeError", "update requires a dict");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "update requires a dict");
         }
         MoltObject::none().bits()
     })
@@ -586,7 +606,11 @@ pub extern "C" fn molt_ordereddict_copy(handle_bits: u64) -> u64 {
             .get(&id)
             .map(|s| s.clone_state());
         let Some(new_state) = cloned else {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid OrderedDict handle");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "invalid OrderedDict handle",
+            );
         };
         let new_id = next_ordereddict_handle();
         collections_state()
@@ -687,7 +711,7 @@ impl DequeState {
 fn deque_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
     let Some(id) = to_i64(obj) else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "deque handle must be an int");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "deque handle must be an int");
         return None;
     };
     Some(id)
@@ -737,11 +761,11 @@ fn parse_maxlen(
         return Ok(None);
     }
     let Some(n) = to_i64(obj) else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "an integer is required");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "an integer is required");
         return Err(molt_runtime_core::ErrorIndicatorSet);
     };
     if n < 0 {
-        let _ = raise_exception::<u64>(_py, "ValueError", "maxlen must be non-negative");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::ValueError, "maxlen must be non-negative");
         return Err(molt_runtime_core::ErrorIndicatorSet);
     }
     Ok(Some(n as usize))
@@ -755,12 +779,12 @@ fn extract_iterable_elements(
 ) -> Option<OwnedBridgeHandleSnapshot> {
     let obj = obj_from_bits(iterable_bits);
     let Some(ptr) = obj.as_ptr() else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "argument must be an iterable");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be an iterable");
         return None;
     };
     let type_id = unsafe { object_type_id(ptr) };
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-        let _ = raise_exception::<u64>(_py, "TypeError", "argument must be an iterable");
+        let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be an iterable");
         return None;
     }
     Some(unsafe { seq_snapshot(ptr) })
@@ -908,7 +932,7 @@ pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
             });
         match result {
             Some(bits) => bits,
-            None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
+            None => raise_exception::<_>(_py, BuiltinExc::IndexError, "pop from an empty deque"),
         }
     })
 }
@@ -935,7 +959,7 @@ pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
             });
         match result {
             Some(bits) => bits,
-            None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
+            None => raise_exception::<_>(_py, BuiltinExc::IndexError, "pop from an empty deque"),
         }
     })
 }
@@ -1043,7 +1067,7 @@ pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
         };
         let n_obj = obj_from_bits(n_bits);
         let Some(n) = to_i64(n_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
         {
             let mut map = collections_state().deque_registry.lock().unwrap();
@@ -1111,7 +1135,7 @@ pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
         };
         match result {
             Some(bits) => retain_handle_value(_py, bits),
-            None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
+            None => raise_exception::<_>(_py, BuiltinExc::IndexError, "deque index out of range"),
         }
     })
 }
@@ -1150,7 +1174,7 @@ pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bi
                 release_handle_value(_py, old);
                 MoltObject::none().bits()
             }
-            None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
+            None => raise_exception::<_>(_py, BuiltinExc::IndexError, "deque index out of range"),
         }
     })
 }
@@ -1193,7 +1217,7 @@ pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
                 release_handle_value(_py, bits);
                 MoltObject::none().bits()
             }
-            None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
+            None => raise_exception::<_>(_py, BuiltinExc::IndexError, "deque index out of range"),
         }
     })
 }
@@ -1210,7 +1234,11 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
         let target = obj_from_bits(item_bits);
         for index in 0..len {
             let Some(elem_bits) = deque_comparison_item(_py, id, index) else {
-                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "deque mutated during iteration",
+                );
             };
             let compared = compare_eq(_py, obj_from_bits(elem_bits), target);
             release_handle_value(_py, elem_bits);
@@ -1222,7 +1250,11 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
                 return MoltObject::from_bool(true).bits();
             }
             if deque_mutated_since(id, mutation_version) {
-                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "deque mutated during iteration",
+                );
             }
         }
         MoltObject::from_bool(false).bits()
@@ -1242,7 +1274,11 @@ pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
         let mut count: i64 = 0;
         for index in 0..len {
             let Some(elem_bits) = deque_comparison_item(_py, id, index) else {
-                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "deque mutated during iteration",
+                );
             };
             let compared = compare_eq(_py, obj_from_bits(elem_bits), target);
             release_handle_value(_py, elem_bits);
@@ -1251,7 +1287,11 @@ pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if deque_mutated_since(id, mutation_version) {
-                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "deque mutated during iteration",
+                );
             }
             if matched {
                 count += 1;
@@ -1278,10 +1318,10 @@ pub extern "C" fn molt_deque_index(
         let start_obj = obj_from_bits(start_bits);
         let stop_obj = obj_from_bits(stop_bits);
         let Some(start_raw) = to_i64(start_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
         let Some(stop_raw) = to_i64(stop_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
         let (len, mutation_version) = deque_comparison_start(id);
         let len = len as i64;
@@ -1314,7 +1354,11 @@ pub extern "C" fn molt_deque_index(
         let stop_usize = stop as usize;
         for i in start_usize..stop_usize {
             let Some(elem_bits) = deque_comparison_item(_py, id, i) else {
-                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "deque mutated during iteration",
+                );
             };
             let compared = compare_eq(_py, obj_from_bits(elem_bits), target);
             release_handle_value(_py, elem_bits);
@@ -1326,10 +1370,14 @@ pub extern "C" fn molt_deque_index(
                 return MoltObject::from_int(i as i64).bits();
             }
             if deque_mutated_since(id, mutation_version) {
-                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "deque mutated during iteration",
+                );
             }
         }
-        raise_exception::<_>(_py, "ValueError", "x is not in deque")
+        raise_exception::<_>(_py, BuiltinExc::ValueError, "x is not in deque")
     })
 }
 
@@ -1345,7 +1393,7 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
         };
         let idx_obj = obj_from_bits(index_bits);
         let Some(index) = to_i64(idx_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "integer argument expected");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "integer argument expected");
         };
         let ok = {
             let mut map = collections_state().deque_registry.lock().unwrap();
@@ -1390,7 +1438,11 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
         };
         match ok {
             Ok(()) => MoltObject::none().bits(),
-            Err(()) => raise_exception::<_>(_py, "IndexError", "deque already at its maximum size"),
+            Err(()) => raise_exception::<_>(
+                _py,
+                BuiltinExc::IndexError,
+                "deque already at its maximum size",
+            ),
         }
     })
 }
@@ -1409,7 +1461,11 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
         let mut found_idx: Option<usize> = None;
         for i in 0..len {
             let Some(elem_bits) = deque_comparison_item(_py, id, i) else {
-                return raise_exception::<_>(_py, "IndexError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "deque mutated during iteration",
+                );
             };
             let compared = compare_eq(_py, obj_from_bits(elem_bits), target);
             release_handle_value(_py, elem_bits);
@@ -1418,7 +1474,11 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if deque_mutated_since(id, mutation_version) {
-                return raise_exception::<_>(_py, "IndexError", "deque mutated during iteration");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "deque mutated during iteration",
+                );
             }
             if matched {
                 found_idx = Some(i);
@@ -1426,7 +1486,11 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
             }
         }
         let Some(idx) = found_idx else {
-            return raise_exception::<_>(_py, "ValueError", "deque.remove(x): x not in deque");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "deque.remove(x): x not in deque",
+            );
         };
         let removed = {
             let mut map = collections_state().deque_registry.lock().unwrap();
@@ -1505,7 +1569,7 @@ pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
             .get(&id)
             .map(|s| s.clone_state(_py));
         let Some(new_state) = cloned else {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid deque handle");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "invalid deque handle");
         };
         let new_id = next_deque_handle();
         collections_state()
@@ -1664,7 +1728,11 @@ fn next_defaultdict_handle() -> i64 {
 fn dd_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
     let Some(id) = to_i64(obj) else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "defaultdict handle must be an int");
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "defaultdict handle must be an int",
+        );
         return None;
     };
     Some(id)
@@ -1681,7 +1749,7 @@ fn defaultdict_missing_value(_py: &CoreGilToken, handle_bits: u64, key_bits: u64
         .get(&id)
         .map(|s| OwnedRuntimeValue::retain(_py, s.factory_bits));
     let Some(factory) = factory else {
-        return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
+        return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "invalid defaultdict handle");
     };
     // A factory may replace its own handle while running. Pin it before
     // releasing the registry lock and keep that owner through the callback.
@@ -1836,12 +1904,12 @@ pub extern "C" fn molt_namedtuple_validate_fields(
     molt_runtime_core::with_core_gil!(_py, {
         // Validate typename
         let Some(typename) = string_obj_to_owned(obj_from_bits(typename_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "typename must be a string");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "typename must be a string");
         };
         let Some(data) = molt_runtime_core::unicode_target::for_runtime_target() else {
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "unsupported target Python Unicode facts",
             );
         };
@@ -1849,7 +1917,7 @@ pub extern "C" fn molt_namedtuple_validate_fields(
             .expect("validated string storage");
         if !is_valid_identifier(data, typename_bytes) || is_python_keyword(&typename) {
             let msg = format!("Type names and field names must be valid identifiers: {typename:?}");
-            return raise_exception::<_>(_py, "ValueError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
         }
 
         // Get rename flag
@@ -1857,11 +1925,19 @@ pub extern "C" fn molt_namedtuple_validate_fields(
 
         // Get field names list
         let Some(fields_ptr) = obj_from_bits(fields_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "field_names must be a sequence");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "field_names must be a sequence",
+            );
         };
         let field_type = unsafe { object_type_id(fields_ptr) };
         if field_type != TYPE_ID_LIST && field_type != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "field_names must be a sequence");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "field_names must be a sequence",
+            );
         }
         let elems = unsafe { seq_snapshot(fields_ptr) };
 
@@ -1870,7 +1946,11 @@ pub extern "C" fn molt_namedtuple_validate_fields(
 
         for (idx, &elem_bits) in elems.iter().enumerate() {
             let Some(name) = string_obj_to_owned(obj_from_bits(elem_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "field names must be strings");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "field names must be strings",
+                );
             };
 
             let name_bytes = unsafe { molt_runtime_core::rt_string_as_bytes(elem_bits) }
@@ -1886,15 +1966,15 @@ pub extern "C" fn molt_namedtuple_validate_fields(
                 } else {
                     if seen.contains(&name) {
                         let msg = format!("Encountered duplicate field name: {name:?}");
-                        return raise_exception::<_>(_py, "ValueError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                     }
                     if name.starts_with('_') {
                         let msg = format!("Field names cannot start with an underscore: {name:?}");
-                        return raise_exception::<_>(_py, "ValueError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                     }
                     let msg =
                         format!("Type names and field names must be valid identifiers: {name:?}");
-                    return raise_exception::<_>(_py, "ValueError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                 }
             } else {
                 name
@@ -1903,13 +1983,17 @@ pub extern "C" fn molt_namedtuple_validate_fields(
             // After rename, check for duplicates again
             if seen.contains(&final_name) {
                 let msg = format!("Encountered duplicate field name: {final_name:?}");
-                return raise_exception::<_>(_py, "ValueError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
             }
             seen.insert(final_name.clone());
 
             let name_ptr = alloc_string(_py, final_name.as_bytes());
             if name_ptr.is_null() {
-                return raise_exception::<_>(_py, "MemoryError", "failed to allocate string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::MemoryError,
+                    "failed to allocate string",
+                );
             }
             normalized.push(unsafe {
                 OwnedRuntimeValue::from_owned_bits(_py, MoltObject::from_ptr(name_ptr).bits())
@@ -1920,7 +2004,7 @@ pub extern "C" fn molt_namedtuple_validate_fields(
         // Exact-string temporaries retire on validation/allocation failure too.
         drop(normalized);
         if result_ptr.is_null() {
-            return raise_exception::<_>(_py, "MemoryError", "failed to allocate tuple");
+            return raise_exception::<_>(_py, BuiltinExc::MemoryError, "failed to allocate tuple");
         }
         MoltObject::from_ptr(result_ptr).bits()
     })

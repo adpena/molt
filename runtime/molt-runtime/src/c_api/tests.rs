@@ -2,6 +2,7 @@
 // The runtime is initialized once by the first test and reused.
 // Each test acquires `RuntimeTestTransaction` to isolate process-global state
 // and prevent concurrent GIL re-entry from corrupting the slab allocator.
+use crate::BuiltinExc;
 //
 // Run with: cargo test -p molt-runtime --lib -- c_api::tests --test-threads=1
 // Individual tests pass; full suite may hit stack overflow from
@@ -29,16 +30,16 @@ impl Drop for CApiTestGuard {
     fn drop(&mut self) {}
 }
 
-fn assert_pending_exception_class(_py: &PyToken<'_>, expected: &str) {
+fn assert_pending_exception_class(_py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(_py));
     let exc_bits = molt_err_fetch();
     assert!(!obj_from_bits(exc_bits).is_none());
     let kind_bits = molt_exception_kind(exc_bits);
     let class_bits = molt_exception_class(kind_bits);
-    let expected_bits = crate::builtins::exceptions::exception_type_bits_from_name(_py, expected);
+    let expected_bits = crate::builtins::exceptions::exception_class_bits(_py, expected);
     assert!(
         issubclass_bits(class_bits, expected_bits),
-        "expected pending exception to be {expected}"
+        "expected pending exception to be {expected:?}"
     );
     dec_ref_bits(_py, class_bits);
     dec_ref_bits(_py, kind_bits);
@@ -46,7 +47,7 @@ fn assert_pending_exception_class(_py: &PyToken<'_>, expected: &str) {
     assert!(!exception_pending(_py));
 }
 
-fn assert_none_with_exception_class(_py: &PyToken<'_>, bits: u64, expected: &str) {
+fn assert_none_with_exception_class(_py: &PyToken<'_>, bits: u64, expected: crate::BuiltinExc) {
     assert!(obj_from_bits(bits).is_none());
     assert_pending_exception_class(_py, expected);
 }
@@ -128,7 +129,7 @@ impl Drop for CApiModuleCacheRestore {
 extern "C" fn c_api_test_meth_varargs(self_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "missing module self");
         }
         let len = molt_sequence_length(args_bits);
         if len < 0 {
@@ -145,7 +146,7 @@ extern "C" fn c_api_test_meth_varargs_keywords(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "missing module self");
         }
         let pos_len = molt_sequence_length(args_bits);
         if pos_len < 0 {
@@ -156,7 +157,11 @@ extern "C" fn c_api_test_meth_varargs_keywords(
         } else if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(kwargs_ptr) != TYPE_ID_DICT {
-                    return raise_exception::<u64>(_py, "TypeError", "kwargs payload must be dict");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "kwargs payload must be dict",
+                    );
                 }
                 dict_len(kwargs_ptr) as i64
             }
@@ -170,12 +175,12 @@ extern "C" fn c_api_test_meth_varargs_keywords(
 extern "C" fn c_api_test_meth_noargs(self_bits: u64, arg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "missing module self");
         }
         if arg_bits != 0 {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "noargs callback expected NULL argument pointer",
             );
         }
@@ -186,10 +191,14 @@ extern "C" fn c_api_test_meth_noargs(self_bits: u64, arg_bits: u64) -> u64 {
 extern "C" fn c_api_test_meth_o(self_bits: u64, arg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "missing module self");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "missing module self");
         }
         if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "METH_O callback missing arg");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "METH_O callback missing arg",
+            );
         }
         inc_ref_bits(_py, arg_bits);
         arg_bits
@@ -201,7 +210,7 @@ extern "C" fn c_api_test_dynamic_varargs(self_bits: u64, args_bits: u64) -> u64 
         let Some(self_value) = to_i64(obj_from_bits(self_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dynamic self must be an int for this probe",
             );
         };
@@ -218,14 +227,14 @@ extern "C" fn c_api_test_dynamic_noargs(self_bits: u64, arg_bits: u64) -> u64 {
         let Some(self_value) = to_i64(obj_from_bits(self_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dynamic self must be an int for this probe",
             );
         };
         if arg_bits != 0 {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "noargs callback expected NULL argument pointer",
             );
         }
@@ -238,14 +247,14 @@ extern "C" fn c_api_test_dynamic_o(self_bits: u64, arg_bits: u64) -> u64 {
         let Some(self_value) = to_i64(obj_from_bits(self_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dynamic self must be an int for this probe",
             );
         };
         let Some(arg_value) = to_i64(obj_from_bits(arg_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "dynamic METH_O arg must be an int for this probe",
             );
         };
@@ -258,14 +267,14 @@ extern "C" fn c_api_test_static_noargs(self_bits: u64, arg_bits: u64) -> u64 {
         if self_bits != 0 {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "static callback expected NULL self_bits",
             );
         }
         if arg_bits != 0 {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "noargs callback expected NULL argument pointer",
             );
         }
@@ -276,10 +285,10 @@ extern "C" fn c_api_test_static_noargs(self_bits: u64, arg_bits: u64) -> u64 {
 extern "C" fn c_api_test_bound_identity(self_bits: u64, arg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "bound self missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "bound self missing");
         }
         if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "bound arg missing");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "bound arg missing");
         }
         inc_ref_bits(_py, arg_bits);
         arg_bits
@@ -304,7 +313,7 @@ static INHERITED_CALL_REPLACEMENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 extern "C" fn c_api_test_identity(arg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "identity arg missing");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "identity arg missing");
         }
         inc_ref_bits(_py, arg_bits);
         arg_bits
@@ -321,15 +330,23 @@ extern "C" fn c_api_test_call_descriptor_get_once(
             || obj_from_bits(instance_bits).is_none()
             || obj_from_bits(owner_bits).is_none()
         {
-            return raise_exception::<u64>(_py, "RuntimeError", "descriptor bind args missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "descriptor bind args missing",
+            );
         }
         let prior = CALL_DESCRIPTOR_GET_COUNT.fetch_add(1, Ordering::SeqCst);
         if prior != 0 {
-            return raise_exception::<u64>(_py, "RuntimeError", "descriptor rebound");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "descriptor rebound");
         }
         let target_bits = CALL_DESCRIPTOR_TARGET_BITS.load(Ordering::SeqCst);
         if obj_from_bits(target_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "descriptor target missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "descriptor target missing",
+            );
         }
         inc_ref_bits(_py, target_bits);
         target_bits
@@ -339,10 +356,10 @@ extern "C" fn c_api_test_call_descriptor_get_once(
 extern "C" fn c_api_test_custom_metaclass_call(self_bits: u64, arg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "metaclass self missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "metaclass self missing");
         }
         if arg_bits == 0 || obj_from_bits(arg_bits).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "metaclass arg missing");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "metaclass arg missing");
         }
         CUSTOM_METACLASS_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         inc_ref_bits(_py, arg_bits);
@@ -353,7 +370,7 @@ extern "C" fn c_api_test_custom_metaclass_call(self_bits: u64, arg_bits: u64) ->
 extern "C" fn c_api_test_mutated_metaclass_call(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "metaclass self missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "metaclass self missing");
         }
         MUTATED_METACLASS_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         MoltObject::from_int(97).bits()
@@ -363,7 +380,7 @@ extern "C" fn c_api_test_mutated_metaclass_call(self_bits: u64) -> u64 {
 extern "C" fn c_api_test_replaced_inherited_call(self_bits: u64, arg_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "call self missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "call self missing");
         }
         INHERITED_CALL_REPLACEMENT_COUNT.fetch_add(1, Ordering::SeqCst);
         inc_ref_bits(_py, arg_bits);
@@ -374,7 +391,7 @@ extern "C" fn c_api_test_replaced_inherited_call(self_bits: u64, arg_bits: u64) 
 extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__del__ self missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__del__ self missing");
         }
         FINALIZER_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         none_bits()
@@ -768,7 +785,11 @@ extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // CPython contract: the weakref is already dead during its own callback.
         if weak_bits == 0 || obj_from_bits(weak_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "weakref callback arg missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "weakref callback arg missing",
+            );
         }
         WEAKREF_CB_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         let target_bits = WEAKREF_CB_TARGET_BITS.load(Ordering::SeqCst);
@@ -814,13 +835,25 @@ extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
 extern "C" fn c_api_test_set_name_records(self_bits: u64, owner_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ self missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "__set_name__ self missing",
+            );
         }
         if obj_from_bits(owner_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ owner missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "__set_name__ owner missing",
+            );
         }
         if obj_from_bits(name_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ name missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "__set_name__ name missing",
+            );
         }
         SET_NAME_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         none_bits()
@@ -834,13 +867,25 @@ extern "C" fn c_api_test_set_name_deletes_owner_attr(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ self missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "__set_name__ self missing",
+            );
         }
         if obj_from_bits(owner_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ owner missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "__set_name__ owner missing",
+            );
         }
         if obj_from_bits(name_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ name missing");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "__set_name__ name missing",
+            );
         }
         SET_NAME_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
         let _ = crate::molt_del_attr_name(owner_bits, name_bits);
@@ -866,10 +911,10 @@ extern "C" fn c_api_test_descriptor_get_deletes_owner_attr(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__get__ self missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__get__ self missing");
         }
         if obj_from_bits(owner_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__get__ owner missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__get__ owner missing");
         }
         let name_bits = unsafe { molt_string_from(b"marker".as_ptr(), 6) };
         assert!(!obj_from_bits(name_bits).is_none());
@@ -892,10 +937,10 @@ extern "C" fn c_api_test_descriptor_get_deletes_owner_attr(
 extern "C" fn c_api_test_init_stores_tag_and_borrows_self(self_bits: u64, tag_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "__init__ self missing");
+            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "__init__ self missing");
         }
         if tag_bits == 0 || obj_from_bits(tag_bits).is_none() {
-            return raise_exception::<u64>(_py, "TypeError", "__init__ tag missing");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "__init__ tag missing");
         }
         let name_bits = unsafe { molt_string_from(b"tag".as_ptr(), 3) };
         assert!(!obj_from_bits(name_bits).is_none());

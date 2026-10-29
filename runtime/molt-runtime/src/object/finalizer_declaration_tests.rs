@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -91,7 +92,7 @@ extern "C" fn mutate_own_finalizer_and_raise(self_bits: u64) -> u64 {
         }
         dec_ref_bits(py, del_bits);
         assert!(!crate::exception_pending(py));
-        crate::raise_exception::<u64>(py, "RuntimeError", "mutating finalizer failure")
+        crate::raise_exception::<u64>(py, BuiltinExc::RuntimeError, "mutating finalizer failure")
     })
 }
 
@@ -522,7 +523,8 @@ fn finalizer_bound_owner_and_exception_scope_restore_on_panic() {
         crate::builtins::exceptions::exception_stack_push();
         crate::builtins::exceptions::exception_stack_push();
         let prior_depth = crate::builtins::exceptions::exception_stack_depth();
-        let _ = crate::raise_exception::<u64>(py, "ValueError", "prior finalizer exception");
+        let _ =
+            crate::raise_exception::<u64>(py, BuiltinExc::ValueError, "prior finalizer exception");
         let prior_exception =
             crate::builtins::exceptions::exception_last_bits_noinc(py).expect("prior exception");
         super::FINALIZER_RESOURCE_TEST_HOOK.with(|slot| {

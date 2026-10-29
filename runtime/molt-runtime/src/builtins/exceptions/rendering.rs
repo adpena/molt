@@ -2,6 +2,7 @@
 //! Neither descriptor publication nor managed rendering acquires process C state.
 
 use super::*;
+use crate::BuiltinExc;
 use molt_obj_model::{
     ExceptionStrSlot,
     exception_render::{
@@ -11,31 +12,32 @@ use molt_obj_model::{
 };
 
 /// Resolve the immutable factory identity, never a mutable __name__ or module
-/// binding. The existing class cache owns non-root identities; no second table.
+/// binding. The kind slots own non-root identities; no second table.
 fn declaring_spec(py: &PyToken<'_>, class: u64) -> Option<&'static BuiltinExceptionSpec> {
     let builtins = builtin_classes(py);
-    for (bits, name) in [
-        (builtins.base_exception, "BaseException"),
-        (builtins.exception, "Exception"),
-        (builtins.base_exception_group, "BaseExceptionGroup"),
-        (builtins.exception_group, "ExceptionGroup"),
+    for (bits, kind) in [
+        (builtins.base_exception, BuiltinExc::BaseException),
+        (builtins.exception, BuiltinExc::Exception),
+        (
+            builtins.base_exception_group,
+            BuiltinExc::BaseExceptionGroup,
+        ),
+        (builtins.exception_group, BuiltinExc::ExceptionGroup),
     ] {
         if class == bits {
-            return builtin_exception_spec(name);
+            return Some(kind.spec());
         }
     }
     if !is_builtin_exception_class_bits(py, class) {
         return None;
     }
-    exception_type_cache(py)
-        .lock()
-        .unwrap()
+    let slots = &runtime_state(py).exception_kind_slots;
+    BuiltinExc::ALL
         .iter()
-        .find_map(|(name, &bits)| {
-            (class == bits)
-                .then(|| builtin_exception_spec(name))
-                .flatten()
+        .find(|&&kind| {
+            slots[ExcKind::from(kind).code() as usize].load(AtomicOrdering::Acquire) == class
         })
+        .map(|kind| kind.spec())
 }
 
 pub(crate) fn exception_render_method_bits(
@@ -113,7 +115,7 @@ fn invoke(py: &PyToken<'_>, object: u64, slot: Option<ExceptionStrSlot>) -> u64 
         if !exception_pending(py) {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception rendering slot requires a compatible exception instance",
             );
         }
@@ -168,7 +170,11 @@ impl ManagedRender<'_, '_> {
 
     fn invalid<T>(&self) -> Option<T> {
         if !exception_pending(self.0) {
-            raise_exception::<()>(self.0, "SystemError", "bad argument to internal function");
+            raise_exception::<()>(
+                self.0,
+                BuiltinExc::SystemError,
+                "bad argument to internal function",
+            );
         }
         None
     }
@@ -203,7 +209,7 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
         if required.is_some_and(|required| required != layout) {
             raise_exception::<()>(
                 self.0,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception rendering slot requires a compatible exception instance",
             );
             return None;
@@ -407,7 +413,7 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
                 );
                 raise_exception::<()>(
                     self.0,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("expected bytes, {name:.200} found"),
                 );
                 return None;

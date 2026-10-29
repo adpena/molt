@@ -4,10 +4,11 @@
 # files; when they change, run `python3 tools/perf_methodology.py --bump` if the
 # change can move a number or a verdict, else `--relock`.
 schema = "molt-perf-methodology-v1"
-# Sealed application inputs and complete, byte-preserving observations change
-# workload identity and measurement admission together.
-version = 16
-content_sha256 = "6537eb23e255f260ddec0601c16c0942f6366110eeb17f9cc95e9bf807bd9c0d"
+# Guest-versus-host failure classification, original failed-capture evidence and
+# explicit application compiler arguments change diagnostic verdicts. Earlier
+# reports retain their recorded class.
+version = 17
+content_sha256 = "baecac6a65dc478d7f34009f21c99952ca230c417aeb19922ab7582532474201"
 
 [[methodology]]
 path = "tools/safe_run.py"

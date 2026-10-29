@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.wasm_execution_manifest import wasm_execution_launch
+
 from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 from copy import deepcopy
@@ -73,6 +75,7 @@ def _payload(
             json.dumps(
                 {
                     "version": WASM_EXECUTION_MANIFEST_VERSION,
+                    "launch": wasm_execution_launch(),
                     "mode": "split-runtime",
                     "modules": {
                         "app": {

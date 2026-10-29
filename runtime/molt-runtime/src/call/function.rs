@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::call::ExceptionBaselineGuard;
 use crate::object::layout::{
@@ -177,7 +178,7 @@ pub(crate) unsafe fn function_required_call_target_ptr(
 
 fn missing_function_call_target(_py: &PyToken<'_>, context: &str, fn_ptr: u64) -> u64 {
     let msg = format!("{context}: function call target 0x{fn_ptr:x} is not initialized");
-    raise_exception::<_>(_py, "RuntimeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg)
 }
 
 // Construction stores every native function's executable target in the
@@ -308,7 +309,7 @@ unsafe fn raise_call_arity_mismatch(
             msg.push_str(" for ");
             msg.push_str(&name);
         }
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     }
 }
 
@@ -358,10 +359,18 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) =
             maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits])
@@ -621,10 +630,18 @@ unsafe fn call_function_obj_bound0(_py: &PyToken<'_>, func_bits: u64) -> u64 {
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[]) {
             return res;
@@ -759,10 +776,18 @@ unsafe fn call_function_obj_bound2(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) =
             maybe_call_function_obj_trampoline(_py, func_bits, func_ptr, &[arg0_bits, arg1_bits])
@@ -863,10 +888,18 @@ unsafe fn call_function_obj_bound3(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -967,10 +1000,18 @@ unsafe fn call_function_obj_bound4(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -1074,10 +1115,18 @@ unsafe fn call_function_obj_bound5(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -1203,10 +1252,18 @@ unsafe fn call_function_obj_bound6(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -1349,10 +1406,18 @@ unsafe fn call_function_obj_bound7(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -1503,10 +1568,18 @@ unsafe fn call_function_obj_bound8(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -1665,10 +1738,18 @@ unsafe fn call_function_obj_bound9(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -1842,10 +1923,18 @@ unsafe fn call_function_obj_bound10(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -2046,10 +2135,18 @@ unsafe fn call_function_obj_bound11(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -2269,10 +2366,18 @@ unsafe fn call_function_obj_bound12(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         if let Some(res) = maybe_call_function_obj_trampoline(
             _py,
@@ -2558,10 +2663,18 @@ unsafe fn invoke_function_trampoline(
         let _baseline_guard = ExceptionBaselineGuard::new();
         let func_obj = obj_from_bits(func_bits);
         let Some(func_ptr) = func_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         };
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "call expects function object",
+            );
         }
         // Published C wrappers use an admitted trampoline. External positional
         // calls must acquire C execution custody before reaching that entry.
@@ -2589,7 +2702,7 @@ unsafe fn invoke_function_trampoline(
         if pending.is_some() && !adopting && !moved_cext {
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "moved call arguments require an adopting entry",
             );
         }
@@ -2620,7 +2733,7 @@ unsafe fn invoke_function_trampoline(
             function_trampoline_ptr(func_ptr),
         );
         if tramp_ptr == 0 {
-            return raise_exception::<_>(_py, "TypeError", "call arity mismatch");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "call arity mismatch");
         }
         let closure_bits = function_execution_closure_bits(func_ptr);
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
@@ -3297,7 +3410,11 @@ mod tests {
         });
         if fail {
             crate::with_gil(|py| {
-                crate::raise_exception::<u64>(&py, "ValueError", "C dispatch failure");
+                crate::raise_exception::<u64>(
+                    &py,
+                    crate::BuiltinExc::ValueError,
+                    "C dispatch failure",
+                );
                 CEXT_DISPATCH.with(|state| {
                     state.borrow_mut().raised = crate::molt_exception_last_pending();
                 });
@@ -3626,7 +3743,10 @@ mod tests {
                     crate::builtins::exceptions::exception_class(&py, pending)
                         .unwrap()
                         .bits(),
-                    crate::builtins::exceptions::exception_type_bits_from_name(&py, "SystemError"),
+                    crate::builtins::exceptions::exception_class_bits(
+                        &py,
+                        crate::BuiltinExc::SystemError
+                    ),
                 );
                 crate::molt_exception_clear();
                 molt_cpython_abi::api::errors::PyErr_Clear();
@@ -3706,7 +3826,11 @@ mod tests {
             crate::with_gil_entry_nopanic!(py, {
                 ENTRIES.fetch_add(1, SeqCst);
                 crate::exception_stack_baseline_set(0);
-                let result = crate::raise_exception::<u64>(py, "ValueError", "callback failure");
+                let result = crate::raise_exception::<u64>(
+                    py,
+                    crate::BuiltinExc::ValueError,
+                    "callback failure",
+                );
                 // Retain the callback's actual exception independently of pending state.
                 RAISED.store(crate::molt_exception_last_pending(), SeqCst);
                 result
@@ -3748,9 +3872,9 @@ mod tests {
                         crate::builtins::exceptions::exception_class(py, pending)
                             .unwrap()
                             .bits(),
-                        crate::builtins::exceptions::exception_type_bits_from_name(
+                        crate::builtins::exceptions::exception_class_bits(
                             py,
-                            "ValueError"
+                            crate::BuiltinExc::ValueError
                         ),
                         "lane {lane} changed the exception class"
                     );

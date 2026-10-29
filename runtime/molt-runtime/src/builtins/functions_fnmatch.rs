@@ -1,6 +1,7 @@
 // Fnmatch pattern matching implementation.
 // Extracted from functions.rs for compilation-unit size reduction and tree shaking.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_runtime_platform::fnmatch::{
@@ -28,11 +29,15 @@ pub extern "C" fn molt_fnmatchcase(name_bits: u64, pat_bits: u64) -> u64 {
                 if fnmatch_bytes_from_bits(pat_bits).is_some() {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "cannot use a bytes pattern on a string-like object",
                     );
                 }
-                return raise_exception::<_>(_py, "TypeError", "expected str or bytes pattern");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected str or bytes pattern",
+                );
             };
             return MoltObject::from_bool(fnmatch_match_impl(&name, &pat)).bits();
         }
@@ -41,15 +46,19 @@ pub extern "C" fn molt_fnmatchcase(name_bits: u64, pat_bits: u64) -> u64 {
                 if string_obj_to_owned(obj_from_bits(pat_bits)).is_some() {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "cannot use a string pattern on a bytes-like object",
                     );
                 }
-                return raise_exception::<_>(_py, "TypeError", "expected str or bytes pattern");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected str or bytes pattern",
+                );
             };
             return MoltObject::from_bool(fnmatch_match_bytes_impl(&name, &pat)).bits();
         }
-        raise_exception::<_>(_py, "TypeError", "expected str or bytes name")
+        raise_exception::<_>(_py, BuiltinExc::TypeError, "expected str or bytes name")
     })
 }
 
@@ -61,11 +70,15 @@ pub extern "C" fn molt_fnmatch(name_bits: u64, pat_bits: u64) -> u64 {
                 if fnmatch_bytes_from_bits(pat_bits).is_some() {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "cannot use a bytes pattern on a string-like object",
                     );
                 }
-                return raise_exception::<_>(_py, "TypeError", "expected str or bytes pattern");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected str or bytes pattern",
+                );
             };
             let name_norm = fnmatch_normcase_text(&name);
             let pat_norm = fnmatch_normcase_text(&pat);
@@ -76,17 +89,21 @@ pub extern "C" fn molt_fnmatch(name_bits: u64, pat_bits: u64) -> u64 {
                 if string_obj_to_owned(obj_from_bits(pat_bits)).is_some() {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "cannot use a string pattern on a bytes-like object",
                     );
                 }
-                return raise_exception::<_>(_py, "TypeError", "expected str or bytes pattern");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "expected str or bytes pattern",
+                );
             };
             let name_norm = fnmatch_normcase_bytes(&name);
             let pat_norm = fnmatch_normcase_bytes(&pat);
             return MoltObject::from_bool(fnmatch_match_bytes_impl(&name_norm, &pat_norm)).bits();
         }
-        raise_exception::<_>(_py, "TypeError", "expected str or bytes name")
+        raise_exception::<_>(_py, BuiltinExc::TypeError, "expected str or bytes name")
     })
 }
 
@@ -100,7 +117,11 @@ pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bit
             None
         };
         if pat_str.is_none() && pat_bytes.is_none() {
-            return raise_exception::<_>(_py, "TypeError", "expected str or bytes pattern");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "expected str or bytes pattern",
+            );
         }
         let invert = is_truthy(_py, obj_from_bits(invert_bits));
         let iter_bits = molt_iter(names_bits);
@@ -130,7 +151,7 @@ pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bit
                     for bits in out_bits {
                         dec_ref_bits(_py, bits);
                     }
-                    return raise_exception::<_>(_py, "TypeError", "expected str item");
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected str item");
                 };
                 let name_norm = fnmatch_normcase_text(&name);
                 let pat_norm = fnmatch_normcase_text(pat);
@@ -147,14 +168,14 @@ pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bit
                         }
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "cannot use a string pattern on a bytes-like object",
                         );
                     }
                     for bits in out_bits {
                         dec_ref_bits(_py, bits);
                     }
-                    return raise_exception::<_>(_py, "TypeError", "expected bytes item");
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected bytes item");
                 };
                 let name_norm = fnmatch_normcase_bytes(&name);
                 let pat_norm = fnmatch_normcase_bytes(pat);
@@ -187,7 +208,7 @@ pub extern "C" fn molt_fnmatch_filter(names_bits: u64, pat_bits: u64, invert_bit
 pub extern "C" fn molt_fnmatch_translate(pat_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(pat) = string_obj_to_owned(obj_from_bits(pat_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "expected str pattern");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected str pattern");
         };
         let out = fnmatch_translate_impl(&pat);
         let out_ptr = alloc_string(_py, out.as_bytes());

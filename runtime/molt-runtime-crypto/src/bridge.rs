@@ -39,20 +39,18 @@ pub(crate) fn hmac_owner(bits: u64) -> Option<Arc<Mutex<crate::hmac::HmacHandle>
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn __molt_crypto_raise_exception(
-        type_ptr: *const u8,
-        type_len: usize,
-        msg_ptr: *const u8,
-        msg_len: usize,
-    ) -> u64;
+    fn __molt_crypto_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64;
 
     fn __molt_crypto_exception_pending() -> i32;
 }
 
-pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
-    let bits = unsafe {
-        __molt_crypto_raise_exception(type_name.as_ptr(), type_name.len(), msg.as_ptr(), msg.len())
-    };
+pub fn raise_exception<T: ExceptionSentinel>(
+    _py: &PyToken,
+    type_name: impl Into<ExcKind>,
+    msg: &str,
+) -> T {
+    let bits =
+        unsafe { __molt_crypto_raise_exception(type_name.into().code(), msg.as_ptr(), msg.len()) };
     T::from_bits(bits)
 }
 

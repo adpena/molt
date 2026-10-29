@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::ExceptionValue;
 use crate::cpython_abi_hooks::native_test_fixture::NativeType;
 use molt_cpython_abi::abi_types::*;
@@ -50,8 +51,11 @@ fn native_mapping_slot_status_preserves_prior_and_legitimate_none() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let _reset = CallbackReset;
-            let prior_ptr =
-                crate::builtins::exceptions::alloc_exception(py, "LookupError", "index prior");
+            let prior_ptr = crate::builtins::exceptions::alloc_exception(
+                py,
+                BuiltinExc::LookupError,
+                "index prior",
+            );
             assert!(!prior_ptr.is_null());
             let prior = ExceptionValue::adopt(py, MoltObject::from_ptr(prior_ptr).bits());
             let prior_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(prior.bits());
@@ -125,8 +129,11 @@ fn managed_and_native_sequence_none_remains_success_with_prior_error() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let _reset = CallbackReset;
-            let prior_ptr =
-                crate::builtins::exceptions::alloc_exception(py, "LookupError", "sequence prior");
+            let prior_ptr = crate::builtins::exceptions::alloc_exception(
+                py,
+                BuiltinExc::LookupError,
+                "sequence prior",
+            );
             assert!(!prior_ptr.is_null());
             let prior = ExceptionValue::adopt(py, MoltObject::from_ptr(prior_ptr).bits());
             let prior_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(prior.bits());

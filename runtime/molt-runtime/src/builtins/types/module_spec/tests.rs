@@ -44,7 +44,7 @@ fn suffix_policy_survives_failed_initialization_and_commits_one_owner() {
         assert!(!commit_module_spec_suffix_namespace(py, partial.bits()));
         assert!(crate::builtins::platform::clear_pending_if_kind(
             py,
-            &["NameError"]
+            &[crate::BuiltinExc::NameError]
         ));
         let after_failure = ExceptionValue::adopt(
             py,

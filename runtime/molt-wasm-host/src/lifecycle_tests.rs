@@ -273,6 +273,7 @@ fn lifetime_export_admission_precedes_any_guest_start() {
                 None,
                 LoadedGuestOptions {
                     kind: LoadedGuestKind::MoltApplication { linked: true },
+                    launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
                     wasm_table_base: None,
@@ -334,6 +335,7 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
             runtime.as_ref(),
             LoadedGuestOptions {
                 kind: LoadedGuestKind::MoltApplication { linked },
+                launch_environment: &[],
                 vfs_envs: &[],
                 guest_args: &[],
                 wasm_table_base: fail_table_setup.then_some(4096),

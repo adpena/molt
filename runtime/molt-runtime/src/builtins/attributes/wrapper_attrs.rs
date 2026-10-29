@@ -1,6 +1,7 @@
 //! One staged publication authority for versioned builtin namespace members.
 //! Native members use the ordinary descriptor lookup lane.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::NativeCallableSpec;
 use crate::builtins::types::{
     NativeDescriptorFlavor, NativeDescriptorSpec, alloc_native_descriptor,
@@ -356,7 +357,7 @@ pub(crate) fn prepare_wrapper_members(
                 if !exception_pending(py) {
                     raise_exception::<()>(
                         py,
-                        "MemoryError",
+                        BuiltinExc::MemoryError,
                         "wrapper member callback allocation failed",
                     );
                 }
@@ -512,7 +513,7 @@ pub(crate) fn prepare_wrapper_members(
                 let Some(dictionary) = dictionary else {
                     raise_exception::<()>(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "builtin namespace has no runtime dictionary owner",
                     );
                     return None;
@@ -520,7 +521,7 @@ pub(crate) fn prepare_wrapper_members(
                 let Some(live) = obj_from_bits(dictionary).as_ptr() else {
                     raise_exception::<()>(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "builtin namespace has invalid dictionary storage",
                     );
                     return None;
@@ -528,7 +529,7 @@ pub(crate) fn prepare_wrapper_members(
                 if object_type_id(live) != TYPE_ID_DICT {
                     raise_exception::<()>(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "builtin namespace requires exact dictionary storage",
                     );
                     return None;
@@ -593,7 +594,7 @@ pub(crate) fn prepare_wrapper_members(
     if result.is_none() && !exception_pending(py) {
         raise_exception::<()>(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "wrapper member publication preparation failed",
         );
     }
@@ -715,7 +716,11 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let Some((operation, object, name)) = callback_member(py, descriptor, instance) else {
-                return raise_exception::<u64>(py, "TypeError", "invalid wrapper member receiver");
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::TypeError,
+                    "invalid wrapper member receiver",
+                );
             };
             let result = match operation {
                 MemberOperation::SuperReference(index) => {
@@ -768,7 +773,7 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
                 Ok(Some(value)) => value,
                 Ok(None) => raise_exception::<u64>(
                     py,
-                    "AttributeError",
+                    BuiltinExc::AttributeError,
                     &format!(
                         "'{}' object has no attribute '{}'",
                         class_name_for_error(object_class_bits(object)),
@@ -789,7 +794,11 @@ unsafe fn mutate_member(
 ) -> u64 {
     unsafe {
         let Some((operation, object, name)) = callback_member(py, descriptor, instance) else {
-            return raise_exception::<u64>(py, "TypeError", "invalid wrapper member receiver");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "invalid wrapper member receiver",
+            );
         };
         let descriptor = obj_from_bits(descriptor).as_ptr().unwrap();
         let callback = if value.is_some() {
@@ -798,7 +807,7 @@ unsafe fn mutate_member(
             layout::native_descriptor_deleter_bits(descriptor)
         };
         if obj_from_bits(callback).is_none() {
-            return raise_exception::<u64>(py, "AttributeError", "readonly attribute");
+            return raise_exception::<u64>(py, BuiltinExc::AttributeError, "readonly attribute");
         }
         match operation {
             MemberOperation::Reference(3) => {
@@ -808,7 +817,11 @@ unsafe fn mutate_member(
                     value.unwrap_or(MoltObject::none().bits()),
                 ) && !exception_pending(py)
                 {
-                    raise_exception::<()>(py, "SystemError", "invalid property doc replacement");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::SystemError,
+                        "invalid property doc replacement",
+                    );
                 }
             }
             MemberOperation::Name => {
@@ -818,12 +831,20 @@ unsafe fn mutate_member(
                     value.unwrap_or_else(|| missing_bits(py)),
                 ) && !exception_pending(py)
                 {
-                    raise_exception::<()>(py, "SystemError", "invalid property name replacement");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::SystemError,
+                        "invalid property name replacement",
+                    );
                 }
             }
             MemberOperation::Dictionary => {
                 let Some(value) = value else {
-                    return raise_exception::<u64>(py, "TypeError", "cannot delete __dict__");
+                    return raise_exception::<u64>(
+                        py,
+                        BuiltinExc::TypeError,
+                        "cannot delete __dict__",
+                    );
                 };
                 if crate::object::field_storage::replace_dictionary(py, object, Some(value))
                     .is_err()
@@ -852,7 +873,7 @@ unsafe fn mutate_member(
                         if !deleted {
                             raise_exception::<()>(
                                 py,
-                                "AttributeError",
+                                BuiltinExc::AttributeError,
                                 &format!(
                                     "'{}' object has no attribute '{}'",
                                     class_name_for_error(object_class_bits(object)),
@@ -866,7 +887,7 @@ unsafe fn mutate_member(
             _ => {
                 return raise_exception::<u64>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "invalid writable wrapper member",
                 );
             }
@@ -977,7 +998,7 @@ unsafe fn lazy_wrapped_attribute(py: &PyToken<'_>, object: *mut u8, name: u64) -
             if is_missing_bits(py, target) {
                 raise_exception::<()>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "uninitialized descriptor wrapper object",
                 );
                 return Err(());
@@ -1596,7 +1617,7 @@ mod tests {
             dec_ref_bits(py, name);
             raise_exception::<u64>(
                 py,
-                "AttributeError",
+                BuiltinExc::AttributeError,
                 "property miss after fallback replacement",
             )
         })
@@ -1604,7 +1625,11 @@ mod tests {
 
     extern "C" fn getter_runtime_error(_receiver: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            raise_exception::<u64>(py, "RuntimeError", "non-attribute descriptor failure")
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::RuntimeError,
+                "non-attribute descriptor failure",
+            )
         })
     }
 
@@ -1661,7 +1686,11 @@ mod tests {
                 molt_get_attr_name(instance, failure_name);
                 assert!(exception_pending(py));
                 let error = molt_exception_last_pending();
-                assert!(exception_matches_builtin_name(py, error, "RuntimeError"));
+                assert!(exception_matches_kind(
+                    py,
+                    error,
+                    crate::BuiltinExc::RuntimeError
+                ));
                 molt_exception_clear();
                 dec_ref_bits(py, error);
                 for bits in [
@@ -1744,7 +1773,11 @@ mod tests {
                 molt_get_attr_name(instance, append);
                 assert!(exception_pending(py));
                 let error = molt_exception_last_pending();
-                assert!(exception_matches_builtin_name(py, error, "RuntimeError"));
+                assert!(exception_matches_kind(
+                    py,
+                    error,
+                    crate::BuiltinExc::RuntimeError
+                ));
                 molt_exception_clear();
                 dec_ref_bits(py, error);
                 // An unshadowed builtin member is found before __getattr__.

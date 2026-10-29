@@ -601,6 +601,7 @@ mod indirect_dispatch_tests {
             None,
             LoadedGuestOptions {
                 kind: LoadedGuestKind::WasiCommand,
+                launch_environment: &[],
                 vfs_envs: &[],
                 guest_args: &[],
                 wasm_table_base: None,
@@ -806,6 +807,7 @@ mod indirect_dispatch_tests {
                     runtime.as_ref(),
                     LoadedGuestOptions {
                         kind: LoadedGuestKind::MoltApplication { linked },
+                        launch_environment: &[],
                         vfs_envs: &[],
                         guest_args: &[],
                         wasm_table_base: None,
@@ -947,6 +949,7 @@ mod indirect_dispatch_tests {
                 None,
                 LoadedGuestOptions {
                     kind: LoadedGuestKind::MoltApplication { linked: true },
+                    launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
                     wasm_table_base: None,
@@ -996,6 +999,7 @@ mod indirect_dispatch_tests {
                 Some(&runtime),
                 LoadedGuestOptions {
                     kind: LoadedGuestKind::MoltApplication { linked: false },
+                    launch_environment: &[],
                     vfs_envs: &[],
                     guest_args: &[],
                     wasm_table_base: None,

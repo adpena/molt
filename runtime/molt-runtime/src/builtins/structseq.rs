@@ -4,6 +4,7 @@
 //! The public namespace is a projection. Mutating n_fields, descriptors or
 //! __new__ never changes the allocation, member indexing or GC reference graph.
 
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::builtins::native_arguments::NativeArguments;
 use crate::object::class_storage::{
@@ -147,7 +148,7 @@ impl<'a, 'py> Spec<'a, 'py> {
             object_type_id(p) == TYPE_ID_TYPE
                 && crate::object::class_storage::class_declares(p, ClassDeclaration::StructSequence)
         }) else {
-            return raise_exception(py, "TypeError", "expected a struct-sequence type");
+            return raise_exception(py, BuiltinExc::TypeError, "expected a struct-sequence type");
         };
         let bits = unsafe { ClassReferenceSlot::StructSequence.load(class) };
         debug_assert!({
@@ -240,7 +241,7 @@ pub(crate) fn from_values(py: &PyToken<'_>, class: u64, fields: &[u64]) -> u64 {
     if fields.len() != spec.names.len() {
         return raise_exception(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "native struct-sequence result has the wrong field count",
         );
     }
@@ -290,7 +291,7 @@ pub(crate) fn new_uninitialized(py: &PyToken<'_>, class: u64) -> u64 {
     };
     let mut fields = Vec::new();
     if fields.try_reserve_exact(spec.names.len()).is_err() {
-        return raise_exception(py, "MemoryError", "");
+        return raise_exception(py, BuiltinExc::MemoryError, "");
     }
     fields.resize(spec.names.len(), missing_bits(py));
     from_values(py, class, &fields)
@@ -455,7 +456,7 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
         if spec.constructor == Constructor::Forbidden {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("cannot create '{label}' instances"),
             );
         }
@@ -477,7 +478,7 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
                     let label = diagnostic_name(py, class);
                     return raise_exception(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("{label}() takes a dict as second arg, if any"),
                     );
                 }
@@ -506,13 +507,13 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
             };
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label}() takes {constraint}-sequence ({count}-sequence given)"),
             );
         }
         let mut fields = Vec::new();
         if fields.try_reserve_exact(max).is_err() {
-            return raise_exception(py, "MemoryError", "");
+            return raise_exception(py, BuiltinExc::MemoryError, "");
         }
         fields.extend_from_slice(&values);
         fields.resize(max, MoltObject::none().bits());
@@ -560,7 +561,7 @@ extern "C" fn construct(declaring: u64, args: u64, kwargs: u64) -> u64 {
             let label = diagnostic_name(py, class);
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label}() got duplicate or unexpected field name(s)"),
             );
         }
@@ -617,7 +618,7 @@ extern "C" fn repr(instance: u64) -> u64 {
             for index in 0..spec.visible {
                 let Some(name) = names.next() else {
                     return Err(FormatError::Diagnostic(
-                        "SystemError",
+                        crate::BuiltinExc::SystemError,
                         format!(
                             "In structseq_repr(), member {index} name is NULL for type {}",
                             diagnostic_name(py, class)
@@ -694,15 +695,23 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
             .as_ptr()
             .and_then(|ptr| unsafe { pin_tuple(py, ptr) })
         else {
-            return raise_exception(py, "TypeError", "__replace__() requires an arguments tuple");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "__replace__() requires an arguments tuple",
+            );
         };
         let Some(&instance) = positional.first() else {
-            return raise_exception(py, "TypeError", "__replace__() requires a receiver");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "__replace__() requires a receiver",
+            );
         };
         if positional.len() != 1 {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "__replace__() takes no positional arguments",
             );
         }
@@ -712,7 +721,7 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
         else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "__replace__() requires a keyword dictionary",
             );
         };
@@ -726,7 +735,7 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
             let name = diagnostic_name(py, class);
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "__replace__() is not supported for {} because it has unnamed field(s)",
                     name
@@ -795,9 +804,11 @@ extern "C" fn replace(args: u64, kwargs: u64) -> u64 {
                 output.finish().into_bytes_result(py)
             })();
             return match message {
-                Ok(message) => {
-                    crate::builtins::exceptions::raise_exception_bytes(py, "TypeError", &message)
-                }
+                Ok(message) => crate::builtins::exceptions::raise_exception_bytes(
+                    py,
+                    BuiltinExc::TypeError,
+                    &message,
+                ),
                 Err(error) => error.raise(py),
             };
         }
@@ -825,7 +836,7 @@ pub extern "C" fn molt_structseq_type(
         {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "invalid native struct-sequence declaration",
             );
         }
@@ -840,7 +851,11 @@ pub extern "C" fn molt_structseq_type(
             return MoltObject::none().bits();
         }
         if !valid_spec(py, specification.bits()) {
-            return raise_exception(py, "TypeError", "invalid native struct-sequence fields");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "invalid native struct-sequence fields",
+            );
         }
         let namespace = alloc_dict_with_pairs(py, &[]);
         if namespace.is_null() {
@@ -895,7 +910,7 @@ pub extern "C" fn molt_structseq_type(
             .try_reserve_exact(spec.names.len() - spec.visible)
             .is_err()
         {
-            return raise_exception(py, "MemoryError", "");
+            return raise_exception(py, BuiltinExc::MemoryError, "");
         }
         for index in spec.visible..spec.names.len() {
             let text = format!("_molt_structseq_field_{index:08x}");
@@ -945,7 +960,7 @@ pub extern "C" fn molt_structseq_type(
         }
         let mut match_names = Vec::new();
         if match_names.try_reserve_exact(spec.visible).is_err() {
-            return raise_exception(py, "MemoryError", "");
+            return raise_exception(py, BuiltinExc::MemoryError, "");
         }
         match_names.extend(
             spec.names[..spec.visible]
@@ -1086,7 +1101,7 @@ pub extern "C" fn molt_structseq_new(class: u64, values: u64) -> u64 {
         let Some(values) = exact(py, values, TYPE_ID_TUPLE) else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "native struct-sequence values must be an exact tuple",
             );
         };
@@ -1145,7 +1160,11 @@ unsafe fn from_description(
             || (*desc).fields.is_null()
             || (*desc).n_in_sequence < 0
         {
-            return raise_exception(py, "SystemError", "invalid struct-sequence descriptor");
+            return raise_exception(
+                py,
+                BuiltinExc::SystemError,
+                "invalid struct-sequence descriptor",
+            );
         }
         let name = owned(py, text(py, (*desc).name));
         if exception_pending(py) {
@@ -1180,7 +1199,7 @@ unsafe fn from_description(
                 || names.try_reserve(1).is_err()
                 || docs.try_reserve(1).is_err()
             {
-                return raise_exception(py, "MemoryError", "");
+                return raise_exception(py, BuiltinExc::MemoryError, "");
             }
             let field_name = if (*field).name
                 == molt_cpython_abi::api::sequences::PyStructSequence_UnnamedField

@@ -3,6 +3,7 @@
 //! before value lookup; the destination decides whether duplicates are legal.
 
 use super::iterable::OwnedIterator;
+use crate::BuiltinExc;
 use crate::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,7 +68,11 @@ pub(crate) fn output_as_list(
     let first = OwnedIterator::new(py, output);
     if first.is_none() {
         let exception = molt_exception_last_pending();
-        if crate::builtins::exceptions::exception_matches_builtin_name(py, exception, "TypeError") {
+        if crate::builtins::exceptions::exception_matches_kind(
+            py,
+            exception,
+            crate::BuiltinExc::TypeError,
+        ) {
             // Replace the pending TypeError, retaining only the independently
             // handled exception as implicit context, just like PyErr_Format.
             clear_exception(py);
@@ -84,7 +89,11 @@ pub(crate) fn output_as_list(
                 b")",
             ]
             .concat();
-            crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+            crate::builtins::exceptions::raise_exception_bytes::<()>(
+                py,
+                BuiltinExc::TypeError,
+                &message,
+            );
         }
         with_preserved_error(|| dec_ref_bits(py, exception));
         dec_ref_bits(py, output);
@@ -164,7 +173,11 @@ pub(crate) unsafe fn apply(
                     return MergeOutcome::Error;
                 }
                 if source_size() != original_size {
-                    raise_exception::<()>(py, "RuntimeError", "dict mutated during update");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::RuntimeError,
+                        "dict mutated during update",
+                    );
                     return MergeOutcome::Error;
                 }
             }
@@ -179,10 +192,10 @@ pub(crate) unsafe fn apply(
             Ok(method) => method,
             Err(()) => {
                 let error = molt_exception_last_pending();
-                let missing = crate::builtins::exceptions::exception_matches_builtin_name(
+                let missing = crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "AttributeError",
+                    crate::BuiltinExc::AttributeError,
                 );
                 molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, error));
                 return if missing {
@@ -244,7 +257,7 @@ pub(crate) unsafe fn unpack_dict(py: &PyToken<'_>, target: *mut u8, source: u64)
             let name = type_name(py, obj_from_bits(source));
             raise_exception::<()>(
                 py,
-                "AttributeError",
+                BuiltinExc::AttributeError,
                 &format!("'{name}' object has no attribute 'keys'"),
             );
         }
@@ -279,7 +292,11 @@ pub(crate) unsafe fn keyword_available(
                     b"'",
                 ]
                 .concat();
-                crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+                crate::builtins::exceptions::raise_exception_bytes::<()>(
+                    py,
+                    BuiltinExc::TypeError,
+                    &message,
+                );
             }
             return false;
         }
@@ -318,7 +335,11 @@ pub(crate) unsafe fn merge_keywords(py: &PyToken<'_>, target: *mut u8, mapping: 
         MergeOutcome::Error => false,
         MergeOutcome::NotMapping => {
             clear_exception(py);
-            raise_exception::<()>(py, "TypeError", "argument after ** must be a mapping");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "argument after ** must be a mapping",
+            );
             false
         }
     }
@@ -341,7 +362,7 @@ pub(crate) fn validate_keyword_names(
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
         {
-            raise_exception::<()>(py, "TypeError", "keywords must be strings");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "keywords must be strings");
             return false;
         }
     }

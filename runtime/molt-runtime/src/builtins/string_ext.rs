@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime/src/builtins/string_ext.rs ===
+use crate::BuiltinExc;
 //
 // Intrinsics for Python `string` module: Template $-substitution scanning,
 // Formatter parse, and field name splitting.
@@ -223,10 +224,10 @@ fn template_token_tuple(py: &PyToken<'_>, token: TemplateToken<'_>) -> Option<(u
 pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "template must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "template must be str");
         };
         let Some(delimiter) = string_obj_to_owned(obj_from_bits(delimiter_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "delimiter must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "delimiter must be str");
         };
         let mut segments = Vec::new();
         let mut owners = Vec::new();
@@ -250,10 +251,10 @@ pub extern "C" fn molt_string_template_scan(template_bits: u64, delimiter_bits: 
 pub extern "C" fn molt_string_template_is_valid(template_bits: u64, delimiter_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "template must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "template must be str");
         };
         let Some(delimiter) = string_obj_to_owned(obj_from_bits(delimiter_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "delimiter must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "delimiter must be str");
         };
         MoltObject::from_bool(
             TemplateScanner::new(&template, &delimiter)
@@ -270,10 +271,10 @@ pub extern "C" fn molt_string_template_get_identifiers(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(template) = string_obj_to_owned(obj_from_bits(template_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "template must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "template must be str");
         };
         let Some(delimiter) = string_obj_to_owned(obj_from_bits(delimiter_bits)) else {
-            return raise_exception::<_>(py, "TypeError", "delimiter must be str");
+            return raise_exception::<_>(py, BuiltinExc::TypeError, "delimiter must be str");
         };
         let mut seen = std::collections::HashSet::new();
         let mut identifiers = Vec::new();
@@ -313,7 +314,7 @@ fn formatter_string_ptr(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
         .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
     else {
         let message = format!("expected str, got {}", type_name(py, obj_from_bits(bits)));
-        return raise_exception(py, "TypeError", &message);
+        return raise_exception(py, BuiltinExc::TypeError, &message);
     };
     Some(ptr)
 }
@@ -434,7 +435,7 @@ fn formatter_set_offset(py: &PyToken<'_>, cell_ptr: *mut u8, offset: usize) -> b
 extern "C" fn formatter_parse_next(state_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some((source_ptr, cell_ptr, mut offset)) = formatter_cursor(state_bits) else {
-            return raise_exception(py, "SystemError", "invalid format parser cursor");
+            return raise_exception(py, BuiltinExc::SystemError, "invalid format parser cursor");
         };
         let text =
             unsafe { std::slice::from_raw_parts(string_bytes(source_ptr), string_len(source_ptr)) };
@@ -445,7 +446,7 @@ extern "C" fn formatter_parse_next(state_bits: u64) -> u64 {
         let markup = match next {
             Ok(Some(markup)) => markup,
             Ok(None) => return MoltObject::none().bits(),
-            Err(message) => return raise_exception(py, "ValueError", message),
+            Err(message) => return raise_exception(py, BuiltinExc::ValueError, message),
         };
         let Some((literal, _literal_owner)) = formatter_string(py, markup.literal) else {
             return MoltObject::none().bits();
@@ -474,7 +475,7 @@ extern "C" fn formatter_parse_next(state_bits: u64) -> u64 {
 extern "C" fn formatter_field_name_next(state_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some((source_ptr, cell_ptr, mut offset)) = formatter_cursor(state_bits) else {
-            return raise_exception(py, "SystemError", "invalid format field cursor");
+            return raise_exception(py, BuiltinExc::SystemError, "invalid format field cursor");
         };
         let text =
             unsafe { std::slice::from_raw_parts(string_bytes(source_ptr), string_len(source_ptr)) };
@@ -485,7 +486,7 @@ extern "C" fn formatter_field_name_next(state_bits: u64) -> u64 {
         let lookup = match next {
             Ok(Some(lookup)) => lookup,
             Ok(None) => return MoltObject::none().bits(),
-            Err(message) => return raise_exception(py, "ValueError", message),
+            Err(message) => return raise_exception(py, BuiltinExc::ValueError, message),
         };
         let Some((name, _name_owner)) = formatter_name(py, lookup.name) else {
             return MoltObject::none().bits();
@@ -528,7 +529,7 @@ pub extern "C" fn molt_string_formatter_field_name_split(field_name_bits: u64) -
         let (first, offset) =
             match split_format_field_name(crate::object::ops::unicode_data(py), text) {
                 Ok(first) => first,
-                Err(message) => return raise_exception(py, "ValueError", message),
+                Err(message) => return raise_exception(py, BuiltinExc::ValueError, message),
             };
         let Some((first_bits, _first_owner)) = formatter_name(py, first) else {
             return MoltObject::none().bits();
@@ -593,7 +594,7 @@ mod tests {
                 );
             }
             let system_error =
-                crate::builtins::exceptions::exception_type_bits_from_name(py, "SystemError");
+                crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::SystemError);
             let next_functions: [extern "C" fn(u64) -> u64; 2] =
                 [formatter_parse_next, formatter_field_name_next];
             for offset in [-1, 2, 4, 5, 7, 8, 9, 13] {

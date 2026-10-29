@@ -135,14 +135,14 @@ fn validate_dialect(_py: &PyToken, dialect: &Dialect) -> Result<(), u64> {
     {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "bad \"quoting\" value",
         ));
     }
     if dialect.quotechar.is_none() && dialect.quoting != QUOTE_NONE {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "quotechar must be set if quoting enabled",
         ));
     }
@@ -174,14 +174,14 @@ fn opt_char_from_bits(_py: &PyToken, bits: u64, param_name: &str) -> Result<Opti
     }
     let Some(s) = string_obj_to_owned(obj) else {
         let msg = format!("{param_name} must be a 1-character string");
-        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
     };
     let mut chars = s.chars();
     match (chars.next(), chars.next()) {
         (Some(ch), None) => Ok(Some(ch)),
         _ => {
             let msg = format!("{param_name} must be a 1-character string");
-            Err(raise_exception::<u64>(_py, "ValueError", &msg))
+            Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg))
         }
     }
 }
@@ -192,7 +192,7 @@ fn char_from_bits(_py: &PyToken, bits: u64, param_name: &str) -> Result<char, u6
         Some(ch) => Ok(ch),
         None => {
             let msg = format!("{param_name} must be a 1-character string");
-            Err(raise_exception::<u64>(_py, "TypeError", &msg))
+            Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg))
         }
     }
 }
@@ -466,7 +466,7 @@ fn fields_to_list(_py: &PyToken, fields: &[ParsedField], dialect: &Dialect) -> R
                             dec_ref_bits(_py, *b);
                         }
                         let msg = format!("could not convert string to float: '{}'", field.text);
-                        return Err(raise_exception::<u64>(_py, "ValueError", &msg));
+                        return Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg));
                     }
                 };
                 bits_vec.push(MoltObject::from_float(parsed).bits());
@@ -479,7 +479,11 @@ fn fields_to_list(_py: &PyToken, fields: &[ParsedField], dialect: &Dialect) -> R
             for b in &bits_vec {
                 dec_ref_bits(_py, *b);
             }
-            return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+            return Err(raise_exception::<u64>(
+                _py,
+                BuiltinExc::MemoryError,
+                "out of memory",
+            ));
         }
         bits_vec.push(MoltObject::from_ptr(str_ptr).bits());
     }
@@ -489,7 +493,11 @@ fn fields_to_list(_py: &PyToken, fields: &[ParsedField], dialect: &Dialect) -> R
         dec_ref_bits(_py, *b);
     }
     if list_ptr.is_null() {
-        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+        return Err(raise_exception::<u64>(
+            _py,
+            BuiltinExc::MemoryError,
+            "out of memory",
+        ));
     }
     Ok(MoltObject::from_ptr(list_ptr).bits())
 }
@@ -699,7 +707,7 @@ fn write_row_to_string(
     let Some(row_ptr) = obj.as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "writerow() argument must be a sequence",
         ));
     };
@@ -711,7 +719,7 @@ fn write_row_to_string(
                 "writerow() argument must be a sequence, not {}",
                 type_name(_py, obj)
             );
-            return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+            return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
         }
         seq_snapshot(row_ptr)
     };
@@ -740,12 +748,12 @@ fn sequence_items_from_bits(
     let obj = obj_from_bits(bits);
     let Some(ptr) = obj.as_ptr() else {
         let msg = format!("{param_name} must be a sequence");
-        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
     };
     let type_id = unsafe { object_type_id(ptr) };
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         let msg = format!("{param_name} must be a sequence");
-        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
     }
     Ok(unsafe { seq_snapshot(ptr) })
 }
@@ -998,7 +1006,11 @@ fn alloc_char_bits(_py: &PyToken, ch: char) -> Result<u64, u64> {
     let text = ch.to_string();
     let ptr = alloc_string(_py, text.as_bytes());
     if ptr.is_null() {
-        return Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"));
+        return Err(raise_exception::<u64>(
+            _py,
+            BuiltinExc::MemoryError,
+            "out of memory",
+        ));
     }
     Ok(MoltObject::from_ptr(ptr).bits())
 }
@@ -1060,12 +1072,16 @@ pub extern "C" fn molt_csv_field_size_limit(new_limit_bits: u64) -> u64 {
         let old = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
         if !new_obj.is_none() {
             let Some(new_val) = to_i64(new_obj) else {
-                return raise_exception::<u64>(_py, "TypeError", "limit must be an integer");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "limit must be an integer",
+                );
             };
             if new_val < 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "field size limit must be a non-negative integer",
                 );
             }
@@ -1091,7 +1107,11 @@ pub extern "C" fn molt_csv_register_dialect(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "dialect name must be a string",
+            );
         };
         let delimiter = match char_from_bits(_py, delimiter_bits, "delimiter") {
             Ok(value) => value,
@@ -1106,10 +1126,14 @@ pub extern "C" fn molt_csv_register_dialect(
             Err(bits) => return bits,
         };
         let Some(lineterminator) = string_obj_to_owned(obj_from_bits(lineterminator_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "\"lineterminator\" must be a string");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "\"lineterminator\" must be a string",
+            );
         };
         let Some(quoting) = to_i64(obj_from_bits(quoting_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "bad \"quoting\" value");
         };
         let dialect = Dialect {
             delimiter,
@@ -1135,7 +1159,11 @@ pub extern "C" fn molt_csv_register_dialect(
 pub extern "C" fn molt_csv_unregister_dialect(name_bits: u64, error_type_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "dialect name must be a string",
+            );
         };
         let removed = DIALECT_REGISTRY.with(|registry| registry.borrow_mut().remove(&name));
         if removed.is_none() {
@@ -1154,14 +1182,14 @@ pub extern "C" fn molt_csv_list_dialects() -> u64 {
             let ptr = alloc_string(_py, name.as_bytes());
             if ptr.is_null() {
                 release_bits(_py, &bits_vec);
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             bits_vec.push(MoltObject::from_ptr(ptr).bits());
         }
         let list_ptr = alloc_list(_py, &bits_vec);
         release_bits(_py, &bits_vec);
         if list_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -1171,7 +1199,11 @@ pub extern "C" fn molt_csv_list_dialects() -> u64 {
 pub extern "C" fn molt_csv_get_dialect(name_bits: u64, error_type_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "dialect name must be a string");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "dialect name must be a string",
+            );
         };
         let dialect = DIALECT_REGISTRY.with(|registry| registry.borrow().get(&name).cloned());
         let Some(dialect) = dialect else {
@@ -1210,7 +1242,7 @@ pub extern "C" fn molt_csv_get_dialect(name_bits: u64, error_type_bits: u64) -> 
             if escapechar_is_ptr {
                 dec_ref_bits(_py, escapechar_bits);
             }
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         let lineterminator_bits = MoltObject::from_ptr(lineterminator_ptr).bits();
 
@@ -1236,7 +1268,7 @@ pub extern "C" fn molt_csv_get_dialect(name_bits: u64, error_type_bits: u64) -> 
         }
         dec_ref_bits(_py, lineterminator_bits);
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -1287,7 +1319,7 @@ pub extern "C" fn molt_csv_reader_new(
         if quotechar.is_none() && quoting != QUOTE_NONE {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "quotechar must be set if quoting != QUOTE_NONE",
             );
         }
@@ -1322,10 +1354,10 @@ pub extern "C" fn molt_csv_reader_parse_line(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid csv reader handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid csv reader handle");
         };
         let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "line must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "line must be str");
         };
         // `at_eof` tells the parser whether more physical lines can still follow.
         // The `_Reader.__next__` continuation passes its `self._eof` flag so an
@@ -1337,7 +1369,11 @@ pub extern "C" fn molt_csv_reader_parse_line(
         let dialect =
             READER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
         let Some(dialect) = dialect else {
-            return raise_exception::<u64>(_py, "ValueError", "csv reader handle not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "csv reader handle not found",
+            );
         };
 
         let fields = match csv_parse_line(&line, &dialect, field_limit, at_eof) {
@@ -1364,17 +1400,21 @@ pub extern "C" fn molt_csv_reader_parse_lines(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid csv reader handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid csv reader handle");
         };
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "text must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "text must be str");
         };
         let field_limit = FIELD_SIZE_LIMIT.with(|lim| *lim.borrow());
 
         let dialect =
             READER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
         let Some(dialect) = dialect else {
-            return raise_exception::<u64>(_py, "ValueError", "csv reader handle not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "csv reader handle not found",
+            );
         };
 
         let raw_lines = split_csv_lines(&text);
@@ -1431,7 +1471,7 @@ pub extern "C" fn molt_csv_reader_parse_lines(
             dec_ref_bits(_py, *b);
         }
         if outer_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(outer_ptr).bits()
     })
@@ -1499,7 +1539,7 @@ pub extern "C" fn molt_csv_writer_new(
                     None => {
                         return raise_exception::<u64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "lineterminator must be a string",
                         );
                     }
@@ -1510,7 +1550,7 @@ pub extern "C" fn molt_csv_writer_new(
         if quotechar.is_none() && quoting != QUOTE_NONE {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "quotechar must be set if quoting != QUOTE_NONE",
             );
         }
@@ -1544,12 +1584,16 @@ pub extern "C" fn molt_csv_writer_writerow(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid csv writer handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid csv writer handle");
         };
         let dialect =
             WRITER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
         let Some(dialect) = dialect else {
-            return raise_exception::<u64>(_py, "ValueError", "csv writer handle not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "csv writer handle not found",
+            );
         };
 
         let record = match write_row_to_string(_py, row_bits, &dialect, error_type_bits) {
@@ -1559,7 +1603,7 @@ pub extern "C" fn molt_csv_writer_writerow(
 
         let str_ptr = alloc_string(_py, record.as_bytes());
         if str_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(str_ptr).bits()
     })
@@ -1577,17 +1621,21 @@ pub extern "C" fn molt_csv_writer_writerows(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid csv writer handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid csv writer handle");
         };
         let dialect =
             WRITER_HANDLES.with(|map| map.borrow().get(&handle_id).map(|s| s.dialect.clone()));
         let Some(dialect) = dialect else {
-            return raise_exception::<u64>(_py, "ValueError", "csv writer handle not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "csv writer handle not found",
+            );
         };
 
         let rows_obj = obj_from_bits(rows_bits);
         let Some(rows_ptr) = rows_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "rows must be a sequence");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "rows must be a sequence");
         };
 
         // Snapshot the rows slice so we don't hold a borrow across allocations.
@@ -1598,7 +1646,7 @@ pub extern "C" fn molt_csv_writer_writerows(
                     "writerows() argument must be a sequence, not {}",
                     type_name(_py, rows_obj)
                 );
-                return raise_exception::<u64>(_py, "TypeError", &msg);
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             }
             seq_snapshot(rows_ptr)
         };
@@ -1614,7 +1662,7 @@ pub extern "C" fn molt_csv_writer_writerows(
 
         let str_ptr = alloc_string(_py, out.as_bytes());
         if str_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(str_ptr).bits()
     })
@@ -1655,7 +1703,7 @@ pub extern "C" fn molt_csv_dict_project(
 
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
 
         let dict = unsafe {
@@ -1673,7 +1721,7 @@ pub extern "C" fn molt_csv_dict_project(
         if field_len < row_len {
             let extras_ptr = alloc_list(_py, &row[field_len..]);
             if extras_ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             let extras_bits = MoltObject::from_ptr(extras_ptr).bits();
             let completed = unsafe { dict_set_in_place(_py, dict_ptr, restkey_bits, extras_bits) };
@@ -1704,7 +1752,7 @@ pub extern "C" fn molt_csv_dict_project(
 pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(sample) = string_obj_to_owned(obj_from_bits(sample_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "sample must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "sample must be str");
         };
 
         let del_obj = obj_from_bits(delimiters_bits);
@@ -1716,7 +1764,7 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
                 None => {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "delimiters must be a string or None",
                     );
                 }
@@ -1729,7 +1777,7 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
         let delim_str = dialect.delimiter.to_string();
         let delim_ptr = alloc_string(_py, delim_str.as_bytes());
         if delim_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         let delim_bits = MoltObject::from_ptr(delim_ptr).bits();
 
@@ -1739,7 +1787,7 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
             let qc_ptr = alloc_string(_py, qc_str.as_bytes());
             if qc_ptr.is_null() {
                 dec_ref_bits(_py, delim_bits);
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             (MoltObject::from_ptr(qc_ptr).bits(), true)
         } else {
@@ -1764,7 +1812,7 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
         }
 
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -1775,7 +1823,7 @@ pub extern "C" fn molt_csv_sniff(sample_bits: u64, delimiters_bits: u64) -> u64 
 pub extern "C" fn molt_csv_has_header(sample_bits: u64, error_type_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(sample) = string_obj_to_owned(obj_from_bits(sample_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "sample must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "sample must be str");
         };
 
         let dialect = sniff_dialect(&sample, None);
@@ -1871,7 +1919,7 @@ pub extern "C" fn molt_csv_validate_fmtparams(keys_bits: u64) -> u64 {
                         {
                             return raise_exception::<u64>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 &format!(
                                     "this function got an unexpected keyword argument {key:?}"
                                 ),
@@ -1906,7 +1954,7 @@ fn dialect_char(
         };
         return Err(raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("\"{name}\" must be {expected}, not {kind}"),
         ));
     };
@@ -1920,7 +1968,7 @@ fn dialect_char(
         } else {
             format!("\"{name}\" must be a 1-character string")
         };
-        return Err(raise_exception::<u64>(py, "TypeError", &message));
+        return Err(raise_exception::<u64>(py, BuiltinExc::TypeError, &message));
     }
     Ok(text.chars().next())
 }
@@ -1944,7 +1992,11 @@ pub extern "C" fn molt_csv_validate_dialect(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(python_minor) = to_i64(obj_from_bits(python_minor_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "Python minor version must be int");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "Python minor version must be int",
+            );
         };
         let delimiter = match dialect_char(_py, delimiter_bits, "delimiter", false, python_minor) {
             Ok(Some(value)) => value,
@@ -1971,7 +2023,7 @@ pub extern "C" fn molt_csv_validate_dialect(
             } else {
                 "\"lineterminator\" must be a string".to_owned()
             };
-            return raise_exception::<u64>(_py, "TypeError", &message);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &message);
         }
         let quotechar = match dialect_char(_py, quotechar_bits, "quotechar", true, python_minor) {
             Ok(value) => value,
@@ -1987,19 +2039,19 @@ pub extern "C" fn molt_csv_validate_dialect(
             } else {
                 "\"quoting\" must be an integer".to_owned()
             };
-            return raise_exception::<u64>(_py, "TypeError", &message);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &message);
         }
         let Some(mut quoting) = to_i64(quoting_obj) else {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "Python int too large to convert to C long",
             );
         };
         if i32::try_from(quoting).is_err() {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "Python int too large to convert to C int",
             );
         }
@@ -2012,7 +2064,7 @@ pub extern "C" fn molt_csv_validate_dialect(
             return MoltObject::none().bits();
         }
         if !(QUOTE_MINIMAL..=QUOTE_NOTNULL).contains(&quoting) {
-            return raise_exception::<u64>(_py, "TypeError", "bad \"quoting\" value");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "bad \"quoting\" value");
         }
         if quotechar.is_none() && obj_from_bits(quoting_omitted_bits).as_bool() == Some(true) {
             quoting = QUOTE_NONE;
@@ -2020,12 +2072,16 @@ pub extern "C" fn molt_csv_validate_dialect(
         if quotechar.is_none() && quoting != QUOTE_NONE {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "quotechar must be set if quoting enabled",
             );
         }
         let Some(lineterminator) = lineterminator else {
-            return raise_exception::<u64>(_py, "TypeError", "lineterminator must be set");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "lineterminator must be set",
+            );
         };
         if python_minor >= 13 {
             for (name, value, allow_space) in [
@@ -2037,14 +2093,14 @@ pub extern "C" fn molt_csv_validate_dialect(
                     if value == '\r' || value == '\n' || (value == ' ' && !allow_space) {
                         return raise_exception::<u64>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             &format!("bad {name} value"),
                         );
                     }
                     if lineterminator.contains(value) {
                         return raise_exception::<u64>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             &format!("bad {name} or lineterminator value"),
                         );
                     }
@@ -2058,7 +2114,7 @@ pub extern "C" fn molt_csv_validate_dialect(
                 if left.is_some() && left == right {
                     return raise_exception::<u64>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         &format!("bad {first} or {second} value"),
                     );
                 }
@@ -2090,7 +2146,7 @@ pub extern "C" fn molt_csv_validate_dialect(
             ],
         );
         if result.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(result).bits()
     })
@@ -2130,7 +2186,7 @@ pub extern "C" fn molt_csv_dialect_lookup_name(name_bits: u64, error_type_bits: 
         if let Some(s) = string_obj_to_owned(obj) {
             let ptr = alloc_string(_py, s.as_bytes());
             if ptr.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             return MoltObject::from_ptr(ptr).bits();
         }

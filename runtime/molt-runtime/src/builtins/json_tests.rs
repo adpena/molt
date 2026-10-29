@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[test]
 fn json_decoding_preserves_python_codepoints_and_character_positions() {
@@ -272,11 +273,11 @@ mod dict_order_tests {
         result
     }
 
-    fn assert_error(py: &PyToken<'_>, result: u64, name: &str) {
+    fn assert_error(py: &PyToken<'_>, result: u64, name: crate::BuiltinExc) {
         assert!(obj_from_bits(result).is_none());
         assert!(exception_pending(py));
         let error = molt_exception_last();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             py, error, name
         ));
         crate::clear_exception(py);
@@ -338,7 +339,11 @@ mod dict_order_tests {
             .bits();
             let before = (refs(tuple), refs(value));
             for skip in [false, true] {
-                assert_error(py, extended(py, dict, skip, true), "TypeError");
+                assert_error(
+                    py,
+                    extended(py, dict, skip, true),
+                    crate::BuiltinExc::TypeError,
+                );
                 assert_eq!((refs(tuple), refs(value)), before);
             }
             assert_error(
@@ -349,7 +354,7 @@ mod dict_order_tests {
                     MoltObject::from_bool(true).bits(),
                     MoltObject::from_bool(true).bits(),
                 ),
-                "TypeError",
+                crate::BuiltinExc::TypeError,
             );
             let result = extended(py, dict, true, false);
             assert_eq!(
@@ -385,7 +390,11 @@ mod dict_order_tests {
                 2
             );
             EQ.store(true, Ordering::SeqCst);
-            assert_error(py, extended(py, dict, true, true), "TypeError");
+            assert_error(
+                py,
+                extended(py, dict, true, true),
+                crate::BuiltinExc::TypeError,
+            );
             assert_eq!(
                 LT_CALLS.load(Ordering::SeqCst),
                 0,
@@ -476,7 +485,11 @@ mod dict_order_tests {
                 MoltObject::from_ptr(alloc_dict_with_pairs(py, &[left, value, right, value]))
                     .bits();
             let before = (refs(left), refs(right), refs(value));
-            raise_exception::<()>(py, "LookupError", "independent JSON truth failure");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::LookupError,
+                "independent JSON truth failure",
+            );
             let failure = molt_exception_last();
             crate::clear_exception(py);
             FAILURE.store(failure, Ordering::SeqCst);
@@ -559,7 +572,7 @@ mod dict_order_tests {
             let item = MoltObject::from_ptr(alloc_string(py, b", ")).bits();
             let key = MoltObject::from_ptr(alloc_string(py, b": ")).bits();
             let before = refs(object);
-            raise_exception::<()>(py, "LookupError", "first JSON value marker");
+            raise_exception::<()>(py, BuiltinExc::LookupError, "first JSON value marker");
             let failure = molt_exception_last();
             crate::clear_exception(py);
             FAILURE.store(failure, Ordering::SeqCst);
@@ -598,7 +611,7 @@ mod dict_order_tests {
                         MoltObject::from_bool(sort).bits(),
                         MoltObject::from_bool(true).bits(),
                     ),
-                    "TypeError",
+                    crate::BuiltinExc::TypeError,
                 );
                 assert_eq!(refs(object), before);
             }

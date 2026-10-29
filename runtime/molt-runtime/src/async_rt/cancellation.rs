@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::exceptions::record_exception_owned;
 use crate::runtime_flags::{self, RuntimeFlag};
@@ -10,8 +11,8 @@ use crate::object::heap_lifecycle::DetachedEdgeSink;
 use crate::{
     ExceptionSentinel, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
     MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple, dec_ref_bits,
-    exception_type_bits_from_name, header_from_obj_ptr, obj_from_bits, raise_exception,
-    runtime_state, string_obj_to_owned, task_last_exception_drop, type_name,
+    exception_class_bits, header_from_obj_ptr, obj_from_bits, raise_exception, runtime_state,
+    string_obj_to_owned, task_last_exception_drop, type_name,
 };
 
 use super::scheduler::{await_waiter_clear, wake_task_ptr};
@@ -475,14 +476,14 @@ pub(crate) fn raise_cancelled_with_message<T: ExceptionSentinel>(
                 task_ptr as usize, msg_desc
             );
         }
-        let class_bits = exception_type_bits_from_name(_py, "CancelledError");
+        let class_bits = exception_class_bits(_py, BuiltinExc::CancelledError);
         let ptr = alloc_exception_from_class_bits(_py, class_bits, args_bits);
         if !ptr.is_null() {
             record_exception_owned(_py, ptr);
             return T::exception_sentinel();
         }
     }
-    raise_exception::<T>(_py, "CancelledError", "")
+    raise_exception::<T>(_py, BuiltinExc::CancelledError, "")
 }
 
 pub(crate) fn wake_tasks_for_cancelled_tokens(_py: &PyToken<'_>) {
@@ -550,14 +551,14 @@ pub unsafe extern "C" fn molt_cancel_token_new(parent_bits: u64) -> u64 {
                 } else {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "cancel token parent must be >= 0 or -1",
                     );
                 }
             } else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "cancel token parent must be int or None",
                 );
             }
@@ -587,7 +588,13 @@ pub unsafe extern "C" fn molt_cancel_token_clone(token_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
-            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cancel token id must be int",
+                );
+            }
         };
         retain_token(_py, id);
         MoltObject::none().bits()
@@ -601,7 +608,13 @@ pub unsafe extern "C" fn molt_cancel_token_drop(token_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
-            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cancel token id must be int",
+                );
+            }
         };
         release_token(_py, id);
         MoltObject::none().bits()
@@ -615,7 +628,13 @@ pub unsafe extern "C" fn molt_cancel_token_cancel(token_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
-            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cancel token id must be int",
+                );
+            }
         };
         let mut map = cancel_tokens(_py).lock().unwrap();
         if let Some(entry) = map.get_mut(&id) {
@@ -634,7 +653,13 @@ pub unsafe extern "C" fn molt_cancel_token_is_cancelled(token_bits: u64) -> u64 
     crate::with_gil_entry_nopanic!(_py, {
         let id = match token_id_from_bits(token_bits) {
             Some(id) => id,
-            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cancel token id must be int",
+                );
+            }
         };
         MoltObject::from_bool(token_is_cancelled(_py, id)).bits()
     })
@@ -648,7 +673,13 @@ pub unsafe extern "C" fn molt_cancel_token_set_current(token_bits: u64) -> u64 {
         let id = match token_id_from_bits(token_bits) {
             Some(0) => 1,
             Some(id) => id,
-            None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "cancel token id must be int",
+                );
+            }
         };
         let prev = set_current_token(_py, id);
         MoltObject::from_int(prev as i64).bits()

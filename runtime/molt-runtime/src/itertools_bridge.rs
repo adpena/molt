@@ -3,6 +3,7 @@
 //! Exports C API functions that the itertools crate needs but that are not
 //! already available as `#[no_mangle]` symbols.
 
+use crate::BuiltinExc;
 use crate::*;
 
 type RuntimeExtensionStateInit = unsafe extern "C" fn() -> *mut u8;
@@ -108,21 +109,33 @@ pub extern "C" fn molt_itertools_alloc_class(
             return MoltObject::none().bits();
         }
         if name_ptr.is_null() || name_len > isize::MAX as usize {
-            return raise_exception::<u64>(py, "SystemError", "invalid itertools class name span");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid itertools class name span",
+            );
         }
         let Ok(name) =
             std::str::from_utf8(unsafe { std::slice::from_raw_parts(name_ptr, name_len) })
         else {
-            return raise_exception::<u64>(py, "SystemError", "invalid itertools class name");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid itertools class name",
+            );
         };
         let Some(shape) = crate::object::ObjectShapeId::from_u16(shape_id) else {
-            return raise_exception::<u64>(py, "SystemError", "invalid itertools shape id");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid itertools shape id",
+            );
         };
         let constructor = if new_fn == 0 {
             if new_arity != 0 || defaults_len != 0 {
                 return raise_exception::<u64>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "invalid absent itertools constructor",
                 );
             }
@@ -137,7 +150,7 @@ pub extern "C" fn molt_itertools_alloc_class(
                 {
                     return raise_exception::<u64>(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "invalid itertools defaults span",
                     );
                 }

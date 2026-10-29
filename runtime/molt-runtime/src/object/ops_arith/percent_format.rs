@@ -3,6 +3,7 @@
 // while ops_arith.rs keeps only arithmetic entrypoint dispatch.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::object::ops_format::{
     FormatOutput, FormatWriter, format_float_value_with_spec, format_obj_output,
     format_obj_str_output,
@@ -197,7 +198,7 @@ fn percent_parse_usize(
             .filter(|value| *value <= field.limit())
         {
             Some(value) => value,
-            None => return raise_exception(py, "ValueError", field.too_big()),
+            None => return raise_exception(py, BuiltinExc::ValueError, field.too_big()),
         };
         *idx += 1;
     }
@@ -208,7 +209,7 @@ fn percent_parse_usize(
 fn percent_star_integer(py: &PyToken<'_>, bits: u64, field: PercentField) -> Option<i64> {
     if let Some(native) = percent_native(bits) {
         if unsafe { numbers::PyLong_Check(native) } == 0 {
-            return raise_exception(py, "TypeError", "* wants int");
+            return raise_exception(py, BuiltinExc::TypeError, "* wants int");
         }
         let value = unsafe {
             match field {
@@ -219,12 +220,12 @@ fn percent_star_integer(py: &PyToken<'_>, bits: u64, field: PercentField) -> Opt
         return (!percent_native_failed(py, "percent star field")).then_some(value);
     }
     let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(bits) else {
-        return raise_exception(py, "TypeError", "* wants int");
+        return raise_exception(py, BuiltinExc::TypeError, "* wants int");
     };
     let Some(value) = value.to_i64() else {
         return raise_exception(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             match field {
                 PercentField::Width => "Python int too large to convert to C ssize_t",
                 PercentField::Precision => "Python int too large to convert to C int",
@@ -238,7 +239,7 @@ fn percent_star_integer(py: &PyToken<'_>, bits: u64, field: PercentField) -> Opt
     if !admitted {
         return raise_exception(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             match field {
                 PercentField::Width => "Python int too large to convert to C ssize_t",
                 PercentField::Precision => "Python int too large to convert to C int",
@@ -272,7 +273,7 @@ fn percent_unsupported_char(
     };
     let message =
         format!("unsupported format character '{display}' (0x{codepoint:x}) at index {index}");
-    raise_exception::<Option<Vec<u8>>>(py, "ValueError", &message)
+    raise_exception::<Option<Vec<u8>>>(py, crate::BuiltinExc::ValueError, &message)
 }
 
 fn percent_apply_numeric_width(
@@ -319,7 +320,7 @@ fn percent_integer_precision(
 
 fn percent_integer_precision_admit(py: &PyToken<'_>, precision: Option<usize>) -> Option<()> {
     if precision.is_some_and(|precision| precision > i32::MAX as usize - 3) {
-        return raise_exception(py, "OverflowError", "precision too large");
+        return raise_exception(py, BuiltinExc::OverflowError, "precision too large");
     }
     Some(())
 }
@@ -334,7 +335,7 @@ fn percent_raise_real_type_error_decimal<T>(
         "%{conv_ch} format: a real number is required, not {}",
         percent_type_name(_py, obj)
     );
-    raise_exception(_py, "TypeError", &msg)
+    raise_exception(_py, BuiltinExc::TypeError, &msg)
 }
 
 fn percent_raise_integer_type_error<T>(_py: &PyToken<'_>, obj: MoltObject, conv: u8) -> Option<T> {
@@ -343,12 +344,12 @@ fn percent_raise_integer_type_error<T>(_py: &PyToken<'_>, obj: MoltObject, conv:
         "%{conv_ch} format: an integer is required, not {}",
         percent_type_name(_py, obj)
     );
-    raise_exception(_py, "TypeError", &msg)
+    raise_exception(_py, BuiltinExc::TypeError, &msg)
 }
 
 fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<FormatOutput> {
     if crate::object::ops_sys::runtime_target_minor(_py) < 14 {
-        return raise_exception(_py, "TypeError", "%c requires int or char");
+        return raise_exception(_py, BuiltinExc::TypeError, "%c requires int or char");
     }
     let message = if let Some(ptr) = obj
         .as_ptr()
@@ -372,9 +373,13 @@ fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<F
                 return error.raise(_py);
             }
         }
-        return crate::object::ops_format::FormatError::Bytes("TypeError", message).raise(_py);
+        return crate::object::ops_format::FormatError::Bytes(
+            crate::BuiltinExc::TypeError,
+            message,
+        )
+        .raise(_py);
     };
-    raise_exception(_py, "TypeError", &message)
+    raise_exception(_py, BuiltinExc::TypeError, &message)
 }
 
 fn percent_char_from_bigint(py: &PyToken<'_>, value: BigInt) -> Option<Vec<u8>> {
@@ -388,14 +393,14 @@ fn percent_decimal_float(py: &PyToken<'_>, value: f64) -> Option<BigInt> {
     if value.is_nan() {
         return raise_exception::<Option<BigInt>>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "cannot convert float NaN to integer",
         );
     }
     if value.is_infinite() {
         return raise_exception::<Option<BigInt>>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "cannot convert float infinity to integer",
         );
     }
@@ -480,7 +485,11 @@ fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
             return None;
         }
         if overflow != 0 || !(0..=0x10ffff).contains(&value) {
-            return raise_exception(py, "OverflowError", "%c arg not in range(0x110000)");
+            return raise_exception(
+                py,
+                BuiltinExc::OverflowError,
+                "%c arg not in range(0x110000)",
+            );
         }
         return percent_char_from_bigint(py, BigInt::from(value)).map(Into::into);
     }
@@ -716,7 +725,7 @@ fn percent_format_char(
 }
 
 fn percent_conversion_type_error(py: &PyToken<'_>) -> bool {
-    let target = crate::builtins::exceptions::exception_type_bits_from_name(py, "TypeError");
+    let target = crate::builtins::exceptions::exception_class_bits(py, BuiltinExc::TypeError);
     crate::builtins::exceptions::pending_exception_matches_type(py, target)
 }
 
@@ -725,7 +734,7 @@ fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &[u8]) -> O
     let Some(rhs_ptr) = rhs_obj.as_ptr() else {
         return raise_exception::<Option<(u64, bool)>>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "format requires a mapping",
         );
     };
@@ -734,7 +743,7 @@ fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &[u8]) -> O
         if is_tuple(rhs_bits) {
             return raise_exception::<Option<(u64, bool)>>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "format requires a mapping",
             );
         }
@@ -799,14 +808,22 @@ impl<'a, 'py> PercentArguments<'a, 'py> {
     fn next(&mut self, py: &PyToken<'_>) -> Option<PercentArgument<'_, 'a, 'py>> {
         if let Some(tuple) = &self.tuple {
             if self.index >= self.tuple_len {
-                return raise_exception(py, "TypeError", "not enough arguments for format string");
+                return raise_exception(
+                    py,
+                    BuiltinExc::TypeError,
+                    "not enough arguments for format string",
+                );
             }
             let item = tuple.comparison_item(self.index)?;
             self.index += 1;
             return Some(PercentArgument::Tuple(item));
         }
         if self.consumed {
-            return raise_exception(py, "TypeError", "not enough arguments for format string");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "not enough arguments for format string",
+            );
         }
         self.consumed = true;
         Some(PercentArgument::Value(self.current))
@@ -871,7 +888,11 @@ pub(super) fn string_percent_format_impl(
         percent_append(_py, &mut out, &text[literal_start..idx])?;
         idx += 1;
         if idx >= bytes.len() {
-            return raise_exception::<Option<FormatOutput>>(_py, "ValueError", "incomplete format");
+            return raise_exception::<Option<FormatOutput>>(
+                _py,
+                BuiltinExc::ValueError,
+                "incomplete format",
+            );
         }
         if bytes[idx] == b'%' {
             percent_append(_py, &mut out, b"%")?;
@@ -881,7 +902,7 @@ pub(super) fn string_percent_format_impl(
         }
         if bytes[idx] == b'(' {
             if !arguments.mapping {
-                return raise_exception(_py, "TypeError", "format requires a mapping");
+                return raise_exception(_py, BuiltinExc::TypeError, "format requires a mapping");
             }
             let key_start = idx + 1;
             let mut key_end = key_start;
@@ -900,7 +921,7 @@ pub(super) fn string_percent_format_impl(
             if key_end >= bytes.len() {
                 return raise_exception::<Option<FormatOutput>>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "incomplete format key",
                 );
             }
@@ -912,7 +933,7 @@ pub(super) fn string_percent_format_impl(
             if idx >= bytes.len() {
                 return raise_exception::<Option<FormatOutput>>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "incomplete format",
                 );
             }
@@ -953,7 +974,7 @@ pub(super) fn string_percent_format_impl(
                 let Ok(width_usize) = usize::try_from(width_val) else {
                     return raise_exception::<Option<FormatOutput>>(
                         _py,
-                        "OverflowError",
+                        BuiltinExc::OverflowError,
                         "width too big",
                     );
                 };
@@ -976,7 +997,7 @@ pub(super) fn string_percent_format_impl(
                     let Ok(prec_usize) = usize::try_from(prec_val) else {
                         return raise_exception::<Option<FormatOutput>>(
                             _py,
-                            "OverflowError",
+                            BuiltinExc::OverflowError,
                             "precision too big",
                         );
                     };
@@ -995,7 +1016,11 @@ pub(super) fn string_percent_format_impl(
             idx += 1;
         }
         if idx >= bytes.len() {
-            return raise_exception::<Option<FormatOutput>>(_py, "ValueError", "incomplete format");
+            return raise_exception::<Option<FormatOutput>>(
+                _py,
+                BuiltinExc::ValueError,
+                "incomplete format",
+            );
         }
         let conv_idx = idx;
         let conv = bytes[idx];
@@ -1049,14 +1074,14 @@ pub(super) fn string_percent_format_impl(
         if arguments.index < arguments.tuple_len {
             return raise_exception::<Option<FormatOutput>>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "not all arguments converted during string formatting",
             );
         }
     } else if !arguments.consumed && !arguments.mapping {
         return raise_exception::<Option<FormatOutput>>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "not all arguments converted during string formatting",
         );
     }

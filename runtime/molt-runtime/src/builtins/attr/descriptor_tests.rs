@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::{TYPE_ID_LIST, alloc_list, call_callable0, call_callable1, header_from_obj_ptr};
 use num_bigint::BigInt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -143,13 +144,17 @@ extern "C" fn descriptor_test_dir(_self_bits: u64) -> u64 {
 
 extern "C" fn descriptor_test_property_attribute_error(_self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "AttributeError", "descriptor test attribute miss")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::AttributeError,
+            "descriptor test attribute miss",
+        )
     })
 }
 
 extern "C" fn descriptor_test_property_runtime_error(_self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "descriptor test failure")
+        raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "descriptor test failure")
     })
 }
 
@@ -188,7 +193,11 @@ extern "C" fn descriptor_test_get_replaces_own_method(
         // until this callback returns.
         let callable_bits = MUTATING_GET_RETURN_CALLABLE_BITS.load(Ordering::SeqCst);
         if callable_bits == 0 {
-            return raise_exception::<u64>(_py, "RuntimeError", "missing return callable");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "missing return callable",
+            );
         }
         inc_ref_bits(_py, callable_bits);
         callable_bits
@@ -735,10 +744,10 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         assert!(failed_attribute_lookup.is_err());
         assert!(exception_pending(_py));
         let attribute_error = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             attribute_error,
-            "AttributeError"
+            crate::BuiltinExc::AttributeError
         ));
         crate::molt_exception_clear();
         dec_ref_bits(_py, attribute_error);
@@ -757,10 +766,10 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         assert!(failed_call.is_err());
         assert!(exception_pending(_py));
         let invocation_error = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             invocation_error,
-            "AttributeError"
+            crate::BuiltinExc::AttributeError
         ));
         crate::molt_exception_clear();
         dec_ref_bits(_py, invocation_error);
@@ -776,10 +785,10 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         assert!(failed.is_err());
         assert!(exception_pending(_py));
         let error_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error_bits,
-            "RuntimeError"
+            crate::BuiltinExc::RuntimeError
         ));
         crate::molt_exception_clear();
         dec_ref_bits(_py, error_bits);
@@ -796,10 +805,10 @@ fn descriptor_bind_property_preserves_attribute_and_runtime_errors() {
         assert!(call_failed.is_err());
         assert!(exception_pending(_py));
         let call_error_bits = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             call_error_bits,
-            "RuntimeError"
+            crate::BuiltinExc::RuntimeError
         ));
         crate::molt_exception_clear();
         dec_ref_bits(_py, call_error_bits);

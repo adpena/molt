@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 pub(in crate::builtins::io) unsafe fn text_backend_read(
     _py: &PyToken<'_>,
@@ -9,7 +10,7 @@ pub(in crate::builtins::io) unsafe fn text_backend_read(
     let MoltFileBackend::Text(text_backend) = backend else {
         return Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "text backend missing",
         ));
     };
@@ -50,7 +51,7 @@ pub(in crate::builtins::io) unsafe fn text_backend_readline(
     let MoltFileBackend::Text(text_backend) = backend else {
         return Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "text backend missing",
         ));
     };
@@ -168,7 +169,7 @@ pub(in crate::builtins::io) unsafe fn text_backend_write(
     let MoltFileBackend::Text(text_backend) = backend else {
         return Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "text backend missing",
         ));
     };
@@ -194,7 +195,7 @@ pub(in crate::builtins::io) unsafe fn text_backend_getvalue(
     let MoltFileBackend::Text(text_backend) = backend else {
         return Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "text backend missing",
         ));
     };
@@ -210,31 +211,35 @@ pub(in crate::builtins::io) unsafe fn text_backend_seek(
     let MoltFileBackend::Text(text_backend) = backend else {
         return Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "text backend missing",
         ));
     };
     let offset = isize::try_from(offset).map_err(|_| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "Python int too large to convert to C ssize_t",
         )
     })?;
     if !matches!(whence, 0..=2) {
-        return Err(raise_exception::<_>(_py, "ValueError", "invalid whence"));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "invalid whence",
+        ));
     }
     if whence == 0 && offset < 0 {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "negative seek position",
         ));
     }
     if whence != 0 && offset != 0 {
         return Err(raise_exception::<_>(
             _py,
-            "OSError",
+            BuiltinExc::OSError,
             "Can't do nonzero cur-relative seeks",
         ));
     }
@@ -256,7 +261,7 @@ pub(in crate::builtins::io) unsafe fn text_backend_truncate(
     let MoltFileBackend::Text(text_backend) = backend else {
         return Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "text backend missing",
         ));
     };
@@ -278,7 +283,7 @@ pub(in crate::builtins::io) unsafe fn text_backend_tell(
     let MoltFileBackend::Text(text_backend) = backend else {
         return Err(raise_exception::<_>(
             _py,
-            "UnsupportedOperation",
+            BuiltinExc::UnsupportedOperation,
             "text backend missing",
         ));
     };

@@ -4,6 +4,7 @@
 //! exported pointer-based C symbol authority lives in `molt-cpython-abi`.
 
 use super::*;
+use crate::BuiltinExc;
 
 // ---------------------------------------------------------------------------
 // libmolt C-API Phase 1 — Dict direct access
@@ -14,7 +15,11 @@ pub(super) fn c_dict_pointer(py: &PyToken<'_>, dict: u64) -> Option<*mut u8> {
     match crate::object::ops::dict_backing_bits(py, dict) {
         Ok(Some(bits)) => obj_from_bits(bits).as_ptr(),
         Ok(None) => {
-            raise_exception::<()>(py, "SystemError", "bad argument to internal function");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "bad argument to internal function",
+            );
             None
         }
         Err(()) => None,
@@ -323,7 +328,8 @@ fn dict_output_as_list(dict: u64, kind: crate::object::ops_dict::DictSnapshotKin
 pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if name.is_null() {
-            let _ = raise_exception::<u64>(_py, "TypeError", "attribute name cannot be null");
+            let _ =
+                raise_exception::<u64>(_py, BuiltinExc::TypeError, "attribute name cannot be null");
             return 0;
         }
         let name_cstr = unsafe { std::ffi::CStr::from_ptr(name) };
@@ -400,7 +406,7 @@ pub extern "C" fn PySet_Size(set: u64) -> isize {
         if !is_any_set_bits(set) {
             let _ = raise_exception::<u64>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "PySet_Size: expected a set or frozenset",
             );
             return -1;
@@ -417,7 +423,7 @@ pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
         if !is_any_set_bits(set) {
             let _ = raise_exception::<u64>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "PySet_Contains: expected a set or frozenset",
             );
             return -1;
@@ -458,7 +464,8 @@ pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
         } else if tid == TYPE_ID_FROZENSET {
             crate::object::ops_set::frozenset_add(_py, set, key)
         } else {
-            let _ = raise_exception::<u64>(_py, "SystemError", "PySet_Add: expected a set");
+            let _ =
+                raise_exception::<u64>(_py, BuiltinExc::SystemError, "PySet_Add: expected a set");
             return -1;
         };
         if completed { 0 } else { -1 }
@@ -474,7 +481,11 @@ pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
         let ptr = match obj_from_bits(set).as_ptr() {
             Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_SET => ptr,
             _ => {
-                let _ = raise_exception::<u64>(_py, "SystemError", "PySet_Discard: expected a set");
+                let _ = raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "PySet_Discard: expected a set",
+                );
                 return -1;
             }
         };
@@ -492,7 +503,7 @@ pub extern "C" fn PySet_Clear(set: u64) -> i32 {
             .as_ptr()
             .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET })
         else {
-            raise_exception::<()>(py, "SystemError", "PySet_Clear: expected a set");
+            raise_exception::<()>(py, BuiltinExc::SystemError, "PySet_Clear: expected a set");
             return -1;
         };
         unsafe { set_clear_in_place(py, ptr) };

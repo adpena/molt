@@ -1903,7 +1903,7 @@ pub(crate) mod tests {
                         if should_panic {
                             let _: u64 = crate::builtins::exceptions::raise_exception(
                                 py,
-                                "RuntimeError",
+                                crate::BuiltinExc::RuntimeError,
                                 "intentional worker unwind",
                             );
                             panic!("intentional worker unwind");

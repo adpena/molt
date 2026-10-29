@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -18,59 +18,47 @@ pub(super) fn infer_list_container_type(
     source_val: ValueId,
     block_ids: &[BlockId],
 ) -> Option<String> {
-    let mut seen = HashSet::new();
-    infer_list_container_type_inner(func, source_val, block_ids, &mut seen)
-}
-
-fn infer_list_container_type_inner(
-    func: &TirFunction,
-    source_val: ValueId,
-    block_ids: &[BlockId],
-    seen: &mut HashSet<ValueId>,
-) -> Option<String> {
-    if !seen.insert(source_val) {
-        return None;
-    }
-
-    if let Some(ty) = func.value_types.get(&source_val)
-        && matches!(ty, TirType::List(_))
-    {
+    if matches!(func.value_types.get(&source_val), Some(TirType::List(_))) {
         return Some("list".to_string());
     }
 
+    // Resolve each operand in O(1), rather than rescanning every operation at
+    // each depth of a repeat chain. Preserve the supplied block/operation order:
+    // the first definition wins, as in the original lookup.
+    let mut definitions = HashMap::new();
     for &bid in block_ids {
         let Some(block) = func.blocks.get(&bid) else {
             continue;
         };
         for op in &block.ops {
-            if !op.results.contains(&source_val) {
-                continue;
+            for &result in &op.results {
+                definitions.entry(result).or_insert(op);
             }
-            // BuildList always produces a generic list.
-            if op.opcode == OpCode::BuildList {
-                return Some("list".to_string());
-            }
-            // Mul(BuildList, count) is a list repeat — inherits from operand.
-            if op.opcode == OpCode::Mul && op.operands.len() == 2 {
-                let (a, b) = (op.operands[0], op.operands[1]);
-                if let Some(ct) = infer_list_container_type_inner(func, a, block_ids, seen) {
-                    return Some(ct);
-                }
-                if let Some(ct) = infer_list_container_type_inner(func, b, block_ids, seen) {
-                    return Some(ct);
-                }
-            }
-            return None;
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut pending = vec![source_val];
+    while let Some(value) = pending.pop() {
+        if !seen.insert(value) {
+            continue;
+        }
+        if matches!(func.value_types.get(&value), Some(TirType::List(_))) {
+            return Some("list".to_string());
+        }
+        let Some(op) = definitions.get(&value) else {
+            continue;
+        };
+        // BuildList always produces a generic list. A two-operand Mul inherits
+        // its list shape from either operand; visit the left operand first and
+        // retain the same global cycle guard as the recursive depth-first walk.
+        if op.opcode == OpCode::BuildList {
+            return Some("list".to_string());
+        }
+        if op.opcode == OpCode::Mul && op.operands.len() == 2 {
+            pending.push(op.operands[1]);
+            pending.push(op.operands[0]);
         }
     }
     None
-}
-
-/// Determine if a value is known to be a list from typed facts or its defining op.
-pub(super) fn is_list_source(
-    func: &TirFunction,
-    source_val: ValueId,
-    block_ids: &[BlockId],
-) -> bool {
-    infer_list_container_type(func, source_val, block_ids).is_some()
 }

@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::libc_compat as libc;
 use crate::*;
 use molt_runtime_platform::synthetic_errno::GuestErrno;
@@ -25,7 +26,7 @@ pub extern "C" fn molt_socket_clone(_sock_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let new_handle = unsafe { crate::molt_socket_clone_host(handle) };
         if new_handle < 0 {
@@ -53,14 +54,16 @@ pub extern "C" fn molt_socket_new(
         }
         let family = match to_i64(obj_from_bits(_family_bits)) {
             Some(val) => val as i32,
-            None => return raise_exception::<_>(_py, "TypeError", "family must be int"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "family must be int"),
         };
         let sock_type = if obj_from_bits(_type_bits).is_none() {
             libc::SOCK_STREAM
         } else {
             match to_i64(obj_from_bits(_type_bits)) {
                 Some(val) => val as i32,
-                None => return raise_exception::<_>(_py, "TypeError", "type must be int"),
+                None => {
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "type must be int");
+                }
             }
         };
         let proto = if obj_from_bits(_proto_bits).is_none() {
@@ -68,7 +71,9 @@ pub extern "C" fn molt_socket_new(
         } else {
             match to_i64(obj_from_bits(_proto_bits)) {
                 Some(val) => val as i32,
-                None => return raise_exception::<_>(_py, "TypeError", "proto must be int"),
+                None => {
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "proto must be int");
+                }
             }
         };
         let fileno = if obj_from_bits(_fileno_bits).is_none() {
@@ -77,7 +82,11 @@ pub extern "C" fn molt_socket_new(
             match to_i64(obj_from_bits(_fileno_bits)) {
                 Some(val) => val,
                 None => {
-                    return raise_exception::<_>(_py, "TypeError", "fileno must be int or None");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "fileno must be int or None",
+                    );
                 }
             }
         };
@@ -101,7 +110,7 @@ pub extern "C" fn molt_socket_close(_sock_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let rc = unsafe { crate::molt_socket_close_host(handle) };
         wasm_socket_meta_remove(handle);
@@ -159,7 +168,7 @@ pub extern "C" fn molt_socket_settimeout(_sock_bits: u64, _timeout_bits: u64) ->
     crate::with_gil_entry_nopanic!(_py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let obj = obj_from_bits(_timeout_bits);
         if obj.is_none() {
@@ -167,10 +176,18 @@ pub extern "C" fn molt_socket_settimeout(_sock_bits: u64, _timeout_bits: u64) ->
             return MoltObject::none().bits();
         }
         let Some(timeout) = to_f64(obj) else {
-            return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "timeout must be float or None",
+            );
         };
         if !timeout.is_finite() || timeout < 0.0 {
-            return raise_exception::<_>(_py, "ValueError", "timeout must be non-negative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "timeout must be non-negative",
+            );
         }
         let duration = if timeout == 0.0 {
             Duration::ZERO
@@ -178,7 +195,7 @@ pub extern "C" fn molt_socket_settimeout(_sock_bits: u64, _timeout_bits: u64) ->
             Duration::from_secs_f64(timeout)
         };
         if let Err(msg) = socket_set_timeout(handle, Some(duration)) {
-            return raise_exception::<_>(_py, "RuntimeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg);
         }
         MoltObject::none().bits()
     })
@@ -211,15 +228,15 @@ pub extern "C" fn molt_socket_bind(_sock_bits: u64, _addr_bits: u64) -> u64 {
         }
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let family = match wasm_socket_family(handle) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let addr = match encode_sockaddr(_py, _addr_bits, family) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let rc = unsafe {
             crate::molt_socket_bind_host(handle, addr.as_ptr() as u32, addr.len() as u32)
@@ -240,7 +257,7 @@ pub extern "C" fn molt_socket_listen(_sock_bits: u64, _backlog_bits: u64) -> u64
         }
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let backlog = to_i64(obj_from_bits(_backlog_bits)).unwrap_or(0) as i32;
         let rc = unsafe { crate::molt_socket_listen_host(handle, backlog) };
@@ -260,11 +277,11 @@ pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
         }
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let family = match wasm_socket_family(handle) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let timeout = socket_timeout(handle);
         let mut addr_buf = vec![0u8; 128];
@@ -288,7 +305,7 @@ pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
                 );
                 let addr_bits = match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
                     Ok(bits) => bits,
-                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                    Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
                 };
                 let handle_bits = MoltObject::from_int(new_handle).bits();
                 let tuple_ptr = alloc_tuple(_py, &[handle_bits, addr_bits]);
@@ -310,7 +327,7 @@ pub extern "C" fn molt_socket_accept(_sock_bits: u64) -> u64 {
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -333,15 +350,15 @@ pub extern "C" fn molt_socket_connect(_sock_bits: u64, _addr_bits: u64) -> u64 {
         }
         let handle = match socket_handle_from_bits(_py, _sock_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let family = match wasm_socket_family(handle) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let addr = match encode_sockaddr(_py, _addr_bits, family) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let timeout = socket_timeout(handle);
         let rc = unsafe {
@@ -363,7 +380,7 @@ pub extern "C" fn molt_socket_connect(_sock_bits: u64, _addr_bits: u64) -> u64 {
             }
             if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
                 if wait_err == GuestErrno::ETIMEDOUT {
-                    return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                    return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                 }
                 return raise_os_error_errno::<u64>(_py, i64::from(wait_err.code()), "connect");
             }
@@ -486,7 +503,7 @@ pub extern "C" fn molt_socket_recv(_sock_bits: u64, _size_bits: u64, _flags_bits
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -544,7 +561,7 @@ pub extern "C" fn molt_socket_recv_into(
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -578,7 +595,7 @@ pub extern "C" fn molt_socket_send(_sock_bits: u64, _data_bits: u64, _flags_bits
         let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(_data_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -606,7 +623,7 @@ pub extern "C" fn molt_socket_send(_sock_bits: u64, _data_bits: u64, _flags_bits
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -636,7 +653,7 @@ pub extern "C" fn molt_socket_sendall(_sock_bits: u64, _data_bits: u64, _flags_b
         let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(_data_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -668,7 +685,7 @@ pub extern "C" fn molt_socket_sendall(_sock_bits: u64, _data_bits: u64, _flags_b
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -698,11 +715,11 @@ pub extern "C" fn molt_socket_sendto(
         };
         let family = match wasm_socket_family(handle) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let addr = match encode_sockaddr(_py, _addr_bits, family) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
         #[cfg(unix)]
@@ -712,7 +729,7 @@ pub extern "C" fn molt_socket_sendto(
         let nonblocking = matches!(socket_timeout(handle), Some(val) if val == Duration::ZERO);
         let send_data = match send_data_from_bits(_data_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -747,7 +764,7 @@ pub extern "C" fn molt_socket_sendto(
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -815,7 +832,7 @@ pub extern "C" fn molt_socket_recvfrom(_sock_bits: u64, _size_bits: u64, _flags_
                 }
                 let addr_bits = match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
                     Ok(bits) => bits,
-                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                    Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
                 };
                 let bytes_bits = MoltObject::from_ptr(bytes_ptr).bits();
                 let tuple_ptr = alloc_tuple(_py, &[bytes_bits, addr_bits]);
@@ -831,7 +848,7 @@ pub extern "C" fn molt_socket_recvfrom(_sock_bits: u64, _size_bits: u64, _flags_
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -898,7 +915,7 @@ pub extern "C" fn molt_socket_recvfrom_into(
                 let n_bits = MoltObject::from_int(rc as i64).bits();
                 let addr_bits = match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
                     Ok(bits) => bits,
-                    Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                    Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
                 };
                 let tuple_ptr = alloc_tuple(_py, &[n_bits, addr_bits]);
                 if tuple_ptr.is_null() {
@@ -913,7 +930,7 @@ pub extern "C" fn molt_socket_recvfrom_into(
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -951,7 +968,7 @@ pub extern "C" fn molt_socket_sendmsg(
         };
         let ancillary_payload = match encode_host_sendmsg_ancillary_buffer(&ancillary_items) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<u64>(_py, "RuntimeError", &msg),
+            Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg),
         };
         let chunks = match collect_sendmsg_payload(_py, _buffers_bits) {
             Ok(val) => val,
@@ -969,11 +986,11 @@ pub extern "C" fn molt_socket_sendmsg(
         } else {
             let family = match wasm_socket_family(handle) {
                 Ok(val) => val,
-                Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg),
             };
             match encode_sockaddr(_py, _address_bits, family) {
                 Ok(val) => Some(val),
-                Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg),
             }
         };
         let payload_ptr = if payload.is_empty() {
@@ -1015,7 +1032,7 @@ pub extern "C" fn molt_socket_sendmsg(
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_WRITE) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -1044,11 +1061,19 @@ pub extern "C" fn molt_socket_recvmsg(
         };
         let bufsize = to_i64(obj_from_bits(_bufsize_bits)).unwrap_or(0);
         if bufsize < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "negative buffersize in recvmsg");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative buffersize in recvmsg",
+            );
         }
         let ancbufsize = to_i64(obj_from_bits(_ancbufsize_bits)).unwrap_or(0);
         if ancbufsize < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "negative ancbufsize in recvmsg");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative ancbufsize in recvmsg",
+            );
         }
         let flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
         #[cfg(unix)]
@@ -1090,7 +1115,9 @@ pub extern "C" fn molt_socket_recvmsg(
                 let addr_bits = if addr_len > 0 {
                     match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
                         Ok(bits) => bits,
-                        Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+                        Err(msg) => {
+                            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
+                        }
                     }
                 } else {
                     MoltObject::none().bits()
@@ -1104,7 +1131,7 @@ pub extern "C" fn molt_socket_recvmsg(
                         Ok(val) => val,
                         Err(msg) => {
                             dec_ref_bits(_py, addr_bits);
-                            return raise_exception::<u64>(_py, "RuntimeError", &msg);
+                            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg);
                         }
                     };
                 let anc_bits = match build_ancillary_list_bits(_py, ancillary_items.as_slice()) {
@@ -1129,7 +1156,7 @@ pub extern "C" fn molt_socket_recvmsg(
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -1158,7 +1185,11 @@ pub extern "C" fn molt_socket_recvmsg_into(
         };
         let ancbufsize = to_i64(obj_from_bits(_ancbufsize_bits)).unwrap_or(0);
         if ancbufsize < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "negative ancbufsize in recvmsg");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "negative ancbufsize in recvmsg",
+            );
         }
         let targets = match collect_recvmsg_into_targets(_py, _buffers_bits) {
             Ok(val) => val,
@@ -1207,7 +1238,9 @@ pub extern "C" fn molt_socket_recvmsg_into(
                 let addr_bits = if addr_len > 0 {
                     match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
                         Ok(bits) => bits,
-                        Err(msg) => return raise_exception::<u64>(_py, "TypeError", &msg),
+                        Err(msg) => {
+                            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
+                        }
                     }
                 } else {
                     MoltObject::none().bits()
@@ -1222,7 +1255,7 @@ pub extern "C" fn molt_socket_recvmsg_into(
                         Ok(val) => val,
                         Err(msg) => {
                             dec_ref_bits(_py, addr_bits);
-                            return raise_exception::<u64>(_py, "RuntimeError", &msg);
+                            return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg);
                         }
                     };
                 let anc_bits = match build_ancillary_list_bits(_py, ancillary_items.as_slice()) {
@@ -1249,7 +1282,7 @@ pub extern "C" fn molt_socket_recvmsg_into(
                 }
                 if let Err(wait_err) = socket_wait_ready(_py, handle, IO_EVENT_READ) {
                     if wait_err == GuestErrno::ETIMEDOUT {
-                        return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                        return raise_exception::<u64>(_py, BuiltinExc::TimeoutError, "timed out");
                     }
                     if wait_err == GuestErrno::EAGAIN {
                         continue;
@@ -1307,7 +1340,7 @@ pub extern "C" fn molt_socket_getsockname(_sock_bits: u64) -> u64 {
         }
         match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
             Ok(bits) => bits,
-            Err(msg) => raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         }
     })
 }
@@ -1335,7 +1368,7 @@ pub extern "C" fn molt_socket_getpeername(_sock_bits: u64) -> u64 {
         }
         match decode_sockaddr(_py, &addr_buf[..addr_len as usize]) {
             Ok(bits) => bits,
-            Err(msg) => raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         }
     })
 }

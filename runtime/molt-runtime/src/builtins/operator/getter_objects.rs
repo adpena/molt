@@ -1,4 +1,5 @@
 use super::class_support::{attrgetter_class, itemgetter_class, methodcaller_class};
+use crate::BuiltinExc;
 
 use molt_obj_model::MoltObject;
 
@@ -132,14 +133,14 @@ pub extern "C" fn molt_operator_itemgetter_new(owner: u64, args: u64, kwargs: u6
         if !call.keyword_view().is_empty() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "itemgetter() takes no keyword arguments",
             );
         }
         if call.values().is_empty() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "itemgetter expected at least 1 argument",
             );
         }
@@ -176,14 +177,14 @@ pub extern "C" fn molt_operator_attrgetter_new(owner: u64, args: u64, kwargs: u6
         if !call.keyword_view().is_empty() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "attrgetter() takes no keyword arguments",
             );
         }
         if call.values().is_empty() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "attrgetter expected at least 1 argument",
             );
         }
@@ -194,7 +195,7 @@ pub extern "C" fn molt_operator_attrgetter_new(owner: u64, args: u64, kwargs: u6
             {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "attrgetter expects string attributes",
                 );
             }
@@ -232,7 +233,7 @@ pub extern "C" fn molt_operator_methodcaller_new(owner: u64, args: u64, kwargs: 
         if call.values().is_empty() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "methodcaller expected at least 1 argument",
             );
         }
@@ -241,7 +242,11 @@ pub extern "C" fn molt_operator_methodcaller_new(owner: u64, args: u64, kwargs: 
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
         {
-            return raise_exception::<_>(_py, "TypeError", "methodcaller() name must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "methodcaller() name must be str",
+            );
         }
         let values = alloc_tuple(_py, &call.values()[1..]);
         if values.is_null() {
@@ -361,7 +366,7 @@ fn resolve_attr_path(_py: &PyToken<'_>, obj_bits: u64, name: &str) -> u64 {
             return MoltObject::none().bits();
         }
         if next_bits == missing {
-            return raise_exception::<u64>(_py, "AttributeError", name);
+            return raise_exception::<u64>(_py, BuiltinExc::AttributeError, name);
         }
         current_bits = next_bits;
         current_owned = true;
@@ -439,7 +444,7 @@ pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64)
         }
         if method_bits == missing {
             let name = string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_default();
-            return raise_exception::<u64>(_py, "AttributeError", &name);
+            return raise_exception::<u64>(_py, BuiltinExc::AttributeError, &name);
         }
         let args_ptr = obj_from_bits(args_bits).as_ptr();
         let arg_snapshot = if let Some(args_ptr) = args_ptr {

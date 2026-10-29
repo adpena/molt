@@ -88,10 +88,10 @@ fn refcount(bits: u64) -> u32 {
 
 fn take_attribute_error(py: &PyToken<'_>) {
     let exception = crate::builtins::exceptions::molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         py,
         exception,
-        "AttributeError"
+        crate::BuiltinExc::AttributeError
     ));
     clear_exception(py);
     dec_ref_bits(py, exception);

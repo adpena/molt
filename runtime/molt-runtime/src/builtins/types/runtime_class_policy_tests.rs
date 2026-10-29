@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::class_storage::ClassSlotPolicy;
 use crate::test_support::RuntimeTestTransaction;
 
@@ -185,23 +186,21 @@ fn cached_class_mutability_is_independent_of_identical_native_slots() {
 
 #[test]
 fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
-    use crate::builtins::exceptions::{
-        exception_type_bits_from_name, is_builtin_exception_class_bits,
-    };
+    use crate::builtins::exceptions::{exception_class_bits, is_builtin_exception_class_bits};
     use crate::object::class_storage::{
         ClassOrigin, ClassSemanticPolicy, is_canonical_runtime_class,
     };
     let _transaction = RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         for (name, module) in [
-            ("CancelledError", "asyncio.exceptions"),
-            ("UnsupportedOperation", "_io"),
-            ("StatisticsError", "statistics"),
-            ("PickleError", "_pickle"),
-            ("PicklingError", "_pickle"),
-            ("UnpicklingError", "_pickle"),
+            (crate::BuiltinExc::CancelledError, "asyncio.exceptions"),
+            (crate::BuiltinExc::UnsupportedOperation, "_io"),
+            (crate::BuiltinExc::StatisticsError, "statistics"),
+            (crate::BuiltinExc::PickleError, "_pickle"),
+            (crate::BuiltinExc::PicklingError, "_pickle"),
+            (crate::BuiltinExc::UnpicklingError, "_pickle"),
         ] {
-            let class = exception_type_bits_from_name(py, name);
+            let class = exception_class_bits(py, name);
             assert_namespace_mutability(py, class, false);
             let ptr = obj_from_bits(class).as_ptr().unwrap();
             assert_eq!(
@@ -210,8 +209,11 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
             );
             assert!(is_canonical_runtime_class(py, class));
             assert!(is_builtin_exception_class_bits(py, class));
-            if matches!(name, "PicklingError" | "UnpicklingError") {
-                let base = exception_type_bits_from_name(py, "PickleError");
+            if matches!(
+                name,
+                crate::BuiltinExc::PicklingError | crate::BuiltinExc::UnpicklingError
+            ) {
+                let base = exception_class_bits(py, BuiltinExc::PickleError);
                 assert!(crate::issubclass_bits(class, base));
             }
             let module_key = attr_name_bits_from_bytes(py, b"__module__").unwrap();
@@ -226,12 +228,12 @@ fn module_exception_identity_survives_mutation_and_does_not_follow_names() {
             inc_ref_bits(py, original);
             let renamed = attr_name_bits_from_bytes(py, b"RenamedModuleException").unwrap();
             assert!(unsafe { crate::class_set_name_bits(py, ptr, renamed) });
-            assert_eq!(exception_type_bits_from_name(py, name), class);
+            assert_eq!(exception_class_bits(py, name), class);
             assert!(is_builtin_exception_class_bits(py, class));
             assert!(unsafe { crate::class_set_name_bits(py, ptr, original) });
             dec_ref_bits(py, original);
             dec_ref_bits(py, renamed);
-            let fake_name = attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+            let fake_name = attr_name_bits_from_bytes(py, name.name().as_bytes()).unwrap();
             let fake = crate::molt_class_new(fake_name);
             dec_ref_bits(py, fake_name);
             let result = crate::molt_class_set_base(fake, builtin_classes(py).base_exception);
@@ -450,7 +452,11 @@ static ANNOTATION_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
 extern "C" fn class_annotation_evaluator(format: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         if obj_from_bits(format).as_int() != Some(1) {
-            return raise_exception::<_>(py, "ValueError", "expected annotation value format");
+            return raise_exception::<_>(
+                py,
+                BuiltinExc::ValueError,
+                "expected annotation value format",
+            );
         }
         ANNOTATION_EVALUATIONS.fetch_add(1, AtomicOrdering::Relaxed);
         let name = attr_name_bits_from_bytes(py, b"answer").unwrap();

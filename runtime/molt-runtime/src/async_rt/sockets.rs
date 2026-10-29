@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::audit::AuditArgs;
 use crate::*;
@@ -205,7 +206,7 @@ pub(crate) fn iter_values_from_bits<'a, 'py>(
         }
         return Err(raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "socket iterable snapshot allocation failed",
         ));
     };
@@ -268,7 +269,7 @@ pub(crate) fn argv_from_bits(_py: &PyToken<'_>, args_bits: u64) -> Result<Vec<Os
     if obj.is_none() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "args must be a sequence",
         ));
     }
@@ -306,7 +307,7 @@ pub(crate) fn env_from_bits(
     let Some(ptr) = obj.as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "env must be a dict",
         ));
     };
@@ -314,7 +315,7 @@ pub(crate) fn env_from_bits(
         if object_type_id(ptr) != TYPE_ID_DICT {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "env must be a dict",
             ));
         }
@@ -385,7 +386,11 @@ mod iterable_ownership_tests {
             // callback dropping the original source's edge.
             assert!(refcount(item) >= 2);
             if FAIL.load(Ordering::Relaxed) {
-                raise_exception::<u64>(py, "LookupError", "injected socket iterator failure")
+                raise_exception::<u64>(
+                    py,
+                    BuiltinExc::LookupError,
+                    "injected socket iterator failure",
+                )
             } else {
                 MoltObject::from_int(777).bits()
             }
@@ -440,10 +445,10 @@ mod iterable_ownership_tests {
                 if fail {
                     assert!(values.is_err());
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "LookupError"
+                        crate::BuiltinExc::LookupError
                     ));
                     clear_exception(py);
                     dec_ref_bits(py, error);

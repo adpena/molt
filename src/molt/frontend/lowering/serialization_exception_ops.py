@@ -73,8 +73,8 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "kind": "exception_new_builtin",
                     "args": [op.args[0].name],
                     "out": op.result.name,
-                    "s_value": metadata.get("exception_name", "Exception"),
-                    "value": int(metadata.get("exception_tag", 2)),
+                    "s_value": metadata["exception_name"],
+                    "value": int(metadata["exception_tag"]),
                 }
             )
         elif op.kind == "EXCEPTION_NEW_BUILTIN_EMPTY":
@@ -84,8 +84,8 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "kind": "exception_new_builtin_empty",
                     "args": [],
                     "out": op.result.name,
-                    "s_value": metadata.get("exception_name", "Exception"),
-                    "value": int(metadata.get("exception_tag", 2)),
+                    "s_value": metadata["exception_name"],
+                    "value": int(metadata["exception_tag"]),
                 }
             )
         elif op.kind == "EXCEPTION_NEW_BUILTIN_ONE":
@@ -95,8 +95,8 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "kind": "exception_new_builtin_one",
                     "args": [op.args[0].name],
                     "out": op.result.name,
-                    "s_value": metadata.get("exception_name", "Exception"),
-                    "value": int(metadata.get("exception_tag", 2)),
+                    "s_value": metadata["exception_name"],
+                    "value": int(metadata["exception_tag"]),
                 }
             )
         elif op.kind == "EXCEPTION_NEW_FROM_CLASS":

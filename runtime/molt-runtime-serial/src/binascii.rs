@@ -17,7 +17,7 @@ impl<'py> AsciiInput<'py> {
             if !text.is_ascii() {
                 return Err(raise_exception::<_>(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "string argument should contain only ASCII characters",
                 ));
             }
@@ -43,7 +43,7 @@ impl<'py> AsciiInput<'py> {
         let label = String::from_utf8_lossy(&label.as_bytes()[..label.len().min(100)]);
         replace_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("argument should be {expected}, not '{label}'"),
         )
     }
@@ -62,7 +62,7 @@ fn alloc_bytes_or_oom(_py: &PyToken, data: &[u8], context: &str) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
         let msg = format!("{context}: out of memory");
-        return raise_exception::<_>(_py, "MemoryError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::MemoryError, &msg);
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -707,15 +707,15 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_error_type() -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
-        binascii_exception_type(py, molt_runtime_core::BinasciiException::Error)
+    molt_runtime_core::with_gil_entry!(_py, {
+        molt_runtime_core::rt_exception_class(BuiltinExc::BinasciiError)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_binascii_incomplete_type() -> u64 {
-    molt_runtime_core::with_gil_entry!(py, {
-        binascii_exception_type(py, molt_runtime_core::BinasciiException::Incomplete)
+    molt_runtime_core::with_gil_entry!(_py, {
+        molt_runtime_core::rt_exception_class(BuiltinExc::BinasciiIncomplete)
     })
 }
 
@@ -938,7 +938,7 @@ pub extern "C" fn molt_uu_codec_encode(data_bits: u64, filename_bits: u64, mode_
             let chunk = &(unsafe { input_export.bytes(_py) })[offset..end];
             match uu_encode(chunk) {
                 Ok(encoded) => out.extend_from_slice(&encoded),
-                Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, msg),
             }
             offset = end;
         }
@@ -983,7 +983,11 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
         }
 
         if !found_begin {
-            return raise_exception::<_>(_py, "ValueError", "Missing \"begin\" line in input data");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "Missing \"begin\" line in input data",
+            );
         }
 
         // Decode lines until "end" or EOF
@@ -1024,7 +1028,7 @@ pub extern "C" fn molt_uu_codec_decode(data_bits: u64) -> u64 {
         }
 
         if !found_end {
-            return raise_exception::<_>(_py, "ValueError", "Truncated input data");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "Truncated input data");
         }
 
         alloc_bytes_or_oom(_py, &out, "uu_codec_decode")

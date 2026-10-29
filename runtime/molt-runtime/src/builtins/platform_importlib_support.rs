@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use digest::Digest;
 pub(super) use molt_runtime_platform::importlib_support::{
     importlib_is_archive_member_path, importlib_metadata_first_nonempty,
@@ -888,7 +889,7 @@ pub(super) fn importlib_enforce_extension_spec_boundary(
     let Some(origin) = resolution.origin.as_deref() else {
         return Err(raise_exception::<u64>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             "extension module path must point to a file",
         ));
     };
@@ -897,7 +898,7 @@ pub(super) fn importlib_enforce_extension_spec_boundary(
         Ok(false) => {
             return Err(raise_exception::<u64>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 "extension module path must point to a file",
             ));
         }
@@ -1103,43 +1104,19 @@ pub(super) fn importlib_best_effort_str(_py: &PyToken<'_>, value_bits: u64) -> S
     out
 }
 
-pub(super) fn importlib_exception_name_from_bits(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-) -> Option<String> {
-    let name_attr = intern_runtime_static_name(_py, b"__name__");
-    let missing = missing_bits(_py);
-    let name_bits = molt_getattr_builtin(class_bits, name_attr, missing);
-    if exception_pending(_py) {
-        clear_exception(_py);
-        return None;
-    }
-    if is_missing_bits(_py, name_bits) {
-        if !obj_from_bits(name_bits).is_none() {
-            dec_ref_bits(_py, name_bits);
-        }
-        return None;
-    }
-    let name = string_obj_to_owned(obj_from_bits(name_bits));
-    if !obj_from_bits(name_bits).is_none() {
-        dec_ref_bits(_py, name_bits);
-    }
-    name
-}
-
 pub(super) fn raise_importlib_io_error(_py: &PyToken<'_>, err: std::io::Error) -> u64 {
     let message = err.to_string();
     match err.kind() {
         std::io::ErrorKind::NotFound => {
-            raise_exception::<u64>(_py, "FileNotFoundError", message.as_str())
+            raise_exception::<u64>(_py, BuiltinExc::FileNotFoundError, message.as_str())
         }
         std::io::ErrorKind::PermissionDenied => {
-            raise_exception::<u64>(_py, "PermissionError", message.as_str())
+            raise_exception::<u64>(_py, BuiltinExc::PermissionError, message.as_str())
         }
         std::io::ErrorKind::IsADirectory => {
-            raise_exception::<u64>(_py, "IsADirectoryError", message.as_str())
+            raise_exception::<u64>(_py, BuiltinExc::IsADirectoryError, message.as_str())
         }
-        _ => raise_exception::<u64>(_py, "OSError", message.as_str()),
+        _ => raise_exception::<u64>(_py, BuiltinExc::OSError, message.as_str()),
     }
 }
 
@@ -1355,7 +1332,7 @@ pub(super) fn importlib_load_extension_manifest_for_path(
             Err(err) => {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     &format!(
                         "extension metadata missing for {path:?}: unable to read extension_manifest.json ({err})"
                     ),
@@ -1367,7 +1344,7 @@ pub(super) fn importlib_load_extension_manifest_for_path(
             Err(err) => {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     &format!(
                         "invalid extension metadata in {archive_path}/extension_manifest.json: {err}"
                     ),
@@ -1386,7 +1363,7 @@ pub(super) fn importlib_load_extension_manifest_for_path(
     else {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "extension metadata missing for {path:?}: extension_manifest.json not found near extension path"
             ),
@@ -1397,7 +1374,7 @@ pub(super) fn importlib_load_extension_manifest_for_path(
     let manifest = serde_json::from_slice::<JsonValue>(&manifest_bytes).map_err(|err| {
         raise_exception::<u64>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!("invalid extension metadata in {manifest_path}: {err}"),
         )
     })?;
@@ -1422,7 +1399,7 @@ pub(super) fn importlib_manifest_required_string<'a>(
         .ok_or_else(|| {
             raise_exception::<u64>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "invalid extension metadata {manifest_source}: missing or invalid field {field:?}"
                 ),
@@ -1441,7 +1418,7 @@ pub(super) fn importlib_validate_extension_metadata(
     let Some(manifest) = loaded.manifest.as_object() else {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "invalid extension metadata {}: payload must be a JSON object",
                 loaded.source
@@ -1454,7 +1431,7 @@ pub(super) fn importlib_validate_extension_metadata(
     if manifest_module != module_name {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "extension metadata module mismatch in {}: manifest has {:?}, loader requested {:?}",
                 loaded.source, manifest_module, module_name
@@ -1475,7 +1452,7 @@ pub(super) fn importlib_validate_extension_metadata(
         .ok_or_else(|| {
             raise_exception::<u64>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "invalid extension ABI version in {}: {:?}",
                     loaded.source, abi_version
@@ -1486,7 +1463,7 @@ pub(super) fn importlib_validate_extension_metadata(
     if manifest_abi_major != runtime_abi_major {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "extension ABI mismatch for {:?}: runtime requires {}, manifest declares {} (source: {})",
                 module_name, runtime_abi_major, manifest_abi_major, loaded.source
@@ -1500,7 +1477,7 @@ pub(super) fn importlib_validate_extension_metadata(
     if abi_tag != expected_abi_tag {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "extension ABI tag mismatch in {}: expected {expected_abi_tag}, found {abi_tag}",
                 loaded.source
@@ -1518,7 +1495,7 @@ pub(super) fn importlib_validate_extension_metadata(
     if !importlib_extension_path_matches_manifest(path, manifest_extension) {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "extension metadata path mismatch in {}: manifest expects {:?}, loader path is {:?}",
                 loaded.source, manifest_extension, path
@@ -1536,7 +1513,7 @@ pub(super) fn importlib_validate_extension_metadata(
     if expected_extension_sha != extension_sha256 {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "extension checksum mismatch for {:?} at {:?} using metadata {}: expected {}, got {}",
                 module_name, path, loaded.source, expected_extension_sha, extension_sha256
@@ -1557,7 +1534,7 @@ pub(super) fn importlib_validate_extension_metadata(
         if expected_wheel_sha != actual_wheel_sha {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "wheel checksum mismatch for extension metadata {}: expected {}, got {}",
                     loaded.source, expected_wheel_sha, actual_wheel_sha
@@ -1578,7 +1555,7 @@ pub(super) fn importlib_validate_extension_metadata(
             if archive_name != wheel_name {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     &format!(
                         "wheel name mismatch in {}: manifest has {:?}, archive is {:?}",
                         loaded.source, wheel_name, archive_name
@@ -1594,7 +1571,7 @@ pub(super) fn importlib_validate_extension_metadata(
         .ok_or_else(|| {
             raise_exception::<u64>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "invalid extension metadata {}: capabilities must be an array",
                     loaded.source
@@ -1604,7 +1581,7 @@ pub(super) fn importlib_validate_extension_metadata(
     if capabilities.is_empty() {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "invalid extension metadata {}: capabilities list must not be empty",
                 loaded.source
@@ -1616,7 +1593,7 @@ pub(super) fn importlib_validate_extension_metadata(
         let Some(cap_raw) = cap_value.as_str() else {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "invalid extension metadata {}: capabilities must contain only strings",
                     loaded.source
@@ -1627,7 +1604,7 @@ pub(super) fn importlib_validate_extension_metadata(
         if cap.is_empty() {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 &format!(
                     "invalid extension metadata {}: capability entries must be non-empty",
                     loaded.source
@@ -1656,7 +1633,7 @@ pub(super) fn importlib_validate_extension_metadata(
     if !missing_caps.is_empty() {
         return Err(raise_exception::<_>(
             _py,
-            "PermissionError",
+            BuiltinExc::PermissionError,
             &format!(
                 "missing extension capabilities for {:?}: {}",
                 module_name,
@@ -1727,7 +1704,7 @@ pub(super) fn importlib_source_extension_loader_contract(
     let Some(manifest) = loaded.manifest.as_object() else {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "invalid extension metadata {}: payload must be a JSON object",
                 loaded.source
@@ -1745,7 +1722,7 @@ pub(super) fn importlib_source_extension_loader_contract(
     if loader_kind != "libmolt_source" {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "unsupported extension loader_kind in {}: {:?}",
                 loaded.source, loader_kind
@@ -1759,7 +1736,7 @@ pub(super) fn importlib_source_extension_loader_contract(
     if init_symbol != expected_init_symbol || !importlib_manifest_c_identifier(init_symbol) {
         return Err(raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!(
                 "invalid source extension init_symbol in {}: expected {:?}, found {:?}",
                 loaded.source, expected_init_symbol, init_symbol
@@ -1850,7 +1827,7 @@ pub(super) fn importlib_extension_spec_target(
         if has_extension_loader {
             return Err(raise_exception::<_>(
                 _py,
-                "ImportError",
+                BuiltinExc::ImportError,
                 "extension module path must point to a file",
             ));
         }
@@ -1885,7 +1862,7 @@ pub(super) fn importlib_enforce_extension_spec_object_boundary(
             Ok(false) => {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     "extension module path must point to a file",
                 ));
             }

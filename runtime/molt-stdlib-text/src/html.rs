@@ -809,7 +809,7 @@ fn alloc_str_or_err(_py: &CoreGilToken, s: &str) -> Result<u64, u64> {
     if ptr.is_null() {
         Err(raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "failed to allocate string",
         ))
     } else {
@@ -825,7 +825,7 @@ fn alloc_tuple2(_py: &CoreGilToken, a: u64, b: u64) -> Result<u64, u64> {
     if ptr.is_null() {
         Err(raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "failed to allocate tuple",
         ))
     } else {
@@ -842,7 +842,7 @@ fn alloc_tuple3(_py: &CoreGilToken, a: u64, b: u64, c: u64) -> Result<u64, u64> 
     if ptr.is_null() {
         Err(raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "failed to allocate tuple",
         ))
     } else {
@@ -871,7 +871,7 @@ fn attrs_to_list(_py: &CoreGilToken, attrs: &[(String, Option<String>)]) -> Resu
             }
             return Err(raise_exception::<u64>(
                 _py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "failed to allocate tuple",
             ));
         }
@@ -884,7 +884,7 @@ fn attrs_to_list(_py: &CoreGilToken, attrs: &[(String, Option<String>)]) -> Resu
     if list_ptr.is_null() {
         return Err(raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "failed to allocate list",
         ));
     }
@@ -969,7 +969,11 @@ fn events_to_list(_py: &CoreGilToken, events: Vec<HtmlEvent>) -> u64 {
         dec_ref_bits(_py, *b);
     }
     if list_ptr.is_null() {
-        return raise_exception::<u64>(_py, "MemoryError", "failed to allocate event list");
+        return raise_exception::<u64>(
+            _py,
+            BuiltinExc::MemoryError,
+            "failed to allocate event list",
+        );
     }
     MoltObject::from_ptr(list_ptr).bits()
 }
@@ -984,13 +988,17 @@ pub extern "C" fn molt_html_escape(text_bits: u64, quote_bits: u64) -> u64 {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             let tn = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("html.escape() argument must be str, not {tn}");
-            return raise_exception::<u64>(_py, "TypeError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         };
         let quote = is_truthy(_py, obj_from_bits(quote_bits));
         let escaped = html_escape_impl(&text, quote);
         let ptr = alloc_string(_py, escaped.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::MemoryError,
+                "failed to allocate string",
+            );
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -1002,12 +1010,16 @@ pub extern "C" fn molt_html_unescape(text_bits: u64) -> u64 {
         let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
             let tn = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("html.unescape() argument must be str, not {tn}");
-            return raise_exception::<u64>(_py, "TypeError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         };
         let unescaped = html_unescape_impl(&text);
         let ptr = alloc_string(_py, unescaped.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::MemoryError,
+                "failed to allocate string",
+            );
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -1033,10 +1045,14 @@ pub extern "C" fn molt_html_parser_new(convert_charrefs_bits: u64) -> u64 {
 pub extern "C" fn molt_html_parser_feed(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid HTMLParser handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid HTMLParser handle");
         };
         let Some(data) = string_obj_to_owned(obj_from_bits(data_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "HTMLParser.feed() expects str");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "HTMLParser.feed() expects str",
+            );
         };
 
         let events = PARSER_HANDLES.with(|map| {
@@ -1048,7 +1064,11 @@ pub extern "C" fn molt_html_parser_feed(handle_bits: u64, data_bits: u64) -> u64
         });
 
         let Some(events) = events else {
-            return raise_exception::<u64>(_py, "ValueError", "HTMLParser handle not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "HTMLParser handle not found",
+            );
         };
         events_to_list(_py, events)
     })
@@ -1058,7 +1078,7 @@ pub extern "C" fn molt_html_parser_feed(handle_bits: u64, data_bits: u64) -> u64
 pub extern "C" fn molt_html_parser_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid HTMLParser handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid HTMLParser handle");
         };
 
         let events = PARSER_HANDLES.with(|map| {
@@ -1070,7 +1090,11 @@ pub extern "C" fn molt_html_parser_close(handle_bits: u64) -> u64 {
         });
 
         let Some(events) = events else {
-            return raise_exception::<u64>(_py, "ValueError", "HTMLParser handle not found");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "HTMLParser handle not found",
+            );
         };
         events_to_list(_py, events)
     })
@@ -1139,7 +1163,7 @@ pub extern "C" fn molt_html_entities_html5() -> u64 {
                 for b in &pairs {
                     dec_ref_bits(_py, *b);
                 }
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             pairs.push(MoltObject::from_ptr(k_ptr).bits());
             pairs.push(MoltObject::from_ptr(v_ptr).bits());
@@ -1149,7 +1173,7 @@ pub extern "C" fn molt_html_entities_html5() -> u64 {
             dec_ref_bits(_py, *b);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
@@ -1201,7 +1225,7 @@ pub extern "C" fn molt_html_entities_codepoint2name() -> u64 {
                 for b in &pairs {
                     dec_ref_bits(_py, *b);
                 }
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             pairs.push(k_bits);
             pairs.push(MoltObject::from_ptr(v_ptr).bits());
@@ -1211,7 +1235,7 @@ pub extern "C" fn molt_html_entities_codepoint2name() -> u64 {
             dec_ref_bits(_py, *b);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
@@ -1227,7 +1251,7 @@ pub extern "C" fn molt_html_entities_name2codepoint() -> u64 {
                 for b in &pairs {
                     dec_ref_bits(_py, *b);
                 }
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             let v_bits = MoltObject::from_int(*cp as i64).bits();
             pairs.push(MoltObject::from_ptr(k_ptr).bits());
@@ -1238,7 +1262,7 @@ pub extern "C" fn molt_html_entities_name2codepoint() -> u64 {
             dec_ref_bits(_py, *b);
         }
         if dict_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })

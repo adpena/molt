@@ -7,6 +7,7 @@
 //! Pins are semantic owners: ordinary retirement leaves the selected error
 //! visible to native deallocators. Explicit cleanup supplies its own boundary.
 
+use crate::BuiltinExc;
 use crate::object::{HEADER_FLAG_CONTAINS_REFS, HEADER_FLAG_HAS_ABI_VIEW};
 use crate::*;
 
@@ -131,7 +132,7 @@ pub(crate) unsafe fn snapshot<'a, 'py>(
         unsafe { with_locked_sequence_slice(ptr, copy) }
     };
     let Some(values) = values else {
-        let _ = raise_exception::<u64>(py, "MemoryError", failure_message);
+        let _ = raise_exception::<u64>(py, BuiltinExc::MemoryError, failure_message);
         return None;
     };
     Some(PinnedSequenceSnapshot {
@@ -219,7 +220,7 @@ pub(crate) unsafe fn snapshot_concat<'a, 'py>(
         }
     };
     let Some(values) = values else {
-        let _ = raise_exception::<u64>(py, "MemoryError", failure_message);
+        let _ = raise_exception::<u64>(py, BuiltinExc::MemoryError, failure_message);
         return None;
     };
     Some(PinnedSequenceSnapshot {

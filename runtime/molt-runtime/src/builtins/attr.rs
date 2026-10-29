@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 #[cfg(test)]
 mod foreign_descriptor_tests;
@@ -9,8 +10,7 @@ use molt_obj_model::{ExceptionTypedField, MoltObject};
 
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::exceptions::{
-    exception_matches_builtin_name, exception_typed_fields_replace_internal,
-    molt_exception_last_pending,
+    exception_matches_kind, exception_typed_fields_replace_internal, molt_exception_last_pending,
 };
 use crate::{
     ClassEdgeOwnership, FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER,
@@ -255,10 +255,10 @@ mod tests {
             crate::molt_set_attr_name(class, offsets_name, rebound);
             assert!(crate::exception_pending(_py));
             let exception = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 exception,
-                "TypeError",
+                crate::BuiltinExc::TypeError,
             ));
             crate::molt_exception_clear();
             dec_ref_bits(_py, exception);
@@ -269,10 +269,10 @@ mod tests {
             crate::molt_del_attr_name(class, offsets_name);
             assert!(crate::exception_pending(_py));
             let exception = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 exception,
-                "TypeError",
+                crate::BuiltinExc::TypeError,
             ));
             crate::molt_exception_clear();
             dec_ref_bits(_py, exception);
@@ -466,7 +466,7 @@ mod tests {
             let obj_refcount = heap_refcount(obj_bits);
             let exc_ptr = crate::builtins::exceptions::alloc_exception(
                 _py,
-                "AttributeError",
+                crate::BuiltinExc::AttributeError,
                 "missing attribute",
             );
             assert!(!exc_ptr.is_null());
@@ -927,7 +927,7 @@ pub(crate) fn attr_error(_py: &PyToken<'_>, type_label: impl AsRef<str>, attr_na
         type_label.as_ref(),
         attr_name
     );
-    raise_exception(_py, "AttributeError", &msg)
+    raise_exception(_py, BuiltinExc::AttributeError, &msg)
 }
 
 /// CPython 3.13 added a trailing clause to the AttributeError raised when
@@ -961,7 +961,7 @@ pub(crate) fn setattr_no_attr_error_with_obj(
         attr_name,
         setattr_no_dict_suffix(_py),
     );
-    let res = raise_exception(_py, "AttributeError", &msg);
+    let res = raise_exception(_py, BuiltinExc::AttributeError, &msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
     if !obj_from_bits(exc_bits).is_none()
         && set_attribute_error_members(_py, exc_bits, attr_name, obj_bits).is_err()
@@ -1007,7 +1007,7 @@ pub(crate) fn attr_error_with_obj(
         type_label.as_ref(),
         attr_name
     );
-    let res = raise_exception(_py, "AttributeError", &msg);
+    let res = raise_exception(_py, BuiltinExc::AttributeError, &msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
     if !obj_from_bits(exc_bits).is_none()
         && set_attribute_error_members(_py, exc_bits, attr_name, obj_bits).is_err()
@@ -1019,7 +1019,7 @@ pub(crate) fn attr_error_with_obj(
 
 pub(crate) fn attr_error_with_message(_py: &PyToken<'_>, msg: &str) -> u64 {
     crate::gil_assert();
-    raise_exception(_py, "AttributeError", msg)
+    raise_exception(_py, BuiltinExc::AttributeError, msg)
 }
 
 pub(crate) fn attr_error_with_obj_message(
@@ -1029,7 +1029,7 @@ pub(crate) fn attr_error_with_obj_message(
     obj_bits: u64,
 ) -> u64 {
     crate::gil_assert();
-    let res = raise_exception(_py, "AttributeError", msg);
+    let res = raise_exception(_py, BuiltinExc::AttributeError, msg);
     let exc_bits = exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
     if !obj_from_bits(exc_bits).is_none()
         && set_attribute_error_members(_py, exc_bits, attr_name, obj_bits).is_err()
@@ -1064,12 +1064,12 @@ pub(crate) fn raise_attr_name_type_error(_py: &PyToken<'_>, name_bits: u64) -> u
         "attribute name must be string, not '{}'",
         type_name(_py, name_obj)
     );
-    raise_exception(_py, "TypeError", &msg)
+    raise_exception(_py, BuiltinExc::TypeError, &msg)
 }
 
 pub(crate) fn exception_is_attribute_error(_py: &PyToken<'_>, exc_bits: u64) -> bool {
     crate::gil_assert();
-    exception_matches_builtin_name(_py, exc_bits, "AttributeError")
+    exception_matches_kind(_py, exc_bits, crate::BuiltinExc::AttributeError)
 }
 
 pub(crate) fn clear_attribute_error_if_pending(_py: &PyToken<'_>) -> bool {
@@ -1154,7 +1154,7 @@ unsafe fn module_attr_lookup_impl(
                         "__annotate__ returned non-dict of type '{}'",
                         type_name(py, obj_from_bits(result))
                     );
-                    raise_exception::<()>(py, "TypeError", &message);
+                    raise_exception::<()>(py, BuiltinExc::TypeError, &message);
                     dec_ref_bits(py, result);
                     return Err(());
                 }
@@ -1868,7 +1868,7 @@ pub(crate) unsafe fn lookup_async_special_method(
                 type_name(py, obj_from_bits(bits)),
                 String::from_utf8_lossy(name)
             );
-            raise_exception::<()>(py, "AttributeError", &message);
+            raise_exception::<()>(py, BuiltinExc::AttributeError, &message);
         }
         method
     }
@@ -2705,7 +2705,7 @@ pub(crate) unsafe fn descriptor_mutate(
                     DescriptorMutation::Set(_) => "__set__",
                     DescriptorMutation::Delete => "__delete__",
                 };
-                raise_exception::<()>(py, "AttributeError", name);
+                raise_exception::<()>(py, BuiltinExc::AttributeError, name);
                 Err(())
             } else {
                 Ok(false)
@@ -2891,7 +2891,7 @@ pub(crate) unsafe fn prepare_class_slot_declaration(
                     let text = String::from_utf8_lossy(bytes);
                     raise_exception::<()>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         &format!("'{text}' in __slots__ conflicts with class variable"),
                     );
                     return None;
@@ -2960,7 +2960,7 @@ unsafe fn capture_class_slot_declaration(
             dec_ref_bits(_py, declaration);
             raise_exception::<()>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "class definition changed during slot admission",
             );
             return false;
@@ -2981,13 +2981,17 @@ pub(crate) unsafe fn capture_class_slot_declaration_for_seal(
         let Some(namespace) = obj_from_bits(class_dict_bits(class)).as_ptr() else {
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "class namespace is absent during slot capture",
             );
             return false;
         };
         if object_type_id(namespace) != TYPE_ID_DICT {
-            raise_exception::<()>(py, "SystemError", "class namespace is not a dictionary");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "class namespace is not a dictionary",
+            );
             return false;
         }
         capture_class_slot_declaration(py, class, namespace)

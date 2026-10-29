@@ -6,6 +6,7 @@ use super::arguments::{ArgumentCustody, CallArguments};
 use super::constructors::is_default_type_call;
 use super::frame_binding::{call_owned_function, function_requires_full_binding};
 use super::*;
+use crate::BuiltinExc;
 use crate::object::layout::function_mutation_version;
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{attr_name_bits_from_bytes, molt_super_new};
@@ -976,7 +977,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
                     dec_ref_bits(_py, inst_bits);
                     return Some(raise_exception::<_>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "type-call inline cache function target is not initialized",
                     ));
                 };
@@ -988,7 +989,7 @@ pub(super) unsafe fn try_call_bind_ic_fast(
                     dec_ref_bits(_py, inst_bits);
                     return Some(raise_exception::<_>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "type-call inline cache target exceeds the active address space",
                     ));
                 };
@@ -1157,7 +1158,7 @@ pub extern "C" fn molt_call_bind_ic_owned(
                 dec_ref_bits(_py, call_bits);
                 return raise_exception::<u64>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "an expanded call keeps its callable; it cannot adopt it",
                 );
             }
@@ -1350,7 +1351,7 @@ unsafe fn load_method(
         let Some(name) = crate::provenance::abi::slice(name_ptr, name_len_bits) else {
             let _ = raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "method name range is invalid for the active target",
             );
             return LoadedMethod::failed();
@@ -1410,7 +1411,7 @@ unsafe fn load_super_method(
         let Some(name) = crate::provenance::abi::slice(name_ptr, name_len_bits) else {
             let _ = raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "method name range is invalid for the active target",
             );
             return LoadedMethod::failed();
@@ -1418,7 +1419,7 @@ unsafe fn load_super_method(
         let Some(class_cell) = crate::object::cells::cell_ptr_from_bits(class_cell_bits) else {
             let _ = raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "zero-argument super() operand is not the __class__ cell",
             );
             return LoadedMethod::failed();
@@ -1449,7 +1450,7 @@ unsafe fn load_super_method(
         if crate::object::cells::cell_value_bits(class_cell) == missing_bits(py) {
             let _ = raise_exception::<u64>(
                 py,
-                "NameError",
+                BuiltinExc::NameError,
                 "cannot access free variable '__class__' where it is not associated \
                  with a value in enclosing scope",
             );
@@ -1542,7 +1543,7 @@ fn publish_loaded_method(
     else {
         return raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "method load output address is invalid for the active target",
         );
     };
@@ -1717,7 +1718,7 @@ pub extern "C" fn molt_call_loaded_method_spilled(
             dec_ref_bits(_py, callable_bits);
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "call argument range is invalid for the active target",
             );
         };
@@ -1856,7 +1857,7 @@ pub extern "C" fn molt_invoke_ffi_ic(
                 profile_hit_unchecked(&INVOKE_FFI_BRIDGE_CAPABILITY_DENIED_COUNT);
                 return raise_exception::<_>(
                     _py,
-                    "PermissionError",
+                    BuiltinExc::PermissionError,
                     "missing python.bridge capability",
                 );
             }
@@ -2069,13 +2070,11 @@ mod super_cache_tests {
                                 if shape == "kwonly" && !args.is_empty() {
                                     let error =
                                         crate::builtins::exceptions::molt_exception_last_pending();
-                                    assert!(
-                                        crate::builtins::exceptions::exception_matches_builtin_name(
-                                            py,
-                                            error,
-                                            "TypeError"
-                                        )
-                                    );
+                                    assert!(crate::builtins::exceptions::exception_matches_kind(
+                                        py,
+                                        error,
+                                        crate::BuiltinExc::TypeError
+                                    ));
                                     crate::molt_exception_clear();
                                     dec_ref_bits(py, error);
                                 } else if shape == "vararg" {
@@ -2208,10 +2207,10 @@ mod super_cache_tests {
                     // Only the following operation sees the deleted method.
                     let result = call();
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "AttributeError"
+                        crate::BuiltinExc::AttributeError
                     ));
                     crate::molt_exception_clear();
                     dec_ref_bits(py, error);
@@ -2527,10 +2526,10 @@ mod super_cache_tests {
             };
             assert!(obj_from_bits(result).is_none());
             let error = crate::builtins::exceptions::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             crate::molt_exception_clear();
             dec_ref_bits(py, error);
@@ -2608,10 +2607,10 @@ mod super_cache_tests {
             assert!(obj_from_bits(loaded.callable).is_none());
             assert_eq!(loaded.self_or_null, LoadedMethod::NULL);
             let error = crate::builtins::exceptions::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "NameError"
+                crate::BuiltinExc::NameError
             ));
             assert_eq!(
                 crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),

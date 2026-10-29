@@ -1,6 +1,7 @@
 // Binary pickle dumps/loads C-ABI entrypoints and multiprocessing codec.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::PyToken;
 
 #[inline]
@@ -8,7 +9,7 @@ fn pickle_payload_len(_py: &PyToken<'_>, len: u64) -> Result<usize, u64> {
     usize::try_from(len).map_err(|_| {
         raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "pickle payload length exceeds the active address space",
         )
     })
@@ -25,12 +26,12 @@ pub extern "C" fn molt_pickle_dumps_core(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(protocol) = to_i64(obj_from_bits(protocol_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "pickle protocol must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle protocol must be int");
         };
         if !(-1..=PICKLE_PROTO_5).contains(&protocol) {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "pickle protocol must be in range -1..5",
             );
         }
@@ -69,7 +70,7 @@ pub extern "C" fn molt_pickle_dumps_core(
         if state.buffer_callback_bits.is_some() && actual_protocol < PICKLE_PROTO_5 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "buffer_callback requires protocol 5 or higher",
             );
         }
@@ -101,12 +102,12 @@ pub extern "C" fn molt_pickle_loads_core(
         let encoding = if let Some(text) = string_obj_to_owned(obj_from_bits(encoding_bits)) {
             text
         } else {
-            return raise_exception::<_>(_py, "TypeError", "pickle encoding must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle encoding must be str");
         };
         let errors = if let Some(text) = string_obj_to_owned(obj_from_bits(errors_bits)) {
             text
         } else {
-            return raise_exception::<_>(_py, "TypeError", "pickle errors must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "pickle errors must be str");
         };
         let persistent_load =
             match pickle_option_callable_bits(_py, persistent_load_bits, "persistent_load") {
@@ -189,7 +190,7 @@ pub extern "C" fn molt_pickle_loads_core(
                     if version > PICKLE_PROTO_5 as u8 {
                         return raise_exception::<_>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "unsupported pickle protocol",
                         );
                     }

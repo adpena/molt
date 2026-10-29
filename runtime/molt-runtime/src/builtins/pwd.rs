@@ -1,6 +1,7 @@
 //! POSIX user-database projection. Native storage and cursor custody belong to
 //! molt-runtime-platform::userdb; this boundary owns admission and Python values.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::*;
 
@@ -54,7 +55,7 @@ mod native {
     pub(super) fn entry(py: &PyToken<'_>, class: u64, value: Passwd) -> u64 {
         let mut fields = Vec::new();
         if fields.try_reserve_exact(7).is_err() {
-            return raise_exception::<u64>(py, "MemoryError", "");
+            return raise_exception::<u64>(py, BuiltinExc::MemoryError, "");
         }
         for index in 0..7 {
             let bits = match index {
@@ -91,7 +92,7 @@ mod native {
             unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "uid should be integer, not {}",
                     protocol_type_name(py, bits, 200)
@@ -119,7 +120,7 @@ mod native {
         {
             return Some(value);
         }
-        raise_exception::<()>(py, "KeyError", "getpwuid(): uid not found");
+        raise_exception::<()>(py, BuiltinExc::KeyError, "getpwuid(): uid not found");
         None
     }
 
@@ -154,9 +155,11 @@ mod native {
                 output.finish().into_bytes_result(py)
             })();
             return Err(match message {
-                Ok(message) => {
-                    crate::builtins::exceptions::raise_exception_bytes(py, "TypeError", &message)
-                }
+                Ok(message) => crate::builtins::exceptions::raise_exception_bytes(
+                    py,
+                    BuiltinExc::TypeError,
+                    &message,
+                ),
                 Err(error) => error.raise(py),
             });
         };
@@ -164,12 +167,12 @@ mod native {
         if bytes.contains(&0) {
             return Err(raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "embedded null byte",
             ));
         }
         if bytes.try_reserve(1).is_err() {
-            return Err(raise_exception::<u64>(py, "MemoryError", ""));
+            return Err(raise_exception::<u64>(py, BuiltinExc::MemoryError, ""));
         }
         Ok(std::ffi::CString::new(bytes).expect("NUL checked before native query"))
     }
@@ -183,13 +186,13 @@ mod native {
             Ok(Some(value)) => entry(py, class, value),
             Ok(None) => raise_exception::<u64>(
                 py,
-                "KeyError",
+                BuiltinExc::KeyError,
                 &format!(
                     "getpwuid(): uid not found: {}",
                     molt_runtime_platform::utils::uid_integer(uid)
                 ),
             ),
-            Err(_) => raise_exception::<u64>(py, "MemoryError", ""),
+            Err(_) => raise_exception::<u64>(py, BuiltinExc::MemoryError, ""),
         }
     }
 
@@ -216,13 +219,15 @@ mod native {
                     output.finish().into_bytes_result(py)
                 })();
                 match message {
-                    Ok(message) => {
-                        crate::builtins::exceptions::raise_exception_bytes(py, "KeyError", &message)
-                    }
+                    Ok(message) => crate::builtins::exceptions::raise_exception_bytes(
+                        py,
+                        BuiltinExc::KeyError,
+                        &message,
+                    ),
                     Err(error) => error.raise(py),
                 }
             }
-            Err(_) => raise_exception::<u64>(py, "MemoryError", ""),
+            Err(_) => raise_exception::<u64>(py, BuiltinExc::MemoryError, ""),
         }
     }
 
@@ -233,11 +238,11 @@ mod native {
         };
         let entries = match entries {
             Ok(entries) => entries,
-            Err(_) => return raise_exception::<u64>(py, "MemoryError", ""),
+            Err(_) => return raise_exception::<u64>(py, BuiltinExc::MemoryError, ""),
         };
         let mut values = Vec::new();
         if values.try_reserve_exact(entries.len()).is_err() {
-            return raise_exception::<u64>(py, "MemoryError", "");
+            return raise_exception::<u64>(py, BuiltinExc::MemoryError, "");
         }
         for value in entries {
             let bits = entry(py, class, value);
@@ -321,7 +326,7 @@ pub extern "C" fn molt_pwd_getpwall(class: u64) -> u64 {
 mod tests {
     use super::*;
     use crate::builtins::exceptions::{
-        ExceptionValue, exception_matches_builtin_name, molt_exception_last_pending,
+        ExceptionValue, exception_matches_kind, molt_exception_last_pending,
     };
 
     #[test]
@@ -337,10 +342,10 @@ mod tests {
             assert_eq!(raise_provider_absence(py), MoltObject::none().bits());
             assert!(exception_pending(py));
             let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
-            assert!(exception_matches_builtin_name(
+            assert!(exception_matches_kind(
                 py,
                 exception.bits(),
-                "ModuleNotFoundError"
+                crate::BuiltinExc::ModuleNotFoundError
             ));
             clear_exception(py);
             let message = ExceptionValue::adopt(

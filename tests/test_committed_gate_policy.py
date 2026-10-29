@@ -607,7 +607,12 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
     if not path.startswith("runtime/molt-backend-wasm/"):
+        # tests/test_gen_op_kinds.py reads TIR pass and verifier sources.
+        reads_op_kind_sources = path.startswith(
+            ("runtime/molt-passes/src/tir/", "runtime/molt-tir/src/tir/")
+        )
         assert [r.name for r in matched] == [
+            *(["op-kind-registry"] if reads_op_kind_sources else []),
             "rust-clippy-changed",
             "tir-midend",
         ]

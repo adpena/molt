@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use std::collections::BTreeMap;
 #[cfg(feature = "stdlib_archive")]
 use std::io::Write;
@@ -7,16 +8,24 @@ use std::io::Write;
 fn pending_error_filters_preserve_independent_handled_error() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let outer = alloc_exception(py, "RuntimeError", "handled owner");
+        let outer = alloc_exception(py, BuiltinExc::RuntimeError, "handled owner");
         let outer_bits = MoltObject::from_ptr(outer).bits();
         exception_stack_push();
         crate::builtins::exceptions::exception_context_set(py, outer_bits);
-        for kind in ["AttributeError", "TypeError", "ImportError", "OSError"] {
+        for kind in [
+            crate::BuiltinExc::AttributeError,
+            crate::BuiltinExc::TypeError,
+            crate::BuiltinExc::ImportError,
+            crate::BuiltinExc::OSError,
+        ] {
             let inner = alloc_exception(py, kind, "raised owner");
             let inner_bits = MoltObject::from_ptr(inner).bits();
             record_exception(py, inner);
             // Matching the handled error must neither match nor consume raised state.
-            assert!(!clear_pending_if_kind(py, &["RuntimeError"]));
+            assert!(!clear_pending_if_kind(
+                py,
+                &[crate::BuiltinExc::RuntimeError]
+            ));
             assert!(exception_pending(py));
             let observed = molt_exception_last_pending();
             assert_eq!(observed, inner_bits);
@@ -67,10 +76,10 @@ fn dynamic_extension_admission_reports_complete_static_grants_before_path_access
             let _owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), error)
             };
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "PermissionError"
+                crate::BuiltinExc::PermissionError
             ));
             crate::molt_exception_clear();
             assert_eq!(
@@ -478,7 +487,11 @@ fn pending_exception_diagnostic_preserves_message_identity_and_owner() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         assert!(pending_exception_kind_and_message(py).is_none());
-        let _ = raise_exception::<u64>(py, "ImportError", "extension metadata: exact diagnostic");
+        let _ = raise_exception::<u64>(
+            py,
+            BuiltinExc::ImportError,
+            "extension metadata: exact diagnostic",
+        );
         let original =
             crate::builtins::exceptions::ExceptionValue::adopt(py, molt_exception_last_pending());
         let ptr = obj_from_bits(original.bits())
@@ -539,11 +552,16 @@ fn pending_exception_diagnostic_preserves_message_identity_and_owner() {
     });
 }
 
-fn assert_pending_exception_contains(_py: &PyToken<'_>, expected_kind: &str, fragments: &[&str]) {
+fn assert_pending_exception_contains(
+    _py: &PyToken<'_>,
+    expected_kind: crate::BuiltinExc,
+    fragments: &[&str],
+) {
     let (kind, message) =
         pending_exception_kind_and_message(_py).expect("expected pending exception");
     assert_eq!(
-        kind, expected_kind,
+        kind,
+        expected_kind.name(),
         "unexpected exception kind: {kind} ({message})"
     );
     for fragment in fragments {
@@ -554,7 +572,7 @@ fn assert_pending_exception_contains(_py: &PyToken<'_>, expected_kind: &str, fra
     }
     assert!(
         clear_pending_if_kind(_py, &[expected_kind]),
-        "failed to clear pending {expected_kind} exception"
+        "failed to clear pending {expected_kind:?} exception"
     );
     assert!(!exception_pending(_py));
 }
@@ -1052,7 +1070,7 @@ fn extension_spec_boundary_rejects_missing_manifest_sidecar() {
             );
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &[
                     "extension metadata missing",
                     "extension_manifest.json not found near extension path",
@@ -1087,7 +1105,7 @@ fn extension_spec_boundary_rejects_invalid_manifest_payload() {
             );
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &["invalid extension metadata in", "extension_manifest.json"],
             );
         });
@@ -1169,7 +1187,7 @@ fn extension_spec_boundary_rejects_manifest_module_mismatch() {
             );
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &["extension metadata module mismatch"],
             );
         });
@@ -1220,7 +1238,11 @@ fn extension_spec_boundary_revalidates_cache_after_artifact_mutation() {
                 out.is_err(),
                 "expected spec boundary failure after extension mutation"
             );
-            assert_pending_exception_contains(_py, "ImportError", &["extension checksum mismatch"]);
+            assert_pending_exception_contains(
+                _py,
+                crate::BuiltinExc::ImportError,
+                &["extension checksum mismatch"],
+            );
         });
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -1252,7 +1274,7 @@ fn extension_spec_object_boundary_enforces_missing_and_valid_manifest() {
                 );
                 assert_pending_exception_contains(
                     _py,
-                    "ImportError",
+                    crate::BuiltinExc::ImportError,
                     &[
                         "extension metadata missing",
                         "extension_manifest.json not found near extension path",
@@ -1323,7 +1345,7 @@ fn extension_loader_boundary_rejects_missing_manifest_sidecar() {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &[
                     "extension metadata missing",
                     "extension_manifest.json not found near extension path",
@@ -1353,7 +1375,7 @@ fn extension_loader_boundary_rejects_invalid_manifest_payload() {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &["invalid extension metadata in", "extension_manifest.json"],
             );
         });
@@ -1378,7 +1400,7 @@ fn extension_exec_boundary_rejects_missing_manifest_sidecar() {
             let _ = call_extension_exec_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &[
                     "extension metadata missing",
                     "extension_manifest.json not found near extension path",
@@ -1408,7 +1430,7 @@ fn extension_exec_boundary_rejects_invalid_manifest_metadata() {
             let _ = call_extension_exec_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &["missing or invalid field", "\"module\""],
             );
         });
@@ -1442,7 +1464,7 @@ fn extension_loader_boundary_rejects_manifest_module_mismatch() {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &["extension metadata module mismatch"],
             );
         });
@@ -1476,7 +1498,7 @@ fn extension_exec_boundary_rejects_manifest_module_mismatch() {
             let _ = call_extension_exec_boundary(_py, module_name, &extension_path_text);
             assert_pending_exception_contains(
                 _py,
-                "ImportError",
+                crate::BuiltinExc::ImportError,
                 &["extension metadata module mismatch"],
             );
         });
@@ -1525,7 +1547,11 @@ fn extension_loader_boundary_revalidates_cache_after_artifact_mutation() {
 
         crate::with_gil_entry_nopanic!(_py, {
             let _ = call_extension_loader_boundary(_py, module_name, &extension_path_text);
-            assert_pending_exception_contains(_py, "ImportError", &["extension checksum mismatch"]);
+            assert_pending_exception_contains(
+                _py,
+                crate::BuiltinExc::ImportError,
+                &["extension checksum mismatch"],
+            );
         });
 
         std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
@@ -2479,7 +2505,11 @@ fn loader_identity_class_namespace(py: &PyToken<'_>, class: u64, name: &[u8], va
 
 extern "C" fn loader_identity_descriptor_failure(_self: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        raise_exception::<_>(py, "RuntimeError", "loader identity descriptor called")
+        raise_exception::<_>(
+            py,
+            BuiltinExc::RuntimeError,
+            "loader identity descriptor called",
+        )
     })
 }
 
@@ -2572,7 +2602,7 @@ fn extension_loader_admission_uses_class_declaration_not_names_or_descriptors() 
         assert!(importlib_extension_spec_target(py, "role_extension", spec).is_err());
         assert_pending_exception_contains(
             py,
-            "ImportError",
+            crate::BuiltinExc::ImportError,
             &["extension module path must point to a file"],
         );
         for bits in [spec, loader, child, base] {
@@ -2600,7 +2630,11 @@ fn extension_loader_declaration_preserves_nonstandard_artifact_manifest_admissio
                 importlib_enforce_extension_spec_object_boundary(py, "role_extension", spec)
                     .is_err()
             );
-            assert_pending_exception_contains(py, "ImportError", &["extension metadata missing"]);
+            assert_pending_exception_contains(
+                py,
+                crate::BuiltinExc::ImportError,
+                &["extension metadata missing"],
+            );
             write_valid_extension_manifest(
                 &tmp.join("extension_manifest.json"),
                 "role_extension",
@@ -2618,7 +2652,11 @@ fn extension_loader_declaration_preserves_nonstandard_artifact_manifest_admissio
                 importlib_enforce_extension_spec_object_boundary(py, "role_extension", spec)
                     .is_err()
             );
-            assert_pending_exception_contains(py, "ImportError", &["extension checksum mismatch"]);
+            assert_pending_exception_contains(
+                py,
+                crate::BuiltinExc::ImportError,
+                &["extension checksum mismatch"],
+            );
             for bits in [spec, loader, class] {
                 dec_ref_bits(py, bits);
             }
@@ -2678,14 +2716,14 @@ fn extension_spec_origin_suffix_and_descriptor_errors_remain_independent_of_load
         assert!(importlib_extension_spec_target(py, "role_extension", spec).is_err());
         assert_pending_exception_contains(
             py,
-            "RuntimeError",
+            crate::BuiltinExc::RuntimeError,
             &["loader identity descriptor called"],
         );
         let result = molt_importlib_extension_loader_type_declare(MoltObject::none().bits());
         assert!(obj_from_bits(result).is_none());
         assert_pending_exception_contains(
             py,
-            "TypeError",
+            crate::BuiltinExc::TypeError,
             &["extension loader declaration requires a type"],
         );
         for bits in [spec, class] {
@@ -2858,7 +2896,11 @@ mod resolver_admission_tests {
                     assert!(dict_set_in_place(py, modules_ptr, util_name, util));
                 }
                 assert!(!exception_pending(py));
-                let _ = raise_exception::<u64>(py, "RuntimeError", "finder's exact exception");
+                let _ = raise_exception::<u64>(
+                    py,
+                    BuiltinExc::RuntimeError,
+                    "finder's exact exception",
+                );
                 let original = crate::builtins::exceptions::ExceptionValue::adopt(
                     py,
                     molt_exception_last_pending(),
@@ -3177,7 +3219,7 @@ extern "C" fn metadata_observed_cached(_spec: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         METADATA_CACHE_READS.fetch_add(1, Ordering::SeqCst);
         if METADATA_CACHE_FAIL.load(Ordering::SeqCst) {
-            raise_exception::<_>(py, "RuntimeError", "cached getter ran")
+            raise_exception::<_>(py, BuiltinExc::RuntimeError, "cached getter ran")
         } else {
             MoltObject::from_int(431).bits()
         }
@@ -3260,7 +3302,7 @@ fn spec_metadata_cached_projection_obeys_target_version_and_factory_ownership() 
                         assert!(result.is_err());
                         assert_pending_exception_contains(
                             py,
-                            "RuntimeError",
+                            crate::BuiltinExc::RuntimeError,
                             &["cached getter ran"],
                         );
                     } else {
@@ -3321,7 +3363,7 @@ fn spec_metadata_cached_projection_obeys_target_version_and_factory_ownership() 
                     assert!(result.is_err());
                     assert_pending_exception_contains(
                         py,
-                        "RuntimeError",
+                        crate::BuiltinExc::RuntimeError,
                         &["loader identity descriptor called"],
                     );
                 } else {
@@ -3595,9 +3637,14 @@ fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_erro
                 unsafe { call_callable0(py, crate::builtins::types::simplenamespace_class(py)) };
             crate::builtins::module_table::set_spec_initializing(py, replacement, true);
             let body_error =
-                MoltObject::from_ptr(alloc_exception(py, "ValueError", "body identity")).bits();
-            let flag_error =
-                MoltObject::from_ptr(alloc_exception(py, "RuntimeError", "flag identity")).bits();
+                MoltObject::from_ptr(alloc_exception(py, BuiltinExc::ValueError, "body identity"))
+                    .bits();
+            let flag_error = MoltObject::from_ptr(alloc_exception(
+                py,
+                BuiltinExc::RuntimeError,
+                "flag identity",
+            ))
+            .bits();
             let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
             SPEC_PROTOCOL_SPEC.store(spec, Ordering::SeqCst);
             SPEC_PROTOCOL_REPLACEMENT.store(replacement, Ordering::SeqCst);
@@ -3654,8 +3701,10 @@ fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_erro
                 assert!(result.is_err());
                 let selected = exceptions::molt_exception_last_pending();
                 if mode == 2 {
-                    assert!(exceptions::exception_matches_builtin_name(
-                        py, selected, "KeyError"
+                    assert!(exceptions::exception_matches_kind(
+                        py,
+                        selected,
+                        crate::BuiltinExc::KeyError
                     ));
                 } else {
                     assert_eq!(
@@ -3878,12 +3927,16 @@ fn import_lock_reentry_failed_release_and_terminal_custody_share_one_owner() {
         guard.finish(py).unwrap();
         assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());
         molt_imp_release_lock();
-        assert_pending_exception_contains(py, "RuntimeError", &["not holding the import lock"]);
+        assert_pending_exception_contains(
+            py,
+            crate::BuiltinExc::RuntimeError,
+            &["not holding the import lock"],
+        );
         importlib_retire_default_generation(py, runtime_state(py));
         molt_imp_acquire_lock();
         assert_pending_exception_contains(
             py,
-            "ImportError",
+            crate::BuiltinExc::ImportError,
             &["interpreter import state is retired"],
         );
         assert_eq!(molt_imp_lock_held(), MoltObject::from_bool(false).bits());

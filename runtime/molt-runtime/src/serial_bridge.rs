@@ -4,6 +4,7 @@
 //! `__molt_serial_get_vtable()`.  All bridge functions are private to this
 //! module — no individual `#[no_mangle]` C symbols are exported.
 
+use crate::BuiltinExc;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
 use crate::builtins::containers::list_len as _list_len;
 use crate::builtins::numbers::{
@@ -23,19 +24,10 @@ use num_bigint::{BigInt, Sign};
 // Exception / error handling
 // ---------------------------------------------------------------------------
 
-extern "C" fn bridge_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
-    msg_ptr: *const u8,
-    msg_len: usize,
-) -> u64 {
+extern "C" fn bridge_raise_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let type_name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, type_name, msg)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 
@@ -43,20 +35,11 @@ extern "C" fn bridge_exception_pending() -> i32 {
     crate::with_gil_entry_nopanic!(_py, { if exception_pending(_py) { 1 } else { 0 } })
 }
 
-extern "C" fn bridge_replace_exception(
-    type_ptr: *const u8,
-    type_len: usize,
-    msg_ptr: *const u8,
-    msg_len: usize,
-) -> u64 {
+extern "C" fn bridge_replace_exception(kind_code: u16, msg_ptr: *const u8, msg_len: usize) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let kind = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let message =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
+        let message = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
         crate::builtins::exceptions::with_saved_raised_exception(py, || {
-            raise_exception::<()>(py, kind, message);
+            crate::builtins::exceptions::raise_exception_code_bytes(py, kind_code, message);
             false
         });
         MoltObject::none().bits()
@@ -82,11 +65,11 @@ extern "C" fn bridge_decode_ascii_input(bits: u64) -> u64 {
             Err(error) => {
                 error.raise::<()>(py, bits);
                 use crate::builtins::exceptions::{
-                    ExceptionStackScope, ExceptionValue, exception_context_set,
-                    exception_type_bits_from_name, molt_exception_last_pending,
+                    ExceptionStackScope, ExceptionValue, exception_class_bits,
+                    exception_context_set, molt_exception_last_pending,
                     pending_exception_matches_type, with_saved_raised_exception,
                 };
-                let target = exception_type_bits_from_name(py, "UnicodeEncodeError");
+                let target = exception_class_bits(py, BuiltinExc::UnicodeEncodeError);
                 if target == 0 || !pending_exception_matches_type(py, target) {
                     return MoltObject::none().bits();
                 }
@@ -96,7 +79,7 @@ extern "C" fn bridge_decode_ascii_input(bits: u64) -> u64 {
                     exception_context_set(py, pending.bits());
                     raise_exception::<()>(
                         py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "string argument should contain only ASCII characters",
                     );
                     molt_cpython_abi::api::errors::with_preserved_error(|| drop(handler));
@@ -585,7 +568,7 @@ fn unsupported_serial_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
     let key = String::from_utf8_lossy(key);
     raise_exception::<u64>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         &format!("molt-runtime-serial requested unsupported interned static name {key:?}"),
     )
 }
@@ -872,7 +855,6 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     exception_pending: bridge_exception_pending,
     exception_new_from_class: crate::builtins::exceptions::molt_exception_new_from_class,
     decode_ascii_input: bridge_decode_ascii_input,
-    binascii_exception_type: crate::builtins::exceptions::binascii_exception_type,
     alloc_tuple: bridge_alloc_tuple,
     alloc_list: bridge_alloc_list,
     alloc_string: bridge_alloc_string,

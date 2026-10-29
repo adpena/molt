@@ -1,3 +1,4 @@
+use molt_runtime_core::BuiltinExc;
 use std::collections::HashMap;
 
 use molt_obj_model::MoltObject;
@@ -19,14 +20,14 @@ fn logging_config_dict_lookup(
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config object must be dict",
         ));
     };
     if unsafe { object_type_id(dict_ptr) } != crate::bridge::type_id_dict() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config object must be dict",
         ));
     }
@@ -46,14 +47,14 @@ fn logging_config_dict_items<'py>(
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config section must be dict",
         ));
     };
     if unsafe { object_type_id(dict_ptr) } != crate::bridge::type_id_dict() {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config section must be dict",
         ));
     }
@@ -69,7 +70,7 @@ fn logging_config_dict_items<'py>(
     if items_method_bits == missing {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config section missing items()",
         ));
     }
@@ -87,7 +88,7 @@ fn logging_config_dict_items<'py>(
         dec_ref_bits(_py, list_bits);
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config items() must produce an iterable of pairs",
         ));
     };
@@ -95,7 +96,7 @@ fn logging_config_dict_items<'py>(
         dec_ref_bits(_py, list_bits);
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config items() iterable materialization failed",
         ));
     }
@@ -106,7 +107,7 @@ fn logging_config_dict_items<'py>(
             dec_ref_bits(_py, list_bits);
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "logging config items must be pairs",
             ));
         };
@@ -114,7 +115,7 @@ fn logging_config_dict_items<'py>(
             dec_ref_bits(_py, list_bits);
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "logging config items must be pairs",
             ));
         }
@@ -123,7 +124,7 @@ fn logging_config_dict_items<'py>(
             dec_ref_bits(_py, list_bits);
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "logging config items must be key/value pairs",
             ));
         }
@@ -150,7 +151,7 @@ fn logging_config_name_list(
         dec_ref_bits(_py, list_bits);
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config handler list must be iterable",
         ));
     };
@@ -158,7 +159,7 @@ fn logging_config_name_list(
         dec_ref_bits(_py, list_bits);
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "logging config handler list materialization failed",
         ));
     }
@@ -169,7 +170,7 @@ fn logging_config_name_list(
             dec_ref_bits(_py, list_bits);
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "logging config handler references must be strings",
             ));
         };
@@ -188,7 +189,7 @@ fn logging_config_call_method1<'py>(
     let Some(method_bits) = attr_optional(_py, obj_bits, method_name)? else {
         return Err(raise_exception::<u64>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             "logging object method is missing",
         ));
     };
@@ -251,7 +252,7 @@ fn logging_config_resolve_ext_stream<'py>(
     }
     Err(raise_exception::<u64>(
         _py,
-        "ValueError",
+        BuiltinExc::ValueError,
         "unsupported logging stream ext target",
     ))
 }
@@ -262,15 +263,23 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
         let configure = || -> Result<(), u64> {
             let version_bits = logging_config_dict_lookup(_py, config_bits, "version")?
                 .ok_or_else(|| {
-                    raise_exception::<u64>(_py, "ValueError", "logging config missing version")
+                    raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "logging config missing version",
+                    )
                 })?;
             let version = to_i64(obj_from_bits(version_bits)).ok_or_else(|| {
-                raise_exception::<u64>(_py, "TypeError", "logging config version must be int")
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "logging config version must be int",
+                )
             })?;
             if version != 1 {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "unsupported logging config version",
                 ));
             }
@@ -308,7 +317,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                 if obj_from_bits(formatter_class.bits()).as_ptr().is_none() {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "logging.Formatter is invalid",
                     ));
                 }
@@ -317,7 +326,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         string_obj_to_owned(obj_from_bits(name.bits())).ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "logging formatter name must be str",
                             )
                         })?;
@@ -344,14 +353,14 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                 {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "logging.StreamHandler is invalid",
                     ));
                 }
                 if obj_from_bits(file_handler_class.bits()).as_ptr().is_none() {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "logging.FileHandler is invalid",
                     ));
                 }
@@ -360,7 +369,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         string_obj_to_owned(obj_from_bits(name.bits())).ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "logging handler name must be str",
                             )
                         })?;
@@ -368,7 +377,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         .ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 "logging handler config missing class",
                             )
                         })?;
@@ -376,7 +385,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         string_obj_to_owned(obj_from_bits(class_bits)).ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "logging handler class must be str",
                             )
                         })?;
@@ -401,7 +410,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                                 || {
                                     raise_exception::<u64>(
                                         _py,
-                                        "ValueError",
+                                        BuiltinExc::ValueError,
                                         "logging FileHandler config missing filename",
                                     )
                                 },
@@ -425,7 +434,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                     } else {
                         return Err(raise_exception::<u64>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "unsupported logging handler class for intrinsic dictConfig",
                         ));
                     };
@@ -452,14 +461,14 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         .ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "logging formatter reference must be str",
                             )
                         })?;
                         let formatter = formatter_map.get(&formatter_name).ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 "unknown formatter in logging handler config",
                             )
                         })?;
@@ -489,7 +498,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                             let handler = handler_map.get(&name).ok_or_else(|| {
                                 raise_exception::<u64>(
                                     _py,
-                                    "ValueError",
+                                    BuiltinExc::ValueError,
                                     "unknown handler in logger config",
                                 )
                             })?;
@@ -529,7 +538,7 @@ pub extern "C" fn molt_logging_config_dict(config_bits: u64) -> u64 {
                         let handler = handler_map.get(&name).ok_or_else(|| {
                             raise_exception::<u64>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 "unknown handler in root logger config",
                             )
                         })?;
@@ -566,7 +575,7 @@ pub extern "C" fn molt_logging_config_valid_ident(value_bits: u64) -> u64 {
         let Some(text) = string_obj_to_owned(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "logging.config.valid_ident expects str",
             );
         };
@@ -603,7 +612,7 @@ pub extern "C" fn molt_logging_config_file_config(
         );
         raise_exception::<_>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "logging.config.fileConfig is not implemented in Molt yet",
         )
     })
@@ -615,7 +624,7 @@ pub extern "C" fn molt_logging_config_listen(port_bits: u64, verify_bits: u64) -
         let _ = (port_bits, verify_bits);
         raise_exception::<_>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "logging.config.listen is not implemented in Molt yet",
         )
     })

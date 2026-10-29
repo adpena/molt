@@ -9,6 +9,7 @@
 //! ABI: NaN-boxed u64 in/out.
 
 use crate::*;
+use molt_runtime_core::BuiltinExc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // ── Task name counter ───────────────────────────────────────────────────────
@@ -39,7 +40,11 @@ pub unsafe extern "C" fn molt_asyncio_validate_coro(coro_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let obj = obj_from_bits(coro_bits);
         if obj.is_none() {
-            return raise_exception::<u64>(py, "TypeError", "a coroutine was expected, got None");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "a coroutine was expected, got None",
+            );
         }
         MoltObject::from_bool(true).bits()
     })
@@ -94,7 +99,7 @@ pub unsafe extern "C" fn molt_asyncio_validate_semaphore_value(value_bits: u64) 
         if val < 0 {
             return raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Semaphore initial value must be >= 0",
             );
         }
@@ -116,7 +121,11 @@ pub unsafe extern "C" fn molt_asyncio_validate_barrier_parties(parties_bits: u64
     crate::with_gil_entry_nopanic!(py, {
         let val = to_i64(obj_from_bits(parties_bits)).unwrap_or(0);
         if val <= 0 {
-            return raise_exception::<u64>(py, "ValueError", "Barrier parties must be > 0");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::ValueError,
+                "Barrier parties must be > 0",
+            );
         }
         parties_bits
     })
@@ -166,7 +175,7 @@ pub unsafe extern "C" fn molt_asyncio_lock_validate_release(locked_bits: u64) ->
         let obj = obj_from_bits(locked_bits);
         let locked = obj.as_bool().unwrap_or(false);
         if !locked {
-            return raise_exception::<u64>(py, "RuntimeError", "Lock is not acquired");
+            return raise_exception::<u64>(py, BuiltinExc::RuntimeError, "Lock is not acquired");
         }
         MoltObject::none().bits()
     })
@@ -188,7 +197,11 @@ pub unsafe extern "C" fn molt_asyncio_condition_validate_locked(locked_bits: u64
         let obj = obj_from_bits(locked_bits);
         let locked = obj.as_bool().unwrap_or(false);
         if !locked {
-            return raise_exception::<u64>(py, "RuntimeError", "Condition lock is not acquired");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::RuntimeError,
+                "Condition lock is not acquired",
+            );
         }
         MoltObject::none().bits()
     })
@@ -235,7 +248,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_writer_buffer_append(
     crate::with_gil_entry_nopanic!(py, {
         let data_obj = obj_from_bits(data_bits);
         if data_obj.is_none() {
-            return raise_exception::<u64>(py, "TypeError", "data must be bytes-like");
+            return raise_exception::<u64>(py, BuiltinExc::TypeError, "data must be bytes-like");
         }
         // Validation passed; the Python side does the actual buffer.extend()
         MoltObject::none().bits()

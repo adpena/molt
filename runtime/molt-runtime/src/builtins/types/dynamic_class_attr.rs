@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::NativeCallableKind;
 
 struct AttrValue {
@@ -60,7 +61,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
                 "DynamicClassAttribute.__init__() takes at most 4 positional arguments ({} given)",
                 positional.len()
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
 
         let none = MoltObject::none().bits();
@@ -78,7 +79,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
                     if has_fget {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "DynamicClassAttribute.__init__() got multiple values for argument 'fget'",
                         );
                     }
@@ -89,7 +90,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
                     if has_fset {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "DynamicClassAttribute.__init__() got multiple values for argument 'fset'",
                         );
                     }
@@ -100,7 +101,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
                     if has_fdel {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "DynamicClassAttribute.__init__() got multiple values for argument 'fdel'",
                         );
                     }
@@ -111,7 +112,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
                     if has_doc {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "DynamicClassAttribute.__init__() got multiple values for argument 'doc'",
                         );
                     }
@@ -123,7 +124,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
                         "DynamicClassAttribute.__init__() got an unexpected keyword argument '{}'",
                         key
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
@@ -208,7 +209,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
                 "DynamicClassAttribute.__get__() takes at most 2 positional arguments ({} given)",
                 positional.len()
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let none = MoltObject::none().bits();
         let mut instance_bits = positional.first().copied().unwrap_or(0);
@@ -221,7 +222,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
                     if has_instance {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "DynamicClassAttribute.__get__() got multiple values for argument 'instance'",
                         );
                     }
@@ -234,14 +235,14 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
                         "DynamicClassAttribute.__get__() got an unexpected keyword argument '{}'",
                         key
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
         }
         if !has_instance {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "DynamicClassAttribute.__get__() missing 1 required positional argument: 'instance'",
             );
         }
@@ -263,7 +264,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
                 inc_ref_bits(_py, self_bits);
                 return self_bits;
             }
-            return raise_exception::<_>(_py, "AttributeError", "");
+            return raise_exception::<_>(_py, BuiltinExc::AttributeError, "");
         }
 
         let Some(fget) = dynamic_class_attr_get(_py, self_bits, "fget", none) else {
@@ -273,7 +274,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
             if fget.owned {
                 dec_ref_bits(_py, fget.bits);
             }
-            return raise_exception::<_>(_py, "AttributeError", "unreadable attribute");
+            return raise_exception::<_>(_py, BuiltinExc::AttributeError, "unreadable attribute");
         }
         let out = unsafe { call_callable1(_py, fget.bits, instance_bits) };
         if fget.owned {
@@ -301,7 +302,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_set(
             if fset.owned {
                 dec_ref_bits(_py, fset.bits);
             }
-            return raise_exception::<_>(_py, "AttributeError", "can't set attribute");
+            return raise_exception::<_>(_py, BuiltinExc::AttributeError, "can't set attribute");
         }
         let _ = unsafe { call_callable2(_py, fset.bits, instance_bits, value_bits) };
         if fset.owned {
@@ -325,7 +326,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_delete(self_bits: u64, instance_
             if fdel.owned {
                 dec_ref_bits(_py, fdel.bits);
             }
-            return raise_exception::<_>(_py, "AttributeError", "can't delete attribute");
+            return raise_exception::<_>(_py, BuiltinExc::AttributeError, "can't delete attribute");
         }
         let _ = unsafe { call_callable1(_py, fdel.bits, instance_bits) };
         if fdel.owned {

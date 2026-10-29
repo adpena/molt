@@ -1,6 +1,7 @@
 //! Exercise C convention transport and managed calls through the real runtime binder.
 
 use super::*;
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::{METH_O, METH_STATIC, METH_VARARGS};
 use molt_cpython_abi::api::{mapping, numbers as numeric, sequences, strings};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -768,7 +769,11 @@ unsafe extern "C" fn runtime_error_with_tuple(
     _args: *mut PyObject,
 ) -> *mut PyObject {
     with_gil(|py| {
-        crate::raise_exception::<u64>(&py, "ValueError", "runtime-only C convention error");
+        crate::raise_exception::<u64>(
+            &py,
+            BuiltinExc::ValueError,
+            "runtime-only C convention error",
+        );
         let bits = crate::exception_last_bits_noinc(&py).unwrap();
         inc_ref_bits(&py, bits);
         ORIGINAL_ERROR.with(|slot| slot.set(bits));
@@ -1934,7 +1939,7 @@ fn abi_operation_custody_preserves_pending_channels_without_embedding_cleanup() 
         let (prior_bits, prior, trace) = with_gil(|py| {
             let prior = crate::builtins::exceptions::alloc_exception(
                 &py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 "operation preserves its caller",
             );
             assert!(!prior.is_null());
@@ -2225,7 +2230,7 @@ fn owned_hook_result_error_retires_transferred_owner_and_preserves_error() {
         let not_implemented_ptr = MoltObject::from_bits(not_implemented).as_ptr().unwrap();
         let immortal_count =
             unsafe { (*crate::header_from_obj_ptr(not_implemented_ptr)).ref_count_snapshot() };
-        crate::raise_exception::<()>(&py, "ValueError", "incoming owned result error");
+        crate::raise_exception::<()>(&py, BuiltinExc::ValueError, "incoming owned result error");
         let original = crate::exception_last_bits_noinc(&py).unwrap();
         assert!(matches!(
             owned_result_from_pending(MoltObject::from_ptr(result_ptr).bits()).decode(),

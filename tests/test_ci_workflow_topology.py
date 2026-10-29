@@ -2707,7 +2707,7 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "name: Changed Path Classifier" in ci_text
     # The frontend-Python ty type-check is a zero-diagnostic ratchet enforced in
     # CI (pre-commit is not run in Actions), mirroring the pre-commit `ty` hook.
-    assert 'argv = ["uv", "run", "ty", "check", "src"]' in _read(
+    assert 'argv = ["uv", "run", "ty", "check", "src", "tests/findings"]' in _read(
         "tools/proof_plan.toml"
     )
     # Proof spelling lives only in the manifest; docs-gates is executor mechanics.

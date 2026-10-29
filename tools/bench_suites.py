@@ -169,7 +169,12 @@ def canonical_benchmark_key(script: str | Path) -> str:
 
 def molt_args_for_benchmark(script: str | Path) -> list[str]:
     """Return a fresh Molt CLI arg list for a benchmark script."""
+    from tools.benchmark_applications import application_for_script
+
     key = canonical_benchmark_key(script)
+    app = application_for_script(Path(__file__).resolve().parents[1] / key)
+    if app is not None:
+        return list(app.molt_args)
     args = MOLT_ARGS_BY_BENCH.get(key)
     if args is not None:
         return list(args)

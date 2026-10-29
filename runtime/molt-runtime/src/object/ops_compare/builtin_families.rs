@@ -4,6 +4,7 @@
 //! authority. Only child elements dispatch Python equality; the outer receiver
 //! never re-enters the generic operator from its builtin descriptor.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::numbers::{compare_bigint_float, int_subclass_value_bits_raw};
 use crate::object::ops::as_float_extended;
 use num_bigint::BigInt;
@@ -119,7 +120,7 @@ impl BuiltinComparison {
         if !self.accepts(left) {
             raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '{}' requires a '{}' object but received a '{}'",
                     op.method_name(),
@@ -136,7 +137,7 @@ impl BuiltinComparison {
         if !matches!(self, Self::DictKeys | Self::DictItems) || !self.accepts(obj_from_bits(view)) {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '__contains__' requires a '{}' object but received a '{}'",
                     self.name(),

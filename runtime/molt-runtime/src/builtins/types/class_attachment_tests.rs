@@ -136,10 +136,10 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
         assert_eq!(molt_set_attr_name(first, class_name, property), none);
         assert!(exception_pending(_py));
         let error = crate::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             _py,
             error,
-            "TypeError"
+            crate::BuiltinExc::TypeError
         ));
         crate::molt_exception_clear();
         assert_eq!(type_of_bits(_py, first), metaclass);
@@ -183,10 +183,10 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
             assert_eq!(result, none);
             assert!(exception_pending(_py));
             let error = crate::molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 error,
-                "AttributeError"
+                crate::BuiltinExc::AttributeError
             ));
             // Normal dictionary lookup admits hashing only without a raised
             // exception. Keep our error owner while checking the rejected write.
@@ -307,10 +307,10 @@ fn tuple_sequence_descriptors_reject_other_physical_receivers() {
                     "{name}: descriptor receiver admission"
                 );
                 let exception = crate::molt_exception_last();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
-                    "TypeError",
+                    crate::BuiltinExc::TypeError,
                 ));
                 crate::molt_exception_clear();
                 dec_ref_bits(py, exception);
@@ -535,10 +535,10 @@ fn native_class_reassignment_preserves_intrinsic_owner_and_live_payload() {
                 assert_eq!(exception_pending(py), !allowed);
                 if !allowed {
                     let error = crate::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "TypeError"
+                        crate::BuiltinExc::TypeError
                     ));
                     crate::molt_exception_clear();
                     dec_ref_bits(py, error);

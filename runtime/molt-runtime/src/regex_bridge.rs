@@ -4,6 +4,7 @@
 //! internal `pub(crate)` function.  The regex crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_runtime_capi::{BufferAcquireError, ByteInput};
 
@@ -36,7 +37,7 @@ fn regex_subject_buffer<T>(
                 let name = crate::object::ops::protocol_type_name(py, subject_bits, 200);
                 raise_exception::<()>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("expected string or bytes-like object, got '{name}'"),
                 );
                 false
@@ -126,7 +127,7 @@ pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
             Err(molt_cpython_abi::api::buffer::InvalidBufferDescriptor) => {
                 return raise_exception(
                     _py,
-                    "BufferError",
+                    BuiltinExc::BufferError,
                     "invalid or indirect memoryview buffer descriptor",
                 );
             }
@@ -145,7 +146,7 @@ pub extern "C" fn molt_re_subject_view(subject_bits: u64) -> u64 {
 pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, end: usize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if start > end {
-            return raise_exception::<u64>(_py, "IndexError", "invalid group span");
+            return raise_exception::<u64>(_py, BuiltinExc::IndexError, "invalid group span");
         }
         if let Some(subject_ptr) = obj_from_bits(subject_bits).as_ptr()
             && unsafe { object_type_id(subject_ptr) } == TYPE_ID_STRING
@@ -249,18 +250,13 @@ pub extern "C" fn __molt_regex_subject_slice(subject_bits: u64, start: usize, en
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_regex_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
+    kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let type_name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, type_name, msg)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 

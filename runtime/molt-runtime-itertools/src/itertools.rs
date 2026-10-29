@@ -1170,7 +1170,7 @@ pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
             if current_bits == 0 || obj_from_bits(current_bits).is_none() {
                 let iterable = match iter_next_owned(_py, &iterables) {
                     Ok(Some(value)) => value,
-                    Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+                    Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
                     Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
                 };
                 let next_bits = molt_iter(_py, iterable.bits());
@@ -1236,7 +1236,7 @@ pub extern "C" fn molt_itertools_islice(
         if step <= 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Step for islice() must be a positive integer or None.",
             );
         }
@@ -1259,7 +1259,7 @@ pub extern "C" fn molt_itertools_islice(
                 if val < 0 {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize.",
                     );
                 }
@@ -1279,7 +1279,7 @@ pub extern "C" fn molt_itertools_islice(
                 if val < 0 {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.",
                     );
                 }
@@ -1299,7 +1299,7 @@ pub extern "C" fn molt_itertools_islice(
                 if val < 0 {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.",
                     );
                 }
@@ -1346,15 +1346,15 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
         let mut idx = unsafe { islice_idx(self_ptr) };
         let mut next_idx = unsafe { islice_next_idx(self_ptr) };
         if has_stop && next_idx >= stop {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         loop {
             if has_stop && idx >= stop {
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             }
             let value = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
-                Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+                Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let selected = idx == next_idx;
@@ -1441,7 +1441,7 @@ pub extern "C" fn molt_itertools_repeat_next(self_bits: u64) -> u64 {
         let obj_bits = unsafe { repeat_obj_bits(self_ptr) };
         let times = unsafe { repeat_times(self_ptr) };
         if times == 0 {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         if times > 0 {
             unsafe { repeat_set_times(self_ptr, times - 1) };
@@ -1541,19 +1541,19 @@ pub extern "C" fn molt_itertools_cycle_next(self_bits: u64) -> u64 {
         let list_bits = unsafe { cycle_saved_bits(self_ptr) };
         let list_ptr = obj_from_bits(list_bits).as_ptr();
         let Some(list_ptr) = list_ptr else {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         };
         unsafe {
             if object_type_id(list_ptr) != TYPE_ID_LIST {
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             }
             let values_len = seq_read_len(list_ptr);
             if values_len == 0 {
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             }
             let idx = cycle_index(self_ptr) as usize % values_len;
             let Some(val_bits) = seq_read_item_owned(list_ptr, idx) else {
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             };
             cycle_set_index(self_ptr, (idx + 1) as i64);
             val_bits
@@ -1634,7 +1634,7 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
         let iterator = OwnedRuntimeValue::retain(_py, iter_bits);
         let value = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
-            Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+            Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
             Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         // Read the phase after input callbacks: a reentrant next may have
@@ -1678,7 +1678,7 @@ pub extern "C" fn molt_itertools_batched(iterable_bits: u64, n_bits: u64, strict
             return MoltObject::none().bits();
         }
         if n < 1 {
-            return raise_exception::<u64>(_py, "ValueError", "n must be at least one");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "n must be at least one");
         }
         let iter_bits = molt_iter(_py, iterable_bits);
         if obj_from_bits(iter_bits).is_none() {
@@ -1713,12 +1713,12 @@ pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         if unsafe { batched_done(self_ptr) } != 0 {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let iter_bits = unsafe { batched_iter_bits(self_ptr) };
         if iter_bits == 0 || obj_from_bits(iter_bits).is_none() {
             unsafe { batched_set_done(self_ptr, 1) };
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         // A nested next can retire the field while this batch still advances.
         let iterator = OwnedRuntimeValue::retain(_py, iter_bits);
@@ -1737,12 +1737,12 @@ pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
                     }
                     drop(unsafe { OwnedRuntimeValue::from_owned_bits(_py, displaced) });
                     if chunk.is_empty() {
-                        return raise_exception::<u64>(_py, "StopIteration", "");
+                        return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
                     }
                     if strict {
                         return raise_exception::<u64>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "batched(): incomplete batch",
                         );
                     }
@@ -1802,12 +1802,12 @@ pub extern "C" fn molt_itertools_compress_next(self_bits: u64) -> u64 {
         loop {
             let value = match iter_next_owned(_py, &data_iterator) {
                 Ok(Some(value)) => value,
-                Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+                Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let selector = match iter_next_owned(_py, &selectors_iterator) {
                 Ok(Some(value)) => value,
-                Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+                Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let selected = is_truthy(_py, obj_from_bits(selector.bits()));
@@ -1860,7 +1860,7 @@ pub extern "C" fn molt_itertools_dropwhile_next(self_bits: u64) -> u64 {
         loop {
             let value = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
-                Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+                Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if unsafe { dropwhile_dropping(self_ptr) } == 0 {
@@ -1931,7 +1931,7 @@ pub extern "C" fn molt_itertools_filterfalse_next(self_bits: u64) -> u64 {
         loop {
             let value = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
-                Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+                Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let predicate = if use_identity {
@@ -1990,7 +1990,7 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
         if unsafe { pairwise_started(self_ptr) } == 0 {
             let first = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
-                Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+                Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let displaced = unsafe { pairwise_prev_bits(self_ptr) };
@@ -2003,7 +2003,7 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
         let prev = OwnedRuntimeValue::retain(_py, unsafe { pairwise_prev_bits(self_ptr) });
         let value = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
-            Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+            Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
             Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let tuple_ptr = alloc_tuple(_py, &[prev.bits(), value.bits()]);
@@ -2025,16 +2025,20 @@ pub extern "C" fn molt_itertools_product(iterables_bits: u64, repeat_bits: u64) 
             return MoltObject::none().bits();
         }
         if repeat < 0 {
-            return raise_exception::<_>(_py, "ValueError", "repeat argument cannot be negative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "repeat argument cannot be negative",
+            );
         }
         let mut pools_bits: Vec<u64> = Vec::new();
         let mut done = false;
         if repeat > 0 {
             let Some(iterables_ptr) = obj_from_bits(iterables_bits).as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "product expects a tuple");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "product expects a tuple");
             };
             if unsafe { object_type_id(iterables_ptr) } != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "product expects a tuple");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "product expects a tuple");
             }
             let iterables = unsafe { seq_snapshot(iterables_ptr) };
             let mut base_pools: Vec<u64> = Vec::with_capacity(iterables.len());
@@ -2106,17 +2110,17 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { product_data_ptr(self_ptr) };
         if data_ptr.is_null() {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let data = unsafe { &mut *data_ptr };
         if data.done {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         if data.first {
             data.first = false;
         } else if data.pools_bits.is_empty() {
             data.done = true;
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         } else {
             let mut advanced = false;
             for idx in (0..data.indices.len()).rev() {
@@ -2134,7 +2138,7 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
             }
             if !advanced {
                 data.done = true;
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             }
         }
         if data.pools_bits.is_empty() {
@@ -2151,7 +2155,11 @@ pub extern "C" fn molt_itertools_product_next(self_bits: u64) -> u64 {
             let Some(item_bits) =
                 (unsafe { seq_read_item_gil_borrowed(pool_ptr, data.indices[idx]) })
             else {
-                return raise_exception::<u64>(_py, "RuntimeError", "product pool changed");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "product pool changed",
+                );
             };
             data.row_buf.push(item_bits);
         }
@@ -2183,7 +2191,7 @@ pub extern "C" fn molt_itertools_permutations(iterable_bits: u64, r_bits: u64) -
         };
         if r < 0 {
             dec_ref_bits(_py, pool_bits);
-            return raise_exception::<_>(_py, "ValueError", "r must be non-negative");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "r must be non-negative");
         }
         let r_usize = r as usize;
         let done = r_usize > n;
@@ -2236,17 +2244,17 @@ pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { permutations_data_ptr(self_ptr) };
         if data_ptr.is_null() {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let data = unsafe { &mut *data_ptr };
         if data.done {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         if data.first {
             data.first = false;
         } else if data.r == 0 {
             data.done = true;
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         } else {
             let mut advanced = false;
             for idx in (0..data.r).rev() {
@@ -2262,7 +2270,7 @@ pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
             }
             if !advanced {
                 data.done = true;
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             }
         }
         if data.r == 0 {
@@ -2278,7 +2286,11 @@ pub extern "C" fn molt_itertools_permutations_next(self_bits: u64) -> u64 {
         for &pool_idx in data.indices.iter().take(data.r) {
             let Some(item_bits) = (unsafe { seq_read_item_gil_borrowed(pool_ptr, pool_idx) })
             else {
-                return raise_exception::<u64>(_py, "RuntimeError", "permutations pool changed");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "permutations pool changed",
+                );
             };
             data.row_buf.push(item_bits);
         }
@@ -2305,7 +2317,7 @@ pub extern "C" fn molt_itertools_combinations(iterable_bits: u64, r_bits: u64) -
         }
         if r < 0 {
             dec_ref_bits(_py, pool_bits);
-            return raise_exception::<_>(_py, "ValueError", "r must be non-negative");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "r must be non-negative");
         }
         let r_usize = r as usize;
         let done = r_usize > n;
@@ -2364,7 +2376,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement(
         }
         if r < 0 {
             dec_ref_bits(_py, pool_bits);
-            return raise_exception::<_>(_py, "ValueError", "r must be non-negative");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "r must be non-negative");
         }
         let r_usize = r as usize;
         let done = n == 0 && r_usize > 0;
@@ -2411,17 +2423,17 @@ pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { combinations_data_ptr(self_ptr) };
         if data_ptr.is_null() {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let data = unsafe { &mut *data_ptr };
         if data.done {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         if data.first {
             data.first = false;
         } else if data.r == 0 {
             data.done = true;
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         } else {
             let mut pivot = None;
             for idx in (0..data.r).rev() {
@@ -2432,7 +2444,7 @@ pub extern "C" fn molt_itertools_combinations_next(self_bits: u64) -> u64 {
             }
             let Some(pivot_idx) = pivot else {
                 data.done = true;
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             };
             data.indices[pivot_idx] += 1;
             for idx in pivot_idx + 1..data.r {
@@ -2467,17 +2479,17 @@ pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { combinations_with_replacement_data_ptr(self_ptr) };
         if data_ptr.is_null() {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let data = unsafe { &mut *data_ptr };
         if data.done {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         if data.first {
             data.first = false;
         } else if data.r == 0 {
             data.done = true;
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         } else {
             let mut pivot = None;
             for idx in (0..data.r).rev() {
@@ -2488,7 +2500,7 @@ pub extern "C" fn molt_itertools_combinations_with_replacement_next(self_bits: u
             }
             let Some(pivot_idx) = pivot else {
                 data.done = true;
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             };
             data.indices[pivot_idx] += 1;
             let fill = data.indices[pivot_idx];
@@ -2605,7 +2617,7 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
         loop {
             let state = unsafe { groupby_state(self_ptr) };
             if state & GROUPBY_EXHAUSTED != 0 {
-                return raise_exception::<u64>(_py, "StopIteration", "");
+                return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
             }
             if state & GROUPBY_HAS_CURRENT != 0 {
                 if state & GROUPBY_HAS_TARGET == 0 {
@@ -2631,7 +2643,7 @@ pub extern "C" fn molt_itertools_groupby_next(self_bits: u64) -> u64 {
                 drop(target);
                 let state = unsafe { groupby_state(self_ptr) };
                 if state & GROUPBY_EXHAUSTED != 0 {
-                    return raise_exception::<u64>(_py, "StopIteration", "");
+                    return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
                 }
                 if state & GROUPBY_HAS_CURRENT == 0 {
                     continue;
@@ -2685,12 +2697,12 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let parent_bits = unsafe { groupby_iter_parent_bits(self_ptr) };
         let Some(parent_ptr) = obj_from_bits(parent_bits).as_ptr() else {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         };
         if unsafe { groupby_active_grouper(parent_ptr) } != self_bits
             || unsafe { groupby_state(parent_ptr) } & GROUPBY_EXHAUSTED != 0
         {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let iterator = OwnedRuntimeValue::retain(_py, unsafe { groupby_iter_bits(parent_ptr) });
         if unsafe { groupby_state(parent_ptr) } & GROUPBY_HAS_CURRENT == 0
@@ -2703,7 +2715,7 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
             || state & GROUPBY_EXHAUSTED != 0
             || state & GROUPBY_HAS_CURRENT == 0
         {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let target = OwnedRuntimeValue::retain(_py, unsafe { groupby_iter_target_bits(self_ptr) });
         let current = OwnedRuntimeValue::retain(_py, unsafe { groupby_curr_key_bits(parent_ptr) });
@@ -2727,7 +2739,7 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
             || state & GROUPBY_EXHAUSTED != 0
             || state & GROUPBY_HAS_CURRENT == 0
         {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let value = unsafe { groupby_curr_val_bits(parent_ptr) };
         let displaced_key = unsafe { groupby_curr_key_bits(parent_ptr) };
@@ -2781,7 +2793,7 @@ pub extern "C" fn molt_itertools_starmap_next(self_bits: u64) -> u64 {
         let iterator = OwnedRuntimeValue::retain(_py, iter_bits);
         let args = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
-            Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
+            Ok(None) => return raise_exception::<u64>(_py, BuiltinExc::StopIteration, ""),
             Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let builder_bits = bridge_callargs_new(0, 0);
@@ -2834,7 +2846,7 @@ pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         if unsafe { takewhile_done(self_ptr) } != 0 {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let predicate =
             OwnedRuntimeValue::retain(_py, unsafe { takewhile_predicate_bits(self_ptr) });
@@ -2850,7 +2862,7 @@ pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
             }
             drop(unsafe { OwnedRuntimeValue::from_owned_bits(_py, old_predicate) });
             drop(unsafe { OwnedRuntimeValue::from_owned_bits(_py, old_iter) });
-            raise_exception::<u64>(_py, "StopIteration", "")
+            raise_exception::<u64>(_py, BuiltinExc::StopIteration, "")
         };
         let value = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
@@ -2877,10 +2889,18 @@ pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
 pub extern "C" fn molt_itertools_zip_longest(iterables_bits: u64, fillvalue_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(iterables_ptr) = obj_from_bits(iterables_bits).as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "zip_longest expects a tuple");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "zip_longest expects a tuple",
+            );
         };
         if unsafe { object_type_id(iterables_ptr) } != TYPE_ID_TUPLE {
-            return raise_exception::<u64>(_py, "TypeError", "zip_longest expects a tuple");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "zip_longest expects a tuple",
+            );
         }
         let iterables = unsafe { seq_snapshot(iterables_ptr) };
         let mut iter_bits_vec = Vec::with_capacity(iterables.len());
@@ -2941,7 +2961,7 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
         let self_ptr = obj_from_bits(self_bits).as_ptr().unwrap();
         let data_ptr = unsafe { zip_longest_data_ptr(self_ptr) };
         if data_ptr.is_null() || unsafe { (*data_ptr).active } == 0 {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         // Keep owned row values local: callbacks may reenter this iterator, so
         // no shared row buffer or Rust mutable borrow can cross advancement.
@@ -2976,7 +2996,7 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
             }
         }
         if !produced {
-            return raise_exception::<u64>(_py, "StopIteration", "");
+            return raise_exception::<u64>(_py, BuiltinExc::StopIteration, "");
         }
         let tuple_ptr = alloc_tuple(_py, OwnedRuntimeValue::as_bits_slice(&out));
         if tuple_ptr.is_null() {
@@ -2996,16 +3016,16 @@ pub extern "C" fn molt_itertools_tee(iterable_bits: u64, n_bits: u64) -> u64 {
         let Ok(n) = isize::try_from(n) else {
             return raise_exception::<u64>(
                 py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "Python int too large to convert to C ssize_t",
             );
         };
         if n < 0 {
-            return raise_exception::<u64>(py, "ValueError", "n must be >= 0");
+            return raise_exception::<u64>(py, BuiltinExc::ValueError, "n must be >= 0");
         }
         let mut readers = Vec::new();
         if readers.try_reserve_exact(n as usize).is_err() {
-            return raise_exception::<u64>(py, "MemoryError", "");
+            return raise_exception::<u64>(py, BuiltinExc::MemoryError, "");
         }
         if n != 0 {
             // CPython gets the iterable's iterator, then constructs a tee from
@@ -3106,7 +3126,7 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
         loop {
             let cursor = unsafe { self_ptr.read() };
             let Some(block_ptr) = obj_from_bits(cursor.block_bits).as_ptr() else {
-                return raise_exception::<u64>(py, "StopIteration", "");
+                return raise_exception::<u64>(py, BuiltinExc::StopIteration, "");
             };
             let block_ptr = block_ptr.cast::<TeeBlock>();
             if cursor.index as usize == TEE_BLOCK_CAPACITY {
@@ -3134,7 +3154,7 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
             if unsafe { (*block_ptr).running } != 0 {
                 return raise_exception::<u64>(
                     py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "cannot re-enter the tee iterator",
                 );
             }
@@ -3148,7 +3168,7 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
             unsafe { (*block_ptr).running = 0 };
             let value = match step {
                 Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
-                Ok(None) => return raise_exception::<u64>(py, "StopIteration", ""),
+                Ok(None) => return raise_exception::<u64>(py, BuiltinExc::StopIteration, ""),
                 Ok(Some(value)) => value,
             };
             let result = OwnedRuntimeValue::retain(py, value.bits());

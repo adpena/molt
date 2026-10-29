@@ -1,4 +1,5 @@
 // Re-export iter impl functions for backward compatibility with crate::object::ops::* paths
+use crate::BuiltinExc;
 use crate::object::{ClassEdgeOwnership, object_replace_class_edge};
 use crate::runtime_flags::{self, RuntimeFlag};
 
@@ -893,7 +894,11 @@ pub extern "C" fn molt_profile_epoch_reset(label_bits: u64) -> u64 {
             return MoltObject::from_bool(false).bits();
         }
         let Some(label) = string_obj_to_owned(obj_from_bits(label_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "profile epoch label must be str");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "profile epoch label must be str",
+            );
         };
         // Serialize the full reset transaction, not just slot replacement.
         // This makes the sole process-wide epoch deterministic under a future
@@ -905,7 +910,7 @@ pub extern "C" fn molt_profile_epoch_reset(label_bits: u64) -> u64 {
         let Some(generation) = state.generation.checked_add(1) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "profile epoch generation exhausted",
             );
         };
@@ -944,12 +949,16 @@ pub extern "C" fn molt_profile_epoch_dump() -> u64 {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let end = runtime_profile_payload(_py, false);
         let Some(baseline) = state.active.take() else {
-            return raise_exception::<u64>(_py, "RuntimeError", "profile epoch is not active");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "profile epoch is not active",
+            );
         };
         drop(state);
         let payload = match runtime_profile_epoch_delta_payload(&baseline, &end) {
             Ok(payload) => payload,
-            Err(message) => return raise_exception::<u64>(_py, "RuntimeError", message),
+            Err(message) => return raise_exception::<u64>(_py, BuiltinExc::RuntimeError, message),
         };
         crate::diagnostics::emit_line(&format!("molt_profile_epoch_json {payload}"));
         MoltObject::from_bool(true).bits()
@@ -1504,7 +1513,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
         let obj = obj_from_bits(seq_bits);
         let Some(ptr) = obj.as_ptr() else {
             let msg = unpack_non_iterable_message(_py, seq_bits);
-            raise_exception::<u64>(_py, "TypeError", &msg);
+            raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             return MoltObject::none().bits();
         };
         unsafe {
@@ -1517,12 +1526,12 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                         "not enough values to unpack (expected {}, got {})",
                         expected, actual
                     );
-                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
                     return MoltObject::none().bits();
                 }
                 if actual > expected {
                     let msg = unpack_too_many_message(_py, expected, actual);
-                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
                     return MoltObject::none().bits();
                 }
                 for (i, &raw) in elems.iter().enumerate().take(expected) {
@@ -1552,12 +1561,12 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                         "not enough values to unpack (expected {}, got {})",
                         expected, actual
                     );
-                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
                     return MoltObject::none().bits();
                 }
                 if actual > expected {
                     let msg = unpack_too_many_message(_py, expected, actual);
-                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
                     return MoltObject::none().bits();
                 }
             } else {
@@ -1568,7 +1577,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                         return MoltObject::none().bits();
                     }
                     let msg = unpack_non_iterable_message(_py, seq_bits);
-                    raise_exception::<u64>(_py, "TypeError", &msg);
+                    raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
                     return MoltObject::none().bits();
                 }
                 let mut count = 0usize;
@@ -1597,7 +1606,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                         }
                         dec_ref_bits(_py, iter_bits);
                         let msg = format!("too many values to unpack (expected {})", expected);
-                        raise_exception::<u64>(_py, "ValueError", &msg);
+                        raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
                         return no_value;
                     }
                     out_slice[count] = value_bits;
@@ -1609,7 +1618,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                         "not enough values to unpack (expected {}, got {})",
                         expected, count
                     );
-                    raise_exception::<u64>(_py, "ValueError", &msg);
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
                     for slot in out_slice.iter_mut().take(count) {
                         dec_ref_bits(_py, *slot);
                         *slot = no_value;
@@ -1635,7 +1644,7 @@ unsafe fn dict_subclass_storage_bits(py: &PyToken<'_>, ptr: *mut u8) -> Result<O
             {
                 return Ok(Some(current));
             }
-            raise_exception::<()>(py, "SystemError", "invalid dict subclass backing");
+            raise_exception::<()>(py, BuiltinExc::SystemError, "invalid dict subclass backing");
             return Err(());
         }
         let dictionary = alloc_dict_with_pairs(py, &[]);
@@ -1751,7 +1760,7 @@ fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
                     let name = protocol_type_name(_py, obj.bits(), 200);
                     let _ = raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("'{name}' cannot be interpreted as a boolean"),
                     );
                     return Err(());
@@ -1773,7 +1782,7 @@ fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
                 } else {
                     let res_type = protocol_type_name(_py, res_bits, usize::MAX);
                     let msg = format!("__bool__ should return bool, returned {res_type}");
-                    let _ = raise_exception::<u64>(_py, "TypeError", &msg);
+                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
                     Err(())
                 };
                 // A native result observes the selected validation error. On
@@ -2176,7 +2185,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         };
         if ptr.is_null() {
             return crate::with_gil_entry_nopanic!(_py, {
-                raise_exception::<u64>(_py, "RuntimeError", "class base pointer is null")
+                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "class base pointer is null")
             });
         }
         ptr
@@ -2194,7 +2203,11 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         };
         if ptr.is_null() {
             return crate::with_gil_entry_nopanic!(_py, {
-                raise_exception::<u64>(_py, "RuntimeError", "class attribute pointer is null")
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "class attribute pointer is null",
+                )
             });
         }
         ptr
@@ -2203,7 +2216,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         return crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "class base range is invalid for the active target",
             )
         });
@@ -2214,7 +2227,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         return crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "class attribute range is invalid for the active target",
             )
         });
@@ -2312,7 +2325,8 @@ pub unsafe extern "C" fn molt_guarded_class_def(
 
     let version_initialized = crate::with_gil_entry_nopanic!(_py, {
         if layout_version < 0 {
-            let _ = raise_exception::<u64>(_py, "TypeError", "layout version must be int");
+            let _ =
+                raise_exception::<u64>(_py, BuiltinExc::TypeError, "layout version must be int");
             false
         } else {
             unsafe { crate::class_set_layout_version_bits(class_ptr, layout_version as u64) };
@@ -2354,7 +2368,11 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
             };
         }
         if parts_ptr.is_null() {
-            return raise_exception::<_>(_py, "RuntimeError", "f-string parts pointer is null");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "f-string parts pointer is null",
+            );
         }
         let Some(pair_slots) = n.checked_mul(2) else {
             return {
@@ -2367,7 +2385,11 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
         let Some(raw_parts) =
             (unsafe { crate::provenance::abi::slice(parts_ptr, pair_slots_bits) })
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "f-string parts pointer is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "f-string parts pointer is invalid",
+            );
         };
 
         // Collect string parts — resolve values via str() as needed.

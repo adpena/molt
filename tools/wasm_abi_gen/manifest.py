@@ -2297,12 +2297,25 @@ def validate_loaded_manifest(
     deployment = data.get("deployment_manifest")
     if (
         not isinstance(deployment, dict)
-        or set(deployment) != {"version"}
+        or set(deployment) != {"version", "launch_environment_required_names"}
         or type(deployment["version"]) is not int
         or not 0 < deployment["version"] < 2**32
     ):
         raise WasmAbiManifestError(
             "deployment_manifest requires a positive u32 version"
+        )
+    names = deployment["launch_environment_required_names"]
+    if (
+        not isinstance(names, list)
+        or not names
+        or any(
+            not isinstance(name, str) or not name or "=" in name or "\x00" in name
+            for name in names
+        )
+        or len(set(names)) != len(names)
+    ):
+        raise WasmAbiManifestError(
+            "deployment_manifest requires unique valid launch environment names"
         )
     _validate_wasi_errno(data)
     synthetic_errno_table(data)

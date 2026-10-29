@@ -192,7 +192,11 @@ pub(crate) unsafe fn current_dictionary(
         {
             return Ok(Some(bits));
         }
-        raise_exception::<()>(py, "SystemError", "invalid instance dictionary backing");
+        raise_exception::<()>(
+            py,
+            BuiltinExc::SystemError,
+            "invalid instance dictionary backing",
+        );
         Err(())
     }
 }
@@ -257,7 +261,7 @@ unsafe fn publish(
             }
             if let Err(message) = result {
                 if !exception_pending(py) {
-                    raise_exception::<()>(py, "SystemError", message);
+                    raise_exception::<()>(py, BuiltinExc::SystemError, message);
                 }
                 return false;
             }
@@ -306,11 +310,15 @@ pub(crate) unsafe fn replace_dictionary(
 ) -> Result<(), ()> {
     unsafe {
         if !allows_dictionary(py, object) {
-            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::AttributeError,
+                "object has no instance dictionary",
+            );
             return Err(());
         }
         if replacement.is_none() && object_type_id(object) == TYPE_ID_FUNCTION {
-            raise_exception::<()>(py, "TypeError", "cannot delete __dict__");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "cannot delete __dict__");
             return Err(());
         }
         if let Some(bits) = replacement
@@ -322,7 +330,7 @@ pub(crate) unsafe fn replace_dictionary(
                 "__dict__ must be set to a dictionary, not a '{}'",
                 type_name(py, obj_from_bits(bits))
             );
-            raise_exception::<()>(py, "TypeError", &message);
+            raise_exception::<()>(py, BuiltinExc::TypeError, &message);
             return Err(());
         }
         current_dictionary(py, object)?;
@@ -357,7 +365,7 @@ pub(crate) unsafe fn resolve(
         let Some(field) = field_at_offset(py, object, offset) else {
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "field offset is absent from instance layout",
             );
             return None;
@@ -404,7 +412,11 @@ unsafe fn materialize_with_pairs(
 pub(crate) unsafe fn materialize(py: &PyToken<'_>, object: *mut u8) -> Option<u64> {
     unsafe {
         if !allows_dictionary(py, object) {
-            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::AttributeError,
+                "object has no instance dictionary",
+            );
             return None;
         }
         if let Some(existing) = current_dictionary(py, object).ok()? {
@@ -425,7 +437,11 @@ pub(crate) unsafe fn set_item_deferred<'a, 'py>(
 ) -> Result<Option<super::ops::DetachedDictReferences<'a, 'py>>, ()> {
     unsafe {
         if super::instance_dict_bits_ptr(object).is_null() {
-            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::AttributeError,
+                "object has no instance dictionary",
+            );
             return Err(());
         }
         let Some(dictionary) = current_dictionary(py, object)? else {
@@ -473,7 +489,11 @@ pub(crate) unsafe fn set_item(
 ) -> Result<(), ()> {
     unsafe {
         if !allows_dictionary(py, object) {
-            raise_exception::<()>(py, "AttributeError", "object has no instance dictionary");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::AttributeError,
+                "object has no instance dictionary",
+            );
             return Err(());
         }
         let retired = set_item_deferred(py, object, name, value)?;

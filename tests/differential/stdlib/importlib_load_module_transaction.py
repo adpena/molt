@@ -1,4 +1,5 @@
 # MOLT_ENV: MOLT_CAPABILITIES=fs.read,fs.write,env.read
+# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-530 expect_molt_returncode=1 expect_molt_stdout_sha256=14fc8d155abb32a875cba9f8d45a80c530604373fb642b446397a07f4c031ccc
 """Purpose: differential coverage for SourceFileLoader.load_module transaction."""
 
 import importlib.machinery

@@ -6,6 +6,7 @@
 //! On WASM all fds are already non-blocking (I/O goes through host imports),
 //! so fcntl is a sensible no-op: F_GETFL returns 0, F_SETFL succeeds silently.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
@@ -104,7 +105,7 @@ pub extern "C" fn molt_fcntl(fd_bits: u64, cmd_bits: u64, arg_bits: u64) -> u64 
             if rc < 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &std::io::Error::last_os_error().to_string(),
                 );
             }
@@ -131,7 +132,11 @@ pub extern "C" fn molt_fcntl(fd_bits: u64, cmd_bits: u64, arg_bits: u64) -> u64 
         #[cfg(all(not(unix), not(target_arch = "wasm32")))]
         {
             let _ = (fd, cmd, arg);
-            raise_exception::<u64>(_py, "OSError", "fcntl is not supported on this platform")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::OSError,
+                "fcntl is not supported on this platform",
+            )
         }
     })
 }

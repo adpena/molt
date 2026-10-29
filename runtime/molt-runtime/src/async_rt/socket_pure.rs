@@ -5,6 +5,7 @@
 //! authority so feature gates cannot turn pure byte/order/address conversions
 //! into unsupported-network stubs.
 
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::socket_constants::{AF_INET, AF_INET6};
 use crate::*;
@@ -44,8 +45,10 @@ pub extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u64) -> 
         let family = to_i64(obj_from_bits(family_bits)).unwrap_or(0) as i32;
         let addr = match host_from_bits(_py, address_bits) {
             Ok(Some(val)) => val,
-            Ok(None) => return raise_exception::<_>(_py, "TypeError", "address cannot be None"),
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Ok(None) => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "address cannot be None");
+            }
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         if family == AF_INET {
             let ip: Ipv4Addr = match addr.parse() {
@@ -81,7 +84,7 @@ pub extern "C" fn molt_socket_inet_pton(family_bits: u64, address_bits: u64) -> 
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        raise_exception::<_>(_py, "ValueError", "unsupported address family")
+        raise_exception::<_>(_py, BuiltinExc::ValueError, "unsupported address family")
     })
 }
 
@@ -104,17 +107,25 @@ pub extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u64) -> u
                 } else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "packed address must be bytes-like",
                     );
                 }
             }
         } else {
-            return raise_exception::<_>(_py, "TypeError", "packed address must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "packed address must be bytes-like",
+            );
         };
         if family == AF_INET {
             if data.len() != 4 {
-                return raise_exception::<_>(_py, "ValueError", "invalid IPv4 packed length");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid IPv4 packed length",
+                );
             }
             let mut octets = [0u8; 4];
             octets.copy_from_slice(&data[..4]);
@@ -128,7 +139,11 @@ pub extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u64) -> u
         }
         if family == AF_INET6 {
             if data.len() != 16 {
-                return raise_exception::<_>(_py, "ValueError", "invalid IPv6 packed length");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid IPv6 packed length",
+                );
             }
             let mut octets = [0u8; 16];
             octets.copy_from_slice(&data[..16]);
@@ -140,7 +155,7 @@ pub extern "C" fn molt_socket_inet_ntop(family_bits: u64, packed_bits: u64) -> u
             }
             return MoltObject::from_ptr(ptr).bits();
         }
-        raise_exception::<_>(_py, "ValueError", "unsupported address family")
+        raise_exception::<_>(_py, BuiltinExc::ValueError, "unsupported address family")
     })
 }
 
@@ -153,17 +168,17 @@ fn socket_u16_from_index(_py: &PyToken<'_>, value_bits: u64, func: &str) -> Opti
     let value = index_bigint_from_obj(_py, value_bits, &err)?;
     if value.is_negative() {
         let msg = format!("{func}: can't convert negative Python int to C 16-bit unsigned integer");
-        raise_exception::<Option<u16>>(_py, "OverflowError", &msg);
+        raise_exception::<Option<u16>>(_py, BuiltinExc::OverflowError, &msg);
         return None;
     }
     if value > BigInt::from(u16::MAX) {
         let msg = format!("{func}: Python int too large to convert to C 16-bit unsigned integer");
-        raise_exception::<Option<u16>>(_py, "OverflowError", &msg);
+        raise_exception::<Option<u16>>(_py, BuiltinExc::OverflowError, &msg);
         return None;
     }
     let Some(out) = value.to_u16() else {
         let msg = format!("{func}: Python int too large to convert to C 16-bit unsigned integer");
-        raise_exception::<Option<u16>>(_py, "OverflowError", &msg);
+        raise_exception::<Option<u16>>(_py, BuiltinExc::OverflowError, &msg);
         return None;
     };
     Some(out)
@@ -174,13 +189,13 @@ fn socket_u32_from_int_only(_py: &PyToken<'_>, value_bits: u64) -> Option<u32> {
     let Some(value) = to_bigint(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, value_bits));
         let msg = format!("expected int, {type_name} found");
-        raise_exception::<Option<u32>>(_py, "TypeError", &msg);
+        raise_exception::<Option<u32>>(_py, BuiltinExc::TypeError, &msg);
         return None;
     };
     if value.is_negative() {
         raise_exception::<Option<u32>>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "can't convert negative value to unsigned int",
         );
         return None;
@@ -190,19 +205,19 @@ fn socket_u32_from_int_only(_py: &PyToken<'_>, value_bits: u64) -> Option<u32> {
     if value > BigInt::from(u64::MAX) {
         raise_exception::<Option<u32>>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "Python int too large to convert to C unsigned long",
         );
         return None;
     }
     if value > BigInt::from(u32::MAX) {
-        raise_exception::<Option<u32>>(_py, "OverflowError", "int larger than 32 bits");
+        raise_exception::<Option<u32>>(_py, BuiltinExc::OverflowError, "int larger than 32 bits");
         return None;
     }
     let Some(out) = value.to_u32() else {
         raise_exception::<Option<u32>>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "Python int too large to convert to C unsigned long",
         );
         return None;
@@ -255,12 +270,18 @@ pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "datalen must be an integer"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "datalen must be an integer",
+                );
+            }
         };
         if datalen < 0 {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "CMSG_LEN() argument out of range",
             );
         }
@@ -269,7 +290,7 @@ pub extern "C" fn molt_socket_cmsg_len(datalen_bits: u64) -> u64 {
             let Ok(datalen_u32) = u32::try_from(datalen) else {
                 return raise_exception::<u64>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "CMSG_LEN() argument out of range",
                 );
             };
@@ -290,12 +311,18 @@ pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let datalen = match to_i64(obj_from_bits(datalen_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "datalen must be an integer"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "datalen must be an integer",
+                );
+            }
         };
         if datalen < 0 {
             return raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "CMSG_SPACE() argument out of range",
             );
         }
@@ -304,7 +331,7 @@ pub extern "C" fn molt_socket_cmsg_space(datalen_bits: u64) -> u64 {
             let Ok(datalen_u32) = u32::try_from(datalen) else {
                 return raise_exception::<u64>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "CMSG_SPACE() argument out of range",
                 );
             };

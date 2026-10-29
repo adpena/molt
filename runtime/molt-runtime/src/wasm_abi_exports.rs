@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::object::ops_string::{
     molt_string_lower, molt_string_startswith, molt_string_strip, molt_string_upper,
 };
@@ -72,7 +73,7 @@ fn bound_method_self_or_type_error(_py: &crate::PyToken<'_>, method_bits: u64) -
     let Some(ptr) = obj_from_bits(method_bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "expected bound method",
         ));
     };
@@ -80,7 +81,7 @@ fn bound_method_self_or_type_error(_py: &crate::PyToken<'_>, method_bits: u64) -
         if object_type_id(ptr) != TYPE_ID_BOUND_METHOD {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "expected bound method",
             ));
         }
@@ -173,10 +174,10 @@ pub extern "C" fn molt_fast_str_strip(method_bits: u64) -> u64 {
 pub extern "C" fn molt_resource_on_allocate(size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(size) = crate::to_i64(obj_from_bits(size_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "size must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "size must be an integer");
         };
         if size < 0 {
-            return raise_exception::<_>(_py, "ValueError", "size must be non-negative");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "size must be non-negative");
         }
         match crate::resource::with_tracker(|tracker| tracker.on_allocate(size as usize)) {
             Ok(()) => MoltObject::from_int(0).bits(),
@@ -189,10 +190,10 @@ pub extern "C" fn molt_resource_on_allocate(size_bits: u64) -> u64 {
 pub extern "C" fn molt_resource_on_free(size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(size) = crate::to_i64(obj_from_bits(size_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "size must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "size must be an integer");
         };
         if size < 0 {
-            return raise_exception::<_>(_py, "ValueError", "size must be non-negative");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "size must be non-negative");
         }
         crate::resource::with_tracker(|tracker| tracker.on_free(size as usize));
         MoltObject::none().bits()
@@ -342,7 +343,8 @@ mod tests {
     fn scratch_alloc_uses_resource_tracker_without_phantom_charge() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let _ = crate::raise_exception::<u64>(_py, "ValueError", "warm runtime");
+            let _ =
+                crate::raise_exception::<u64>(_py, crate::BuiltinExc::ValueError, "warm runtime");
             crate::clear_exception(_py);
         });
         set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {

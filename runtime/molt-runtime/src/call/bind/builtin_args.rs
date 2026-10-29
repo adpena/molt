@@ -1,6 +1,7 @@
 use super::arguments::CallArgumentView;
 use super::frame_binding::function_binding_meta;
 use super::*;
+use crate::BuiltinExc;
 use crate::call::type_policy::{ObjectConstructorCall, object_constructor_extra_args_allowed};
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{dict_update_apply, dict_update_set_in_place};
@@ -28,14 +29,18 @@ impl BuiltinArgumentStorage {
         let owner = PtrDropGuard::new(ptr);
         if ptr.is_null() {
             if !exception_pending(py) {
-                raise_exception::<()>(py, "MemoryError", "builtin argument allocation failed");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::MemoryError,
+                    "builtin argument allocation failed",
+                );
             }
             return None;
         }
         if self.owners.try_reserve(1).is_err() {
             return raise_exception(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "builtin argument custody allocation failed",
             );
         }
@@ -150,7 +155,7 @@ pub(super) unsafe fn builtin_call_binding(
                 if args.pos.len() != 1 {
                     return raise_exception(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "a2b_base64() takes exactly 1 positional argument ({} given)",
                             args.pos.len()
@@ -169,7 +174,7 @@ pub(super) unsafe fn builtin_call_binding(
                 if storage.owners.try_reserve(owners.len()).is_err() {
                     return raise_exception(
                         py,
-                        "MemoryError",
+                        BuiltinExc::MemoryError,
                         "binascii argument custody allocation failed",
                     );
                 }
@@ -575,14 +580,14 @@ pub(super) unsafe fn builtin_call_binding(
                 if !args.kw_names.is_empty() {
                     return raise_exception(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "maketrans() takes no keyword arguments",
                     );
                 }
                 if args.pos.len() != 2 {
                     return raise_exception(
                         py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("maketrans expected 2 arguments, got {}", args.pos.len()),
                     );
                 }
@@ -600,7 +605,7 @@ unsafe fn bind_builtin_class_hook(
     let Some(&receiver) = args.pos.first() else {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "object.__init_subclass__ requires a class receiver",
         );
     };
@@ -610,7 +615,7 @@ unsafe fn bind_builtin_class_hook(
     {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "object.__init_subclass__ requires a class receiver",
         );
     }
@@ -618,7 +623,7 @@ unsafe fn bind_builtin_class_hook(
         let name = class_name_for_error(receiver);
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{name}.__init_subclass__() takes no arguments"),
         );
     }
@@ -635,14 +640,18 @@ unsafe fn bind_builtin_object_constructor(
         ObjectConstructorCall::Init => "object.__init__",
     };
     let Some(&receiver) = args.pos.first() else {
-        return raise_exception(py, "TypeError", &format!("{name} requires a receiver"));
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            &format!("{name} requires a receiver"),
+        );
     };
     let class = if matches!(call, ObjectConstructorCall::New) {
         if !obj_from_bits(receiver)
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
         {
-            return raise_exception(py, "TypeError", "object.__new__ expects type");
+            return raise_exception(py, BuiltinExc::TypeError, "object.__new__ expects type");
         }
         receiver
     } else {
@@ -656,7 +665,7 @@ unsafe fn bind_builtin_object_constructor(
         if !allowed {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{name}() takes exactly one argument (the receiver)"),
             );
         }
@@ -674,7 +683,7 @@ pub(super) unsafe fn bind_positional_builtin_call(
         if !args.kw_names.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "keywords are not supported for this builtin",
             );
         }
@@ -683,13 +692,17 @@ pub(super) unsafe fn bind_positional_builtin_call(
         let Some(arity) = function_arity_usize(func_ptr) else {
             let _ = raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "builtin arity exceeds the active address space",
             );
             return None;
         };
         if out.len() > arity {
-            return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "too many positional arguments",
+            );
         }
         let missing = arity - out.len();
         if missing == 0 {
@@ -738,7 +751,7 @@ pub(super) unsafe fn bind_positional_builtin_call(
                 missing,
             );
         }
-        raise_exception::<_>(_py, "TypeError", "missing required arguments")
+        raise_exception::<_>(_py, BuiltinExc::TypeError, "missing required arguments")
     }
 }
 
@@ -748,7 +761,7 @@ fn bind_builtin_exception_args(
     allow_keywords: bool,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required arguments");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "missing required arguments");
     }
     if !allow_keywords && !args.kw_names.is_empty() {
         let head = obj_from_bits(args.pos[0]);
@@ -761,7 +774,7 @@ fn bind_builtin_exception_args(
             type_name(_py, head).into_owned()
         };
         let msg = format!("{class_name}() takes no keyword arguments");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let head = args.pos[0];
     let rest = &args.pos[1..];
@@ -778,7 +791,7 @@ fn bind_builtin_exception_init_owned(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required arguments");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "missing required arguments");
     }
     let positional = alloc_tuple(_py, &args.pos[1..]);
     let keyword_names = alloc_tuple(_py, args.kw_names);
@@ -802,12 +815,16 @@ fn bind_builtin_exception_init_owned(
 unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgumentView<'_>) -> u64 {
     unsafe {
         if args.pos.is_empty() {
-            return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "missing required argument 'self'",
+            );
         }
         let positional = args.pos.len().saturating_sub(1);
         if positional > 1 {
             let msg = format!("update expected at most 1 argument, got {}", positional);
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let dict_bits = args.pos[0];
         if positional == 1 {
@@ -835,10 +852,18 @@ unsafe fn bind_builtin_dict_update(_py: &PyToken<'_>, args: &CallArgumentView<'_
             {
                 let name_obj = obj_from_bits(name_bits);
                 let Some(name_ptr) = name_obj.as_ptr() else {
-                    return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "keywords must be strings",
+                    );
                 };
                 if object_type_id(name_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "keywords must be strings",
+                    );
                 }
                 if !dict_update_set_via_store(_py, dict_bits, name_bits, val_bits) {
                     return MoltObject::none().bits();
@@ -854,10 +879,14 @@ unsafe fn bind_builtin_bytes_hex(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     if args.pos.len() > 3 {
-        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "too many positional arguments");
     }
     let self_bits = args.pos[0];
     let mut sep_bits = args.pos.get(1).copied();
@@ -874,20 +903,20 @@ unsafe fn bind_builtin_bytes_hex(
             "sep" => {
                 if sep_bits.is_some() {
                     let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 sep_bits = Some(val_bits);
             }
             "bytes_per_sep" => {
                 if bytes_per_sep_bits.is_some() {
                     let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 bytes_per_sep_bits = Some(val_bits);
             }
             _ => {
                 let msg = format!("got an unexpected keyword '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
     }
@@ -904,7 +933,11 @@ unsafe fn bind_builtin_keywords(
     extra_bits: Option<u64>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let mut out = vec![args.pos[0]];
     let mut values: Vec<Option<u64>> = vec![None; names.len()];
@@ -912,7 +945,11 @@ unsafe fn bind_builtin_keywords(
     while pos_idx < args.pos.len() {
         let idx = pos_idx - 1;
         if idx >= names.len() {
-            return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "too many positional arguments",
+            );
         }
         values[idx] = Some(args.pos[pos_idx]);
         pos_idx += 1;
@@ -930,7 +967,7 @@ unsafe fn bind_builtin_keywords(
             if name_str == *expected {
                 if values[idx].is_some() {
                     let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 values[idx] = Some(val_bits);
                 matched = true;
@@ -939,7 +976,7 @@ unsafe fn bind_builtin_keywords(
         }
         if !matched {
             let msg = format!("got an unexpected keyword '{name_str}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
     }
     for (idx, val) in values.iter_mut().enumerate() {
@@ -950,7 +987,7 @@ unsafe fn bind_builtin_keywords(
             }
             let name = names[idx];
             let msg = format!("missing required argument '{name}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
     }
     for val in values.into_iter().flatten() {
@@ -984,7 +1021,11 @@ unsafe fn bind_builtin_int_bytes_codec(
         IntBytesCodec::From => ("from_bytes", "bytes"),
     };
     let Some(&receiver) = args.pos.first() else {
-        return raise_exception(py, "TypeError", "missing required argument 'self'");
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     };
     let positional = &args.pos[1..];
     let given = positional.len() + args.kw_names.len();
@@ -992,7 +1033,7 @@ unsafe fn bind_builtin_int_bytes_codec(
     if given > 3 {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "{label}() takes at most 3 {}arguments ({given} given)",
                 if positional.is_empty() {
@@ -1006,7 +1047,7 @@ unsafe fn bind_builtin_int_bytes_codec(
     if positional.len() > 2 {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "{label}() takes at most 2 positional arguments ({} given)",
                 positional.len(),
@@ -1022,7 +1063,11 @@ unsafe fn bind_builtin_int_bytes_codec(
         .as_ptr()
         .filter(|&ptr| unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE)
     else {
-        return raise_exception(py, "SystemError", "invalid integer bytes codec defaults");
+        return raise_exception(
+            py,
+            BuiltinExc::SystemError,
+            "invalid integer bytes codec defaults",
+        );
     };
     // SAFETY: the live metadata owner still retains this type-checked tuple;
     // pin_tuple retains it before keyword binding can invoke user code.
@@ -1032,7 +1077,11 @@ unsafe fn bind_builtin_int_bytes_codec(
         IntBytesCodec::From => 2,
     };
     if defaults.len() != expected_defaults {
-        return raise_exception(py, "SystemError", "invalid integer bytes codec defaults");
+        return raise_exception(
+            py,
+            BuiltinExc::SystemError,
+            "invalid integer bytes codec defaults",
+        );
     }
     inc_ref_bits(py, defaults_bits);
     storage.own(py, defaults_ptr)?;
@@ -1041,7 +1090,7 @@ unsafe fn bind_builtin_int_bytes_codec(
         if positional.len() < required {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label}() missing required argument '{first_name}' (pos 1)"),
             );
         }
@@ -1063,7 +1112,7 @@ unsafe fn bind_builtin_int_bytes_codec(
         if storage.owners.try_reserve(owners.len()).is_err() {
             return raise_exception(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "integer bytes codec custody allocation failed",
             );
         }
@@ -1076,7 +1125,11 @@ unsafe fn bind_builtin_int_bytes_codec(
             Some(bits) => bits,
             None if required == 0 => defaults[0],
             None => {
-                return raise_exception(py, "SystemError", "missing bound integer bytes source");
+                return raise_exception(
+                    py,
+                    BuiltinExc::SystemError,
+                    "missing bound integer bytes source",
+                );
             }
         },
         slots[1].unwrap_or_else(|| defaults[1 - required]),
@@ -1123,7 +1176,7 @@ unsafe fn bind_builtin_print(
             "flush" => flush = val_bits,
             _ => {
                 let msg = format!("'{}' is an invalid keyword argument for print", name_str);
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
     }
@@ -1149,10 +1202,18 @@ unsafe fn bind_builtin_named(
         ]) {
             let bits = function_binding_meta(py, func_ptr, field);
             let Some(ptr) = obj_from_bits(bits).as_ptr() else {
-                return raise_exception(py, "SystemError", "invalid named builtin tuple metadata");
+                return raise_exception(
+                    py,
+                    BuiltinExc::SystemError,
+                    "invalid named builtin tuple metadata",
+                );
             };
             if object_type_id(ptr) != TYPE_ID_TUPLE {
-                return raise_exception(py, "SystemError", "invalid named builtin tuple metadata");
+                return raise_exception(
+                    py,
+                    BuiltinExc::SystemError,
+                    "invalid named builtin tuple metadata",
+                );
             }
             // Keep the exact tuples through the native body, including defaults
             // whose values are borrowed by the returned ABI argument vector.
@@ -1187,7 +1248,11 @@ unsafe fn bind_builtin_named(
             || function_arity_usize(func_ptr) != Some(names.len())
             || args.kw_names.len() != args.kw_values.len()
         {
-            return raise_exception(py, "SystemError", "invalid fixed named builtin metadata");
+            return raise_exception(
+                py,
+                BuiltinExc::SystemError,
+                "invalid fixed named builtin metadata",
+            );
         }
         let required = names.len() - defaults.len();
         let mut slots = Vec::new();
@@ -1197,7 +1262,7 @@ unsafe fn bind_builtin_named(
         {
             return raise_exception(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "named builtin argument allocation failed",
             );
         }
@@ -1213,7 +1278,11 @@ unsafe fn bind_builtin_named(
         )?;
         let (slots, owners) = bound.into_parts();
         if storage.owners.try_reserve(owners.len()).is_err() {
-            return raise_exception(py, "MemoryError", "named builtin custody allocation failed");
+            return raise_exception(
+                py,
+                BuiltinExc::MemoryError,
+                "named builtin custody allocation failed",
+            );
         }
         storage.owners.extend(owners);
         for (index, value) in slots.into_iter().enumerate() {
@@ -1233,13 +1302,21 @@ unsafe fn bind_builtin_type_new_init(
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
-            return raise_exception::<_>(_py, "TypeError", "missing required argument 'cls'");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "missing required argument 'cls'",
+            );
         }
         let mut values: [Option<u64>; 3] = [None, None, None];
         for (idx, val) in args.pos.iter().copied().enumerate().skip(1) {
             let pos_idx = idx - 1;
             if pos_idx >= values.len() {
-                return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "too many positional arguments",
+                );
             }
             values[pos_idx] = Some(val);
         }
@@ -1252,10 +1329,18 @@ unsafe fn bind_builtin_type_new_init(
         {
             let name_obj = obj_from_bits(name_bits);
             let Some(name_ptr) = name_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "keywords must be strings",
+                );
             };
             if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "keywords must be strings",
+                );
             }
             let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
             let slot = match name_str.as_str() {
@@ -1267,7 +1352,7 @@ unsafe fn bind_builtin_type_new_init(
             if let Some(idx) = slot {
                 if values[idx].is_some() {
                     let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 values[idx] = Some(val_bits);
             } else {
@@ -1287,7 +1372,7 @@ unsafe fn bind_builtin_type_new_init(
                     );
                 }
                 let msg = format!("missing required argument '{}'", names[idx]);
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
         let mut out = vec![args.pos[0]];
@@ -1309,10 +1394,14 @@ unsafe fn bind_builtin_list_sort(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     if args.pos.len() > 1 {
-        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "too many positional arguments");
     }
     let mut key_bits = MoltObject::none().bits();
     let mut reverse_bits = MoltObject::from_bool(false).bits();
@@ -1330,7 +1419,7 @@ unsafe fn bind_builtin_list_sort(
             "key" => {
                 if key_set {
                     let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 key_bits = val_bits;
                 key_set = true;
@@ -1338,14 +1427,14 @@ unsafe fn bind_builtin_list_sort(
             "reverse" => {
                 if reverse_set {
                     let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 reverse_bits = val_bits;
                 reverse_set = true;
             }
             _ => {
                 let msg = format!("got an unexpected keyword '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
     }
@@ -1357,17 +1446,21 @@ unsafe fn bind_builtin_list_pop(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     if !args.kw_names.is_empty() {
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "keywords are not supported for this builtin",
         );
     }
     if args.pos.len() > 2 {
-        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "too many positional arguments");
     }
     let mut out = args.pos.to_vec();
     if out.len() == 1 {
@@ -1381,20 +1474,28 @@ unsafe fn bind_builtin_list_index_range(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     if !args.kw_names.is_empty() {
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "keywords are not supported for this builtin",
         );
     }
     if args.pos.len() < 2 {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'value'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'value'",
+        );
     }
     if args.pos.len() > 4 {
-        return raise_exception::<_>(_py, "TypeError", "too many positional arguments");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, "too many positional arguments");
     }
     let mut out = args.pos.to_vec();
     let missing = missing_bits(_py);
@@ -1413,7 +1514,11 @@ unsafe fn bind_builtin_string_find(
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let positional = args.pos.len().saturating_sub(1);
     if positional > 3 {
@@ -1421,7 +1526,7 @@ unsafe fn bind_builtin_string_find(
             "{func_name}() takes at most 3 arguments ({} given)",
             positional
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let mut needle_bits: Option<u64> = None;
     let mut start_bits: Option<u64> = None;
@@ -1455,7 +1560,7 @@ unsafe fn bind_builtin_string_find(
             "end" => (&mut end_bits, &mut saw_end),
             _ => {
                 let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         };
         if target.0.is_some() {
@@ -1463,13 +1568,17 @@ unsafe fn bind_builtin_string_find(
                 "{}() got multiple values for argument '{}'",
                 func_name, name_str
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         *target.0 = Some(val_bits);
         *target.1 = true;
     }
     let needle_bits = needle_bits.unwrap_or_else(|| {
-        raise_exception::<_>(_py, "TypeError", "missing required argument 'sub'")
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'sub'",
+        )
     });
     let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
     let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
@@ -1491,7 +1600,11 @@ unsafe fn bind_builtin_count(
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let positional = args.pos.len().saturating_sub(1);
     if positional > 3 {
@@ -1499,7 +1612,7 @@ unsafe fn bind_builtin_count(
             "{func_name}() takes at most 3 arguments ({} given)",
             positional
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let mut needle_bits: Option<u64> = None;
     let mut start_bits: Option<u64> = None;
@@ -1533,7 +1646,7 @@ unsafe fn bind_builtin_count(
             "end" => (&mut end_bits, &mut saw_end),
             _ => {
                 let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         };
         if target.0.is_some() {
@@ -1541,13 +1654,17 @@ unsafe fn bind_builtin_count(
                 "{}() got multiple values for argument '{}'",
                 func_name, name_str
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         *target.0 = Some(val_bits);
         *target.1 = true;
     }
     let needle_bits = needle_bits.unwrap_or_else(|| {
-        raise_exception::<_>(_py, "TypeError", "missing required argument 'sub'")
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'sub'",
+        )
     });
     let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
     let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
@@ -1569,7 +1686,11 @@ unsafe fn bind_builtin_split(
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let positional = args.pos.len().saturating_sub(1);
     if positional > 2 {
@@ -1577,7 +1698,7 @@ unsafe fn bind_builtin_split(
             "{func_name}() takes at most 2 arguments ({} given)",
             positional
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let mut sep_bits: Option<u64> = None;
     let mut maxsplit_bits: Option<u64> = None;
@@ -1604,7 +1725,7 @@ unsafe fn bind_builtin_split(
             "maxsplit" => (&mut maxsplit_bits, &mut saw_maxsplit),
             _ => {
                 let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         };
         if target.0.is_some() {
@@ -1612,7 +1733,7 @@ unsafe fn bind_builtin_split(
                 "{}() got multiple values for argument '{}'",
                 func_name, name_str
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         *target.0 = Some(val_bits);
         *target.1 = true;
@@ -1627,7 +1748,11 @@ unsafe fn bind_builtin_splitlines(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let positional = args.pos.len().saturating_sub(1);
     if positional > 1 {
@@ -1635,7 +1760,7 @@ unsafe fn bind_builtin_splitlines(
             "splitlines() takes at most 1 argument ({} given)",
             positional
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let mut keepends_bits: Option<u64> = None;
     let mut saw_keepends = false;
@@ -1662,12 +1787,12 @@ unsafe fn bind_builtin_splitlines(
             } else {
                 format!("'{name_str}' is an invalid keyword argument for splitlines()")
             };
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         if saw_keepends {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "splitlines() got multiple values for argument 'keepends'",
             );
         }
@@ -1688,7 +1813,11 @@ unsafe fn bind_builtin_set_multi(
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
-            return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "missing required argument 'self'",
+            );
         }
         let self_obj = obj_from_bits(args.pos[0]);
         let mut is_owner = false;
@@ -1700,14 +1829,14 @@ unsafe fn bind_builtin_set_multi(
                 "descriptor '{method}' for '{owner_name}' objects doesn't apply to a '{}' object",
                 type_name(_py, self_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         if !args.kw_names.is_empty() {
             let msg = format!(
                 "{}.{method}() takes no keyword arguments",
                 type_name(_py, self_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let tuple_ptr = alloc_tuple(_py, &args.pos[1..]);
         let tuple_bits = storage.own(_py, tuple_ptr)?;
@@ -1724,7 +1853,11 @@ unsafe fn bind_builtin_set_single(
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
-            return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "missing required argument 'self'",
+            );
         }
         let self_obj = obj_from_bits(args.pos[0]);
         let mut is_owner = false;
@@ -1736,14 +1869,14 @@ unsafe fn bind_builtin_set_single(
                 "descriptor '{method}' for '{owner_name}' objects doesn't apply to a '{}' object",
                 type_name(_py, self_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         if !args.kw_names.is_empty() {
             let msg = format!(
                 "{}.{method}() takes no keyword arguments",
                 type_name(_py, self_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let positional = args.pos.len().saturating_sub(1);
         if positional != 1 {
@@ -1752,7 +1885,7 @@ unsafe fn bind_builtin_set_single(
                 type_name(_py, self_obj),
                 positional
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         Some(vec![args.pos[0], args.pos[1]])
     }
@@ -1765,7 +1898,11 @@ unsafe fn bind_builtin_prefix_check(
     needle_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let positional = args.pos.len().saturating_sub(1);
     if positional > 3 {
@@ -1773,7 +1910,7 @@ unsafe fn bind_builtin_prefix_check(
             "{func_name}() takes at most 3 arguments ({} given)",
             positional
         );
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let mut needle_bits: Option<u64> = None;
     let mut start_bits: Option<u64> = None;
@@ -1807,7 +1944,7 @@ unsafe fn bind_builtin_prefix_check(
             _ if name_str == needle_name => (&mut needle_bits, &mut saw_needle),
             _ => {
                 let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         };
         if target.0.is_some() {
@@ -1815,14 +1952,14 @@ unsafe fn bind_builtin_prefix_check(
                 "{}() got multiple values for argument '{}'",
                 func_name, name_str
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         *target.0 = Some(val_bits);
         *target.1 = true;
     }
     let needle_bits = needle_bits.unwrap_or_else(|| {
         let msg = format!("missing required argument '{needle_name}'");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     });
     let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
     let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
@@ -1845,7 +1982,11 @@ unsafe fn bind_builtin_string_format(
 ) -> Option<Vec<u64>> {
     unsafe {
         if args.pos.is_empty() {
-            return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "missing required argument 'self'",
+            );
         }
         let tuple_ptr = alloc_tuple(_py, &args.pos[1..]);
         let tuple_bits = storage.own(_py, tuple_ptr)?;
@@ -1858,10 +1999,18 @@ unsafe fn bind_builtin_string_format(
         {
             let name_obj = obj_from_bits(name_bits);
             let Some(name_ptr) = name_obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "keywords must be strings",
+                );
             };
             if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "keywords must be strings",
+                );
             }
             pairs.push(name_bits);
             pairs.push(val_bits);
@@ -1877,19 +2026,23 @@ unsafe fn bind_builtin_memoryview_cast(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let provided = args.pos.len().saturating_sub(1);
     if provided == 0 {
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "cast() missing required argument 'format' (pos 1)",
         );
     }
     if provided > 2 {
         let msg = format!("cast() takes at most 2 arguments ({provided} given)");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let format_bits = args.pos[1];
     let mut shape_bits: Option<u64> = None;
@@ -1906,12 +2059,12 @@ unsafe fn bind_builtin_memoryview_cast(
         let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
         if name_str != "shape" {
             let msg = format!("cast() got an unexpected keyword argument '{name_str}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         if shape_bits.is_some() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "cast() got multiple values for argument 'shape'",
             );
         }
@@ -1933,12 +2086,16 @@ unsafe fn bind_builtin_file_reconfigure(
     args: &CallArgumentView<'_>,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     if args.pos.len() > 1 {
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "reconfigure() takes no positional arguments",
         );
     }
@@ -1960,35 +2117,35 @@ unsafe fn bind_builtin_file_reconfigure(
             "encoding" => {
                 if encoding_bits != missing {
                     let msg = format!("got multiple values for keyword argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 encoding_bits = val_bits;
             }
             "errors" => {
                 if errors_bits != missing {
                     let msg = format!("got multiple values for keyword argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 errors_bits = val_bits;
             }
             "newline" => {
                 if newline_bits != missing {
                     let msg = format!("got multiple values for keyword argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 newline_bits = val_bits;
             }
             "line_buffering" => {
                 if line_buffering_bits != missing {
                     let msg = format!("got multiple values for keyword argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 line_buffering_bits = val_bits;
             }
             "write_through" => {
                 if write_through_bits != missing {
                     let msg = format!("got multiple values for keyword argument '{name_str}'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 write_through_bits = val_bits;
             }
@@ -2004,7 +2161,7 @@ unsafe fn bind_builtin_file_reconfigure(
                 } else {
                     format!("'{name_str}' is an invalid keyword argument for reconfigure()")
                 };
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
     }
@@ -2024,12 +2181,16 @@ unsafe fn bind_builtin_text_codec(
     func_name: &str,
 ) -> Option<Vec<u64>> {
     if args.pos.is_empty() {
-        return raise_exception::<_>(_py, "TypeError", "missing required argument 'self'");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "missing required argument 'self'",
+        );
     }
     let positional = args.pos.len().saturating_sub(1);
     if positional > 2 {
         let msg = format!("{func_name}() takes at most 2 arguments ({positional} given)");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let missing = missing_bits(_py);
     let mut encoding_bits = if positional >= 1 {
@@ -2054,20 +2215,20 @@ unsafe fn bind_builtin_text_codec(
             "encoding" => {
                 if encoding_bits != missing {
                     let msg = format!("{func_name}() got multiple values for argument 'encoding'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 encoding_bits = val_bits;
             }
             "errors" => {
                 if errors_bits != missing {
                     let msg = format!("{func_name}() got multiple values for argument 'errors'");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 errors_bits = val_bits;
             }
             _ => {
                 let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
     }

@@ -6,6 +6,7 @@
 //! the `except*` match/combine intrinsics all consume these primitives.
 
 use super::*;
+use crate::BuiltinExc;
 use molt_cpython_abi::hooks::ExceptionGroupRequest;
 use molt_cpython_abi::{
     abi_types as cabi,
@@ -15,7 +16,7 @@ use molt_cpython_abi::{
 use super::storage::{ExceptionStorage, ExceptionValue as Owned, native_owned_value};
 
 /// Raise unless a callee already published the failure.
-fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: &str, message: &str) -> T {
+fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: BuiltinExc, message: &str) -> T {
     if exception_pending(py) {
         T::exception_sentinel()
     } else {
@@ -49,7 +50,11 @@ fn alloc_owned_list<'a, 'py>(py: &'a PyToken<'py>) -> Option<Owned<'a, 'py>> {
 
 fn list_append(py: &PyToken<'_>, list: &Owned<'_, '_>, item: u64) -> Option<()> {
     let Some(ptr) = obj_from_bits(list.bits()).as_ptr() else {
-        return fail(py, "SystemError", "exception group partition is not a list");
+        return fail(
+            py,
+            BuiltinExc::SystemError,
+            "exception group partition is not a list",
+        );
     };
     if unsafe { crate::object::list_mutation::append(py, ptr, item) } {
         Some(())
@@ -98,7 +103,11 @@ impl ExceptionTuple<'_, '_> {
     fn try_all(&self, mut consume: impl FnMut(u64) -> Option<bool>) -> Option<bool> {
         let py = self.tuple.py;
         let Some(ptr) = obj_from_bits(self.tuple.bits()).as_ptr() else {
-            return fail(py, "SystemError", "exception group has no exceptions tuple");
+            return fail(
+                py,
+                BuiltinExc::SystemError,
+                "exception group has no exceptions tuple",
+            );
         };
         if unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE {
             let values = unsafe { crate::object::seq_access::pin_tuple(py, ptr) }?;
@@ -110,7 +119,11 @@ impl ExceptionTuple<'_, '_> {
             return Some(true);
         }
         if unsafe { object_type_id(ptr) } != crate::TYPE_ID_FOREIGN {
-            return fail(py, "SystemError", "exception group has no exceptions tuple");
+            return fail(
+                py,
+                BuiltinExc::SystemError,
+                "exception group has no exceptions tuple",
+            );
         }
         unsafe {
             let tuple = std::ptr::with_exposed_provenance_mut(
@@ -259,7 +272,7 @@ fn exception_group_admit<'a, 'py>(
     else {
         return fail(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "exception group arguments must be a tuple",
         );
     };
@@ -269,7 +282,7 @@ fn exception_group_admit<'a, 'py>(
             "BaseExceptionGroup.__new__() takes exactly 2 arguments ({} given)",
             args.len()
         );
-        return fail(py, "TypeError", &message);
+        return fail(py, BuiltinExc::TypeError, &message);
     }
     let (message, exceptions) = (args[0], args[1]);
     if !issubclass_bits(type_of_bits(py, message), builtin_classes(py).str) {
@@ -279,13 +292,13 @@ fn exception_group_admit<'a, 'py>(
             type_name(py, obj_from_bits(message))
         };
         let message = format!("BaseExceptionGroup.__new__() argument 1 must be str, not {label}");
-        return fail(py, "TypeError", &message);
+        return fail(py, BuiltinExc::TypeError, &message);
     }
     let message = Owned::pin(py, message);
     if crate::object::ops::sequence_check_bits(py, exceptions) != 1 {
         return fail(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "second argument (exceptions) must be a sequence",
         );
     }
@@ -296,7 +309,7 @@ fn exception_group_admit<'a, 'py>(
     let Some(tuple) = obj_from_bits(exceptions.bits()).as_ptr() else {
         return fail(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "PySequence_Tuple did not produce a tuple",
         );
     };
@@ -321,19 +334,19 @@ fn exception_group_admit<'a, 'py>(
         Some(Err(None)) => {
             return fail(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "second argument (exceptions) must be a non-empty sequence",
             );
         }
         Some(Err(Some(index))) => {
             let message =
                 format!("Item {index} of second argument (exceptions) is not an exception");
-            return fail(py, "ValueError", &message);
+            return fail(py, BuiltinExc::ValueError, &message);
         }
         None => {
             return fail(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "PySequence_Tuple did not produce a tuple",
             );
         }
@@ -343,13 +356,13 @@ fn exception_group_admit<'a, 'py>(
         ExceptionGroupRequest::ExceptionGroup if nested_base => {
             return fail(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "Cannot nest BaseExceptions in an ExceptionGroup",
             );
         }
         ExceptionGroupRequest::ExceptionSubclass if nested_base => {
             let message = format!("Cannot nest BaseExceptions in '{}'", class.c_name());
-            return fail(py, "TypeError", &message);
+            return fail(py, BuiltinExc::TypeError, &message);
         }
         _ => false,
     };
@@ -385,7 +398,7 @@ fn exception_group_allocate(
         ExceptionTypedField::GroupExceptions,
         admission.exceptions.bits(),
     ) {
-        return fail(py, "SystemError", message);
+        return fail(py, BuiltinExc::SystemError, message);
     }
     Some(group.into_bits())
 }
@@ -435,7 +448,11 @@ pub(crate) fn exception_group_admit_native(
 /// the canonical class-call authority, including exact-class narrowing.
 fn exception_group_construct(py: &PyToken<'_>, message: u64, exceptions: u64) -> Option<u64> {
     let Some(class) = obj_from_bits(builtin_classes(py).base_exception_group).as_ptr() else {
-        return fail(py, "SystemError", "BaseExceptionGroup is not initialized");
+        return fail(
+            py,
+            BuiltinExc::SystemError,
+            "BaseExceptionGroup is not initialized",
+        );
     };
     let result = unsafe {
         crate::call::bind::call_bind_capi(
@@ -516,7 +533,7 @@ impl GroupMatcher {
         } else {
             "expected a function, exception type or tuple of exception types"
         };
-        fail(py, "TypeError", message)
+        fail(py, BuiltinExc::TypeError, message)
     }
 
     /// An `except*` handler already validated as a class or tuple of classes.
@@ -588,7 +605,7 @@ fn exception_group_parse_except_star_matcher(py: &PyToken<'_>, matcher_bits: u64
     if catches_group {
         let _ = raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "catching ExceptionGroup with except* is not allowed. Use except instead.",
         );
         return None;
@@ -667,7 +684,11 @@ unsafe fn exception_group_subset<'a, 'py>(
     excs: &Owned<'a, 'py>,
 ) -> Option<Option<Owned<'a, 'py>>> {
     let Some(excs_ptr) = obj_from_bits(excs.bits()).as_ptr() else {
-        return fail(py, "SystemError", "exception group partition is not a list");
+        return fail(
+            py,
+            BuiltinExc::SystemError,
+            "exception group partition is not a list",
+        );
     };
     if unsafe { crate::object::seq_access::len(excs_ptr) } == 0 {
         return Some(None);
@@ -689,7 +710,7 @@ unsafe fn exception_group_subset<'a, 'py>(
     let Some(destination) = exception_group_storage(py, derived.bits()) else {
         return fail(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "derive must return an instance of BaseExceptionGroup",
         );
     };
@@ -708,7 +729,7 @@ unsafe fn publish_slot(
     } else {
         fail(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "exception ABI sidecar synchronization failed",
         )
     }
@@ -796,7 +817,7 @@ fn exception_group_receiver(
         "descriptor '{method}' for 'BaseExceptionGroup' objects doesn't apply to a '{}' object",
         type_name(py, obj_from_bits(receiver))
     );
-    fail(py, "TypeError", &message)
+    fail(py, BuiltinExc::TypeError, &message)
 }
 
 #[unsafe(no_mangle)]
@@ -808,7 +829,7 @@ pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u6
             }
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception init expects exception instance",
             );
         };
@@ -892,7 +913,7 @@ pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) ->
             return none;
         };
         let Some(exception) = ExceptionStorage::for_exception(_py, exc_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected exception object");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected exception object");
         };
         let matcher = GroupMatcher::handler(handler);
         if exception_group_storage(_py, exc_bits).is_some() {
@@ -922,7 +943,7 @@ pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) ->
         let Some(group_ptr) = obj_from_bits(group.bits()).as_ptr() else {
             return fail(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "exception group construction returned no object",
             );
         };
@@ -972,18 +993,30 @@ mod tests {
     extern "C" fn generic_sequence_getitem(_self_bits: u64, index_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(index) = to_i64(obj_from_bits(index_bits)) else {
-                return raise_exception::<u64>(_py, "TypeError", "index must be int");
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "index must be int");
             };
             let items_bits = GENERIC_SEQUENCE_ITEMS.load(Ordering::Acquire);
             let Some(items_ptr) = obj_from_bits(items_bits).as_ptr() else {
-                return raise_exception::<u64>(_py, "RuntimeError", "test sequence unavailable");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "test sequence unavailable",
+                );
             };
             let Ok(index) = usize::try_from(index) else {
-                return raise_exception::<u64>(_py, "IndexError", "test sequence exhausted");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "test sequence exhausted",
+                );
             };
             let mut bits = 0;
             if crate::object::seq_access::read_item_owned(items_ptr, index, &mut bits) == 0 {
-                return raise_exception::<u64>(_py, "IndexError", "test sequence exhausted");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::IndexError,
+                    "test sequence exhausted",
+                );
             }
             bits
         })
@@ -1070,11 +1103,11 @@ mod tests {
         tuple_items(exception_group_exceptions_bits(py, ptr).expect("canonical exceptions tuple"))
     }
 
-    fn pending_message(py: &PyToken<'_>, kind: &str) -> String {
+    fn pending_message(py: &PyToken<'_>, kind: crate::BuiltinExc) -> String {
         let error = crate::exception_last_bits_noinc(py).expect("pending exception");
         assert!(
-            super::super::exception_matches_builtin_name(py, error, kind),
-            "pending exception is not {kind}"
+            super::super::exception_matches_kind(py, error, kind),
+            "pending exception is not {kind:?}"
         );
         let text = crate::builtins::exceptions::format_exception_message(
             py,
@@ -1088,8 +1121,8 @@ mod tests {
     fn constructor_generic_sequence_transfers_each_item_once() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let first_ptr = alloc_exception(_py, "ValueError", "first");
-            let second_ptr = alloc_exception(_py, "TypeError", "second");
+            let first_ptr = alloc_exception(_py, BuiltinExc::ValueError, "first");
+            let second_ptr = alloc_exception(_py, BuiltinExc::TypeError, "second");
             assert!(!first_ptr.is_null() && !second_ptr.is_null());
             let first_bits = MoltObject::from_ptr(first_ptr).bits();
             let second_bits = MoltObject::from_ptr(second_ptr).bits();
@@ -1127,7 +1160,7 @@ mod tests {
     fn exact_tuple_argument_is_the_canonical_exceptions_tuple() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let value_ptr = alloc_exception(_py, "ValueError", "value");
+            let value_ptr = alloc_exception(_py, BuiltinExc::ValueError, "value");
             assert!(!value_ptr.is_null());
             let value_bits = MoltObject::from_ptr(value_ptr).bits();
             let children_ptr = alloc_tuple(_py, &[value_bits]);
@@ -1178,8 +1211,8 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins = builtin_classes(_py);
-            let value_ptr = alloc_exception(_py, "ValueError", "value");
-            let interrupt_ptr = alloc_exception(_py, "KeyboardInterrupt", "interrupt");
+            let value_ptr = alloc_exception(_py, BuiltinExc::ValueError, "value");
+            let interrupt_ptr = alloc_exception(_py, BuiltinExc::KeyboardInterrupt, "interrupt");
             assert!(!value_ptr.is_null() && !interrupt_ptr.is_null());
             let value_bits = MoltObject::from_ptr(value_ptr).bits();
             let interrupt_bits = MoltObject::from_ptr(interrupt_ptr).bits();
@@ -1217,7 +1250,7 @@ mod tests {
             );
             assert!(rejected.is_null());
             assert_eq!(
-                pending_message(_py, "TypeError"),
+                pending_message(_py, crate::BuiltinExc::TypeError),
                 "Cannot nest BaseExceptions in an ExceptionGroup"
             );
 
@@ -1239,7 +1272,7 @@ mod tests {
     fn invalid_generic_sequence_releases_current_and_prior_items() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let exception_ptr = alloc_exception(_py, "ValueError", "valid first");
+            let exception_ptr = alloc_exception(_py, BuiltinExc::ValueError, "valid first");
             let invalid_ptr = alloc_string(_py, b"not an exception");
             assert!(!exception_ptr.is_null() && !invalid_ptr.is_null());
             let exception_bits = MoltObject::from_ptr(exception_ptr).bits();
@@ -1263,7 +1296,7 @@ mod tests {
             );
             assert!(group_ptr.is_null());
             assert_eq!(
-                pending_message(_py, "ValueError"),
+                pending_message(_py, crate::BuiltinExc::ValueError),
                 "Item 1 of second argument (exceptions) is not an exception"
             );
             assert_eq!(heap_refcount(exception_bits), exception_baseline);
@@ -1284,7 +1317,7 @@ mod tests {
     fn admission_oom_releases_every_item() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let exception_ptr = alloc_exception(_py, "ValueError", "owned");
+            let exception_ptr = alloc_exception(_py, BuiltinExc::ValueError, "owned");
             assert!(!exception_ptr.is_null());
             let exception_bits = MoltObject::from_ptr(exception_ptr).bits();
             let list_ptr = alloc_list(_py, &[exception_bits]);
@@ -1326,8 +1359,8 @@ mod tests {
     fn split_and_subgroup_run_the_predicate_once_per_node() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let first_ptr = alloc_exception(_py, "ValueError", "first");
-            let second_ptr = alloc_exception(_py, "TypeError", "second");
+            let first_ptr = alloc_exception(_py, BuiltinExc::ValueError, "first");
+            let second_ptr = alloc_exception(_py, BuiltinExc::TypeError, "second");
             assert!(!first_ptr.is_null() && !second_ptr.is_null());
             let first_bits = MoltObject::from_ptr(first_ptr).bits();
             let second_bits = MoltObject::from_ptr(second_ptr).bits();
@@ -1404,8 +1437,8 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins = builtin_classes(_py);
-            let interrupt_ptr = alloc_exception(_py, "KeyboardInterrupt", "interrupt");
-            let value_ptr = alloc_exception(_py, "ValueError", "value");
+            let interrupt_ptr = alloc_exception(_py, BuiltinExc::KeyboardInterrupt, "interrupt");
+            let value_ptr = alloc_exception(_py, BuiltinExc::ValueError, "value");
             assert!(!interrupt_ptr.is_null() && !value_ptr.is_null());
             let interrupt_bits = MoltObject::from_ptr(interrupt_ptr).bits();
             let value_bits = MoltObject::from_ptr(value_ptr).bits();

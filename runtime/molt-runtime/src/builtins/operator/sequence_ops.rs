@@ -1,7 +1,8 @@
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
 
-use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
+use crate::builtins::exceptions::{exception_matches_kind, molt_exception_last_pending};
 use crate::{
     call_callable0, dec_ref_bits, exception_pending, exception_stack_pop, exception_stack_push,
     molt_concat, molt_contains, molt_delitem_method, molt_getitem_method, molt_inplace_add,
@@ -74,7 +75,7 @@ fn length_hint_integer_value(py: &crate::PyToken<'_>, bits: u64) -> Result<Optio
     value.map(Some).ok_or_else(|| {
         raise_exception::<()>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "Python int too large to convert to C ssize_t",
         );
     })
@@ -96,7 +97,7 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
             Ok(None) => {
                 return raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "validated index has no integer storage",
                 );
             }
@@ -112,7 +113,7 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
         }
         dec_ref_bits(_py, length);
         let error = molt_exception_last_pending();
-        let type_error = exception_matches_builtin_name(_py, error, "TypeError");
+        let type_error = exception_matches_kind(_py, error, crate::BuiltinExc::TypeError);
         if type_error {
             crate::molt_exception_clear();
         }
@@ -144,7 +145,7 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
         if exception_pending(_py) {
             drop(result);
             let error = molt_exception_last_pending();
-            let type_error = exception_matches_builtin_name(_py, error, "TypeError");
+            let type_error = exception_matches_kind(_py, error, crate::BuiltinExc::TypeError);
             if type_error {
                 crate::molt_exception_clear();
             }
@@ -170,14 +171,18 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
                 let name = crate::object::ops::protocol_type_name(_py, result.bits(), 100);
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("__length_hint__ must be an integer, not {name}"),
                 );
             }
         };
         drop(result);
         if value < 0 {
-            return raise_exception::<_>(_py, "ValueError", "__length_hint__() should return >= 0");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "__length_hint__() should return >= 0",
+            );
         }
         crate::int_bits_from_i64(_py, value as i64)
     })

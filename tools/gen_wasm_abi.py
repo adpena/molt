@@ -417,6 +417,13 @@ def _render_rs_callable_table(
         lines.append(
             f"pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = {data['deployment_manifest']['version']};\n"
         )
+        names = ", ".join(
+            _rust_string(name)
+            for name in data["deployment_manifest"]["launch_environment_required_names"]
+        )
+        lines.append(
+            f"pub const WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: &[&str] = &[{names}];\n"
+        )
     if include_active_element_role:
         lines.extend(
             [
@@ -2292,6 +2299,9 @@ def render_js_abi(data: dict) -> str:
 
     payload = {
         "execution_manifest_version": data["deployment_manifest"]["version"],
+        "execution_manifest_required_environment": data["deployment_manifest"][
+            "launch_environment_required_names"
+        ],
         "generated_by": "tools/gen_wasm_abi.py",
         "synthetic_errno": synthetic_errno_table(data),
         "wasi_preview1_errno": wasi_errno_table(data),
@@ -2333,6 +2343,9 @@ def render_js_callable_table_abi(data: dict) -> str:
         {
             **data["callable_table_publication"],
             "execution_manifest_version": data["deployment_manifest"]["version"],
+            "execution_manifest_required_environment": data["deployment_manifest"][
+                "launch_environment_required_names"
+            ],
             "runtime_callables": _js_runtime_callable_abi(data),
         },
         sort_keys=True,

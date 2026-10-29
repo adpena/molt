@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 #[cfg(test)]
 use crate::exception_pending;
 use crate::{
@@ -31,8 +32,11 @@ pub(crate) enum DictSeqError {
 
 fn dict_pair_iteration_error(py: &PyToken<'_>, acquisition: bool) -> DictSeqError {
     let error = crate::builtins::exceptions::molt_exception_last_pending();
-    let type_error =
-        crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
+    let type_error = crate::builtins::exceptions::exception_matches_kind(
+        py,
+        error,
+        crate::BuiltinExc::TypeError,
+    );
     dec_ref_bits(py, error);
     if type_error {
         if !crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
@@ -41,7 +45,7 @@ fn dict_pair_iteration_error(py: &PyToken<'_>, acquisition: bool) -> DictSeqErro
         }
         if acquisition {
             crate::molt_exception_clear();
-            raise_exception::<()>(py, "TypeError", "object is not iterable");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "object is not iterable");
         }
     }
     DictSeqError::Exception
@@ -259,7 +263,11 @@ mod tests {
                 // its actual allocation remains subject to the same budget.
                 for prior_error in [false, true] {
                     if prior_error {
-                        raise_exception::<()>(py, "ValueError", "prior constructor error");
+                        raise_exception::<()>(
+                            py,
+                            BuiltinExc::ValueError,
+                            "prior constructor error",
+                        );
                     }
                     let budget = DenyAllocations::enter();
                     let bits = constructor(capacity);

@@ -1,5 +1,6 @@
 //! C generic attributes use logical descriptors while bypassing user overrides.
 use super::*;
+use crate::BuiltinExc;
 use crate::obj_from_bits;
 use molt_cpython_abi::api::{errors, mapping, object, refcount, sequences, strings};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -406,7 +407,7 @@ fn exercise_native_namespaces(
 
             let failure = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "managed descriptor body",
             ))
             .bits();
@@ -801,7 +802,7 @@ fn explicit_native_wrappers_skip_managed_dispatch_but_keep_native_ancestors() {
     });
 }
 
-fn pending_error(py: &crate::PyToken<'_>, kind: &str) -> u64 {
+fn pending_error(py: &crate::PyToken<'_>, kind: crate::BuiltinExc) -> u64 {
     crate::raise_exception::<u64>(py, kind, "generic descriptor sentinel");
     let error = crate::builtins::exceptions::molt_exception_last_pending();
     crate::molt_exception_clear();
@@ -995,7 +996,10 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
         let nondata =
             refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"nondata".as_ptr()));
 
-        for kind in ["RuntimeError", "AttributeError"] {
+        for kind in [
+            crate::BuiltinExc::RuntimeError,
+            crate::BuiltinExc::AttributeError,
+        ] {
             let failure_owner =
                 OwnedRuntimeValue::from_owned_bits(py.core_token(), pending_error(&py, kind));
             let failure = failure_owner.bits();
@@ -1013,7 +1017,7 @@ fn managed_generic_dictionary_replaces_only_instance_tier_and_preserves_errors()
                             ),
                         );
                         assert!(result.as_ptr().is_null());
-                        if suppress == 1 && kind == "AttributeError" {
+                        if suppress == 1 && kind == crate::BuiltinExc::AttributeError {
                             assert!(errors::PyErr_Occurred().is_null());
                         } else {
                             assert_eq!(take_bits(errors::PyErr_GetRaisedException()), failure);
@@ -1087,14 +1091,17 @@ fn managed_generic_suppressed_dictionary_attribute_error_continues_to_class() {
             Some(dictionary_bits),
         )
         .unwrap();
-        for kind in ["AttributeError", "RuntimeError"] {
+        for kind in [
+            crate::BuiltinExc::AttributeError,
+            crate::BuiltinExc::RuntimeError,
+        ] {
             let failure = pending_error(&py, kind);
             FAILURE.with(|slot| slot.set(failure));
             for explicit in [ptr::null_mut(), dictionary] {
                 for suppress in [0, 1] {
                     let result =
                         object::_PyObject_GenericGetAttrWithDict(view, shadow, explicit, suppress);
-                    if kind == "AttributeError" && suppress == 1 {
+                    if kind == crate::BuiltinExc::AttributeError && suppress == 1 {
                         assert_eq!(take_bits(result), MoltObject::from_int(9).bits());
                         assert!(errors::PyErr_Occurred().is_null());
                     } else {
@@ -1458,7 +1465,10 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                     assert_eq!(projected, 0);
                 }
 
-                for (kind, missing) in [("AttributeError", true), ("ValueError", false)] {
+                for (kind, missing) in [
+                    (crate::BuiltinExc::AttributeError, true),
+                    (crate::BuiltinExc::ValueError, false),
+                ] {
                     let failure =
                         MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
                             py,
@@ -1486,7 +1496,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 method(py, class, b"__getattr__", optional_getattr as *const (), 2);
                 let failure = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
                     py,
-                    "AttributeError",
+                    BuiltinExc::AttributeError,
                     "invoke fallback",
                 ))
                 .bits();
@@ -1500,7 +1510,7 @@ fn optional_attributes_share_normal_lookup_and_preserve_special_protocols() {
                 dec_ref_bits(py, failure);
                 let failure = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "do not invoke fallback",
                 ))
                 .bits();
@@ -1863,8 +1873,11 @@ fn getattribute_callable_retires_under_its_exact_error_before_fallback() {
                 GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class.bits()),
             );
             assert!(!class_view.as_ptr().is_null());
-            let error_ptr =
-                crate::builtins::exceptions::alloc_exception(py, "AttributeError", "lookup body");
+            let error_ptr = crate::builtins::exceptions::alloc_exception(
+                py,
+                BuiltinExc::AttributeError,
+                "lookup body",
+            );
             assert!(!error_ptr.is_null());
             let error = ExceptionValue::adopt(py, MoltObject::from_ptr(error_ptr).bits());
             let error_view = refcount::OwnedPyObject::from_owned(
@@ -1960,12 +1973,12 @@ fn fallible_type_publication_preserves_prior_on_success_and_selects_new_failure(
             );
             let failure_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "slot publication equality",
             );
             let prior_ptr = crate::builtins::exceptions::alloc_exception(
                 py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 "incoming publication error",
             );
             assert!(!failure_ptr.is_null() && !prior_ptr.is_null());

@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::NativeCallableKind;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -519,7 +520,11 @@ pub extern "C" fn molt_functools_partial(func_bits: u64, args_bits: u64, kwargs_
     crate::with_gil_entry_nopanic!(_py, {
         let callable = is_truthy(_py, obj_from_bits(molt_is_callable(func_bits)));
         if !callable {
-            return raise_exception::<_>(_py, "TypeError", "partial() requires a callable");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "partial() requires a callable",
+            );
         }
         let class_bits = partial_class(_py);
         let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
@@ -648,7 +653,7 @@ pub extern "C" fn molt_functools_reduce(
                 Ok(None) => {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "reduce() of empty sequence with no initial value",
                     );
                 }
@@ -1022,11 +1027,19 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cls_ptr = obj_from_bits(cls_bits).as_ptr();
         let Some(cls_ptr) = cls_ptr else {
-            return raise_exception::<_>(_py, "TypeError", "total_ordering expects a class");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "total_ordering expects a class",
+            );
         };
         unsafe {
             if object_type_id(cls_ptr) != crate::TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "total_ordering expects a class");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "total_ordering expects a class",
+                );
             }
         }
         let dict_bits = unsafe { class_dict_bits(cls_ptr) };
@@ -1070,7 +1083,7 @@ pub extern "C" fn molt_functools_total_ordering(cls_bits: u64) -> u64 {
         } else {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "total_ordering requires at least one ordering operation: < <= > >=",
             );
         };
@@ -1275,7 +1288,11 @@ pub extern "C" fn molt_functools_lru_cache(
             return MoltObject::none().bits();
         }
         if !is_truthy(_py, obj_from_bits(molt_is_callable(func_bits))) {
-            return raise_exception::<u64>(_py, "TypeError", "the first argument must be callable");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "the first argument must be callable",
+            );
         }
         let maxsize_bits = if obj_from_bits(maxsize_bits).is_none() {
             maxsize_bits
@@ -1867,7 +1884,11 @@ fn singledispatch_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, Sin
 fn sd_handle_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
     let obj = obj_from_bits(handle_bits);
     let Some(id) = to_i64(obj) else {
-        let _ = raise_exception::<u64>(_py, "TypeError", "singledispatch handle must be an int");
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "singledispatch handle must be an int",
+        );
         return None;
     };
     Some(id)
@@ -2010,7 +2031,7 @@ pub extern "C" fn molt_functools_singledispatch_call(
                     if crate::object::seq_access::len(args_ptr) == 0 {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "singledispatch requires at least one positional argument",
                         );
                     }
@@ -2031,7 +2052,7 @@ pub extern "C" fn molt_functools_singledispatch_call(
         } else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "singledispatch requires at least one positional argument",
             );
         };
@@ -2623,9 +2644,7 @@ mod tests {
     }
 
     fn assert_kwd_mark_memory_error(py: &crate::PyToken<'_>) {
-        use crate::builtins::exceptions::{
-            exception_class_is_subtype, exception_type_bits_from_name,
-        };
+        use crate::builtins::exceptions::{exception_class_bits, exception_class_is_subtype};
         use molt_cpython_abi::hooks::PendingExceptionClass;
 
         assert!(crate::exception_pending(py));
@@ -2634,7 +2653,7 @@ mod tests {
         // consuming or materializing a replacement owner.
         let is_memory_error = match pending.0 {
             PendingExceptionClass::Class(class) => {
-                let memory_error = exception_type_bits_from_name(py, "MemoryError");
+                let memory_error = exception_class_bits(py, crate::BuiltinExc::MemoryError);
                 exception_class_is_subtype(py, class, memory_error)
             }
             PendingExceptionClass::NativeClass(class) => unsafe {
@@ -2892,7 +2911,11 @@ mod tests {
 
     extern "C" fn iterator_owned_fail(_value: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            crate::raise_exception::<u64>(py, "ValueError", "owned iterator callback")
+            crate::raise_exception::<u64>(
+                py,
+                crate::BuiltinExc::ValueError,
+                "owned iterator callback",
+            )
         })
     }
 
@@ -2901,7 +2924,11 @@ mod tests {
             // A native callback may return an owned handle and set an error.
             // The consumer must retire both the operand and that return value.
             inc_ref_bits(py, right);
-            crate::raise_exception::<()>(py, "ValueError", "owned iterator callback");
+            crate::raise_exception::<()>(
+                py,
+                crate::BuiltinExc::ValueError,
+                "owned iterator callback",
+            );
             right
         })
     }
@@ -3394,7 +3421,7 @@ mod tests {
                 MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, b"x"))
                     .bits()
             } else {
-                crate::raise_exception::<u64>(py, "StopIteration", "")
+                crate::raise_exception::<u64>(py, crate::BuiltinExc::StopIteration, "")
             }
         })
     }
@@ -3739,7 +3766,11 @@ mod tests {
                 inc_ref_bits(py, right);
                 right
             } else {
-                crate::raise_exception::<u64>(py, "ValueError", "input failed after one item")
+                crate::raise_exception::<u64>(
+                    py,
+                    crate::BuiltinExc::ValueError,
+                    "input failed after one item",
+                )
             }
         })
     }

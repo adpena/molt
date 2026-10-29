@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::builtins::methods::is_missing_bits;
 use crate::object::seq_access::with_immutable_tuple_slice;
@@ -288,7 +289,11 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
         descriptor
     });
     if descriptor == 0 && !exception_pending(_py) {
-        let _ = raise_exception::<u64>(_py, "SystemError", "frame.f_locals publication failed");
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::SystemError,
+            "frame.f_locals publication failed",
+        );
     }
     descriptor != 0
 }
@@ -683,10 +688,14 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
 pub extern "C" fn molt_types_method_new(_cls_bits: u64, func_bits: u64, self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if !crate::builtins::callable::is_callable_impl(_py, func_bits) {
-            return raise_exception::<_>(_py, "TypeError", "first argument must be callable");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "first argument must be callable",
+            );
         }
         if obj_from_bits(self_bits).is_none() {
-            return raise_exception::<_>(_py, "TypeError", "instance must not be None");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "instance must not be None");
         }
         crate::builtins::functions::explicit_bound_method_new(_py, func_bits, self_bits)
     })
@@ -703,7 +712,7 @@ pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) 
         if obj_from_bits(mapping_bits).is_none() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "mappingproxy() argument cannot be None",
             );
         }
@@ -712,7 +721,7 @@ pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) 
             Ok(false) => {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "mappingproxy() argument must be a mapping",
                 );
             }
@@ -720,11 +729,15 @@ pub extern "C" fn molt_types_mappingproxy_new(cls_bits: u64, mapping_bits: u64) 
         }
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "mappingproxy() expects type");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "mappingproxy() expects type");
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "mappingproxy() expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "mappingproxy() expects type",
+                );
             }
         }
         let inst_bits = unsafe { alloc_instance_for_class(_py, cls_ptr) };
@@ -797,13 +810,17 @@ pub extern "C" fn molt_types_mappingproxy_get(
     crate::with_gil_entry_nopanic!(_py, {
         let args_ptr = obj_from_bits(args_bits).as_ptr();
         let Some(args_ptr) = args_ptr else {
-            return raise_exception::<_>(_py, "TypeError", "mappingproxy.get() expects arguments");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "mappingproxy.get() expects arguments",
+            );
         };
         unsafe {
             if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "mappingproxy.get() expects arguments",
                 );
             }
@@ -817,12 +834,16 @@ pub extern "C" fn molt_types_mappingproxy_get(
                 (args.len(), args.first().copied(), default_bits)
             })
         }) else {
-            return raise_exception::<_>(_py, "TypeError", "mappingproxy.get() expects arguments");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "mappingproxy.get() expects arguments",
+            );
         };
         if args_len == 0 || args_len > 2 {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "mappingproxy.get() takes 1 or 2 arguments",
             );
         }
@@ -831,7 +852,7 @@ pub extern "C" fn molt_types_mappingproxy_get(
                 if object_type_id(kwargs_ptr) == TYPE_ID_DICT && crate::dict_len(kwargs_ptr) != 0 {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "mappingproxy.get() takes no keyword arguments",
                     );
                 }
@@ -855,7 +876,7 @@ pub extern "C" fn molt_types_mappingproxy_get(
             return MoltObject::none().bits();
         }
         if is_missing_bits(_py, method) {
-            return raise_exception::<_>(_py, "AttributeError", "get");
+            return raise_exception::<_>(_py, BuiltinExc::AttributeError, "get");
         }
         let result = unsafe { call_callable2(_py, method, key_bits, default_bits) };
         dec_ref_bits(_py, method);
@@ -878,7 +899,7 @@ fn mappingproxy_call_noargs(_py: &PyToken<'_>, self_bits: u64, name: &str) -> u6
         return MoltObject::none().bits();
     }
     if method_bits == missing {
-        return raise_exception::<_>(_py, "AttributeError", name);
+        return raise_exception::<_>(_py, BuiltinExc::AttributeError, name);
     }
     let res_bits = unsafe { call_callable0(_py, method_bits) };
     dec_ref_bits(_py, method_bits);
@@ -930,7 +951,7 @@ pub extern "C" fn molt_types_mappingproxy_setitem(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "'mappingproxy' object does not support item assignment",
         )
     })
@@ -941,7 +962,7 @@ pub extern "C" fn molt_types_mappingproxy_delitem(_self_bits: u64, _key_bits: u6
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "'mappingproxy' object does not support item deletion",
         )
     })
@@ -992,7 +1013,7 @@ extern "C" fn mappingproxy_ior(_self_bits: u64, _other: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         raise_exception::<_>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "'|=' is not supported by mappingproxy; use '|' instead",
         )
     })
@@ -1033,7 +1054,11 @@ mappingproxy_comparison!(mappingproxy_ge, crate::molt_ge);
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_types_capsule_new(_cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<_>(_py, "TypeError", "cannot create 'capsule' instances")
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            "cannot create 'capsule' instances",
+        )
     })
 }
 
@@ -1044,7 +1069,7 @@ pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bit
             let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "CellType takes no keyword arguments",
                 );
             };
@@ -1053,16 +1078,16 @@ pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bit
             {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "CellType takes no keyword arguments",
                 );
             }
         }
         let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "CellType expects arguments");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "CellType expects arguments");
         };
         if unsafe { object_type_id(args_ptr) } != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "CellType expects arguments");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "CellType expects arguments");
         }
         let Some((len, value_bits)) = (unsafe {
             with_immutable_tuple_slice(args_ptr, |args| {
@@ -1072,11 +1097,11 @@ pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bit
                 )
             })
         }) else {
-            return raise_exception::<_>(_py, "TypeError", "CellType expects arguments");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "CellType expects arguments");
         };
         if len > 1 {
             let msg = format!("CellType expected at most 1 argument, got {len}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         let ptr = crate::object::cells::alloc_cell(_py, value_bits);
         if ptr.is_null() {
@@ -1091,11 +1116,11 @@ pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bit
 pub extern "C" fn molt_types_cell_contents_get(_descriptor_bits: u64, cell_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected cell");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
         let value = unsafe { crate::object::cells::cell_value_bits(ptr) };
         if is_missing_bits(_py, value) {
-            return raise_exception::<_>(_py, "ValueError", "Cell is empty");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "Cell is empty");
         }
         inc_ref_bits(_py, value);
         value
@@ -1110,7 +1135,7 @@ pub extern "C" fn molt_types_cell_contents_set(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected cell");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
         unsafe { crate::object::cells::cell_replace_value(_py, ptr, value_bits) };
         MoltObject::none().bits()
@@ -1121,7 +1146,7 @@ pub extern "C" fn molt_types_cell_contents_set(
 pub extern "C" fn molt_types_cell_contents_delete(_descriptor_bits: u64, cell_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = crate::object::cells::cell_ptr_from_bits(cell_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "expected cell");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "expected cell");
         };
         unsafe { crate::object::cells::cell_replace_value(_py, ptr, missing_bits(_py)) };
         MoltObject::none().bits()
@@ -1138,7 +1163,7 @@ pub extern "C" fn molt_types_simplenamespace_init(
         let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "SimpleNamespace requires a namespace receiver",
             );
         };
@@ -1148,7 +1173,7 @@ pub extern "C" fn molt_types_simplenamespace_init(
                 if object_type_id(args_ptr) != TYPE_ID_TUPLE {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "SimpleNamespace expects arguments",
                     );
                 }
@@ -1158,7 +1183,11 @@ pub extern "C" fn molt_types_simplenamespace_init(
             false
         };
         if has_args {
-            return raise_exception::<_>(_py, "TypeError", "no positional arguments expected");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "no positional arguments expected",
+            );
         }
         let dict_ptr = alloc_dict_with_pairs(_py, &[]);
         if dict_ptr.is_null() {
@@ -1199,7 +1228,11 @@ pub extern "C" fn molt_types_simplenamespace_init(
                     };
                     if object_type_id(key_ptr) != TYPE_ID_STRING {
                         dec_ref_bits(_py, dict_bits);
-                        return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
+                        return raise_exception::<_>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            "keywords must be strings",
+                        );
                     }
                     // SimpleNamespace.__init__ populates its dictionary
                     // directly, like CPython: neither subclass setters nor

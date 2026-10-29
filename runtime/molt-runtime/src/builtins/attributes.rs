@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use molt_obj_model::MoltObject;
@@ -13,7 +14,7 @@ use crate::builtins::attr::{
 };
 use crate::builtins::containers::tuple_method_bits;
 #[cfg(test)]
-use crate::builtins::exceptions::exception_matches_builtin_name;
+use crate::builtins::exceptions::exception_matches_kind;
 use crate::builtins::frames::suspended_frame_bits;
 use crate::builtins::methods::{
     asyncgen_method_bits, complex_method_bits, generator_method_bits, object_method_bits,
@@ -129,11 +130,19 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let code_obj = obj_from_bits(code_bits);
         let Some(code_ptr) = code_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "code.co_positions() requires code");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "code.co_positions() requires code",
+            );
         };
         unsafe {
             if object_type_id(code_ptr) != TYPE_ID_CODE {
-                return raise_exception::<_>(_py, "TypeError", "code.co_positions() requires code");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "code.co_positions() requires code",
+                );
             }
         }
 
@@ -1043,7 +1052,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
                             type_name(_py, res_obj)
                         );
                         dec_ref_bits(_py, res_bits);
-                        raise_exception::<()>(_py, "TypeError", &msg);
+                        raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
                         return Err(());
                     };
                     if object_type_id(res_ptr) != TYPE_ID_DICT {
@@ -1052,7 +1061,7 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_mode(
                             type_name(_py, res_obj)
                         );
                         dec_ref_bits(_py, res_bits);
-                        raise_exception::<()>(_py, "TypeError", &msg);
+                        raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
                         return Err(());
                     }
                     res_bits
@@ -1245,10 +1254,18 @@ pub unsafe extern "C" fn molt_get_attr_generic(
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
-                return raise_exception::<u64>(_py, "OverflowError", "attribute name is too large");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "attribute name is too large",
+                );
             };
             if obj_ptr.is_null() {
-                return raise_exception::<_>(_py, "AttributeError", "object has no attribute");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::AttributeError,
+                    "object has no attribute",
+                );
             }
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
@@ -1338,7 +1355,11 @@ pub unsafe extern "C" fn molt_get_attr_object(
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
-                return raise_exception::<u64>(_py, "OverflowError", "attribute name is too large");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "attribute name is too large",
+                );
             };
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -1371,7 +1392,11 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
                 return molt_get_attr_object(obj_bits, attr_name_ptr, attr_name_len_bits);
             }
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
-                return raise_exception::<u64>(_py, "OverflowError", "attribute name is too large");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "attribute name is too large",
+                );
             };
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             get_attr_object_ic_with_mode(
@@ -1444,7 +1469,11 @@ pub unsafe extern "C" fn molt_get_attr_special(
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(attr_name_len) = usize_from_bits(attr_name_len_bits) else {
-                return raise_exception::<u64>(_py, "OverflowError", "attribute name is too large");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OverflowError,
+                    "attribute name is too large",
+                );
             };
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
@@ -1523,11 +1552,19 @@ pub extern "C" fn molt_function_descriptor_get(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(pointer) = obj_from_bits(self_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "descriptor requires a function");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "descriptor requires a function",
+            );
         };
         unsafe {
             if object_type_id(pointer) != TYPE_ID_FUNCTION {
-                return raise_exception::<_>(_py, "TypeError", "descriptor requires a function");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "descriptor requires a function",
+                );
             }
             let owner = (!obj_from_bits(owner_bits).is_none()).then_some(owner_bits);
             let instance = (!obj_from_bits(instance_bits).is_none()).then_some(instance_bits);
@@ -1536,7 +1573,7 @@ pub extern "C" fn molt_function_descriptor_get(
             {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "native function is not a descriptor",
                 );
             }
@@ -1749,9 +1786,19 @@ mod tests {
             let class_ptr = MoltObject::from_bits(class_bits).as_ptr().unwrap();
             let invalid_name = MoltObject::from_int(17).bits();
             for (operation, name, expected_error, routes) in [
-                ("get", "__missing_boxed_attribute__", "AttributeError", 8),
-                ("set", "__name__", "TypeError", 5),
-                ("del", "__missing_boxed_attribute__", "AttributeError", 4),
+                (
+                    "get",
+                    "__missing_boxed_attribute__",
+                    crate::BuiltinExc::AttributeError,
+                    8,
+                ),
+                ("set", "__name__", crate::BuiltinExc::TypeError, 5),
+                (
+                    "del",
+                    "__missing_boxed_attribute__",
+                    crate::BuiltinExc::AttributeError,
+                    4,
+                ),
             ] {
                 let name_bits = string_bits(_py, name.as_bytes());
                 for route in 0..routes {
@@ -1846,7 +1893,7 @@ mod tests {
                     assert!(crate::exception_pending(_py), "{operation} route {route}");
                     let exception = crate::exception_last_bits_noinc(_py).unwrap();
                     assert!(
-                        crate::builtins::exceptions::exception_matches_builtin_name(
+                        crate::builtins::exceptions::exception_matches_kind(
                             _py,
                             exception,
                             expected_error,
@@ -1898,10 +1945,10 @@ mod tests {
                 assert_eq!(result, -1);
                 assert!(crate::exception_pending(_py));
                 let exception = crate::exception_last_bits_noinc(_py).unwrap();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     _py,
                     exception,
-                    "TypeError",
+                    crate::BuiltinExc::TypeError,
                 ));
                 crate::clear_exception(_py);
             }
@@ -2135,10 +2182,10 @@ mod tests {
                         .is_err()
                     );
                     let exception = crate::exception_last_bits_noinc(py).unwrap();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
-                        "AttributeError"
+                        crate::BuiltinExc::AttributeError
                     ));
                     crate::clear_exception(py);
                 }
@@ -2189,10 +2236,10 @@ mod tests {
                         .is_err()
                     );
                     let exception = crate::exception_last_bits_noinc(py).unwrap();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
-                        "TypeError"
+                        crate::BuiltinExc::TypeError
                     ));
                     crate::clear_exception(py);
                 }
