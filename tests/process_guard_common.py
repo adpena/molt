@@ -336,8 +336,13 @@ def guarded_process_role(args: Sequence[str]) -> GuardedProcessRole:
     return GuardedProcessRole.EXECUTION
 
 
-def _role_prefix(prefix: str, role: GuardedProcessRole) -> str:
-    return f"{prefix}_{role.value.upper()}"
+# The registered scope whose timeout bounds a role: building a test fixture is
+# a `molt build`, so a build takes `MOLT_BUILD_TIMEOUT_SEC`. Execution has no
+# scope beyond the test's own stem; its default comes from the role.
+_ROLE_SCOPE: Mapping[GuardedProcessRole, str | None] = {
+    GuardedProcessRole.BUILD: "MOLT_BUILD",
+    GuardedProcessRole.EXECUTION: None,
+}
 
 
 def resolve_test_process_timeout(
@@ -348,7 +353,12 @@ def resolve_test_process_timeout(
     explicit: float | None = None,
     default: float | None = None,
 ) -> float | None:
-    """Select one existing role budget for a fixture's build and first execution."""
+    """One budget for a fixture's build or first execution.
+
+    Precedence: the explicit timeout, the test stem's `<STEM>_TIMEOUT_SEC`, the
+    role scope's (`_ROLE_SCOPE`), then the root `MOLT_TEST_PROCESS_TIMEOUT_SEC`
+    or the role default. Every name is a registered stem's; no stem is composed.
+    """
     if explicit is not None:
         return explicit
     role_default = (
@@ -356,23 +366,19 @@ def resolve_test_process_timeout(
         if default is not None
         else default_nested_process_timeout_seconds(role.value)
     )
-    role_prefix = _role_prefix(prefix, role)
-    role_env = f"MOLT_{role.value.upper()}_TIMEOUT_SEC"
-    # Avoid the generic fallback inside timeout_from_env until the two
-    # compositional authorities have had precedence.
-    for name in (f"{role_prefix}_TIMEOUT_SEC", f"{prefix}_TIMEOUT_SEC", role_env):
-        raw = env.get(name)
+    # The generic root fallback inside timeout_from_env waits until both
+    # scopes have had precedence.
+    for stem in (prefix, _ROLE_SCOPE[role]):
+        if stem is None:
+            continue
+        raw = env.get(f"{stem}_TIMEOUT_SEC")
         if raw is None or not raw.strip():
             continue
         selected = harness_memory_guard.timeout_from_env(
-            role_prefix,
-            {f"{role_prefix}_TIMEOUT_SEC": raw},
-            default=role_default,
+            stem, {f"{stem}_TIMEOUT_SEC": raw}, default=role_default
         )
         return enforce_owning_proof_timeout(env, selected)
-    selected = harness_memory_guard.timeout_from_env(
-        role_prefix, env, default=role_default
-    )
+    selected = harness_memory_guard.timeout_from_env(prefix, env, default=role_default)
     return enforce_owning_proof_timeout(env, selected)
 
 

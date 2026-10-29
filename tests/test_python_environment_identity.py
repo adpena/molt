@@ -39,7 +39,7 @@ from tests.process_guard_common import install_module_view
 from tests.module_isolation import forget_module
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 _PORTABLE_PATH_ALIASES = [
