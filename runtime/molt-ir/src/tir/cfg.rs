@@ -493,10 +493,6 @@ fn add_edge(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: shared indexed dominator projection
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Phase 4: loop detection and depth
 // ---------------------------------------------------------------------------
 
@@ -504,16 +500,16 @@ fn compute_loop_depth(
     blocks: &[BasicBlock],
     successors: &[Vec<usize>],
     predecessors: &[Vec<usize>],
-    dominators: &[Option<usize>],
-    entry: usize,
+    dominance: &crate::tir::dominators::IndexedDominance,
 ) -> Vec<u32> {
     let n = blocks.len();
     let mut depth = vec![0u32; n];
 
-    // Find back-edges: an edge b→h where h dominates b.
+    // Find back-edges: an edge b→h where h dominates b. Each test is O(1). A
+    // self edge is a back edge even in a block the entry cannot reach.
     for (b, succs) in successors.iter().enumerate() {
         for &h in succs {
-            if dominates(dominators, h, b, entry) {
+            if h == b || dominance.dominates(h, b) {
                 // h is a loop header; find the natural loop body.
                 // Use the pre-computed predecessor list (O(1) lookup per node)
                 // instead of scanning all successors (which was O(N) per lookup).
@@ -526,25 +522,6 @@ fn compute_loop_depth(
     }
 
     depth
-}
-
-/// Returns `true` if `a` dominates `b` in the dominator tree.
-fn dominates(idom: &[Option<usize>], a: usize, b: usize, entry: usize) -> bool {
-    if a == b {
-        return true;
-    }
-    let mut cur = b;
-    loop {
-        match idom[cur] {
-            Some(d) if d == a => return true,
-            Some(d) if d == cur => return false, // shouldn't happen, safety net
-            Some(d) => cur = d,
-            None => {
-                // cur is the entry; a dominates b only if a is also entry.
-                return cur == entry && a == entry;
-            }
-        }
-    }
 }
 
 /// Compute the natural loop body for back-edge tail → header.
@@ -710,14 +687,11 @@ impl CFG {
         }
 
         let entry = 0;
-        let dominators = crate::tir::dominators::IndexedDominance::compute(&successors, entry)
-            .immediate_dominators()
-            .to_vec();
+        let dominance = crate::tir::dominators::IndexedDominance::compute(&successors, entry);
+        let dominators = dominance.immediate_dominators().to_vec();
 
-        // For loop depth we need to pass successors to the dominator-based
-        // detector, but we also use the structural back-edges.
-        let loop_depth =
-            compute_loop_depth(&blocks, &successors, &predecessors, &dominators, entry);
+        // Back edges are the edges whose target dominates their source.
+        let loop_depth = compute_loop_depth(&blocks, &successors, &predecessors, &dominance);
 
         Self {
             blocks,
@@ -741,13 +715,10 @@ impl CFG {
             .map(|index| self.exception_edges[index].1)
     }
 
-    /// Exact executable operation dominance, projected from the canonical
-    /// before/after program-point graph. Handler registrations do not execute
-    /// their targets, and resume edges leave at dispatch rather than block tail.
-    pub fn execution_op_dominators(&self, ops: &[OpIR]) -> Vec<Option<usize>> {
-        self.execution_points(ops).operation_dominators()
-    }
-
+    /// Exact executable dominance over the canonical before/after
+    /// program-point graph, with O(1) operation-level queries. Handler
+    /// registrations do not execute their targets, and resume edges leave at
+    /// dispatch rather than block tail.
     pub fn execution_points(
         &self,
         ops: &[OpIR],
@@ -877,7 +848,7 @@ mod tests {
                 assert!(transfers <= 1, "{kind}: one authored transfer per block");
             }
             assert_eq!(
-                cfg.execution_op_dominators(&ops)[6],
+                cfg.execution_points(&ops).operation_immediate_dominator(6),
                 (kind != "try_start").then_some(1),
                 "{kind}: only observations execute a handler; no later definition can dominate it"
             );

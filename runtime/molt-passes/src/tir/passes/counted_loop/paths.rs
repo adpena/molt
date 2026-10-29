@@ -17,7 +17,7 @@ pub(crate) struct MaterialLoopGuard {
 pub(crate) struct LoopGuardContext {
     reachable: HashSet<BlockId>,
     preds: HashMap<BlockId, Vec<BlockId>>,
-    idoms: HashMap<BlockId, Option<BlockId>>,
+    tree: dominators::DominatorTree,
     labels: HashMap<i64, BlockId>,
 }
 
@@ -26,7 +26,7 @@ impl LoopGuardContext {
         let preds = dominators::build_pred_map(func);
         Self {
             reachable: dominators::executable_reachable_blocks(func),
-            idoms: dominators::compute_idoms(func, &preds),
+            tree: dominators::compute_dominator_tree(func, &preds),
             preds,
             labels: dominators::exception_label_to_block(func),
         }
@@ -85,9 +85,11 @@ impl LoopGuardContext {
                 .contains(&entry);
         let mut success_blocks = Vec::new();
         if edge_is_unique {
-            success_blocks.extend(body.iter().copied().filter(|bid| {
-                !path.contains(bid) && dominators::dominates(entry, *bid, &self.idoms)
-            }));
+            success_blocks.extend(
+                body.iter()
+                    .copied()
+                    .filter(|bid| !path.contains(bid) && self.tree.dominates(entry, *bid)),
+            );
             success_blocks.sort_unstable_by_key(|bid| bid.0);
         }
         Some(MaterialLoopGuard {
