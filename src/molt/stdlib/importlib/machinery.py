@@ -356,22 +356,18 @@ def _run_compiled_loader_exec(
         # Restore the caller's exact mapping before executing the requested
         # body; direct Loader.exec_module does not own sys.modules publication.
         _restore_sys_modules_entry(modules, module_name, previous)
+        # Like CPython's Loader.exec_module, these run the body and set no
+        # module metadata: module_from_spec owns _init_module_attrs.
         if kind == 0:
-            result = _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE(
-                loader, module, path, ModuleSpec
-            )
+            result = _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE(loader, module, path)
         elif kind == 1:
             result = _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE(
-                loader, module, path, inner_path, ModuleSpec
+                loader, module, path, inner_path
             )
         elif kind == 2:
-            result = _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE(
-                loader, module, path, ModuleSpec
-            )
+            result = _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE(loader, module, path)
         else:
-            result = _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE(
-                loader, module, path, ModuleSpec
-            )
+            result = _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE(loader, module, path)
         _check_loader_exec_result(result)
     finally:
         _restore_sys_modules_entry(modules, module_name, previous)
@@ -398,12 +394,75 @@ def _raise_loader_pending_exception() -> None:
         raise RuntimeError("importlib loader execution failed")
 
 
+class _NamespacePath:
+    """A namespace package's ``__path__``: CPython's
+    ``importlib._bootstrap_external._NamespacePath``.
+
+    It reads the parent's path (``sys.path`` for a top-level package) and asks
+    ``path_finder`` for the portions again when that path changes or
+    ``PathFinder.invalidate_caches`` ran.
+    """
+
+    # PathFinder.invalidate_caches increments this epoch (bpo-45703).
+    _epoch = 0
+
+    def __init__(self, name, path, path_finder):
+        self._name = name
+        self._path = path
+        self._last_parent_path = tuple(self._get_parent_path())
+        self._last_epoch = self._epoch
+        self._path_finder = path_finder
+
+    def _find_parent_path_names(self):
+        """Return (parent-module-name, parent-path-attr-name)."""
+        parent, dot, _me = self._name.rpartition(".")
+        if dot == "":
+            return "sys", "path"
+        return parent, "__path__"
+
+    def _get_parent_path(self):
+        parent_module_name, path_attr_name = self._find_parent_path_names()
+        return getattr(_sys.modules[parent_module_name], path_attr_name)
+
+    def _recalculate(self):
+        parent_path = tuple(self._get_parent_path())
+        if parent_path != self._last_parent_path or self._epoch != self._last_epoch:
+            spec = self._path_finder(self._name, parent_path)
+            # A returned loader changes nothing, but the new parent path is kept.
+            if spec is not None and spec.loader is None:
+                if spec.submodule_search_locations:
+                    self._path = spec.submodule_search_locations
+            self._last_parent_path = parent_path
+            self._last_epoch = self._epoch
+        return self._path
+
+    def __iter__(self):
+        return iter(self._recalculate())
+
+    def __getitem__(self, index):
+        return self._recalculate()[index]
+
+    def __setitem__(self, index, path):
+        self._path[index] = path
+
+    def __len__(self):
+        return len(self._recalculate())
+
+    def __repr__(self):
+        return f"_NamespacePath({self._path!r})"
+
+    def __contains__(self, item):
+        return item in self._recalculate()
+
+    def append(self, item):
+        self._path.append(item)
+
+
 class PathFinder:
     @classmethod
-    def find_spec(cls, fullname, path=None, target=None):
-        if path is None:
-            path = _sys.path
-        portions = None
+    def _get_spec(cls, fullname, path, target=None):
+        """The loader's spec, else a loader-less spec of the namespace portions."""
+        namespace_path = []
         for entry in path:
             if not isinstance(entry, str):
                 continue
@@ -433,17 +492,29 @@ class PathFinder:
             _MOLT_IMPORTLIB_ADMIT_SPEC(fullname, spec)
             if spec.loader is not None:
                 return spec
-            locations = spec.submodule_search_locations
-            if locations is None:
-                raise ImportError("spec missing loader")
+            portions = spec.submodule_search_locations
             if portions is None:
-                portions = []
-            portions.extend(locations)
-        if portions:
-            spec = ModuleSpec(fullname, None)
-            spec.submodule_search_locations = portions
+                raise ImportError("spec missing loader")
+            namespace_path.extend(portions)
+        spec = ModuleSpec(fullname, None)
+        spec.submodule_search_locations = namespace_path
+        return spec
+
+    @classmethod
+    def find_spec(cls, fullname, path=None, target=None):
+        if path is None:
+            path = _sys.path
+        spec = cls._get_spec(fullname, path, target)
+        if spec.loader is not None:
             return spec
-        return None
+        namespace_path = spec.submodule_search_locations
+        if not namespace_path:
+            return None
+        spec.origin = None
+        spec.submodule_search_locations = _NamespacePath(
+            fullname, namespace_path, cls._get_spec
+        )
+        return spec
 
     @staticmethod
     def invalidate_caches():
@@ -480,6 +551,8 @@ class PathFinder:
                 del _sys.path_importer_cache[path]
             elif hasattr(finder, "invalidate_caches"):
                 finder.invalidate_caches()
+        # Namespace paths recompute after this (bpo-45703).
+        _NamespacePath._epoch += 1
 
 
 class FileFinder:
@@ -537,15 +610,8 @@ _default_path_hooks = [
 ]
 
 class NamespaceLoader:
-    def __init__(self, name: str, path, path_finder=None) -> None:
-        del name, path_finder
-        if isinstance(path, str):
-            values = [path] if path else []
-        elif isinstance(path, (list, tuple)):
-            values = [entry for entry in path if isinstance(entry, str) and entry]
-        else:
-            values = []
-        self._path = list(values)
+    def __init__(self, name: str, path, path_finder) -> None:
+        self._path = _NamespacePath(name, path, path_finder)
 
     def create_module(self, _spec: ModuleSpec):
         return None
@@ -555,6 +621,9 @@ class NamespaceLoader:
 
     def is_package(self, _fullname: str) -> bool:
         return True
+
+    def get_source(self, _fullname: str) -> str:
+        return ""
 
     def get_resource_reader(self, fullname: str):
         _ensure_intrinsics()

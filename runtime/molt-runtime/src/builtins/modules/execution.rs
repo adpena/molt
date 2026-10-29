@@ -55,10 +55,10 @@ const SCRIPT_PACKAGE_PENDING: u8 = 1 << 2;
 const SCRIPT_SPEC_PENDING: u8 = 1 << 3;
 const SCRIPT_METADATA_PENDING: u8 =
     EXECUTION_NAME_PENDING | SCRIPT_FILE_PENDING | SCRIPT_PACKAGE_PENDING | SCRIPT_SPEC_PENDING;
-/// `Loader.exec_module` runs after CPython's `_init_module_attrs` bound
-/// `__path__` to the spec's `submodule_search_locations` object, and it sets
-/// no metadata itself. The compiled package prologue must not replace that
-/// object with its own list.
+/// `Loader.exec_module` sets no module metadata: CPython runs
+/// `_init_module_attrs` only in `module_from_spec`, which bound `__path__` to
+/// the spec's `submodule_search_locations` object. The compiled prologue keeps
+/// each value the module already has and stores none it lacks.
 const LOADER_PATH_PENDING: u8 = 1 << 4;
 const LOADER_METADATA_PENDING: u8 = SCRIPT_METADATA_PENDING | LOADER_PATH_PENDING;
 
@@ -579,14 +579,24 @@ pub(super) fn module_new_target(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     })
 }
 
-pub(super) fn module_metadata_override_bits(
+/// What one module metadata store writes while a compiled body executes.
+pub(super) enum MetadataStore {
+    /// The stored value itself: no execution context claims this store.
+    Body,
+    /// This value instead; `owned` when the store releases it afterwards.
+    Value { bits: u64, owned: bool },
+    /// Nothing: the loader's module lacks the attribute and keeps lacking it.
+    Absent,
+}
+
+pub(super) fn module_metadata_store(
     _py: &PyToken<'_>,
     module_bits: u64,
     attr_bits: u64,
-) -> Result<Option<(u64, bool)>, u64> {
+) -> Result<MetadataStore, u64> {
     let runtime_id = runtime_state(_py) as *const _ as usize;
     let Some(attr) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
-        return Ok(None);
+        return Ok(MetadataStore::Body);
     };
     enum MetadataOverride {
         Text(Option<String>),
@@ -642,34 +652,41 @@ pub(super) fn module_metadata_override_bits(
         }
         ctx.metadata_override_pending &= !bit;
         if bit == SCRIPT_SPEC_PENDING {
-            // The compiler stores a located package's `__path__` before its
-            // spec admission, and stores none for any other module. Admission
-            // ends that window: a later `__path__` store is the body's own.
-            ctx.metadata_override_pending &= !LOADER_PATH_PENDING;
+            // The compiler prologue stores `__file__`, `__package__` and a
+            // located package's `__path__` before its spec admission.
+            // Admission ends that window: a later store is the body's own.
+            ctx.metadata_override_pending &=
+                !(SCRIPT_FILE_PENDING | SCRIPT_PACKAGE_PENDING | LOADER_PATH_PENDING);
         }
         Some(value)
     });
     let Some(metadata_override) = metadata_override else {
-        return Ok(None);
+        return Ok(MetadataStore::Body);
     };
     match metadata_override {
-        MetadataOverride::Text(None) => Ok(Some((MoltObject::none().bits(), false))),
+        MetadataOverride::Text(None) => Ok(MetadataStore::Value {
+            bits: MoltObject::none().bits(),
+            owned: false,
+        }),
         MetadataOverride::Text(Some(text)) => {
             let ptr = alloc_string(_py, text.as_bytes());
             if ptr.is_null() {
                 return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
             }
-            Ok(Some((MoltObject::from_ptr(ptr).bits(), true)))
+            Ok(MetadataStore::Value {
+                bits: MoltObject::from_ptr(ptr).bits(),
+                owned: true,
+            })
         }
         MetadataOverride::Existing => unsafe {
             let dict_ptr = module_dict_ptr(_py, module_bits)?;
             let Some(bits) = dict_get_in_place(_py, dict_ptr, attr_bits)
                 .map_err(|()| MoltObject::none().bits())?
             else {
-                return Ok(None);
+                return Ok(MetadataStore::Absent);
             };
             inc_ref_bits(_py, bits);
-            Ok(Some((bits, true)))
+            Ok(MetadataStore::Value { bits, owned: true })
         },
     }
 }
