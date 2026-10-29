@@ -294,7 +294,7 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
                 }
                 // NOTE(runtime/windows): `socketpair` currently uses loopback TCP to preserve
                 // deterministic behavior. The native WSAPROTOCOL_INFO/AF_UNIX perf lane remains
-                // tracked in docs/spec/STATUS.md and ROADMAP.md (RT2/P2).
+                // tracked by HF-577.
                 let (left_fd, right_fd) = match socketpair_windows_loopback_raw(family) {
                     Ok(pair) => pair,
                     Err(err) => return raise_os_error::<u64>(_py, err, "socketpair"),

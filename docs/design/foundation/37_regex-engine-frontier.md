@@ -10,8 +10,8 @@ uses host Python. Native and WASM have the same semantic obligations.
 ## One compilation and execution authority
 
 `molt-runtime-regex/src/regex` is the single implementation. The former duplicate
-runtime implementation was removed; [design 21e](21e_runtime_satellite_dedup_PLAN.md)
-owns that completed migration. `ReNode` is parser input to compilation, not an
+runtime implementation was removed by the completed runtime satellite
+deduplication of the [decomposition program](21_decomposition_program.md). `ReNode` is parser input to compilation, not an
 executable pattern payload. Compilation consumes it into an immutable typed
 instruction `Program` in `CompiledPattern`; `PatternHandle` owns that program.
 There is no runtime AST interpreter or alternate compatibility matcher.

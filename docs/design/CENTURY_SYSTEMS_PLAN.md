@@ -59,11 +59,11 @@ Do not duplicate detail from these authorities in this plan:
 | CPython parity and compatibility surfaces | [`foundation/66_compat_cpython_parity.md`](foundation/66_compat_cpython_parity.md), [`docs/spec/areas/compat/README.md`](../spec/areas/compat/README.md) |
 | Lifetime, RC, GC, weakrefs, finalizers | [`foundation/55_memory_safety_ownership_lattice.md`](foundation/55_memory_safety_ownership_lattice.md), [`foundation/rc_gc_redesign.md`](foundation/rc_gc_redesign.md), designs 20, 27, 48-50 |
 | Free-threading and concurrency | [`foundation/concurrency_architecture_100yr.md`](foundation/concurrency_architecture_100yr.md), [`foundation/33_threading-parallelism-ladder.md`](foundation/33_threading-parallelism-ladder.md), [`foundation/54_throughput_concurrency_async.md`](foundation/54_throughput_concurrency_async.md) |
-| Performance evidence | [`foundation/64_perf_scoreboards_and_harness.md`](foundation/64_perf_scoreboards_and_harness.md), [`OPTIMIZATIONS_PLAN.md`](../../OPTIMIZATIONS_PLAN.md), [`docs/BENCHMARKING.md`](../BENCHMARKING.md) |
+| Performance evidence | [`foundation/64_perf_scoreboards_and_harness.md`](foundation/64_perf_scoreboards_and_harness.md), [`tools/PERF_AUTHORITY.md`](../../tools/PERF_AUTHORITY.md), [`docs/BENCHMARKING.md`](../BENCHMARKING.md) |
 | Footprint and cold start | designs [`60`](foundation/60_tree_shaking_whole_program_dce.md), [`61`](foundation/61_binary_size_and_output_optimization.md), [`62`](foundation/62_startup_cold_start.md) |
 | Import/module bedrock | [`foundation/import_bedrock_frozen_module_layer.md`](foundation/import_bedrock_frozen_module_layer.md) |
 | DX, build graph, toolchains, distribution | [`foundation/dx_doctrine_100yr.md`](foundation/dx_doctrine_100yr.md), designs [`56`](foundation/56_dx_buildspeed_tooling.md), [`73`](foundation/73_efficient_builds_toolchain_provisioning_binary_cdn.md), [`74`](foundation/74_build_work_deduplication.md), [`75`](foundation/75_oss_build_speed_mining.md) |
-| Security and formalization | [`docs/SECURITY.md`](../SECURITY.md), [`docs/spec/areas/security/`](../spec/areas/security/), [`docs/spec/areas/formal/FORMALIZATION_PLAN.md`](../spec/areas/formal/FORMALIZATION_PLAN.md), [`docs/spec/areas/formal/CERTIFICATION_STATUS.md`](../spec/areas/formal/CERTIFICATION_STATUS.md) |
+| Security and formalization | [`docs/SECURITY.md`](../SECURITY.md), [`docs/spec/areas/security/`](../spec/areas/security/), [`formal/lean/PROOF_MAINTENANCE.md`](../../formal/lean/PROOF_MAINTENANCE.md), [`docs/spec/areas/formal/CERTIFICATION_STATUS.md`](../spec/areas/formal/CERTIFICATION_STATUS.md) |
 | Pact acceptance and runtime evidence | [`collab/pact/README.md`](../../collab/pact/README.md), [`docs/PACT_SUPPORT_MATRIX.md`](../PACT_SUPPORT_MATRIX.md) |
 | Long-running proof protocol | [`docs/agent/PROOF_QUEUE.md`](../agent/PROOF_QUEUE.md) |
 | Phase-exit predicate (§5) and legacy inventory (§4.10) | [`tools/phase_exit_manifest.py`](../../tools/phase_exit_manifest.py) over [`config/phase_exit_requirements.toml`](../../config/phase_exit_requirements.toml); [`tools/legacy_inventory.py`](../../tools/legacy_inventory.py) over [`config/legacy_inventory.toml`](../../config/legacy_inventory.toml) |
@@ -174,7 +174,9 @@ an ecosystem lane may not clone an upstream package.
   cyclic ownership.
 - Native, LLVM, WASM, Luau, MLIR, WebGPU, and future backends share semantics
   and differ only in explicit capability/cost/lowering policy. Unsupported
-  lowering fails before artifact production.
+  lowering fails before artifact production. Every backend compiles against the
+  same closed typed contract: it implements an op or returns a typed refusal.
+  [ROADMAP.md](../../ROADMAP.md) names the P0 and experimental backends.
 - Import/module state and extension initialization use one transaction and one
   identity authority across static, dynamic, split-runtime, and embed surfaces.
 

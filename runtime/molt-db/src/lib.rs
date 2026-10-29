@@ -1,10 +1,10 @@
 //! DB primitives and connectors for Molt.
 
 #[cfg(all(target_arch = "wasm32", feature = "sqlite"))]
-compile_error!("molt-db sqlite support is not available on wasm yet (see ROADMAP.md)");
+compile_error!("molt-db sqlite support is not available on wasm32 (docs/spec/STATUS.md)");
 
 #[cfg(all(target_arch = "wasm32", feature = "postgres"))]
-compile_error!("molt-db postgres support is not available on wasm yet (see ROADMAP.md)");
+compile_error!("molt-db postgres support is not available on wasm32 (docs/spec/STATUS.md)");
 
 mod pool;
 

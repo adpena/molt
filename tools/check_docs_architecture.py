@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import enum
 import os
 import re
+import subprocess
 import sys
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
@@ -19,6 +22,8 @@ bind_repository_imports(__file__)
 from markdown_it import MarkdownIt  # noqa: E402
 
 from tools import finding_status  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.git_identity import repository_source_paths  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +45,45 @@ LOCAL_LINK_AUTHORITY_DOCS = (
     "docs/CANONICALS.md",
     "docs/spec/README.md",
 )
+ROADMAP_REL = "ROADMAP.md"
+SESSION_PLAN_TREE = ("docs", "superpowers")
+DATED_PLAN_NAME_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}-.*plan.*\.md$", re.IGNORECASE
+)
+DOCUMENT_SUFFIXES = frozenset({".md", ".rst", ".txt"})
+_COMMANDS = CommandExecutor.for_file(__file__)
+
+
+class PlanningDocumentRefusal(enum.Enum):
+    """Why a repository path may not hold a planning document."""
+
+    SESSION_PLAN_TREE = (
+        "session plans and specs do not belong in docs/superpowers/; fold durable "
+        "design into the owning design doc and open work into the findings ledger"
+    )
+    DATED_PLAN = (
+        "dated plan documents go stale; fold durable design into the owning design "
+        "doc and open work into the findings ledger"
+    )
+    SECOND_ROADMAP = (
+        "ROADMAP.md is the one forward plan; link to it instead of adding a roadmap"
+    )
+
+
+def planning_document_refusal(rel_path: str) -> PlanningDocumentRefusal | None:
+    """Classify one repository-relative POSIX path; None admits it."""
+    path = PurePosixPath(rel_path)
+    if path.parts[: len(SESSION_PLAN_TREE)] == SESSION_PLAN_TREE:
+        return PlanningDocumentRefusal.SESSION_PLAN_TREE
+    if DATED_PLAN_NAME_RE.match(path.name):
+        return PlanningDocumentRefusal.DATED_PLAN
+    if (
+        rel_path != ROADMAP_REL
+        and path.suffix.lower() in DOCUMENT_SUFFIXES
+        and "roadmap" in path.name.lower()
+    ):
+        return PlanningDocumentRefusal.SECOND_ROADMAP
+    return None
 
 
 def _read_text(path: Path) -> str:
@@ -211,12 +255,6 @@ def _check_support_story_refs(errors: list[str]) -> None:
             "AGENTS.md: contains stale sync language 'README and [ROADMAP.md](ROADMAP.md) are kept in sync'"
         )
 
-    roadmap_90_text = _read_text(ROOT / "docs/ROADMAP_90_DAYS.md")
-    if "stay aligned with both" in roadmap_90_text:
-        errors.append(
-            "docs/ROADMAP_90_DAYS.md: contains stale dual-truth language 'stay aligned with both'"
-        )
-
     proof_text = _read_text(ROOT / "docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md")
     if "Support contract: [../../SUPPORTED.md]" in proof_text:
         errors.append(
@@ -340,7 +378,7 @@ def _markdown_link_targets(text: str) -> list[tuple[int, str]]:
             if token.type not in {"link_open", "image"}:
                 continue
             target = token.attrGet(attribute)
-            if target:
+            if isinstance(target, str) and target:
                 targets.append((line, target))
     return targets
 
@@ -429,8 +467,40 @@ def _check_handoff_ledger(errors: list[str]) -> None:
     )
 
 
+def _read_git(cwd: Path, arguments: list[str]) -> bytes:
+    return _COMMANDS.run(
+        ["git", *arguments], cwd=cwd, capture_output=True, timeout=30, check=True
+    ).stdout
+
+
+def _repository_paths() -> list[str]:
+    """Tracked and untracked-but-unignored paths: Git owns the boundary."""
+    root = ROOT.resolve()
+    return [
+        path.relative_to(root).as_posix()
+        for path in repository_source_paths(
+            root, run_git=_read_git, include_untracked=True
+        )
+    ]
+
+
+def _check_planning_documents(
+    errors: list[str], repository_paths: Iterable[str]
+) -> None:
+    for rel_path in repository_paths:
+        refusal = planning_document_refusal(rel_path)
+        if refusal is not None:
+            errors.append(f"{rel_path}: {refusal.value}")
+
+
 def check_repo() -> list[str]:
     errors: list[str] = []
+    try:
+        repository_paths = _repository_paths()
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        errors.append(f"cannot list repository paths through Git: {exc}")
+    else:
+        _check_planning_documents(errors, repository_paths)
     _check_readme(errors)
     _check_status(errors)
     _check_roadmap(errors)
