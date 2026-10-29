@@ -94,6 +94,8 @@ the source of truth.
   [design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md](design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md)
 - Function-level imports in a closed-world build (HF-557):
   [design/foundation/function_level_imports.md](design/foundation/function_level_imports.md)
+- Findings prior art (sourced precedent for each ledger family A to T, what to adopt or refuse, and the cheapest confirming experiment):
+  [design/findings_prior_art.md](design/findings_prior_art.md)
 
 ## Workspace Guides
 
