@@ -33,7 +33,7 @@ repos:
         types_or: [python, pyi]
       - id: ty
         name: ty
-        entry: uv run ty check src
+        entry: uv run ty check src tests/findings
         language: system
         pass_filenames: false
       - id: secret-guard

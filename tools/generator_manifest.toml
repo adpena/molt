@@ -87,7 +87,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_finding_ids.py"
 outputs = ["tests/findings/finding_ids.py"]
-source = "docs/agent/V1_HANDOFF_FINDINGS.md + tools/finding_status.py"
+source = "docs/agent/V1_HANDOFF_FINDINGS.md + tools/finding_status.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_finding_ids.py --check"
 toolchains = []
