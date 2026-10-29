@@ -70,6 +70,8 @@ pub(super) struct WasmFunctionFrame {
     // only through the runtime's pending state, including calls from Rust.
     python_eh_boundary: bool,
     dispatch_locals: Option<WasmDispatchFrameLocals>,
+    /// Routing local of a multi-level dispatch scope tree.
+    route_local: Option<u32>,
     const_cache: ConstantCache,
     const_seed_locals: Vec<(u32, i64)>,
     const_anchors: Vec<FrameConstAnchor>,
@@ -91,6 +93,10 @@ impl WasmFunctionFrame {
 
     pub(super) fn dispatch_locals(&self) -> Option<WasmDispatchFrameLocals> {
         self.dispatch_locals
+    }
+
+    pub(super) fn route_local(&self) -> Option<u32> {
+        self.route_local
     }
 
     pub(super) fn control_plan(&self) -> Option<&NonLinearControlPlan> {
