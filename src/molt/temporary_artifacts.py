@@ -833,7 +833,14 @@ def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, obj
     if _payload_identity(target) != owner["target_identity"]:
         raise ValueError("scratch target generation changed before reclamation")
     if not terminal.success:
-        archive = _archive_failed_scratch(generation, owner, keep_payload=False)
+        try:
+            archive = _archive_failed_scratch(generation, owner, keep_payload=False)
+        except (OSError, ValueError) as error:
+            # Closed, exclusively pinned evidence remains recoverable. A soft
+            # retention budget does not turn this into a failed user command.
+            raise ScratchEvidencePending(
+                f"evidence archive deferred: {error}"
+            ) from error
         owner = {
             **owner,
             "state": "reclaimed",

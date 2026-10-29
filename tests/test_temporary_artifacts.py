@@ -2073,7 +2073,9 @@ def test_failed_archive_error_preserves_raw_evidence(tmp_path, monkeypatch):
     assert (
         lease.generation / "payload" / "failure"
     ).read_bytes() == b"retain on storage failure"
-    assert "archive volume unavailable" in str(result["retention"]["errors"])
+    assert result["retention"]["errors"] == []
+    assert "archive volume unavailable" in str(result["retention"]["deferred"])
+    assert result["retention"]["retained_count"] == 1
 
 
 def test_deferred_failed_receipts_reuse_verified_archive_and_preserve_new_signal(

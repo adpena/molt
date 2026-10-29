@@ -49,6 +49,24 @@ from .custody_layout import (
 )
 from .exact_json import ExactJsonError, read_exact, write_exact
 
+EVIDENCE_INDEX_NAME = "storage-index.json"
+
+
+def is_evidence_index(path: Path) -> bool:
+    """Reserved recovery coordinates are durable control, never raw payload."""
+    return path.name == EVIDENCE_INDEX_NAME or path.name.endswith(
+        "." + EVIDENCE_INDEX_NAME
+    )
+
+
+def evidence_index_path(root: Path) -> Path:
+    return (
+        root / EVIDENCE_INDEX_NAME
+        if root.is_dir()
+        else root.with_name(root.name + "." + EVIDENCE_INDEX_NAME)
+    )
+
+
 OWNER_RECORD = ".molt-state-owner.json"
 SCHEMA = "molt.state-root-owner.v1"
 _MAX_RECORD_BYTES = 8192
@@ -1651,11 +1669,9 @@ def compact_evidence(
     kept = {str(path) for path in keep}
     is_directory = root.is_dir()
     root_metadata = root.lstat()
-    index = (
-        root / "storage-index.json"
-        if is_directory
-        else root.with_name(root.name + ".storage-index.json")
-    )
+    if not is_directory and is_evidence_index(root):
+        raise ValueError("durable recovery index cannot be compacted as raw payload")
+    index = evidence_index_path(root)
     previous_index = None
     if index.exists():
         previous = read_exact(
@@ -1682,11 +1698,7 @@ def compact_evidence(
         if not Path(previous_index).is_file():
             raise ValueError(f"missing previous evidence manifest: {previous_index}")
     paths = (
-        [
-            path
-            for path in sorted(root.rglob("*"))
-            if path != root / "storage-index.json"
-        ]
+        [path for path in sorted(root.rglob("*")) if path != index]
         if is_directory
         else [root]
     )
@@ -1821,18 +1833,25 @@ def compact_evidence(
         write_exact(
             index, {key: value for key, value in record.items() if key != "files"}
         )
-        for path in reversed(paths):
-            relative = path.relative_to(base).as_posix()
-            if relative in kept:
+        from .file_deletion import delete_path
+
+        # Remove maximal represented subtrees through the canonical sealed-tree
+        # boundary. Never chmod files or follow links to external images.
+        preserved = {base / relative for relative in kept}
+        preserved.update(
+            parent
+            for path in tuple(preserved)
+            for parent in path.parents
+            if parent.is_relative_to(base)
+        )
+        removals: set[Path] = set()
+        for path in paths:
+            if path in preserved or any(parent in removals for parent in path.parents):
                 continue
-            if path.is_symlink() or path.is_file():
-                path.unlink()
-            elif path.is_dir():
-                try:
-                    path.rmdir()
-                except OSError as exc:
-                    if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
-                        raise
+            removals.add(path)
+            removed, error = delete_path(path, owning_root=base)
+            if not removed:
+                raise OSError(f"archived source removal deferred: {path}: {error}")
         return archive
     finally:
         staging.unlink(missing_ok=True)
