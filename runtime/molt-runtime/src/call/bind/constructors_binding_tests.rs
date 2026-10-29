@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::builders::alloc_list;
 
 #[test]
@@ -42,8 +43,11 @@ fn resolve_construct_after_init_pending_drops_instance_and_returns_none() {
         // Simulate `__init__` having raised: set a pending exception, then
         // resolve. The helper must drop the instance's owning reference and
         // surface the raise via a `none` result.
-        let _: u64 =
-            crate::builtins::exceptions::raise_exception(_py, "ValueError", "task60 init raise");
+        let _: u64 = crate::builtins::exceptions::raise_exception(
+            _py,
+            BuiltinExc::ValueError,
+            "task60 init raise",
+        );
         assert_eq!(
             crate::molt_exception_pending(),
             1,

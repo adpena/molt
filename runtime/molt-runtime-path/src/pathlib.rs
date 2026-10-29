@@ -136,7 +136,7 @@ fn parse_root(
             } else {
                 return Err(raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "path must be str or bytes",
                 ));
             }
@@ -157,7 +157,7 @@ fn parse_root(
             } else {
                 return Err(raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "path must be str or bytes",
                 ));
             }
@@ -196,7 +196,7 @@ pub extern "C" fn molt_pathlib_parts(
             Err(error) => return error,
         };
         if parsed.bytes {
-            return raise_exception::<u64>(_py, "TypeError", "path must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "path must be str");
         }
         parsed.normalize_pathlib(posix);
         let sep = if posix { b'/' } else { b'\\' };
@@ -350,7 +350,7 @@ pub extern "C" fn molt_pathlib_is_mount(path_bits: u64) -> u64 {
         if metadata.virtual_file {
             return raise_exception::<u64>(
                 _py,
-                "NotImplementedError",
+                BuiltinExc::NotImplementedError,
                 "virtual filesystem has no native mount topology",
             );
         }
@@ -421,7 +421,7 @@ pub extern "C" fn molt_pathlib_touch(path_bits: u64, exist_ok_bits: u64) -> u64 
             if !exist_ok {
                 return raise_exception::<u64>(
                     _py,
-                    "FileExistsError",
+                    BuiltinExc::FileExistsError,
                     &format!("File exists: '{}'", s.display()),
                 );
             }
@@ -485,7 +485,7 @@ pub extern "C" fn molt_pathlib_read_bytes(path_bits: u64) -> u64 {
             Ok(data) => {
                 let ptr = alloc_bytes(_py, &data);
                 if ptr.is_null() {
-                    raise_exception::<u64>(_py, "MemoryError", "out of memory")
+                    raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory")
                 } else {
                     MoltObject::from_ptr(ptr).bits()
                 }
@@ -546,7 +546,7 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
             if meta.virtual_file {
                 return raise_exception::<u64>(
                     _py,
-                    "NotImplementedError",
+                    BuiltinExc::NotImplementedError,
                     "virtual filesystem has no user/group identity",
                 );
             }
@@ -561,14 +561,14 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
                 Ok(None) => {
                     return raise_exception::<u64>(
                         _py,
-                        "KeyError",
+                        BuiltinExc::KeyError,
                         &format!(
                             "getpwuid(): uid not found: {}",
                             molt_runtime_platform::utils::uid_integer(uid)
                         ),
                     );
                 }
-                Err(_) => return raise_exception::<u64>(_py, "MemoryError", ""),
+                Err(_) => return raise_exception::<u64>(_py, BuiltinExc::MemoryError, ""),
             };
             {
                 use std::os::unix::ffi::OsStrExt;
@@ -580,7 +580,7 @@ pub extern "C" fn molt_pathlib_owner(path_bits: u64) -> u64 {
             let _ = s;
             raise_exception::<u64>(
                 _py,
-                "NotImplementedError",
+                BuiltinExc::NotImplementedError,
                 "owner() not available on this platform",
             )
         }
@@ -605,7 +605,7 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
             if meta.virtual_file {
                 return raise_exception::<u64>(
                     _py,
-                    "NotImplementedError",
+                    BuiltinExc::NotImplementedError,
                     "virtual filesystem has no user/group identity",
                 );
             }
@@ -617,19 +617,19 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
             let name = match entry {
                 Ok(Some(Some(name))) => name,
                 Ok(Some(None)) => {
-                    return raise_exception::<u64>(_py, "SystemError", "null group name");
+                    return raise_exception::<u64>(_py, BuiltinExc::SystemError, "null group name");
                 }
                 Ok(None) => {
                     return raise_exception::<u64>(
                         _py,
-                        "KeyError",
+                        BuiltinExc::KeyError,
                         &format!(
                             "getgrgid(): gid not found: {}",
                             molt_runtime_platform::utils::gid_integer(gid)
                         ),
                     );
                 }
-                Err(_) => return raise_exception::<u64>(_py, "MemoryError", ""),
+                Err(_) => return raise_exception::<u64>(_py, BuiltinExc::MemoryError, ""),
             };
             {
                 use std::os::unix::ffi::OsStrExt;
@@ -641,7 +641,7 @@ pub extern "C" fn molt_pathlib_group(path_bits: u64) -> u64 {
             let _ = s;
             raise_exception::<u64>(
                 _py,
-                "NotImplementedError",
+                BuiltinExc::NotImplementedError,
                 "group() not available on this platform",
             )
         }

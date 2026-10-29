@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
 use std::collections::HashSet;
@@ -31,7 +32,7 @@ fn string_strip_impl(
             else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("{method} arg must be None or str"),
                 );
             };
@@ -215,7 +216,7 @@ fn parse_string_fillchar_arg(_py: &PyToken<'_>, fill_bits: u64) -> Result<char, 
             "The fill character must be a unicode character, not {}",
             type_name(_py, fill_obj)
         );
-        return Err(raise_exception::<_>(_py, "TypeError", &msg));
+        return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg));
     };
     unsafe {
         if object_type_id(fill_ptr) != TYPE_ID_STRING {
@@ -223,7 +224,7 @@ fn parse_string_fillchar_arg(_py: &PyToken<'_>, fill_bits: u64) -> Result<char, 
                 "The fill character must be a unicode character, not {}",
                 type_name(_py, fill_obj)
             );
-            return Err(raise_exception::<_>(_py, "TypeError", &msg));
+            return Err(raise_exception::<_>(_py, BuiltinExc::TypeError, &msg));
         }
         let fill_bytes = std::slice::from_raw_parts(string_bytes(fill_ptr), string_len(fill_ptr));
         let Ok(fill_str) = std::str::from_utf8(fill_bytes) else {
@@ -233,14 +234,14 @@ fn parse_string_fillchar_arg(_py: &PyToken<'_>, fill_bits: u64) -> Result<char, 
         let Some(fill_char) = chars.next() else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "The fill character must be exactly one character long",
             ));
         };
         if chars.next().is_some() {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "The fill character must be exactly one character long",
             ));
         }
@@ -283,7 +284,7 @@ fn exception_is_lookup_error(_py: &PyToken<'_>, exc_bits: u64) -> bool {
         if class_bits == 0 {
             return false;
         }
-        let lookup_error_bits = exception_type_bits_from_name(_py, "LookupError");
+        let lookup_error_bits = exception_class_bits(_py, BuiltinExc::LookupError);
         lookup_error_bits != 0 && issubclass_bits(class_bits, lookup_error_bits)
     }
 }
@@ -307,7 +308,7 @@ pub extern "C" fn molt_string_removeprefix(hay_bits: u64, prefix_bits: u64) -> u
                         "removeprefix() argument must be str, not {}",
                         type_name(_py, prefix)
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             };
             if object_type_id(prefix_ptr) != TYPE_ID_STRING {
@@ -315,7 +316,7 @@ pub extern "C" fn molt_string_removeprefix(hay_bits: u64, prefix_bits: u64) -> u
                     "removeprefix() argument must be str, not {}",
                     type_name(_py, prefix)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let prefix_bytes =
@@ -359,7 +360,7 @@ pub extern "C" fn molt_string_removesuffix(hay_bits: u64, suffix_bits: u64) -> u
                         "removesuffix() argument must be str, not {}",
                         type_name(_py, suffix)
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             };
             if object_type_id(suffix_ptr) != TYPE_ID_STRING {
@@ -367,7 +368,7 @@ pub extern "C" fn molt_string_removesuffix(hay_bits: u64, suffix_bits: u64) -> u
                     "removesuffix() argument must be str, not {}",
                     type_name(_py, suffix)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let hay_bytes = std::slice::from_raw_parts(string_bytes(hay_ptr), string_len(hay_ptr));
             let suffix_bytes =
@@ -719,7 +720,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                         }
                         return raise_exception::<_>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "character mapping must be in range(0x110000)",
                         );
                     }
@@ -737,7 +738,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "character mapping must return integer, None or str",
                     );
                 };
@@ -764,7 +765,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "character mapping must return integer, None or str",
                     );
                 };
@@ -775,7 +776,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "character mapping must be in range(0x110000)",
                     );
                 }
@@ -785,7 +786,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "character mapping must be in range(0x110000)",
                     );
                 };
@@ -795,7 +796,7 @@ pub extern "C" fn molt_string_translate(hay_bits: u64, table_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "character mapping must be in range(0x110000)",
                     );
                 };
@@ -824,7 +825,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
             let Some(x_ptr) = x_obj.as_ptr() else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "if you give only one argument to maketrans it must be a dict",
                 );
             };
@@ -832,7 +833,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                 if object_type_id(x_ptr) != TYPE_ID_DICT {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "if you give only one argument to maketrans it must be a dict",
                     );
                 }
@@ -868,7 +869,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                                 dec_ref_bits(_py, out_bits);
                                 return raise_exception::<_>(
                                     _py,
-                                    "ValueError",
+                                    BuiltinExc::ValueError,
                                     "string keys in translate table must be of length 1",
                                 );
                             };
@@ -876,7 +877,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                                 dec_ref_bits(_py, out_bits);
                                 return raise_exception::<_>(
                                     _py,
-                                    "ValueError",
+                                    BuiltinExc::ValueError,
                                     "string keys in translate table must be of length 1",
                                 );
                             }
@@ -887,7 +888,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                             dec_ref_bits(_py, out_bits);
                             return raise_exception::<_>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "keys in translate table must be strings or integers",
                             );
                         }
@@ -897,7 +898,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                         dec_ref_bits(_py, out_bits);
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "keys in translate table must be strings or integers",
                         );
                     };
@@ -917,7 +918,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                     "maketrans() argument 1 must be str, not {}",
                     type_name(_py, x_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         };
         let y_ptr = match y_obj.as_ptr() {
@@ -927,7 +928,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                     "maketrans() argument 2 must be str, not {}",
                     type_name(_py, y_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         };
         let z_ptr_opt = z_obj.as_ptr();
@@ -937,14 +938,14 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                     "maketrans() argument 1 must be str, not {}",
                     type_name(_py, x_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             if object_type_id(y_ptr) != TYPE_ID_STRING {
                 let msg = format!(
                     "maketrans() argument 2 must be str, not {}",
                     type_name(_py, y_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             if !z_obj.is_none() {
                 let Some(z_ptr) = z_ptr_opt else {
@@ -952,14 +953,14 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                         "maketrans() argument 3 must be str, not {}",
                         type_name(_py, z_obj)
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 };
                 if object_type_id(z_ptr) != TYPE_ID_STRING {
                     let msg = format!(
                         "maketrans() argument 3 must be str, not {}",
                         type_name(_py, z_obj)
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
             }
             let x_bytes = std::slice::from_raw_parts(string_bytes(x_ptr), string_len(x_ptr));
@@ -975,7 +976,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
             if x_len != y_len {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "the first two maketrans arguments must have equal length",
                 );
             }
@@ -1000,7 +1001,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                         "maketrans() argument 3 must be str, not {}",
                         type_name(_py, z_obj)
                     );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
                 }
                 let z_bytes = std::slice::from_raw_parts(string_bytes(z_ptr), string_len(z_ptr));
                 let Ok(z_str) = std::str::from_utf8(z_bytes) else {

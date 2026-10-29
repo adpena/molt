@@ -125,13 +125,13 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
                 assert_eq!(receiver.calls, before + 1, "callback must not be retried");
                 let error =
                     crate::exception_last_bits_noinc(&py).expect("native failure is pending");
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     &py,
                     error,
                     if malformed {
-                        "SystemError"
+                        crate::BuiltinExc::SystemError
                     } else {
-                        "ValueError"
+                        crate::BuiltinExc::ValueError
                     }
                 ));
                 assert!(
@@ -162,10 +162,10 @@ fn native_attribute_failures_reach_all_public_runtime_consumers() {
                 crate::molt_set_attr_name(bits, name, none);
             }
             let error = crate::exception_last_bits_noinc(&py).expect("missing setter is an error");
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 &py,
                 error,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             assert!(errors::take_current_error().is_none());
             assert_eq!(

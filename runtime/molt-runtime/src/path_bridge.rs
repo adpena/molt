@@ -4,6 +4,7 @@
 //! internal `pub(crate)` function.  The path crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::object::ops_format::string_obj_bytes as _string_obj_bytes;
 use crate::*;
@@ -14,18 +15,13 @@ use crate::*;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_path_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
+    kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let type_name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, type_name, msg)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 
@@ -267,7 +263,7 @@ pub extern "C" fn __molt_path_require_operation(
             _ => {
                 let error = raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "invalid path operation audit argument kind",
                 );
                 unsafe { *out_error_bits = error };
@@ -382,10 +378,10 @@ mod path_transport_tests {
                             error,
                         )
                     };
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "PermissionError"
+                        crate::BuiltinExc::PermissionError
                     ));
                     crate::molt_exception_clear();
                 } else {
@@ -433,10 +429,10 @@ mod path_transport_tests {
                                 error,
                             )
                         };
-                        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        assert!(crate::builtins::exceptions::exception_matches_kind(
                             py,
                             error,
-                            "PermissionError"
+                            crate::BuiltinExc::PermissionError
                         ));
                         crate::molt_exception_clear();
                         assert_eq!(
@@ -502,10 +498,10 @@ mod path_transport_tests {
                                 exception,
                             )
                         };
-                        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        assert!(crate::builtins::exceptions::exception_matches_kind(
                             py,
                             exception,
-                            "PermissionError"
+                            crate::BuiltinExc::PermissionError
                         ));
                         crate::molt_exception_clear();
                         assert_eq!(
@@ -558,10 +554,10 @@ mod path_transport_tests {
                         exception,
                     )
                 };
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
-                    "ValueError"
+                    crate::BuiltinExc::ValueError
                 ));
                 crate::molt_exception_clear();
             });
@@ -609,10 +605,10 @@ mod path_transport_tests {
                     )
                 };
                 assert!(
-                    crate::builtins::exceptions::exception_matches_builtin_name(
+                    crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
-                        "TypeError"
+                        crate::BuiltinExc::TypeError
                     ),
                     "{name}"
                 );
@@ -671,10 +667,10 @@ mod path_transport_tests {
             let _exception_owner = unsafe {
                 molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), exception)
             };
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             crate::molt_exception_clear();
         });

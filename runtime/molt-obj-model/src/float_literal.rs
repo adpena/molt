@@ -12,12 +12,18 @@ pub enum HexFloatError {
 }
 
 impl HexFloatError {
-    pub fn diagnostic(self) -> (&'static str, &'static str) {
+    pub fn diagnostic(self) -> (crate::BuiltinExc, &'static str) {
         match self {
-            Self::InvalidSyntax => ("ValueError", "invalid hexadecimal floating-point string"),
-            Self::TooLong => ("ValueError", "hexadecimal string too long to convert"),
+            Self::InvalidSyntax => (
+                crate::BuiltinExc::ValueError,
+                "invalid hexadecimal floating-point string",
+            ),
+            Self::TooLong => (
+                crate::BuiltinExc::ValueError,
+                "hexadecimal string too long to convert",
+            ),
             Self::Overflow => (
-                "OverflowError",
+                crate::BuiltinExc::OverflowError,
                 "hexadecimal value too large to represent as a float",
             ),
         }

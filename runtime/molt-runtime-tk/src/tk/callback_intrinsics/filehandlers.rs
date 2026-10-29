@@ -13,6 +13,7 @@ use super::super::state::{
     parse_app_handle, raise_invalid_handle_error, require_tk_operation, tk_registry,
 };
 use crate::bridge::{inc_ref_bits, raise_exception_u64, to_i64};
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::prelude::{MoltObject, obj_from_bits};
 use std::collections::HashMap;
 
@@ -37,7 +38,7 @@ pub extern "C" fn molt_tk_filehandler_create(
         if fd < 0 {
             return raise_exception_u64(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("file descriptor cannot be a negative integer ({fd})"),
             );
         }
@@ -45,7 +46,7 @@ pub extern "C" fn molt_tk_filehandler_create(
             return raise_tcl_for_handle(_py, handle, "filehandler mask must be an integer");
         };
         if !callback_is_callable(callback_bits) {
-            return raise_exception_u64(_py, "TypeError", "bad argument list");
+            return raise_exception_u64(_py, BuiltinExc::TypeError, "bad argument list");
         }
 
         let mut registry = tk_registry().lock().unwrap();
@@ -162,7 +163,7 @@ pub extern "C" fn molt_tk_filehandler_delete(app_bits: u64, fd_bits: u64) -> u64
         if fd < 0 {
             return raise_exception_u64(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("file descriptor cannot be a negative integer ({fd})"),
             );
         }

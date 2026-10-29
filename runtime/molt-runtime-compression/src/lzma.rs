@@ -69,7 +69,7 @@ pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
 fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
-        return raise_exception(_py, "MemoryError", "out of memory");
+        return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -185,7 +185,7 @@ pub extern "C" fn molt_lzma_compress(
                     .and_then(|()| enc.finish())
             }
             _ => {
-                return raise_exception(_py, "ValueError", "unknown format");
+                return raise_exception(_py, BuiltinExc::ValueError, "unknown format");
             }
         };
         match result {
@@ -269,7 +269,7 @@ pub extern "C" fn molt_lzma_decompress(
                 }
             }
             _ => {
-                return raise_exception(_py, "ValueError", "unknown format");
+                return raise_exception(_py, BuiltinExc::ValueError, "unknown format");
             }
         };
         match result {
@@ -444,7 +444,7 @@ pub extern "C" fn molt_lzma_compressor_flush(error_class: u64, handle_bits: u64)
             }
             _ => {
                 drop(handle);
-                return raise_exception(_py, "ValueError", "unknown format");
+                return raise_exception(_py, BuiltinExc::ValueError, "unknown format");
             }
         };
         match result {
@@ -524,7 +524,7 @@ pub extern "C" fn molt_lzma_decompressor_new(
         if format == FORMAT_RAW && !obj_from_bits(memlimit_bits).is_none() {
             return raise_exception(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Cannot specify memory limit with FORMAT_RAW",
             );
         }
@@ -546,12 +546,12 @@ pub extern "C" fn molt_lzma_decompressor_new(
                 } else {
                     "Cannot specify memory limit with FORMAT_RAW"
                 };
-                return raise_exception(_py, "ValueError", message);
+                return raise_exception(_py, BuiltinExc::ValueError, message);
             }
             _ => {
                 return raise_exception(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("Invalid container format: {format}"),
                 );
             }
@@ -560,12 +560,18 @@ pub extern "C" fn molt_lzma_decompressor_new(
             Ok(engine) => engine,
             Err(error) => {
                 return match lzma_decode_error(error) {
-                    DecodeError::Memory => raise_exception(_py, "MemoryError", "out of memory"),
+                    DecodeError::Memory => {
+                        raise_exception(_py, BuiltinExc::MemoryError, "out of memory")
+                    }
                     DecodeError::Codec(message) => {
                         molt_runtime_core::rt_raise_class(_py, error_owner.bits(), message)
                     }
-                    DecodeError::Value(message) => raise_exception(_py, "ValueError", message),
-                    DecodeError::Runtime(message) => raise_exception(_py, "RuntimeError", message),
+                    DecodeError::Value(message) => {
+                        raise_exception(_py, BuiltinExc::ValueError, message)
+                    }
+                    DecodeError::Runtime(message) => {
+                        raise_exception(_py, BuiltinExc::RuntimeError, message)
+                    }
                     DecodeError::Eof => unreachable!(),
                 };
             }
@@ -626,13 +632,21 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
         drop(handle);
         match result {
             Ok(output) => return_bytes(_py, &output),
-            Err(DecodeError::Memory) => raise_exception(_py, "MemoryError", "out of memory"),
+            Err(DecodeError::Memory) => {
+                raise_exception(_py, BuiltinExc::MemoryError, "out of memory")
+            }
             Err(DecodeError::Codec(message)) => {
                 molt_runtime_core::rt_raise_class(_py, error_class, message)
             }
-            Err(DecodeError::Value(message)) => raise_exception(_py, "ValueError", message),
-            Err(DecodeError::Runtime(message)) => raise_exception(_py, "RuntimeError", message),
-            Err(DecodeError::Eof) => raise_exception(_py, "EOFError", "Already at end of stream"),
+            Err(DecodeError::Value(message)) => {
+                raise_exception(_py, BuiltinExc::ValueError, message)
+            }
+            Err(DecodeError::Runtime(message)) => {
+                raise_exception(_py, BuiltinExc::RuntimeError, message)
+            }
+            Err(DecodeError::Eof) => {
+                raise_exception(_py, BuiltinExc::EOFError, "Already at end of stream")
+            }
         }
     })
 }
@@ -740,7 +754,7 @@ pub extern "C" fn molt_lzma_file_open(
         let error_class = error_owner.bits();
         let name_obj = obj_from_bits(filename_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
-            return raise_exception(_py, "TypeError", "filename must be str");
+            return raise_exception(_py, BuiltinExc::TypeError, "filename must be str");
         };
         let mode_obj = obj_from_bits(mode_bits);
         let mode = string_obj_to_owned(mode_obj).unwrap_or_else(|| "rb".to_string());
@@ -768,7 +782,7 @@ pub extern "C" fn molt_lzma_file_open(
                     Ok(f) => f,
                     Err(e) => {
                         let msg = format!("lzma.open: {e}");
-                        return raise_exception(_py, "OSError", &msg);
+                        return raise_exception(_py, BuiltinExc::OSError, &msg);
                     }
                 };
                 match format {
@@ -800,7 +814,7 @@ pub extern "C" fn molt_lzma_file_open(
                     Ok(f) => f,
                     Err(e) => {
                         let msg = format!("lzma.open: {e}");
-                        return raise_exception(_py, "OSError", &msg);
+                        return raise_exception(_py, BuiltinExc::OSError, &msg);
                     }
                 };
                 LzmaFileInner::Writing {
@@ -816,7 +830,7 @@ pub extern "C" fn molt_lzma_file_open(
                     Ok(f) => f,
                     Err(e) => {
                         let msg = format!("lzma.open: {e}");
-                        return raise_exception(_py, "OSError", &msg);
+                        return raise_exception(_py, BuiltinExc::OSError, &msg);
                     }
                 };
                 LzmaFileInner::Writing {
@@ -830,7 +844,7 @@ pub extern "C" fn molt_lzma_file_open(
             _ => {
                 return raise_exception(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "Invalid mode ('r', 'rb', 'w', 'wb', 'a', 'ab' supported)",
                 );
             }
@@ -872,7 +886,7 @@ pub extern "C" fn molt_lzma_file_read(error_class: u64, handle_bits: u64, size_b
             LzmaFileInner::ReadingLzma(r) => r,
             _ => {
                 drop(handle);
-                return raise_exception(_py, "OSError", "file not open for reading");
+                return raise_exception(_py, BuiltinExc::OSError, "file not open for reading");
             }
         };
 
@@ -926,7 +940,7 @@ pub extern "C" fn molt_lzma_file_write(error_class: u64, handle_bits: u64, data_
             .unwrap_or_else(|error| error.into_inner());
         let LzmaFileInner::Writing { ref mut buffer, .. } = handle.inner else {
             drop(handle);
-            return raise_exception(_py, "OSError", "file not open for writing");
+            return raise_exception(_py, BuiltinExc::OSError, "file not open for writing");
         };
         buffer.extend_from_slice(unsafe { data_export.bytes(_py) });
         drop(handle);
@@ -985,14 +999,18 @@ pub extern "C" fn molt_lzma_file_close(error_class: u64, handle_bits: u64) -> u6
                     }
                     _ => {
                         drop(handle);
-                        return raise_exception(_py, "ValueError", "unknown format");
+                        return raise_exception(_py, BuiltinExc::ValueError, "unknown format");
                     }
                 };
                 match result {
                     Ok(compressed) => {
                         if file.write_all(&compressed).is_err() {
                             drop(handle);
-                            return raise_exception(_py, "OSError", "lzma write to file failed");
+                            return raise_exception(
+                                _py,
+                                BuiltinExc::OSError,
+                                "lzma write to file failed",
+                            );
                         }
                     }
                     Err(e) => {

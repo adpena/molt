@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 pub(crate) mod bind;
 pub(crate) mod class_init;
 pub(crate) mod dispatch;
@@ -89,7 +90,7 @@ impl StaticmethodResolutionDepth {
         } else {
             let _ = raise_exception::<u64>(
                 py,
-                "RecursionError",
+                BuiltinExc::RecursionError,
                 "maximum recursion depth exceeded while resolving staticmethod call target",
             );
             false
@@ -205,8 +206,11 @@ pub(crate) unsafe fn resolve_staticmethod_call_target<'guard, 'py>(
                 if let Some(bits) = current_owned {
                     dec_ref_bits(py, bits);
                 }
-                let _ =
-                    raise_exception::<u64>(py, "RuntimeError", "uninitialized staticmethod object");
+                let _ = raise_exception::<u64>(
+                    py,
+                    BuiltinExc::RuntimeError,
+                    "uninitialized staticmethod object",
+                );
                 return StaticmethodCallTarget::Raised;
             }
             inc_ref_bits(py, next_bits);

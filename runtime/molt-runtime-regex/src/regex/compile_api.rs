@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 // ---------------------------------------------------------------------------
 // molt_re_compile intrinsic
@@ -22,7 +23,7 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
                 }
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "first argument must be string or compiled pattern",
                 );
             };
@@ -43,19 +44,19 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
             }
         };
         let Some(flags) = to_i64(obj_from_bits(flags_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "flags must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "flags must be int");
         };
         if is_bytes && flags & RE_UNICODE != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot use UNICODE flag with a bytes pattern",
             );
         }
         if !is_bytes && flags & RE_LOCALE != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot use LOCALE flag with a str pattern",
             );
         }
@@ -90,7 +91,7 @@ pub extern "C" fn molt_re_compile(pattern_bits: u64, flags_bits: u64) -> u64 {
 pub extern "C" fn molt_re_pattern_info(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(compiled) = pattern_handle_arc(handle_bits) else {
-            return raise_exception::<_>(_py, "ValueError", "invalid regex handle");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid regex handle");
         };
         // Project the canonical group-open order directly. Match/groupdict
         // consumers retain this declaration order without sorting per match.

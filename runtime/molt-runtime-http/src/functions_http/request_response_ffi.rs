@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_request_init(
@@ -68,7 +69,11 @@ pub extern "C" fn molt_urllib_request_add_handler(opener_bits: u64, handler_bits
             Err(bits) => return bits,
         };
         let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "opener handler registry is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "opener handler registry is invalid",
+            );
         };
         let existing = unsafe { seq_snapshot(list_ptr) };
         let mut insert_at = existing.len();
@@ -100,7 +105,7 @@ pub extern "C" fn molt_urllib_request_open(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(route_scheme) = string_obj_to_owned(obj_from_bits(scheme_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "route scheme must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "route scheme must be str");
         };
         let environment = !obj_from_bits(selected_proxy_bits).is_none();
         use molt_runtime_core::host_capabilities_generated::OperationId;
@@ -110,7 +115,7 @@ pub extern "C" fn molt_urllib_request_open(
             _ if environment => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "proxy route must use HTTP or HTTPS",
                 );
             }
@@ -123,7 +128,7 @@ pub extern "C" fn molt_urllib_request_open(
         }
         let selected_proxy = if environment {
             let Some(proxy) = string_obj_to_owned(obj_from_bits(selected_proxy_bits)) else {
-                return raise_exception::<u64>(_py, "TypeError", "proxy URL must be str");
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "proxy URL must be str");
             };
             Some(proxy)
         } else {
@@ -141,13 +146,17 @@ pub extern "C" fn molt_urllib_request_open(
                 else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "request object is missing full_url",
                     );
                 };
                 let Some(text) = string_obj_to_owned(obj_from_bits(full_url_bits)) else {
                     dec_ref_bits(_py, full_url_bits);
-                    return raise_exception::<_>(_py, "TypeError", "request.full_url must be str");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "request.full_url must be str",
+                    );
                 };
                 dec_ref_bits(_py, full_url_bits);
                 text
@@ -156,7 +165,7 @@ pub extern "C" fn molt_urllib_request_open(
             if scheme != route_scheme {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "request URL does not match selected route scheme",
                 );
             }
@@ -172,7 +181,7 @@ pub extern "C" fn molt_urllib_request_open(
             let Some(list_ptr) = obj_from_bits(list_bits).as_ptr() else {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "opener handler registry is invalid",
                 );
             };
@@ -225,13 +234,17 @@ pub extern "C" fn molt_urllib_request_open(
                 else {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "request object is missing full_url",
                     );
                 };
                 let Some(text) = string_obj_to_owned(obj_from_bits(full_url_bits)) else {
                     dec_ref_bits(_py, full_url_bits);
-                    return raise_exception::<_>(_py, "TypeError", "request.full_url must be str");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "request.full_url must be str",
+                    );
                 };
                 dec_ref_bits(_py, full_url_bits);
                 text
@@ -286,7 +299,7 @@ pub extern "C" fn molt_urllib_request_open(
             let mut response_bits = if scheme == "data" && allow_data_fallback {
                 let payload = match urllib_request_decode_data_url(&full_url) {
                     Ok(value) => value,
-                    Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+                    Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
                 };
                 let Some(handle) = urllib_response_store(urllib_response_from_parts(
                     payload,
@@ -677,7 +690,7 @@ pub extern "C" fn molt_urllib_request_open(
                             Ok(None) => {
                                 return raise_exception::<u64>(
                                     _py,
-                                    "TypeError",
+                                    BuiltinExc::TypeError,
                                     "opener has no open method",
                                 );
                             }
@@ -770,7 +783,11 @@ pub extern "C" fn molt_urllib_request_process_http_error(
                 resp.url.clone(),
             )
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         if code >= 400 {
             return urllib_raise_http_error(_py, &url, code, &reason, &headers, response_bits);
@@ -784,7 +801,7 @@ pub extern "C" fn molt_urllib_request_process_http_error(
 pub extern "C" fn molt_urllib_request_response_read(handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let size_opt = if obj_from_bits(size_bits).is_none() {
             None
@@ -794,7 +811,11 @@ pub extern "C" fn molt_urllib_request_response_read(handle_bits: u64, size_bits:
         let Some(out) =
             urllib_response_with_mut(handle, |resp| urllib_response_read_vec(resp, size_opt))
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(data) => {
@@ -805,7 +826,7 @@ pub extern "C" fn molt_urllib_request_response_read(handle_bits: u64, size_bits:
                     MoltObject::from_ptr(ptr).bits()
                 }
             }
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -864,7 +885,7 @@ pub(super) fn urllib_response_readinto_len(
 pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let export = match unsafe {
             molt_runtime_capi::acquire_buffer(buffer_bits, molt_runtime_capi::PyBUF_WRITABLE)
@@ -882,11 +903,15 @@ pub extern "C" fn molt_urllib_request_response_readinto(handle_bits: u64, buffer
         let Some(out) =
             urllib_response_with_mut(handle, |resp| urllib_response_readinto_len(resp, out_buf))
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(read_len) => MoltObject::from_int(read_len as i64).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -961,7 +986,7 @@ pub(super) fn urllib_response_seek_pos(
 pub extern "C" fn molt_urllib_request_response_readline(handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let size_opt = if obj_from_bits(size_bits).is_none() {
             None
@@ -971,7 +996,11 @@ pub extern "C" fn molt_urllib_request_response_readline(handle_bits: u64, size_b
         let Some(out) =
             urllib_response_with_mut(handle, |resp| urllib_response_readline_vec(resp, size_opt))
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(data) => {
@@ -982,7 +1011,7 @@ pub extern "C" fn molt_urllib_request_response_readline(handle_bits: u64, size_b
                     MoltObject::from_ptr(ptr).bits()
                 }
             }
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -991,7 +1020,7 @@ pub extern "C" fn molt_urllib_request_response_readline(handle_bits: u64, size_b
 pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let hint_obj = obj_from_bits(hint_bits);
         let hint = if hint_obj.is_none() {
@@ -1000,7 +1029,13 @@ pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_
             match to_i64(hint_obj) {
                 Some(value) if value <= 0 => None,
                 Some(value) => Some(usize::try_from(value).unwrap_or(usize::MAX)),
-                None => return raise_exception::<_>(_py, "TypeError", "hint must be int or None"),
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "hint must be int or None",
+                    );
+                }
             }
         };
         let Some(out) = urllib_response_with_mut(handle, |resp| {
@@ -1008,7 +1043,7 @@ pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_
                 if urllib_response_is_data(resp) {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "I/O operation on closed file.",
                     ));
                 }
@@ -1023,7 +1058,9 @@ pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_
             loop {
                 let line = match urllib_response_readline_vec(resp, None) {
                     Ok(data) => data,
-                    Err(msg) => return Err(raise_exception::<u64>(_py, "ValueError", &msg)),
+                    Err(msg) => {
+                        return Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg));
+                    }
                 };
                 if line.is_empty() {
                     break;
@@ -1055,7 +1092,11 @@ pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_
             }
             Ok(MoltObject::from_ptr(list_ptr).bits())
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,
@@ -1068,7 +1109,7 @@ pub extern "C" fn molt_urllib_request_response_readlines(handle_bits: u64, hint_
 pub extern "C" fn molt_urllib_request_response_readable(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(out) = urllib_response_with(handle, |resp| {
             if resp.closed && urllib_response_is_data(resp) {
@@ -1076,11 +1117,15 @@ pub extern "C" fn molt_urllib_request_response_readable(handle_bits: u64) -> u64
             }
             Ok(true)
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(value) => MoltObject::from_bool(value).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -1089,7 +1134,7 @@ pub extern "C" fn molt_urllib_request_response_readable(handle_bits: u64) -> u64
 pub extern "C" fn molt_urllib_request_response_writable(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(out) = urllib_response_with(handle, |resp| {
             if resp.closed && urllib_response_is_data(resp) {
@@ -1097,11 +1142,15 @@ pub extern "C" fn molt_urllib_request_response_writable(handle_bits: u64) -> u64
             }
             Ok(urllib_response_is_data(resp))
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(value) => MoltObject::from_bool(value).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -1110,7 +1159,7 @@ pub extern "C" fn molt_urllib_request_response_writable(handle_bits: u64) -> u64
 pub extern "C" fn molt_urllib_request_response_seekable(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(out) = urllib_response_with(handle, |resp| {
             if resp.closed && urllib_response_is_data(resp) {
@@ -1118,11 +1167,15 @@ pub extern "C" fn molt_urllib_request_response_seekable(handle_bits: u64) -> u64
             }
             Ok(urllib_response_is_data(resp))
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(value) => MoltObject::from_bool(value).bits(),
-            Err(msg) => raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         }
     })
 }
@@ -1131,22 +1184,30 @@ pub extern "C" fn molt_urllib_request_response_seekable(handle_bits: u64) -> u64
 pub extern "C" fn molt_urllib_request_response_tell(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(out) = urllib_response_with(handle, |resp| {
             if !urllib_response_is_data(resp) {
-                return Err(raise_exception::<u64>(_py, "UnsupportedOperation", "seek"));
+                return Err(raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::UnsupportedOperation,
+                    "seek",
+                ));
             }
             if resp.closed {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "I/O operation on closed file.",
                 ));
             }
             Ok(resp.pos)
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(pos) => MoltObject::from_int(pos as i64).bits(),
@@ -1163,33 +1224,41 @@ pub extern "C" fn molt_urllib_request_response_seek(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(offset) = to_i64(obj_from_bits(offset_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "offset must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "offset must be int");
         };
         let Some(whence) = to_i64(obj_from_bits(whence_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "whence must be int");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "whence must be int");
         };
         let Some(out) = urllib_response_with_mut(handle, |resp| {
             if !urllib_response_is_data(resp) {
-                return Err(raise_exception::<u64>(_py, "UnsupportedOperation", "seek"));
+                return Err(raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::UnsupportedOperation,
+                    "seek",
+                ));
             }
             if resp.closed {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "I/O operation on closed file.",
                 ));
             }
             let pos = match urllib_response_seek_pos(resp, offset, whence) {
                 Ok(pos) => pos,
-                Err(msg) => return Err(raise_exception::<u64>(_py, "ValueError", &msg)),
+                Err(msg) => return Err(raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)),
             };
             resp.pos = pos;
             Ok(pos)
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(pos) => MoltObject::from_int(pos as i64).bits(),
@@ -1202,12 +1271,16 @@ pub extern "C" fn molt_urllib_request_response_seek(
 pub extern "C" fn molt_urllib_request_response_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(()) = urllib_response_with_mut(handle, |resp| {
             resp.closed = true;
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         MoltObject::none().bits()
     })
@@ -1217,7 +1290,7 @@ pub extern "C" fn molt_urllib_request_response_close(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_urllib_request_response_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         urllib_response_drop(_py, handle);
         MoltObject::none().bits()
@@ -1228,7 +1301,7 @@ pub extern "C" fn molt_urllib_request_response_drop(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_urllib_request_response_geturl(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(out) = urllib_response_with(handle, |resp| {
             let ptr = alloc_string(_py, resp.url.as_bytes());
@@ -1238,7 +1311,11 @@ pub extern "C" fn molt_urllib_request_response_geturl(handle_bits: u64) -> u64 {
                 Ok(MoltObject::from_ptr(ptr).bits())
             }
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,
@@ -1251,10 +1328,14 @@ pub extern "C" fn molt_urllib_request_response_geturl(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_urllib_request_response_getcode(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(code) = urllib_response_with(handle, |resp| resp.code) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         if code < 0 {
             MoltObject::none().bits()
@@ -1268,7 +1349,7 @@ pub extern "C" fn molt_urllib_request_response_getcode(handle_bits: u64) -> u64 
 pub extern "C" fn molt_urllib_request_response_getreason(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(out) = urllib_response_with(handle, |resp| {
             if resp.reason.is_empty() {
@@ -1281,7 +1362,11 @@ pub extern "C" fn molt_urllib_request_response_getreason(handle_bits: u64) -> u6
                 Ok(MoltObject::from_ptr(ptr).bits())
             }
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,
@@ -1298,7 +1383,7 @@ pub extern "C" fn molt_urllib_request_response_getheader(
 ) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(name) = crate::bridge::format_obj_str(_py, obj_from_bits(name_bits)) else {
             return MoltObject::none().bits();
@@ -1314,7 +1399,11 @@ pub extern "C" fn molt_urllib_request_response_getheader(
                 Ok(Some(MoltObject::from_ptr(ptr).bits()))
             }
         }) else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(Some(bits)) => bits,
@@ -1331,12 +1420,16 @@ pub extern "C" fn molt_urllib_request_response_getheader(
 pub extern "C" fn molt_urllib_request_response_getheaders_list(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         let Some(out) =
             urllib_response_with_mut(handle, |resp| urllib_response_headers_list_bits(_py, resp))
         else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "response handle is invalid",
+            );
         };
         match out {
             Ok(bits) => bits,
@@ -1350,7 +1443,7 @@ pub(super) fn urllib_response_message_bits(
     handle: i64,
 ) -> u64 {
     let Some(headers) = urllib_response_with(handle, |resp| resp.headers.clone()) else {
-        return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
+        return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "response handle is invalid");
     };
     let Some(message_handle) = http_message_store(headers) else {
         return MoltObject::none().bits();
@@ -1362,7 +1455,7 @@ pub(super) fn urllib_response_message_bits(
 pub extern "C" fn molt_urllib_request_response_message(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "response handle is invalid");
         };
         urllib_response_message_bits(_py, handle)
     })

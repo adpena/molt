@@ -51,6 +51,7 @@
 //! runs (CPython `frame_tp_clear` order) or when it dies (`frame_dealloc`
 //! order); the two orders differ.
 
+use crate::BuiltinExc;
 use std::cell::RefCell;
 
 use molt_codegen_abi::{
@@ -454,7 +455,7 @@ impl ObserveError {
         match self {
             Self::Layout(message) => {
                 if !exception_pending(py) {
-                    raise_exception::<u64>(py, "SystemError", message);
+                    raise_exception::<u64>(py, BuiltinExc::SystemError, message);
                 }
             }
             Self::Allocation => crate::record_memory_error_without_allocation(py),
@@ -633,7 +634,7 @@ fn report_malformed(py: &PyToken<'_>) {
     if !exception_pending(py) {
         raise_exception::<u64>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "frame binding home has an invalid storage kind",
         );
     }
@@ -810,7 +811,7 @@ pub extern "C" fn molt_frame_homes(min_count: u64) -> u64 {
             None => {
                 raise_exception::<u64>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "compiled frame has no binding homes for its code slots",
                 );
                 0
@@ -826,7 +827,7 @@ fn unlent_home(py: &PyToken<'_>) -> u64 {
     if !exception_pending(py) {
         raise_exception::<u64>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "compiled frame used a binding home it was never lent",
         );
     }
@@ -996,7 +997,7 @@ impl Drop for FrameBindingItems<'_, '_> {
 
 fn invalid<T>(py: &PyToken<'_>, message: &'static str) -> Result<T, ()> {
     if !exception_pending(py) {
-        raise_exception::<u64>(py, "SystemError", message);
+        raise_exception::<u64>(py, BuiltinExc::SystemError, message);
     }
     Err(())
 }
@@ -1415,7 +1416,7 @@ pub(crate) fn frame_bindings_write(
         let Some(value) = value else {
             raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "cannot remove local variables from FrameLocalsProxy",
             );
             return Err(());
@@ -1528,7 +1529,11 @@ pub(crate) fn frame_bindings_clear(py: &PyToken<'_>, payload_bits: u64) -> Resul
     let state = state_of(ptr);
     let policy = frame_bindings_policy(ptr);
     if state & STATE_LIVE_HOMES != 0 {
-        raise_exception::<u64>(py, "RuntimeError", "cannot clear an executing frame");
+        raise_exception::<u64>(
+            py,
+            BuiltinExc::RuntimeError,
+            "cannot clear an executing frame",
+        );
         return Err(());
     }
     if let Some(task) = frame_bindings_live_activation(ptr) {

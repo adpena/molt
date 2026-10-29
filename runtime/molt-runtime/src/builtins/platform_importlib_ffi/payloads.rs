@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
@@ -38,7 +39,7 @@ pub extern "C" fn molt_importlib_frozen_payload() -> u64 {
         // The exception schema/cache owns this single identity independently
         // of mutable importlib or builtins bindings. Payload entries project it.
         let deadlock =
-            crate::builtins::exceptions::exception_type_bits_from_name(_py, "_DeadlockError");
+            crate::builtins::exceptions::exception_class_bits(_py, BuiltinExc::DeadlockError);
         if deadlock == 0 || exception_pending(_py) {
             for bits in owned {
                 dec_ref_bits(_py, bits);
@@ -484,14 +485,14 @@ fn importlib_external_producer_owns_namespace(
     let Some(provider) = provider else {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "importlib suffix producer has no admitted source body",
         ));
     };
     if !crate::builtins::modules::module_body_owns_globals(_py, provider, namespace_bits) {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "importlib suffix producer does not own its defining globals",
         ));
     }

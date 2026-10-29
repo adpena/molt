@@ -12,6 +12,7 @@
 //! payload), a stateful activation's task payload, a cell's contents, or the
 //! frame's extra locals for a name that is not a code slot.
 
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 use super::bindings::{
@@ -68,7 +69,7 @@ pub(crate) fn frame_object_set_source(py: &PyToken<'_>, frame_ptr: *mut u8, sour
         if !exception_pending(py) {
             raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "frame object has no binding source field",
             );
         }
@@ -134,7 +135,11 @@ fn frame_locals_proxy(py: &PyToken<'_>, source: u64) -> u64 {
         return MoltObject::none().bits();
     };
     if unsafe { object_type_id(class_ptr) } != TYPE_ID_TYPE {
-        return raise_exception::<u64>(py, "SystemError", "FrameLocalsProxy class is invalid");
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "FrameLocalsProxy class is invalid",
+        );
     }
     let proxy_bits = unsafe { alloc_instance_for_class(py, class_ptr) };
     let Some(proxy_ptr) = obj_from_bits(proxy_bits).as_ptr() else {
@@ -143,7 +148,11 @@ fn frame_locals_proxy(py: &PyToken<'_>, source: u64) -> u64 {
     let Some(slot) = (unsafe { source_slot(proxy_ptr, ObjectShapeId::TypesFrameLocalsProxy) })
     else {
         dec_ref_bits(py, proxy_bits);
-        return raise_exception::<u64>(py, "SystemError", "FrameLocalsProxy has no source field");
+        return raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "FrameLocalsProxy has no source field",
+        );
     };
     inc_ref_bits(py, source);
     let previous = unsafe { slot.replace(source) };
@@ -165,7 +174,7 @@ fn frame_object_source_slot(
     slot.ok_or_else(|| {
         raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("descriptor '{method}' for 'frame' objects doesn't apply to this object"),
         );
     })
@@ -224,7 +233,7 @@ pub extern "C" fn molt_frame_clear(frame_bits: u64) -> u64 {
                 if executing {
                     return raise_exception::<u64>(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "cannot clear an executing frame",
                     );
                 }
@@ -242,7 +251,7 @@ fn proxy_source(py: &PyToken<'_>, self_bits: u64) -> Result<u64, ()> {
         .as_ptr()
         .and_then(|ptr| unsafe { source_slot(ptr, ObjectShapeId::TypesFrameLocalsProxy) });
     let Some(slot) = slot else {
-        raise_exception::<u64>(py, "TypeError", "expected a FrameLocalsProxy");
+        raise_exception::<u64>(py, BuiltinExc::TypeError, "expected a FrameLocalsProxy");
         return Err(());
     };
     match frame_source(unsafe { *slot }) {
@@ -250,7 +259,7 @@ fn proxy_source(py: &PyToken<'_>, self_bits: u64) -> Result<u64, ()> {
         FrameSource::Empty | FrameSource::Mapping(_) => {
             raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "FrameLocalsProxy is not bound to a frame",
             );
             Err(())
@@ -301,7 +310,7 @@ fn positional_args(
         _ => {
             raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "FrameLocalsProxy.{method}() takes {} to {} positional arguments",
                     range.start(),
@@ -592,7 +601,7 @@ pub extern "C" fn molt_frame_locals_proxy_update(
         } else {
             return raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "update() argument must be dict or another FrameLocalsProxy",
             );
         };

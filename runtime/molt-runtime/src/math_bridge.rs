@@ -4,6 +4,7 @@
 //! internal `pub(crate)` function.  The math crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::builtins::classes::class_name_for_error as _class_name_for_error;
 use crate::builtins::containers::list_len as _list_len;
@@ -50,18 +51,13 @@ pub extern "C" fn __molt_math_runtime_state_get_or_init(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_math_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
+    kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let type_name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, type_name, msg)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 
@@ -306,7 +302,7 @@ pub extern "C" fn __molt_math_integer_storage(
         if status == 0 {
             raise_exception::<()>(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "math integer storage transport allocation failed",
             );
             return -1;
@@ -579,7 +575,7 @@ fn unsupported_math_intern_name(_py: &PyToken<'_>, key: &[u8]) -> u64 {
     let key = String::from_utf8_lossy(key);
     raise_exception::<u64>(
         _py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         &format!("molt-runtime-math requested unsupported interned static name {key:?}"),
     )
 }
@@ -1401,9 +1397,9 @@ mod numeric_protocol_tests {
                     py,
                     crate::molt_warnings_simplefilter(
                         action.bits(),
-                        crate::builtins::exceptions::exception_type_bits_from_name(
+                        crate::builtins::exceptions::exception_class_bits(
                             py,
-                            "DeprecationWarning",
+                            crate::BuiltinExc::DeprecationWarning,
                         ),
                         crate::MoltObject::from_int(0).bits(),
                         crate::MoltObject::from_bool(false).bits(),

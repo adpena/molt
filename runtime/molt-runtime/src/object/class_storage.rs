@@ -4,6 +4,7 @@
 //! Multi-field operations transfer displaced references to the caller so that
 //! every field can be published before the first callback-capable release.
 
+use crate::BuiltinExc;
 use crate::{MoltObject, PyToken, dec_ref_bits, inc_ref_bits};
 
 /// Private, monotonic semantic declarations owned by the actual class.
@@ -482,7 +483,7 @@ pub(crate) unsafe fn class_capture_native_module<'a, 'py>(
         {
             crate::raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "native class changed during module capture",
             );
             return Err(());
@@ -1470,7 +1471,11 @@ mod tests {
                 assert!(crate::dict_set_in_place(py, dictionary, key, declaration));
                 // Static bootstrap can run with an unrelated exception already
                 // selected. Successful Result-based capture must preserve it.
-                crate::raise_exception::<()>(py, "ValueError", "pending before static capture");
+                crate::raise_exception::<()>(
+                    py,
+                    BuiltinExc::ValueError,
+                    "pending before static capture",
+                );
                 let pending = crate::exception_last_bits_noinc(py).unwrap();
                 assert!(ClassSemanticPolicy::static_type(true).apply(py, class));
                 assert_eq!(crate::exception_last_bits_noinc(py), Some(pending));

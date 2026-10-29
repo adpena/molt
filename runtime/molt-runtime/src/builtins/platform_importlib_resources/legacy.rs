@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_validate_resource_name(resource_bits: u64) -> u64 {
@@ -28,7 +29,7 @@ pub extern "C" fn molt_importlib_resources_normalize_path(path_bits: u64) -> u64
             if !obj_from_bits(text_bits).is_none() {
                 dec_ref_bits(_py, text_bits);
             }
-            return raise_exception::<_>(_py, "TypeError", "path must be str-like");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "path must be str-like");
         };
         if !obj_from_bits(text_bits).is_none() {
             dec_ref_bits(_py, text_bits);
@@ -70,6 +71,11 @@ pub extern "C" fn molt_importlib_resources_only(
             Ok(None) => return first.into_bits(),
             Err(_) => return MoltObject::none().bits(),
         };
+        if !obj_from_bits(too_long_bits).is_none() {
+            // `raise too_long or ValueError(msg)`: the caller's exception
+            // object or class is raised as given, never re-spelled by name.
+            return crate::molt_raise(too_long_bits);
+        }
         let first_text = importlib_best_effort_str(_py, first.bits());
         let second_text = importlib_best_effort_str(_py, second.bits());
         drop(first);
@@ -78,12 +84,7 @@ pub extern "C" fn molt_importlib_resources_only(
             "Expected exactly one item in iterable, but got {:?}, {:?}, and perhaps more.",
             first_text, second_text
         );
-        if !obj_from_bits(too_long_bits).is_none()
-            && let Some(kind) = importlib_exception_name_from_bits(_py, too_long_bits)
-        {
-            return raise_exception::<_>(_py, &kind, &message);
-        }
-        raise_exception::<_>(_py, "ValueError", &message)
+        raise_exception::<_>(_py, BuiltinExc::ValueError, &message)
     })
 }
 
@@ -101,7 +102,11 @@ pub extern "C" fn molt_importlib_resources_reader_resource_path_from_roots(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let roots = match string_sequence_arg_from_bits(_py, roots_bits, "roots") {
             Ok(value) => value,
@@ -138,7 +143,11 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes_from_roots
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let roots = match string_sequence_arg_from_bits(_py, roots_bits, "roots") {
             Ok(value) => value,
@@ -162,7 +171,7 @@ pub extern "C" fn molt_importlib_resources_reader_open_resource_bytes_from_roots
             }
             return MoltObject::from_ptr(out_ptr).bits();
         }
-        raise_exception::<_>(_py, "FileNotFoundError", &resource)
+        raise_exception::<_>(_py, BuiltinExc::FileNotFoundError, &resource)
     })
 }
 
@@ -180,7 +189,11 @@ pub extern "C" fn molt_importlib_resources_reader_is_resource_from_roots(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let roots = match string_sequence_arg_from_bits(_py, roots_bits, "roots") {
             Ok(value) => value,
@@ -209,7 +222,11 @@ pub extern "C" fn molt_importlib_resources_reader_contents_from_roots(roots_bits
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let roots = match string_sequence_arg_from_bits(_py, roots_bits, "roots") {
             Ok(value) => value,
@@ -248,7 +265,7 @@ pub extern "C" fn molt_importlib_resources_joinpath(traversable_bits: u64, child
             }
             return raise_exception::<_>(
                 _py,
-                "AttributeError",
+                BuiltinExc::AttributeError,
                 "traversable has no attribute 'joinpath'",
             );
         }
@@ -281,7 +298,7 @@ pub extern "C" fn molt_importlib_resources_open_mode_is_text(mode_bits: u64) -> 
         }
         raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("Invalid mode value {mode:?}, only 'r' and 'rb' are supported"),
         )
     })

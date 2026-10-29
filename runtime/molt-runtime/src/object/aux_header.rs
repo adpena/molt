@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use std::sync::atomic::Ordering;
 
 use super::MoltAuxWord;
@@ -331,7 +332,11 @@ pub(crate) unsafe fn object_init_frame_context_unpublished(
                     .as_ptr()
                     .is_none_or(|code_ptr| super::object_type_id(code_ptr) != crate::TYPE_ID_CODE))
         {
-            crate::raise_exception::<u64>(py, "SystemError", "invalid suspended frame context");
+            crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "invalid suspended frame context",
+            );
             return false;
         }
         if !super::object_init_sidecar_unpublished(ptr) {

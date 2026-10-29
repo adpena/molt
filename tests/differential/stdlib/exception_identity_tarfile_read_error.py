@@ -1,4 +1,3 @@
-# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-207 expect_molt_returncode=0 expect_molt_stdout_sha256=e12c216e42263a21ce48d249d39e36efd420c422910dfdc6fcd939b1b36559a3
 """Purpose: an unreadable compressed archive raises tarfile.ReadError."""
 
 import os

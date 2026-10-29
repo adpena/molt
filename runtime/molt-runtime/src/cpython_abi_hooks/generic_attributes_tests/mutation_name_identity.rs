@@ -1,5 +1,6 @@
 //! Name objects remain the same operands across normal and raw mutation.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::ExceptionValue;
 use molt_cpython_abi::abi_types::{Py_TPFLAGS_READY, PyBaseObject_Type, PyType_Type, PyTypeObject};
 
@@ -39,7 +40,11 @@ extern "C" fn name_hash(_name: u64) -> u64 {
     HASH_CALLS.with(|slot| slot.set(slot.get() + 1));
     if HASH_FAIL.with(Cell::get) {
         return crate::with_gil_entry_nopanic!(py, {
-            crate::raise_exception::<u64>(py, "ValueError", "attribute-name hash sentinel")
+            crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::ValueError,
+                "attribute-name hash sentinel",
+            )
         });
     }
     NAME_HASH.with(Cell::get)
@@ -164,7 +169,7 @@ fn named_mutation_preserves_original_name_for_every_override_family() {
                 assert!(!crate::exception_pending(py));
                 let failure = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "name override sentinel",
                 ))
                 .bits();

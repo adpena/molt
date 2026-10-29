@@ -2,6 +2,7 @@
 //! descriptors. Source operators own special-method and reflected dispatch.
 
 use super::*;
+use crate::BuiltinExc;
 
 /// Concatenation rejection belongs to the sequence slot, not generic numeric
 /// dispatch. A Python class name is diagnostic data, never slot identity.
@@ -43,7 +44,7 @@ impl SequenceConcatKind {
                 format!("can't concat {right_name} to {left_name}")
             }
         };
-        raise_exception(py, "TypeError", &message)
+        raise_exception(py, BuiltinExc::TypeError, &message)
     }
 }
 
@@ -91,7 +92,7 @@ pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
         let Some(lhs) = obj_from_bits(left).as_ptr() else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "sequence concatenation requires a native sequence",
             );
         };
@@ -158,7 +159,7 @@ pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
         }
         raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "sequence concatenation requires a native sequence",
         )
     }
@@ -183,7 +184,11 @@ pub(crate) extern "C" fn sequence_repeat_slot(value: u64, count: u64) -> u64 {
                 TYPE_ID_TUPLE | TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY
             )
         }) else {
-            return raise_exception(py, "TypeError", "repetition requires a native sequence");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "repetition requires a native sequence",
+            );
         };
         let Some(count) = sequence_repeat_count(py, count) else {
             return MoltObject::none().bits();
@@ -219,7 +224,7 @@ pub(crate) extern "C" fn bytearray_iadd_slot(value: u64, other: u64) -> u64 {
         else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bytearray in-place concatenation requires a bytearray",
             );
         };
@@ -239,7 +244,7 @@ pub(crate) extern "C" fn bytearray_imul_slot(value: u64, count: u64) -> u64 {
         else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "bytearray in-place repetition requires a bytearray",
             );
         };
@@ -564,7 +569,11 @@ fn set_inplace(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
         .as_ptr()
         .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_SET })
     {
-        return raise_exception(py, "TypeError", "in-place set arithmetic requires a set");
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            "in-place set arithmetic requires a set",
+        );
     }
     if !obj_from_bits(right)
         .as_ptr()
@@ -716,7 +725,11 @@ fn integer_carrier(bits: u64) -> Option<u64> {
 
 fn int_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) -> u64) -> u64 {
     let Some(value) = integer_carrier(value) else {
-        return raise_exception(py, "TypeError", "int arithmetic requires an int receiver");
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            "int arithmetic requires an int receiver",
+        );
     };
     operation(value)
 }
@@ -735,7 +748,11 @@ pub(crate) extern "C" fn int_invert_slot(value: u64) -> u64 {
 pub(crate) extern "C" fn int_bool_slot(value: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(value) = integer_carrier(value) else {
-            return raise_exception(py, "TypeError", "int truth requires an int receiver");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "int truth requires an int receiver",
+            );
         };
         MoltObject::from_bool(is_truthy(py, obj_from_bits(value))).bits()
     })
@@ -773,7 +790,11 @@ fn int_binary_slot(
     operation: extern "C" fn(u64, u64) -> u64,
 ) -> u64 {
     let Some(receiver) = integer_carrier(receiver) else {
-        return raise_exception(py, "TypeError", "int arithmetic requires an int receiver");
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            "int arithmetic requires an int receiver",
+        );
     };
     let Some(other) = integer_carrier(other) else {
         return not_implemented_bits(py);
@@ -932,7 +953,7 @@ fn float_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) 
     let Some(value) = as_float_extended(obj_from_bits(value)) else {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "float arithmetic requires a float receiver",
         );
     };
@@ -968,7 +989,7 @@ pub(crate) extern "C" fn float_bool_slot(value: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let value = as_float_extended(obj_from_bits(value));
         let Some(value) = value else {
-            return raise_exception(py, "TypeError", "float.__bool__ requires a float");
+            return raise_exception(py, BuiltinExc::TypeError, "float.__bool__ requires a float");
         };
         MoltObject::from_bool(value != 0.0).bits()
     })
@@ -988,7 +1009,7 @@ fn float_binary_slot(
     let Some(value) = as_float_extended(obj_from_bits(receiver)) else {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "float arithmetic requires a float receiver",
         );
     };
@@ -1107,7 +1128,7 @@ fn float_power_slot(py: &PyToken<'_>, a: u64, b: u64, modulus: u64) -> u64 {
     if !obj_from_bits(modulus).is_none() {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "pow() 3rd argument not allowed unless all arguments are integers",
         );
     }

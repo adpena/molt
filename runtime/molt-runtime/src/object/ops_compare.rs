@@ -1,6 +1,7 @@
 // Comparison operations and helpers.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::BuiltinExc;
 use crate::*;
 use molt_obj_model::MoltObject;
 use molt_obj_model::sequence_compare::RichCompareOp;
@@ -23,7 +24,7 @@ pub(crate) fn compare_type_error(
         type_name(_py, lhs),
         type_name(_py, rhs),
     );
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 #[derive(Clone, Copy)]
@@ -299,7 +300,7 @@ impl SequenceComparison {
             };
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "descriptor '{}' requires a '{}' object but received a '{}'",
                     op.method_name(),
@@ -512,7 +513,7 @@ fn cell_compare_method(
         let received = type_name(_py, lhs);
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("descriptor '{method}' requires a 'cell' object but received a '{received}'"),
         );
     }
@@ -532,7 +533,7 @@ fn method_compare(py: &PyToken<'_>, left: u64, right: u64, op: RichCompareOp) ->
     let Some(left_ptr) = crate::builtins::types::method_ptr_from_bits(py, left) else {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "descriptor '{}' requires a 'method' object but received a '{}'",
                 op.method_name(),

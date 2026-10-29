@@ -1,5 +1,6 @@
 //! Lazy native class and callable projections of the Context owner.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind as Kind, NativeCallableSpec};
 use crate::builtins::types::native_descriptors::{
     NativeDescriptorFlavor, NativeDescriptorSpec, alloc_native_descriptor,
@@ -425,7 +426,7 @@ fn positional(
 ) -> Option<([u64; 2], usize)> {
     let p = obj_from_bits(args).as_ptr()?;
     if unsafe { object_type_id(p) } != crate::TYPE_ID_TUPLE {
-        raise_exception::<()>(py, "TypeError", "expected argument tuple");
+        raise_exception::<()>(py, BuiltinExc::TypeError, "expected argument tuple");
         return None;
     }
     let out = unsafe {
@@ -440,7 +441,7 @@ fn positional(
     if out.1 < min || out.1 > max {
         raise_exception::<()>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label}() takes {min} to {max} positional arguments"),
         );
         return None;
@@ -452,7 +453,7 @@ fn positional(
     {
         raise_exception::<()>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label}() takes no keyword arguments"),
         );
         return None;
@@ -465,7 +466,7 @@ fn lookup_error(py: &PyToken<'_>, var: u64) -> u64 {
         return none();
     }
     let args = MoltObject::from_ptr(args).bits();
-    let class = crate::exception_type_bits_from_name(py, "LookupError");
+    let class = crate::exception_class_bits(py, BuiltinExc::LookupError);
     let p = crate::alloc_exception_from_class_bits(py, class, args);
     dec_ref_bits(py, args);
     if !p.is_null() {
@@ -517,7 +518,7 @@ pub extern "C" fn molt_contextvars_types(module: u64) -> u64 {
         {
             return raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "Context namespace requires its module owner",
             );
         }
@@ -577,7 +578,7 @@ fn unconstructible(py: &PyToken<'_>, declaring: u64, receiver: u64, label: &str)
     }
     raise_exception::<u64>(
         py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         "Instances of this type cannot be created",
     )
 }
@@ -640,7 +641,7 @@ pub extern "C" fn molt_contextvars_var_new(class: u64, args: u64, kwargs: u64) -
         if args.positional.len() > 1 {
             return raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "ContextVar() takes at most 1 positional argument",
             );
         }
@@ -749,7 +750,7 @@ pub extern "C" fn molt_contextvars_run(ctx: u64, args: u64, kwargs: u64) -> u64 
         let Some((&function, rest)) = args.split_first() else {
             return raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "run() missing required positional argument",
             );
         };
@@ -836,7 +837,7 @@ pub extern "C" fn molt_contextvars_iter_next(bits: u64) -> u64 {
         };
         let it = unsafe { &mut *p.cast::<ContextIterator>() };
         let Some((key, value)) = it.cursor.next() else {
-            return raise_exception::<u64>(py, "StopIteration", "");
+            return raise_exception::<u64>(py, BuiltinExc::StopIteration, "");
         };
         match it.mode {
             0 => owned(py, key),

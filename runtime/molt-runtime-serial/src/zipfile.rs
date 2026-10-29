@@ -77,10 +77,18 @@ fn imghdr_detect_kind(header: &[u8]) -> Option<&'static str> {
 pub extern "C" fn molt_imghdr_detect(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "imghdr header must be bytes-like",
+            );
         };
         let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "imghdr header must be bytes-like",
+            );
         };
         let Some(kind) = imghdr_detect_kind(header) else {
             return MoltObject::none().bits();
@@ -582,20 +590,20 @@ pub extern "C" fn molt_zipfile_parse_central_directory(data_bits: u64) -> u64 {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "zipfile central directory input must be bytes-like",
             );
         };
         let Some(data) = (unsafe { bytes_like_slice(data_ptr) }) else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "zipfile central directory input must be bytes-like",
             );
         };
         let entries = match zipfile_parse_central_directory_impl(data) {
             Ok(value) => value,
-            Err(message) => return raise_exception::<_>(_py, "ValueError", message),
+            Err(message) => return raise_exception::<_>(_py, BuiltinExc::ValueError, message),
         };
 
         let mut pairs: Vec<u64> = Vec::with_capacity(entries.len() * 2);
@@ -617,7 +625,7 @@ pub extern "C" fn molt_zipfile_parse_central_directory(data_bits: u64) -> u64 {
                     }
                     return raise_exception::<_>(
                         _py,
-                        "OverflowError",
+                        BuiltinExc::OverflowError,
                         "zipfile central directory value overflow",
                     );
                 };
@@ -661,27 +669,47 @@ pub extern "C" fn molt_zipfile_build_zip64_extra(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(size) = to_i64(obj_from_bits(size_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile zip64 size must be int");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile zip64 size must be int",
+            );
         };
         if size < 0 {
-            return raise_exception::<_>(_py, "ValueError", "zipfile zip64 size must be >= 0");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "zipfile zip64 size must be >= 0",
+            );
         }
         let Some(comp_size) = to_i64(obj_from_bits(comp_size_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile zip64 comp_size must be int");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile zip64 comp_size must be int",
+            );
         };
         if comp_size < 0 {
-            return raise_exception::<_>(_py, "ValueError", "zipfile zip64 comp_size must be >= 0");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "zipfile zip64 comp_size must be >= 0",
+            );
         }
         let offset = if obj_from_bits(offset_bits).is_none() {
             None
         } else {
             let Some(value) = to_i64(obj_from_bits(offset_bits)) else {
-                return raise_exception::<_>(_py, "TypeError", "zipfile zip64 offset must be int");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "zipfile zip64 offset must be int",
+                );
             };
             if value < 0 {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "zipfile zip64 offset must be >= 0",
                 );
             }
@@ -729,7 +757,11 @@ pub extern "C" fn molt_zipfile_path_implied_dirs(names_bits: u64) -> u64 {
 pub extern "C" fn molt_zipfile_path_resolve_dir(name_bits: u64, names_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile path name must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile path name must be str",
+            );
         };
         let names = match iterable_to_string_vec(_py, names_bits) {
             Ok(items) => items,
@@ -754,10 +786,18 @@ pub extern "C" fn molt_zipfile_path_resolve_dir(name_bits: u64, names_bits: u64)
 pub extern "C" fn molt_zipfile_path_is_child(path_at_bits: u64, parent_at_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(path_at) = string_obj_to_owned(obj_from_bits(path_at_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile path candidate must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile path candidate must be str",
+            );
         };
         let Some(parent_at) = string_obj_to_owned(obj_from_bits(parent_at_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile path parent must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile path parent must be str",
+            );
         };
 
         let candidate_parent = zipfile_parent_of(path_at.as_str());
@@ -778,17 +818,25 @@ pub extern "C" fn molt_zipfile_path_translate_glob(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(pattern) = string_obj_to_owned(obj_from_bits(pattern_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile glob pattern must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile glob pattern must be str",
+            );
         };
         let Some(seps) = string_obj_to_owned(obj_from_bits(seps_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile glob separators must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile glob separators must be str",
+            );
         };
         let py313_plus = is_truthy(_py, obj_from_bits(py313_plus_bits));
 
         let translated =
             match zipfile_translate_glob_impl(pattern.as_str(), seps.as_str(), py313_plus) {
                 Ok(value) => value,
-                Err(msg) => return raise_exception::<_>(_py, "ValueError", msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, msg),
             };
         let ptr = alloc_string(_py, translated.as_bytes());
         if ptr.is_null() {
@@ -803,7 +851,11 @@ pub extern "C" fn molt_zipfile_path_translate_glob(
 pub extern "C" fn molt_zipfile_normalize_member_path(member_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(member) = string_obj_to_owned(obj_from_bits(member_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "zipfile member path must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "zipfile member path must be str",
+            );
         };
         let Some(normalized) = zipfile_normalize_member_path_impl(member.as_str()) else {
             return MoltObject::none().bits();
@@ -821,10 +873,18 @@ pub extern "C" fn molt_zipfile_normalize_member_path(member_bits: u64) -> u64 {
 pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "imghdr header must be bytes-like",
+            );
         };
         let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "imghdr header must be bytes-like",
+            );
         };
         let Some(kind) = imghdr_detect_kind(header) else {
             return MoltObject::none().bits();
@@ -842,13 +902,21 @@ pub extern "C" fn molt_imghdr_what(data_bits: u64) -> u64 {
 pub extern "C" fn molt_imghdr_test(kind_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr kind must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "imghdr kind must be str");
         };
         let Some(data_ptr) = obj_from_bits(data_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "imghdr header must be bytes-like",
+            );
         };
         let Some(header) = (unsafe { bytes_like_slice(data_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "imghdr header must be bytes-like");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "imghdr header must be bytes-like",
+            );
         };
         let matches = imghdr_detect_kind(header)
             .map(|detected| detected == kind.as_str())

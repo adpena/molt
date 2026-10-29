@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 #[derive(Copy, Clone)]
 pub(super) struct BufferRuntimeView {
@@ -28,7 +29,7 @@ pub(super) unsafe fn buffer_runtime_view(
     let Some(buffer_ptr) = obj_from_bits(buffer_bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a Buffer instance"),
         ));
     };
@@ -36,7 +37,7 @@ pub(super) unsafe fn buffer_runtime_view(
     if obj_from_bits(class_bits).is_none() {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a Buffer instance"),
         ));
     }
@@ -68,7 +69,7 @@ pub(super) unsafe fn tensor_runtime_view(
     let Some(tensor_ptr) = obj_from_bits(tensor_bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a Tensor instance"),
         ));
     };
@@ -76,7 +77,7 @@ pub(super) unsafe fn tensor_runtime_view(
     if obj_from_bits(class_bits).is_none() {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{role} must be a Tensor instance"),
         ));
     }
@@ -132,14 +133,14 @@ pub(super) fn parse_i64_sequence_arg(
             to_i64(obj).map(|value| vec![value]).ok_or_else(|| {
                 raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("{role} must be a tuple or list of ints"),
                 )
             })
         } else {
             Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{role} must be a tuple or list of ints"),
             ))
         };
@@ -150,14 +151,14 @@ pub(super) fn parse_i64_sequence_arg(
             to_i64(obj).map(|value| vec![value]).ok_or_else(|| {
                 raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("{role} must be a tuple or list of ints"),
                 )
             })
         } else {
             Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{role} must be a tuple or list of ints"),
             ))
         };
@@ -196,7 +197,11 @@ pub(super) fn parse_i64_sequence_arg(
         unsafe { seq_access::with_borrowed(ptr, decode) }
     };
     decoded.ok_or_else(|| {
-        raise_exception::<_>(_py, "TypeError", &format!("{role} must contain integers"))
+        raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            &format!("{role} must contain integers"),
+        )
     })
 }
 
@@ -209,7 +214,7 @@ pub(super) fn normalize_permute_dims(
     if raw_dims.len() != ndim {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "permute dims must match tensor rank",
         ));
     }
@@ -222,7 +227,7 @@ pub(super) fn normalize_permute_dims(
         if dim < 0 || dim >= ndim as i64 {
             return Err(raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 &format!("permute dim {raw_dim} out of range for ndim={ndim}"),
             ));
         }
@@ -269,7 +274,7 @@ pub(super) unsafe fn module_global_bits(
     if is_missing_bits(_py, value_bits) {
         return Err(raise_exception::<_>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             &format!(
                 "module {:?} has no attribute {:?}",
                 String::from_utf8_lossy(module_name),

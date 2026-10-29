@@ -3,6 +3,7 @@
 //! State stays with its existing owner; calls preserve transaction and drop order.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 /// A Python frame's declared parameter layout (CPython `co_varnames`):
@@ -57,7 +58,7 @@ impl<'a, 'py> BoundCallSlots<'a, 'py> {
         if values.try_reserve_exact(count).is_err() {
             return Err(raise_exception::<_>(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "bound arguments allocation failed",
             ));
         }
@@ -200,7 +201,7 @@ unsafe fn function_kwdefault_owned(
         let Some(defaults_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
             return Err(raise_exception::<_>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "call expects function object",
             ));
         };
@@ -209,7 +210,7 @@ unsafe fn function_kwdefault_owned(
         let backing_bits = crate::object::ops::dict_backing_bits(py, defaults_bits)
             .map_err(|()| MoltObject::none().bits())?
             .ok_or_else(|| {
-                raise_exception::<u64>(py, "TypeError", "call expects function object")
+                raise_exception::<u64>(py, BuiltinExc::TypeError, "call expects function object")
             })?;
         let backing_ptr = obj_from_bits(backing_bits)
             .as_ptr()
@@ -385,7 +386,7 @@ pub(crate) unsafe fn function_raw_positional_call_needs_binding(
         let Some(arity) = function_arity_usize(func_ptr) else {
             let _ = raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "function arity exceeds the active address space",
             );
             return true;
@@ -478,7 +479,7 @@ pub(super) unsafe fn call_function_with_arguments(
                 };
                 return crate::builtins::exceptions::raise_exception_bytes(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &error.message(&name),
                 );
             }
@@ -527,7 +528,11 @@ pub(super) unsafe fn call_function_with_arguments(
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
-                return raise_exception::<_>(_py, "TypeError", "call expects function object");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "call expects function object",
+                );
             }
             Err(error) => return error,
         };
@@ -580,14 +585,14 @@ unsafe fn python_argument_names<'a, 'py>(
         let Some(pointer) = obj_from_bits(bits).as_ptr() else {
             return Err(raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "call expects function object",
             ));
         };
         let Some(names) = crate::object::seq_access::pin_tuple(py, pointer) else {
             return Err(raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "call expects function object",
             ));
         };
@@ -625,7 +630,7 @@ unsafe fn raise_missing_arguments(
     let plural = if count == 1 { "" } else { "s" };
     raise_exception::<u64>(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!("{function}() missing {count} required {kind} argument{plural}: {names}"),
     )
 }
@@ -669,14 +674,14 @@ unsafe fn bind_python_frame<'a, 'py>(
             let Some(kw_ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "call expects function object",
                 ));
             };
             if object_type_id(kw_ptr) != TYPE_ID_TUPLE {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "call expects function object",
                 ));
             }
@@ -748,7 +753,7 @@ unsafe fn bind_python_frame<'a, 'py>(
             {
                 return Err(raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "invalid fixed positional builtin metadata",
                 ));
             }
@@ -759,7 +764,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                     .unwrap_or_else(|| "function".to_string());
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("{name}() takes no keyword arguments"),
                 ));
             }
@@ -868,7 +873,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                     }
                     return Err(raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!("{function}() got multiple values for argument '{name}'"),
                     ));
                 }
@@ -919,7 +924,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                         .unwrap_or_else(|| "function".to_string());
                     return Err(raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "{function}() got some positional-only arguments passed as keyword arguments: '{}'",
                             conflicts.join(", "),
@@ -935,7 +940,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("{function}() got an unexpected keyword argument '{name}'"),
                 ));
             }
@@ -960,14 +965,14 @@ unsafe fn bind_python_frame<'a, 'py>(
             let Some(def_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "call expects function object",
                 ));
             };
             if object_type_id(def_ptr) != TYPE_ID_TUPLE {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "call expects function object",
                 ));
             }
@@ -983,7 +988,7 @@ unsafe fn bind_python_frame<'a, 'py>(
             let Some(required) = total_pos.checked_sub(defaults_len) else {
                 return Err(raise_exception::<_>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "invalid fixed positional builtin defaults",
                 ));
             };
@@ -1000,7 +1005,7 @@ unsafe fn bind_python_frame<'a, 'py>(
                 let plural = if expected == 1 { "" } else { "s" };
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!(
                         "{name} expected {qualifier}{expected} argument{plural}, got {supplied}"
                     ),
@@ -1044,7 +1049,7 @@ unsafe fn bind_python_frame<'a, 'py>(
             };
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "{function}() takes {expected} positional argument{plural} but {supplied}{keyword_only} {verb} given",
                 ),
@@ -1127,7 +1132,7 @@ unsafe fn bind_python_frame<'a, 'py>(
             let Some(val) = *slot else {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "call binding failed",
                 ));
             };
@@ -1159,10 +1164,18 @@ pub(crate) unsafe fn bind_python_frame_tuple(
 ) -> u64 {
     unsafe {
         let Some(function) = obj_from_bits(function_bits).as_ptr() else {
-            return raise_exception::<u64>(py, "TypeError", "GPU kernel must be a Python function");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "GPU kernel must be a Python function",
+            );
         };
         if object_type_id(function) != TYPE_ID_FUNCTION {
-            return raise_exception::<u64>(py, "TypeError", "GPU kernel must be a Python function");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "GPU kernel must be a Python function",
+            );
         }
         let mut arguments = match CallArguments::retained(py, None, positional, &[], &[]) {
             Ok(arguments) => arguments,
@@ -1174,7 +1187,7 @@ pub(crate) unsafe fn bind_python_frame_tuple(
             Ok(None) => {
                 return raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "GPU kernel lacks a Python signature",
                 );
             }

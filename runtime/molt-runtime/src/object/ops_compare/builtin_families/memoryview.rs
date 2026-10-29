@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::object::buffer_exports::{BufferAccessError, ScopedBuffer};
 use crate::object::memoryview::{
     MOLT_BUFFER_MAX_NDIM, MoltBufferView, memoryview_format_from_str, memoryview_read_scalar,
@@ -119,11 +120,19 @@ pub(super) fn compare(
     let compare = || -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
         let (left_view, right_view) = (left.view(), right.view());
         let Some(lcount) = element_count(left_view) else {
-            raise_exception::<()>(py, "BufferError", "invalid comparison buffer geometry");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::BufferError,
+                "invalid comparison buffer geometry",
+            );
             return Err(molt_runtime_core::ErrorIndicatorSet);
         };
         let Some(rcount) = element_count(right_view) else {
-            raise_exception::<()>(py, "BufferError", "invalid comparison buffer geometry");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::BufferError,
+                "invalid comparison buffer geometry",
+            );
             return Err(molt_runtime_core::ErrorIndicatorSet);
         };
         if left_view.ndim != right_view.ndim || lcount != rcount {

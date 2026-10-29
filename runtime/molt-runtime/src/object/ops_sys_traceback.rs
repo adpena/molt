@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::exceptions::{
     ExceptionFieldSlot, ExceptionStorage, ExceptionValue, exception_class, exception_field,
     exception_is_instance,
@@ -19,7 +20,7 @@ pub(crate) fn traceback_limit_from_bits(
     let Some(limit) = to_i64(obj) else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "limit must be an integer",
         ));
     };
@@ -57,13 +58,13 @@ pub(crate) fn traceback_mutate_field(
 ) -> Result<bool, ()> {
     match name {
         "tb_frame" | "tb_lasti" => {
-            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(py, BuiltinExc::AttributeError, "readonly attribute");
             return Err(());
         }
         "tb_lineno" => {
             raise_exception::<()>(
                 py,
-                "AttributeError",
+                BuiltinExc::AttributeError,
                 "attribute 'tb_lineno' of 'traceback' objects is not writable",
             );
             return Err(());
@@ -72,7 +73,7 @@ pub(crate) fn traceback_mutate_field(
         _ => return Ok(false),
     }
     let Some(next) = value else {
-        raise_exception::<()>(py, "TypeError", "can't delete tb_next attribute");
+        raise_exception::<()>(py, BuiltinExc::TypeError, "can't delete tb_next attribute");
         return Err(());
     };
     let traceback_type = crate::builtins::classes::builtin_classes(py).traceback;
@@ -83,7 +84,7 @@ pub(crate) fn traceback_mutate_field(
             "expected traceback object, got '{}'",
             type_name(py, obj_from_bits(next))
         );
-        raise_exception::<()>(py, "TypeError", &message);
+        raise_exception::<()>(py, BuiltinExc::TypeError, &message);
         return Err(());
     }
     let self_bits = MoltObject::from_ptr(tb_ptr).bits();
@@ -91,7 +92,7 @@ pub(crate) fn traceback_mutate_field(
     let mut cursor = ExceptionValue::pin(py, next);
     while !obj_from_bits(cursor.bits()).is_none() {
         if cursor.bits() == self_bits {
-            raise_exception::<()>(py, "ValueError", "traceback loop detected");
+            raise_exception::<()>(py, BuiltinExc::ValueError, "traceback loop detected");
             return Err(());
         }
         let Some(following) = traceback_attribute(py, cursor.bits(), next_name)? else {
@@ -101,7 +102,7 @@ pub(crate) fn traceback_mutate_field(
     }
     let dict_bits = unsafe { instance_dict_bits(tb_ptr) };
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        raise_exception::<()>(py, "AttributeError", "readonly attribute");
+        raise_exception::<()>(py, BuiltinExc::AttributeError, "readonly attribute");
         return Err(());
     };
     if unsafe { crate::dict_set_in_place(py, dict_ptr, next_name, next) } {
@@ -625,10 +626,10 @@ mod traceback_format_tests {
             frame.end_colno = 9;
             assert!(traceback_payload_to_formatted_entries(py, &[frame]).is_err());
             let error = crate::molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "UnicodeEncodeError"
+                crate::BuiltinExc::UnicodeEncodeError
             ));
             crate::molt_exception_clear();
             let rendered = crate::molt_str_from_obj(error);
@@ -1070,7 +1071,11 @@ pub(crate) fn traceback_exception_chain<'a, 'py>(
             .value
             .bits();
         let Some(storage) = ExceptionStorage::for_exception(py, current) else {
-            return raise_exception(py, "TypeError", "value must be an exception instance");
+            return raise_exception(
+                py,
+                BuiltinExc::TypeError,
+                "value must be an exception instance",
+            );
         };
         let cause = exception_field(py, current, ExceptionFieldSlot::Cause)?;
         let (next, separator) = if !obj_from_bits(cause.bits()).is_none() {
@@ -1092,7 +1097,7 @@ pub(crate) fn traceback_exception_chain<'a, 'py>(
         if !exception_is_instance(py, next.bits()) {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception chain must contain exception instances",
             );
         }
@@ -2078,7 +2083,7 @@ fn traceback_require_column_text(
     let Some(last) = lines.get(last_index).copied() else {
         return Err(raise_exception::<_>(
             py,
-            "IndexError",
+            BuiltinExc::IndexError,
             "list index out of range",
         ));
     };
@@ -2149,7 +2154,7 @@ fn traceback_payload_failure(py: &PyToken<'_>) -> u64 {
     if exception_pending(py) {
         MoltObject::none().bits()
     } else {
-        raise_exception(py, "MemoryError", "out of memory")
+        raise_exception(py, BuiltinExc::MemoryError, "out of memory")
     }
 }
 
@@ -2167,7 +2172,7 @@ pub(crate) fn traceback_exception_chain_collect<'a, 'py>(
     if depth > 1024 {
         return Err(raise_exception(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "traceback exception chain recursion too deep",
         ));
     }
@@ -2175,7 +2180,7 @@ pub(crate) fn traceback_exception_chain_collect<'a, 'py>(
     let Some(storage) = ExceptionStorage::for_exception(py, value.bits()) else {
         return Err(raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "value must be an exception instance",
         ));
     };
@@ -2203,7 +2208,7 @@ pub(crate) fn traceback_exception_chain_collect<'a, 'py>(
         if !exception_is_instance(py, cause.bits()) {
             return Err(raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception __cause__ must be an exception instance or None",
             ));
         }
@@ -2220,7 +2225,7 @@ pub(crate) fn traceback_exception_chain_collect<'a, 'py>(
         if !exception_is_instance(py, context.bits()) {
             return Err(raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "exception __context__ must be an exception instance or None",
             ));
         }

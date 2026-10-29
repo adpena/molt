@@ -12,6 +12,7 @@
 
 use super::unraisable::sys_attr_bits;
 use super::*;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::{
     attr_name_bits_from_bytes, call_callable1, call_callable3, molt_get_attr_name,
@@ -48,12 +49,12 @@ fn report_uncaught(py: &PyToken<'_>, exc_bits: u64) -> i32 {
         eprintln!("RuntimeError: uncaught payload is not an exception");
         return 1;
     }
-    if exception_matches_builtin_name(py, exc_bits, "SystemExit") {
+    if exception_matches_kind(py, exc_bits, crate::BuiltinExc::SystemExit) {
         return super::system_exit_code(py, exc_ptr);
     }
     // CPython `run_eval_code_obj`: only an exact KeyboardInterrupt makes the
     // process exit by SIGINT once finalization completes.
-    let keyboard_interrupt = exception_type_bits_from_name(py, "KeyboardInterrupt");
+    let keyboard_interrupt = exception_class_bits(py, BuiltinExc::KeyboardInterrupt);
     if keyboard_interrupt != 0
         && exception_class(py, exc_bits).is_some_and(|class| class.bits() == keyboard_interrupt)
     {
@@ -89,7 +90,7 @@ fn report_uncaught(py: &PyToken<'_>, exc_bits: u64) -> i32 {
         &[hook_bits, type_bits, exc_bits, tb_bits],
     );
     if !audited {
-        let runtime_error = exception_type_bits_from_name(py, "RuntimeError");
+        let runtime_error = exception_class_bits(py, BuiltinExc::RuntimeError);
         if runtime_error != 0 && pending_exception_matches_type(py, runtime_error) {
             clear_exception(py);
             release(py, hook_bits);
@@ -116,7 +117,7 @@ fn report_uncaught(py: &PyToken<'_>, exc_bits: u64) -> i32 {
     if exception_pending(py) {
         let hook_exc = super::exception_state_abi::exception_last_pending_bits(py);
         clear_exception(py);
-        if exception_matches_builtin_name(py, hook_exc, "SystemExit") {
+        if exception_matches_kind(py, hook_exc, crate::BuiltinExc::SystemExit) {
             let status = obj_from_bits(hook_exc)
                 .as_ptr()
                 .map_or(1, |ptr| super::system_exit_code(py, ptr));

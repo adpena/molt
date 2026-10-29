@@ -7,6 +7,7 @@
 //!
 //! ABI: NaN-boxed u64 in/out.
 
+use crate::BuiltinExc;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::object::builders::{alloc_string, alloc_tuple};
 use crate::{
@@ -81,7 +82,7 @@ fn timeout_nanoseconds(py: &PyToken<'_>, bits: u64) -> Result<i64, u64> {
         if seconds.is_nan() {
             return Err(raise_exception::<u64>(
                 py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Invalid value NaN (not a number)",
             ));
         }
@@ -95,7 +96,7 @@ fn timeout_nanoseconds(py: &PyToken<'_>, bits: u64) -> Result<i64, u64> {
         if !nanos.is_finite() || nanos >= i64::MAX as f64 || nanos < i64::MIN as f64 {
             return Err(raise_exception::<u64>(
                 py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "timestamp out of range for platform time_t",
             ));
         }
@@ -117,7 +118,7 @@ fn timeout_nanoseconds(py: &PyToken<'_>, bits: u64) -> Result<i64, u64> {
         Some(value) => Ok(value),
         None => Err(raise_exception::<u64>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "timestamp too large to convert to C _PyTime_t",
         )),
     }
@@ -131,7 +132,7 @@ fn positive_timeout_duration(py: &PyToken<'_>, nanos: i64) -> Result<std::time::
     if micros > THREAD_TIMEOUT_MAX_MICROS {
         return Err(raise_exception::<u64>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "timeout value is too large",
         ));
     }
@@ -180,14 +181,14 @@ pub(crate) fn parse_thread_timeout(
     if !blocking && nanos != -1_000_000_000 {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "can't specify a timeout for a non-blocking call",
         ));
     }
     if nanos < 0 && nanos != -1_000_000_000 {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "timeout value must be positive",
         ));
     }
@@ -239,7 +240,11 @@ pub unsafe extern "C" fn molt_threading_parse_registry_record(record_bits: u64) 
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(record_bits);
         if obj.is_none() {
-            return raise_exception::<u64>(_py, "RuntimeError", "invalid thread registry record");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "invalid thread registry record",
+            );
         }
         // Pass through validated record
         record_bits
@@ -346,11 +351,16 @@ mod timeout_tests {
     use super::*;
     use std::time::Duration;
 
-    fn assert_error(py: &PyToken<'_>, bits: u64, policy: ThreadTimeoutPolicy, name: &str) {
+    fn assert_error(
+        py: &PyToken<'_>,
+        bits: u64,
+        policy: ThreadTimeoutPolicy,
+        name: crate::BuiltinExc,
+    ) {
         assert!(parse_thread_timeout(py, bits, policy).is_err());
         let pending = crate::molt_exception_last_pending();
         let ptr = obj_from_bits(pending).as_ptr().expect("pending exception");
-        let class = crate::builtins::exceptions::exception_type_bits_from_name(py, name);
+        let class = crate::builtins::exceptions::exception_class_bits(py, name);
         assert_eq!(unsafe { crate::object_class_bits(ptr) }, class);
         crate::clear_exception(py);
         crate::dec_ref_bits(py, pending);
@@ -373,25 +383,30 @@ mod timeout_tests {
                     bits,
                     lock,
                     if value.is_infinite() {
-                        "OverflowError"
+                        crate::BuiltinExc::OverflowError
                     } else {
-                        "ValueError"
+                        crate::BuiltinExc::ValueError
                     },
                 );
                 crate::dec_ref_bits(py, bits);
             }
             let nan = crate::float_result_bits(py, f64::NAN);
-            assert_error(py, nan, ThreadTimeoutPolicy::Join, "ValueError");
+            assert_error(
+                py,
+                nan,
+                ThreadTimeoutPolicy::Join,
+                crate::BuiltinExc::ValueError,
+            );
             crate::dec_ref_bits(py, nan);
             for value in [f64::INFINITY, 1e300] {
                 let bits = crate::float_result_bits(py, value);
-                assert_error(py, bits, condition, "OverflowError");
-                assert_error(py, bits, lock, "OverflowError");
+                assert_error(py, bits, condition, crate::BuiltinExc::OverflowError);
+                assert_error(py, bits, lock, crate::BuiltinExc::OverflowError);
                 crate::dec_ref_bits(py, bits);
             }
             let none = MoltObject::none().bits();
             assert_eq!(parse_thread_timeout(py, none, condition).unwrap(), None);
-            assert_error(py, none, lock, "TypeError");
+            assert_error(py, none, lock, crate::BuiltinExc::TypeError);
             let negative_one = MoltObject::from_int(-1).bits();
             assert_eq!(parse_thread_timeout(py, negative_one, lock).unwrap(), None);
             assert_eq!(
@@ -407,7 +422,7 @@ mod timeout_tests {
                 py,
                 MoltObject::from_int(0).bits(),
                 ThreadTimeoutPolicy::Lock { blocking: false },
-                "ValueError",
+                crate::BuiltinExc::ValueError,
             );
         });
     }
@@ -430,7 +445,7 @@ mod timeout_tests {
                 py,
                 over_seconds,
                 ThreadTimeoutPolicy::Lock { blocking: true },
-                "OverflowError",
+                crate::BuiltinExc::OverflowError,
             );
             let max_seconds = crate::to_f64(obj_from_bits(molt_thread_timeout_max())).unwrap();
             #[cfg(target_os = "windows")]

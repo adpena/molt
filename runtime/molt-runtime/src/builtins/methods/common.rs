@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::functions::native_callable::{NativeCallableSpec, configure_native_callable};
 use crate::*;
@@ -77,12 +78,20 @@ pub(crate) fn configure_builtin_signature(
         return false;
     }
     let Some(ptr) = obj_from_bits(function).as_ptr() else {
-        raise_exception::<u64>(py, "SystemError", "builtin signature requires a function");
+        raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "builtin signature requires a function",
+        );
         return false;
     };
     unsafe {
         if object_type_id(ptr) != TYPE_ID_FUNCTION {
-            raise_exception::<u64>(py, "SystemError", "builtin signature requires a function");
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::SystemError,
+                "builtin signature requires a function",
+            );
             return false;
         }
         let interned = &runtime_state(py).interned;
@@ -335,11 +344,11 @@ pub(crate) fn init_native_callable(
         return init_atomic_bits(py, slot, initialize);
     }
     let Some(owner) = spec.owner.and_then(|bits| obj_from_bits(bits).as_ptr()) else {
-        raise_exception::<u64>(py, "SystemError", "cached callable has no owner");
+        raise_exception::<u64>(py, BuiltinExc::SystemError, "cached callable has no owner");
         return 0;
     };
     let Some(name) = spec.name else {
-        raise_exception::<u64>(py, "SystemError", "declared callable has no name");
+        raise_exception::<u64>(py, BuiltinExc::SystemError, "declared callable has no name");
         return 0;
     };
     let Some(key) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
@@ -350,7 +359,7 @@ pub(crate) fn init_native_callable(
             dec_ref_bits(py, key);
             raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "declared callable owner has no namespace",
             );
             return 0;

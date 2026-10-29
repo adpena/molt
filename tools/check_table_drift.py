@@ -15,17 +15,16 @@ asserts equality, failing on any mismatch. The bound tables are:
 
   #1 builtin-type numeric tags     (frontend `BUILTIN_TYPE_TAGS`
                                      <-> runtime `TYPE_TAG_*` / `BUILTIN_TAG_*`)
-  #2 builtin-exception ordinals    (frontend `BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS`
-                                     <-> runtime `builtin_exception_name_for_tag`)
-  #3 builtin-exception name set    (frontend `BUILTIN_EXCEPTION_NAMES`
-                                     <-> object-model `BUILTIN_EXCEPTION_SPECS`)
   #4 supported target-Python vers  (cli authority <-> stdlib-union baseline
                                      <-> gen_stdlib_module_union generator)
   #5 PyModuleDef_Slot tokens        (inline `include/molt/Python.h`
                                      <-> standalone `molt-cpython-abi/include/Python.h`
                                      both vs CPython 3.12 moduleobject.h)
 
-Authority: the Rust runtime owns #1/#2, and the object-model schema owns #3; the CLI
+Builtin exception codes and names are not mirrored: `runtime/exception_kinds.toml`
+generates both the runtime types and the frontend tables (HF-207).
+
+Authority: the Rust runtime owns #1; the CLI
 `target_python_policy` module is the single source for #4; CPython 3.12
 `Include/moduleobject.h` is the authority for #5. This gate binds the mirrors to
 those authorities.
@@ -61,22 +60,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 from molt import target_python_policy  # noqa: E402
-from molt.rust_source_scan import (  # noqa: E402
-    mask_rust_comments_and_strings,
-    rust_delimiter_end,
-    rust_match_arms,
-    rust_source_tokens,
-    rust_token_range,
-    scan_memo,
-)
+from molt.rust_source_scan import mask_rust_comments_and_strings  # noqa: E402
 
 # --- Source paths ---------------------------------------------------------
 FRONTEND_TYPES_PY = ROOT / "src" / "molt" / "frontend" / "_types.py"
 TYPE_IDS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "object" / "type_ids.rs"
-EXCEPTIONS_RS = ROOT / "runtime" / "molt-runtime" / "src" / "builtins" / "exceptions.rs"
-EXCEPTION_SCHEMA_RS = (
-    ROOT / "runtime" / "molt-obj-model" / "src" / "exception_layout.rs"
-)
 STDLIB_UNION_PY = ROOT / "tools" / "stdlib_module_union.py"
 GEN_STDLIB_UNION_PY = ROOT / "tools" / "gen_stdlib_module_union.py"
 # CPython-ABI PyModuleDef_Slot token headers (two ABI homes: inline + standalone lib).
@@ -171,205 +159,6 @@ def _parse_rust_i64_consts(text: str) -> dict[str, int]:
     return out
 
 
-def _rust_function_body(text: str, fn_name: str) -> str | None:
-    signature = rust_token_range(text, f"fn {fn_name}", depth=0)
-    if signature is None:
-        return None
-    code = mask_rust_comments_and_strings(text)
-    start = code.find("{", signature[1])
-    if start < 0 or ";" in code[signature[1] : start]:
-        return None
-    end = rust_delimiter_end(text, start)
-    return text[start + 1 : end - 1] if end is not None else None
-
-
-def _parse_rust_match_ordinals(text: str, fn_name: str) -> dict[int, str]:
-    """Read the constructor's direct return match, rejecting other body shapes."""
-    with scan_memo():
-        body = _rust_function_body(text, fn_name)
-        if body is None:
-            return {}
-        tokens = rust_source_tokens(body)
-        if (
-            len(tokens) < 4
-            or [token.text for token in tokens[:3]] != ["match", "tag", "{"]
-            or rust_delimiter_end(body, tokens[2].start) != tokens[-1].end
-        ):
-            return {}
-        arms = rust_match_arms(body, "tag")
-        if arms is None:
-            return {}
-        out: dict[int, str] = {}
-        has_default = False
-        for arm in arms:
-            if has_default:
-                return {}
-            pattern = [token.text for token in rust_source_tokens(arm.pattern)]
-            rhs = [token.text for token in rust_source_tokens(arm.body)]
-            if pattern == ["_"]:
-                if rhs != ["None"]:
-                    return {}
-                has_default = True
-                continue
-            if (
-                len(pattern) != 1
-                or not pattern[0].isdecimal()
-                or len(rhs) != 4
-                or rhs[:2] != ["Some", "("]
-                or rhs[3] != ")"
-                or not re.fullmatch(r'"[A-Za-z_][A-Za-z0-9_]*"', rhs[2])
-                or int(pattern[0]) in out
-            ):
-                return {}
-            out[int(pattern[0])] = rhs[2][1:-1]
-        return out if has_default else {}
-
-
-def _split_rust_arguments(tokens: list[str]) -> list[list[str]]:
-    """Split a declarative row/argument list using actual lexical delimiters."""
-    parts: list[list[str]] = []
-    current: list[str] = []
-    stack: list[str] = []
-    for token in tokens:
-        if token in ("(", "[", "{"):
-            stack.append(token)
-        elif token in (")", "]", "}"):
-            if not stack or stack.pop() != {")": "(", "]": "[", "}": "{"}[token]:
-                raise ValueError("unbalanced exception schema row")
-        if token == "," and not stack:
-            if not current:
-                raise ValueError("empty exception schema row/argument")
-            parts.append(current)
-            current = []
-        else:
-            current.append(token)
-    if stack:
-        raise ValueError("unclosed exception schema row")
-    if current:
-        parts.append(current)
-    return parts
-
-
-def _rust_call_arguments(tokens: list[str], start: int) -> tuple[list[list[str]], int]:
-    if start >= len(tokens) or tokens[start] != "(":
-        raise ValueError("exception schema call has no argument list")
-    depth = 1
-    end = start + 1
-    while end < len(tokens) and depth:
-        depth += (tokens[end] == "(") - (tokens[end] == ")")
-        end += 1
-    if depth:
-        raise ValueError("exception schema call is unclosed")
-    return _split_rust_arguments(tokens[start + 1 : end - 1]), end
-
-
-def _rust_name_literal(tokens: list[str]) -> str:
-    if len(tokens) != 1 or not re.fullmatch(r'"[A-Za-z_][A-Za-z0-9_.]*"', tokens[0]):
-        raise ValueError("exception schema requires a literal name")
-    return tokens[0][1:-1]
-
-
-def _exception_default_binding(text: str, constructor: str) -> bool:
-    body = _rust_function_body(text, constructor)
-    if body is None:
-        raise ValueError(f"missing exception schema constructor: {constructor}")
-    tokens = [token.text for token in rust_source_tokens(body)]
-    values = [
-        tokens[index + 2]
-        for index in range(len(tokens) - 2)
-        if tokens[index : index + 2] == ["builtin_binding", ":"]
-    ]
-    if len(values) != 1 or values[0] not in {"true", "false"}:
-        raise ValueError(f"ambiguous exception schema builtin binding: {constructor}")
-    return values[0] == "true"
-
-
-def _parse_builtin_exception_names(text: str) -> set[str]:
-    """Project the declared namespace superset, including Windows-only aliases.
-
-    The frontend set spans target versions/platforms. It must never be filtered
-    by the compiler host. Explicit builtin bindings and alias identity come
-    from the runtime schema; class origin does not determine publication.
-    """
-    with scan_memo():
-        header = rust_token_range(
-            text, "const BUILTIN_EXCEPTION_SPECS: &[BuiltinExceptionSpec] = &[", depth=0
-        )
-        if header is None:
-            raise ValueError("missing or ambiguous BUILTIN_EXCEPTION_SPECS")
-        end = rust_delimiter_end(text, header[1] - 1)
-        if end is None:
-            raise ValueError("unclosed BUILTIN_EXCEPTION_SPECS")
-        defaults = {
-            kind: _exception_default_binding(text, kind)
-            for kind in ("exception_spec", "exception_alias")
-        }
-        rows = _split_rust_arguments(
-            [token.text for token in rust_source_tokens(text[header[1] : end - 1])]
-        )
-        bindings: dict[str, bool] = {}
-        aliases: dict[str, str] = {}
-        for row in rows:
-            kind = row[0]
-            if kind not in defaults:
-                raise ValueError(f"unknown exception schema constructor: {kind}")
-            args, cursor = _rust_call_arguments(row, 1)
-            if len(args) != (3 if kind == "exception_spec" else 2):
-                raise ValueError(f"invalid exception schema constructor arity: {kind}")
-            name = _rust_name_literal(args[0])
-            if name in bindings:
-                raise ValueError(f"duplicate exception schema name: {name}")
-            binding = defaults[kind]
-            if kind == "exception_alias":
-                aliases[name] = _rust_name_literal(args[1])
-            while cursor < len(row):
-                if row[cursor] != "." or cursor + 1 >= len(row):
-                    raise ValueError(f"unsupported exception schema row: {name}")
-                modifier = row[cursor + 1]
-                values, cursor = _rust_call_arguments(row, cursor + 2)
-                if modifier in ("on_windows_only", "with_base_render_slots"):
-                    valid = not values
-                elif modifier == "without_builtin_binding":
-                    valid = not values
-                    if valid:
-                        binding = False
-                elif modifier == "with_heap_class":
-                    valid = len(values) == 1
-                    if valid:
-                        _rust_name_literal(values[0])
-                elif modifier == "since_python_minor":
-                    valid = (
-                        len(values) == 1
-                        and len(values[0]) == 1
-                        and values[0][0].isdecimal()
-                    )
-                elif modifier == "with_str_slot":
-                    valid = (
-                        len(values) == 1
-                        and len(values[0]) == 4
-                        and values[0][:3] == ["ExceptionStrSlot", ":", ":"]
-                    )
-                else:
-                    valid = False
-                if not valid:
-                    raise ValueError(
-                        f"unsupported exception schema modifier: {name}.{modifier}"
-                    )
-            bindings[name] = binding
-        names: set[str] = set()
-        for name in bindings:
-            canonical = aliases.get(name, name)
-            if canonical not in bindings:
-                raise ValueError(f"missing canonical exception: {name}->{canonical}")
-            if canonical in aliases:
-                raise ValueError(f"non-canonical exception alias: {name}->{canonical}")
-            if bindings[name]:
-                names.add(name)
-        if not names:
-            raise ValueError("empty builtin exception schema")
-        return names
-
-
 def _literal_tuple_of_str(node: ast.expr | None) -> tuple[str, ...] | None:
     if node is None:
         return None
@@ -449,166 +238,6 @@ def check_type_tags() -> CategoryResult:
                 else f"DRIFT: frontend {name}={py_value} but {rust_name}={rust_value}",
             )
         )
-    return result
-
-
-# --- Category #2: builtin-exception constructor ordinals -------------------
-def check_exception_ordinals() -> CategoryResult:
-    result = CategoryResult(
-        "exception-ordinals",
-        "#2 builtin-exception constructor ordinals (frontend BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS <-> runtime builtin_exception_name_for_tag)",
-    )
-    py_text = _read(FRONTEND_TYPES_PY)
-    rs_text = _read(EXCEPTIONS_RS)
-    if not py_text or not rs_text:
-        result.items.append(
-            CheckItem("source", False, "missing frontend or runtime source")
-        )
-        return result
-
-    rhs = _parse_python_assign(py_text, "BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS")
-    py_ordinals: dict[int, str] = {}
-    # The frontend builds this via `enumerate((<names...>), start=1)`. Recover
-    # the ordered name tuple from the enumerate() call so we compare the actual
-    # positional intent, not just the literal dict.
-    names_tuple: tuple[str, ...] | None = None
-    if isinstance(rhs, ast.DictComp):
-        for call in ast.walk(rhs):
-            if (
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id == "enumerate"
-                and call.args
-            ):
-                names_tuple = _literal_tuple_of_str(call.args[0])
-                break
-    if names_tuple is not None:
-        py_ordinals = {i: n for i, n in enumerate(names_tuple, start=1)}
-    if not py_ordinals:
-        result.items.append(
-            CheckItem(
-                "BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS",
-                False,
-                "could not parse frontend enumerate() ordinal tuple",
-            )
-        )
-        return result
-
-    rust_ordinals = _parse_rust_match_ordinals(
-        rs_text, "builtin_exception_name_for_tag"
-    )
-    if not rust_ordinals:
-        result.items.append(
-            CheckItem(
-                "builtin_exception_name_for_tag",
-                False,
-                "could not parse runtime tag->name match arms",
-            )
-        )
-        return result
-
-    result.items.append(
-        CheckItem(
-            "sources",
-            True,
-            f"frontend: {len(py_ordinals)} ordinals; runtime: {len(rust_ordinals)} match arms",
-        )
-    )
-
-    all_ordinals = sorted(set(py_ordinals) | set(rust_ordinals))
-    for ordinal in all_ordinals:
-        py_name = py_ordinals.get(ordinal)
-        rust_name = rust_ordinals.get(ordinal)
-        ok = py_name is not None and py_name == rust_name
-        if ok:
-            detail = f"{ordinal} -> {py_name}"
-        elif py_name is None:
-            detail = f"DRIFT: ordinal {ordinal} only in runtime (={rust_name})"
-        elif rust_name is None:
-            detail = f"DRIFT: ordinal {ordinal} only in frontend (={py_name})"
-        else:
-            detail = f"DRIFT: ordinal {ordinal} frontend={py_name} runtime={rust_name}"
-        result.items.append(CheckItem(f"ordinal {ordinal}", ok, detail))
-
-    # The count must also agree (a trailing name added on one side only).
-    result.items.append(
-        CheckItem(
-            "ordinal-count",
-            len(py_ordinals) == len(rust_ordinals),
-            f"frontend={len(py_ordinals)} runtime={len(rust_ordinals)}",
-        )
-    )
-    return result
-
-
-# --- Category #3: builtin-exception name set ------------------------------
-def check_exception_names() -> CategoryResult:
-    result = CategoryResult(
-        "exception-names",
-        "#3 builtin-exception name set (frontend BUILTIN_EXCEPTION_NAMES <-> object-model BUILTIN_EXCEPTION_SPECS)",
-    )
-    py_text = _read(FRONTEND_TYPES_PY)
-    rs_text = _read(EXCEPTION_SCHEMA_RS)
-    if not py_text or not rs_text:
-        result.items.append(
-            CheckItem("source", False, "missing frontend or runtime source")
-        )
-        return result
-
-    rhs = _parse_python_assign(py_text, "BUILTIN_EXCEPTION_NAMES")
-    py_names: set[str] | None = None
-    if rhs is not None:
-        try:
-            evaluated = ast.literal_eval(rhs)
-            if isinstance(evaluated, (set, frozenset, list, tuple)):
-                py_names = {str(v) for v in evaluated}
-        except (ValueError, SyntaxError):
-            py_names = None
-    if not py_names:
-        result.items.append(
-            CheckItem("BUILTIN_EXCEPTION_NAMES", False, "could not parse frontend set")
-        )
-        return result
-
-    try:
-        rust_names = _parse_builtin_exception_names(rs_text)
-    except ValueError as error:
-        result.items.append(CheckItem("BUILTIN_EXCEPTION_SPECS", False, str(error)))
-        return result
-
-    result.items.append(
-        CheckItem(
-            "sources",
-            True,
-            f"frontend: {len(py_names)} names; object-model builtin schema: {len(rust_names)} names",
-        )
-    )
-
-    # Every frontend-accepted exception name MUST be runtime-constructible,
-    # otherwise the frontend accepts a raise the runtime cannot build/parent.
-    missing_in_runtime = sorted(py_names - rust_names)
-    result.items.append(
-        CheckItem(
-            "frontend-subset-of-runtime",
-            not missing_in_runtime,
-            "every frontend exception name is runtime-constructible"
-            if not missing_in_runtime
-            else f"DRIFT: frontend names not runtime-constructible: {missing_in_runtime}",
-        )
-    )
-
-    # Explicit namespace binding excludes stdlib classes; aliases and roots are
-    # actual rows, so neither needs a second manually maintained allowlist.
-    missing_in_frontend = sorted(rust_names - py_names)
-    result.items.append(
-        CheckItem(
-            "runtime-subset-of-frontend",
-            not missing_in_frontend,
-            "every runtime builtin exception is frontend-known"
-            if not missing_in_frontend
-            else f"DRIFT: runtime exceptions unknown to frontend: {missing_in_frontend}",
-        )
-    )
     return result
 
 
@@ -780,8 +409,6 @@ def check_pymod_slot_tokens() -> CategoryResult:
 
 CATEGORIES = {
     "type-tags": check_type_tags,
-    "exception-ordinals": check_exception_ordinals,
-    "exception-names": check_exception_names,
     "target-python": check_target_python_versions,
     "pymod-slot-tokens": check_pymod_slot_tokens,
 }

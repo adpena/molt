@@ -148,10 +148,10 @@ fn function_type_constructor_keywords_share_clinic_error_precedence() {
                             assert!(obj_from_bits(result).is_none());
                             let error =
                                 crate::exception_last_bits_noinc(py).expect("binding failure");
-                            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                            assert!(crate::builtins::exceptions::exception_matches_kind(
                                 py,
                                 error,
-                                "TypeError"
+                                crate::BuiltinExc::TypeError
                             ));
                             assert_eq!(
                                 crate::format_exception_message(
@@ -835,10 +835,10 @@ fn type_invalid_qualname_precedes_cell_validation_and_publication() {
                     let result = call_type(_py, name, bases_bits, ns_bits);
                     assert!(obj_from_bits(result).is_none());
                     let error = crate::builtins::exceptions::molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         _py,
                         error,
-                        "TypeError"
+                        crate::BuiltinExc::TypeError
                     ));
                     let message = crate::format_exception_message(
                         _py,

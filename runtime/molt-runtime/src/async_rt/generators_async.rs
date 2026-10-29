@@ -2,6 +2,7 @@
 //!
 //! Split from generators.rs to reduce file size.
 
+use crate::BuiltinExc;
 use crate::PyToken;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::{Duration, Instant};
@@ -52,7 +53,11 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify(
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
-                return raise_exception::<u64>(_py, "TypeError", "waiter notify count must be int");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "waiter notify count must be int",
+                );
             };
             if count <= 0 {
                 return MoltObject::from_int(0).bits();
@@ -65,7 +70,11 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify(
                 if !obj_from_bits(len_bits).is_none() {
                     dec_ref_bits(_py, len_bits);
                 }
-                return raise_exception::<u64>(_py, "TypeError", "waiter collection must be sized");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "waiter collection must be sized",
+                );
             };
             if !obj_from_bits(len_bits).is_none() {
                 dec_ref_bits(_py, len_bits);
@@ -122,7 +131,7 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "waiter notify-exception count must be int",
                 );
             };
@@ -137,7 +146,11 @@ pub unsafe extern "C" fn molt_asyncio_waiters_notify_exception(
                 if !obj_from_bits(len_bits).is_none() {
                     dec_ref_bits(_py, len_bits);
                 }
-                return raise_exception::<u64>(_py, "TypeError", "waiter collection must be sized");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "waiter collection must be sized",
+                );
             };
             if !obj_from_bits(len_bits).is_none() {
                 dec_ref_bits(_py, len_bits);
@@ -216,7 +229,11 @@ pub unsafe extern "C" fn molt_asyncio_condition_wait_for_step(
                 dec_ref_bits(_py, callable_bits);
             }
             if !is_callable {
-                return raise_exception::<u64>(_py, "TypeError", "predicate must be callable");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "predicate must be callable",
+                );
             }
 
             let predicate_out = call_callable0(_py, predicate_bits);
@@ -282,7 +299,7 @@ pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 
                 dec_ref_bits(_py, waiter_tuple_bits);
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "barrier waiter collection must be iterable",
                 );
             };
@@ -292,7 +309,11 @@ pub unsafe extern "C" fn molt_asyncio_barrier_release(waiters_bits: u64) -> u64 
                 let Some(waiter) = crate::object::seq_access::pin_item(_py, waiter_tuple_ptr, idx)
                 else {
                     dec_ref_bits(_py, waiter_tuple_bits);
-                    return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "invalid waiter state",
+                    );
                 };
                 let waiter_bits = waiter.bits();
                 let Some(done) = asyncio_method_truthy(_py, waiter_bits, b"done") else {
@@ -435,7 +456,11 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -
             };
             let Some(waiter_tuple_ptr) = obj_from_bits(waiter_tuple_bits).as_ptr() else {
                 dec_ref_bits(_py, waiter_tuple_bits);
-                return raise_exception::<u64>(_py, "TypeError", "event waiters must be iterable");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "event waiters must be iterable",
+                );
             };
             let waiter_count = crate::object::seq_access::len(waiter_tuple_ptr);
             let mut cleaned = 0i64;
@@ -443,7 +468,11 @@ pub unsafe extern "C" fn molt_asyncio_event_waiters_cleanup(waiters_bits: u64) -
                 let Some(waiter) = crate::object::seq_access::pin_item(_py, waiter_tuple_ptr, idx)
                 else {
                     dec_ref_bits(_py, waiter_tuple_bits);
-                    return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "invalid waiter state",
+                    );
                 };
                 let waiter_bits = waiter.bits();
                 let owner_bits =
@@ -512,14 +541,22 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
                 dec_ref_bits(_py, callable_bits);
             }
             if !is_callable {
-                return raise_exception::<u64>(_py, "TypeError", "callback must be callable");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "callback must be callable",
+                );
             }
             let Some(task_tuple_bits) = tuple_from_iter_bits(_py, tasks_bits) else {
                 return MoltObject::none().bits();
             };
             let Some(task_tuple_ptr) = obj_from_bits(task_tuple_bits).as_ptr() else {
                 dec_ref_bits(_py, task_tuple_bits);
-                return raise_exception::<u64>(_py, "TypeError", "tasks must be iterable");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "tasks must be iterable",
+                );
             };
             let task_count = crate::object::seq_access::len(task_tuple_ptr);
             let mut attached = 0i64;
@@ -527,7 +564,11 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
                 let Some(task) = crate::object::seq_access::pin_item(_py, task_tuple_ptr, idx)
                 else {
                     dec_ref_bits(_py, task_tuple_bits);
-                    return raise_exception::<u64>(_py, "RuntimeError", "invalid task state");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "invalid task state",
+                    );
                 };
                 let task_bits = task.bits();
                 let out_bits =
@@ -553,7 +594,7 @@ pub unsafe extern "C" fn molt_asyncio_tasks_add_done_callback(
 pub unsafe extern "C" fn molt_asyncio_task_uncancel_apply(future_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(future_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "object is not awaitable");
         };
         task_cancel_message_clear(_py, task_ptr);
         let _ = task_take_cancel_pending(task_ptr);
@@ -575,7 +616,11 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
             };
             let Some(waiter_tuple_ptr) = obj_from_bits(waiter_tuple_bits).as_ptr() else {
                 dec_ref_bits(_py, waiter_tuple_bits);
-                return raise_exception::<u64>(_py, "TypeError", "event waiters must be iterable");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "event waiters must be iterable",
+                );
             };
             let waiter_count = crate::object::seq_access::len(waiter_tuple_ptr);
             let mut woke = 0i64;
@@ -583,7 +628,11 @@ pub unsafe extern "C" fn molt_asyncio_event_set_waiters(
                 let Some(waiter) = crate::object::seq_access::pin_item(_py, waiter_tuple_ptr, idx)
                 else {
                     dec_ref_bits(_py, waiter_tuple_bits);
-                    return raise_exception::<u64>(_py, "RuntimeError", "invalid waiter state");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "invalid waiter state",
+                    );
                 };
                 let waiter_bits = waiter.bits();
                 let token = match asyncio_attr_lookup_allow_missing(
@@ -658,7 +707,7 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
             let Some(mut count) = to_i64(obj_from_bits(count_bits)) else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "stream consume count must be int",
                 );
             };
@@ -673,7 +722,11 @@ pub unsafe extern "C" fn molt_asyncio_stream_buffer_consume(
                 if !obj_from_bits(len_bits).is_none() {
                     dec_ref_bits(_py, len_bits);
                 }
-                return raise_exception::<u64>(_py, "TypeError", "stream buffer must be sized");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "stream buffer must be sized",
+                );
             };
             if !obj_from_bits(len_bits).is_none() {
                 dec_ref_bits(_py, len_bits);

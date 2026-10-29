@@ -1,4 +1,5 @@
 use super::wake_await_waiters;
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::*;
 
@@ -304,7 +305,7 @@ pub unsafe extern "C" fn molt_thread_submit(
         if !runtime_state(_py).thread_borrow_admission_is_open() {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "runtime thread admission is closed",
             );
         }
@@ -342,7 +343,7 @@ pub unsafe extern "C" fn molt_thread_submit(
             dec_ref_bits(_py, future_bits);
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "runtime thread admission is closed",
             );
         }
@@ -360,7 +361,11 @@ pub unsafe extern "C" fn molt_thread_submit(
     _kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::RuntimeError,
+            "thread submit unsupported on wasm",
+        )
     })
 }
 
@@ -381,7 +386,7 @@ pub unsafe extern "C" fn molt_thread_poll(obj_bits: u64) -> i64 {
             .get(&PtrSlot(obj_ptr))
             .cloned()
         else {
-            return raise_exception::<i64>(_py, "RuntimeError", "thread task missing");
+            return raise_exception::<i64>(_py, BuiltinExc::RuntimeError, "thread task missing");
         };
         if state.done.load(AtomicOrdering::Acquire) {
             task_take_cancel_pending(obj_ptr);
@@ -462,7 +467,7 @@ pub unsafe extern "C" fn molt_wasm_check_module_gate(name_bits: u64) -> u64 {
             if name == *blocked || name.starts_with(&format!("{blocked}.")) {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     &format!(
                         "module '{name}' requires threading support which is unavailable in the \
                          WASM runtime. This is a known promotion blocker – see MOL-184."
@@ -493,7 +498,7 @@ pub extern "C" fn molt_thread_start(_callable_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "threading.Thread is not available in the WASM runtime: WASM is \
              single-threaded. Server-heavy workloads using threading (smtplib, \
              socketserver) are promotion blockers – see MOL-184.",

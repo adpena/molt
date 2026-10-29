@@ -3,6 +3,7 @@
 //! callback can replace the root. Root replacement publishes before releasing.
 //! This follows CPython 3.14.8 context_get_vars/context_set_vars and the checked
 //! token allocation in 3.13.16; it does not change recorded reference versions.
+use crate::BuiltinExc;
 mod native;
 #[cfg(test)]
 mod tests;
@@ -78,7 +79,7 @@ fn checked(py: &PyToken<'_>, bits: u64, shape: ObjectShapeId, label: &str) -> Op
     }
     raise_exception::<()>(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!("an instance of {label} was expected"),
     );
     None
@@ -198,7 +199,7 @@ pub(crate) fn enter(py: &PyToken<'_>, bits: u64) -> bool {
         if context(bits).entered != 0 {
             raise_exception::<()>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "cannot enter context: Context is already entered",
             );
             return false;
@@ -217,7 +218,7 @@ pub(crate) fn exit(py: &PyToken<'_>, bits: u64) -> bool {
         if context(bits).entered == 0 {
             raise_exception::<()>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "cannot exit context: Context is not entered",
             );
             return false;
@@ -225,7 +226,7 @@ pub(crate) fn exit(py: &PyToken<'_>, bits: u64) -> bool {
         if CURRENT.with(Cell::get) != bits {
             raise_exception::<()>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "cannot exit context: Context is not current",
             );
             return false;
@@ -256,7 +257,11 @@ pub(crate) fn new_variable(py: &PyToken<'_>, name: u64, default: Option<u64>) ->
     if unsafe { crate::object::ops_format::with_string_bytes(obj_from_bits(name), |_| ()) }
         .is_none()
     {
-        raise_exception::<()>(py, "TypeError", "context variable name must be a str");
+        raise_exception::<()>(
+            py,
+            BuiltinExc::TypeError,
+            "context variable name must be a str",
+        );
         return None;
     }
     let class = variable_class(py);
@@ -359,13 +364,17 @@ pub(crate) fn reset_variable(py: &PyToken<'_>, var: u64, token: u64) -> bool {
         (t.context, t.variable, t.old, t.flags)
     };
     if flags & USED != 0 {
-        raise_exception::<()>(py, "RuntimeError", "Token has already been used once");
+        raise_exception::<()>(
+            py,
+            BuiltinExc::RuntimeError,
+            "Token has already been used once",
+        );
         return false;
     }
     if tvar != var {
         raise_exception::<()>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "Token was created by a different ContextVar",
         );
         return false;
@@ -374,7 +383,11 @@ pub(crate) fn reset_variable(py: &PyToken<'_>, var: u64, token: u64) -> bool {
         return false;
     };
     if current != ctx {
-        raise_exception::<()>(py, "ValueError", "Token was created in a different Context");
+        raise_exception::<()>(
+            py,
+            BuiltinExc::ValueError,
+            "Token was created in a different Context",
+        );
         return false;
     }
     unsafe {
@@ -386,7 +399,7 @@ pub(crate) fn reset_variable(py: &PyToken<'_>, var: u64, token: u64) -> bool {
         trie::assoc(py, prior, var, old, var_hash(var))
     } else {
         if !had {
-            raise_exception::<()>(py, "LookupError", "ContextVar has no value");
+            raise_exception::<()>(py, BuiltinExc::LookupError, "ContextVar has no value");
             return false;
         }
         trie::without(py, prior, var, var_hash(var))

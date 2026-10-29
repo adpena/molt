@@ -448,10 +448,10 @@ fn explicit_object_mutation_admits_builtin_storage_and_managed_subclasses() {
                     crate::molt_object_setattr(receiver, name, receiver);
                 }
                 let error = crate::exception_last_bits_noinc(py).unwrap();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "AttributeError"
+                    crate::BuiltinExc::AttributeError
                 ));
                 crate::clear_exception(py);
             }

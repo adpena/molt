@@ -4,6 +4,7 @@
 
 #[cfg(molt_net)]
 use super::*;
+use crate::BuiltinExc;
 
 #[cfg(molt_net)]
 pub(super) fn collect_sendmsg_payload(
@@ -15,7 +16,7 @@ pub(super) fn collect_sendmsg_payload(
     for &value_bits in values.iter() {
         let send_data = match send_data_from_bits(value_bits) {
             Ok(val) => val,
-            Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+            Err(msg) => return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg)),
         };
         match send_data {
             SendData::Borrowed(ptr, len) => {
@@ -72,7 +73,7 @@ pub(super) fn parse_sendmsg_ancillary_items(
         let Some(entry_ptr) = maybe_ptr_from_bits(entry_bits) else {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "sendmsg ancillary data must be iterable of 3-item tuples",
             ));
         };
@@ -80,7 +81,7 @@ pub(super) fn parse_sendmsg_ancillary_items(
         if entry_type != TYPE_ID_TUPLE && entry_type != TYPE_ID_LIST {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "sendmsg ancillary data must be iterable of 3-item tuples",
             ));
         }
@@ -96,7 +97,7 @@ pub(super) fn parse_sendmsg_ancillary_items(
         if parts.len() != 3 {
             return Err(raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "sendmsg ancillary data must be iterable of 3-item tuples",
             ));
         }
@@ -105,7 +106,7 @@ pub(super) fn parse_sendmsg_ancillary_items(
             None => {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "sendmsg ancillary level must be int",
                 ));
             }
@@ -115,7 +116,7 @@ pub(super) fn parse_sendmsg_ancillary_items(
             None => {
                 return Err(raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "sendmsg ancillary type must be int",
                 ));
             }
@@ -125,7 +126,7 @@ pub(super) fn parse_sendmsg_ancillary_items(
                 unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
             }
             Ok(SendData::Owned(vec)) => vec,
-            Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+            Err(msg) => return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg)),
         };
         out.push((level, kind, payload));
     }
@@ -345,7 +346,7 @@ pub(super) fn collect_recvmsg_into_targets<'a, 'py>(
     if values.is_empty() {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "recvmsg_into() requires at least one buffer",
         ));
     }

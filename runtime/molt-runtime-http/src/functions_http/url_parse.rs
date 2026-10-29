@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 pub(super) fn urllib_is_alpha(ch: char) -> bool {
     ch.is_ascii_alphabetic()
@@ -188,7 +189,7 @@ pub(super) fn urllib_urlencode_impl(
             let Some(item_ptr) = item_obj.as_ptr() else {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "not a valid non-string sequence or mapping object",
                 ));
             };
@@ -198,7 +199,7 @@ pub(super) fn urllib_urlencode_impl(
             {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "not a valid non-string sequence or mapping object",
                 ));
             }
@@ -207,7 +208,7 @@ pub(super) fn urllib_urlencode_impl(
                 if item_fields.len() < 2 {
                     return Err(raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         &format!(
                             "not enough values to unpack (expected 2, got {})",
                             item_fields.len()
@@ -216,7 +217,7 @@ pub(super) fn urllib_urlencode_impl(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "too many values to unpack (expected 2)",
                 ));
             }

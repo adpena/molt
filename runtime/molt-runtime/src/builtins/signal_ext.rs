@@ -34,6 +34,7 @@
 //!
 //! ABI: NaN-boxed u64 in/out.
 
+use crate::BuiltinExc;
 use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
@@ -260,7 +261,7 @@ fn require_active_signal_runtime(py: &PyToken<'_>) -> Result<(), u64> {
     } else {
         Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "signals are owned by the main interpreter",
         ))
     }
@@ -590,7 +591,7 @@ fn run_pending_handlers(py: &PyToken<'_>) -> bool {
 fn report_handler_race(py: &PyToken<'_>, signum: i32) {
     let message = format!("Signal {signum} ignored due to race condition");
     crate::builtins::exceptions::run_unraisable(py, MoltObject::none().bits(), None, || {
-        let _ = raise_exception::<u64>(py, "OSError", &message);
+        let _ = raise_exception::<u64>(py, BuiltinExc::OSError, &message);
     });
 }
 
@@ -766,17 +767,17 @@ fn sig_from_bits(_py: &PyToken<'_>, bits: u64) -> Result<i32, u64> {
         Some(v) if v > 0 && v < nsig => Ok(v as i32),
         Some(v) if v <= 0 => Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "signal number must be positive",
         )),
         Some(_) => Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("signal number out of range (max {})", nsig - 1),
         )),
         None => Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "signal number must be int",
         )),
     }
@@ -793,7 +794,7 @@ fn default_int_handler_object(py: &PyToken<'_>) -> Result<u64, u64> {
         Ok(Some(bits)) => Ok(bits),
         Ok(None) => Err(raise_exception::<u64>(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "signal.default_int_handler is unavailable",
         )),
         Err(()) => Err(MoltObject::none().bits()),
@@ -807,11 +808,19 @@ fn handler_bits_from_py(py: &PyToken<'_>, signum: i32, handler_bits: u64) -> Res
         return match value {
             SIG_DFL_INT => Ok(HANDLER_SIG_DFL),
             SIG_IGN_INT => Ok(HANDLER_SIG_IGN),
-            _ => Err(raise_exception::<u64>(py, "TypeError", HANDLER_TYPE_ERROR)),
+            _ => Err(raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                HANDLER_TYPE_ERROR,
+            )),
         };
     }
     if handler.is_none() || !crate::builtins::callable::is_callable_impl(py, handler_bits) {
-        return Err(raise_exception::<u64>(py, "TypeError", HANDLER_TYPE_ERROR));
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::TypeError,
+            HANDLER_TYPE_ERROR,
+        ));
     }
     if signum == libc::SIGINT {
         let default_int = default_int_handler_object(py)?;
@@ -848,7 +857,7 @@ pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64
         if !async_work_owner(_py) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "signal only works in main thread of the main interpreter",
             );
         }
@@ -866,7 +875,7 @@ pub extern "C" fn molt_signal_signal(signum_bits: u64, handler_bits: u64) -> u64
             return MoltObject::none().bits();
         }
         if let Err(err) = install_os_handler(signum, new_handler_bits) {
-            return raise_exception::<u64>(_py, "OSError", &err.to_string());
+            return raise_exception::<u64>(_py, BuiltinExc::OSError, &err.to_string());
         }
         let state = runtime_state(_py);
         let old_bits = state
@@ -927,7 +936,7 @@ pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
                 if rc != 0 {
                     return raise_exception::<u64>(
                         _py,
-                        "OSError",
+                        BuiltinExc::OSError,
                         &std::io::Error::last_os_error().to_string(),
                     );
                 }
@@ -939,7 +948,7 @@ pub extern "C" fn molt_signal_raise_signal(signum_bits: u64) -> u64 {
                 if handler == HANDLER_SIG_DFL {
                     return raise_exception::<u64>(
                         _py,
-                        "OSError",
+                        BuiltinExc::OSError,
                         &format!(
                             "the default action of signal {signum} is not supported on this platform"
                         ),
@@ -969,10 +978,14 @@ pub extern "C" fn molt_signal_set_interrupt(signum_bits: u64) -> u64 {
             return err;
         }
         let Some(signum) = to_i64(obj_from_bits(signum_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "signal number must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "signal number must be int");
         };
         if signal_set_interrupt(signum) != 0 {
-            return raise_exception::<u64>(_py, "ValueError", "signal number out of range");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "signal number out of range",
+            );
         }
         MoltObject::none().bits()
     })
@@ -1000,7 +1013,7 @@ pub extern "C" fn molt_signal_alarm(seconds_bits: u64) -> u64 {
             let _ = seconds_bits;
             raise_exception::<u64>(
                 _py,
-                "OSError",
+                BuiltinExc::OSError,
                 "signal.alarm not available on this platform",
             )
         }
@@ -1035,7 +1048,7 @@ pub extern "C" fn molt_signal_pause() -> u64 {
         {
             raise_exception::<u64>(
                 _py,
-                "OSError",
+                BuiltinExc::OSError,
                 "signal.pause not available on this platform",
             )
         }
@@ -1053,18 +1066,18 @@ pub extern "C" fn molt_signal_set_wakeup_fd(fd_bits: u64) -> u64 {
         if !async_work_owner(_py) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "set_wakeup_fd only works in main thread of the main interpreter",
             );
         }
         let Some(raw_fd) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "fd must be an integer");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "fd must be an integer");
         };
         let Ok(new_fd) = i32::try_from(raw_fd) else {
-            return raise_exception::<u64>(_py, "ValueError", "fd is out of range");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "fd is out of range");
         };
         if new_fd < -1 {
-            return raise_exception::<u64>(_py, "ValueError", "invalid fd");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid fd");
         }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         if new_fd >= 0 {
@@ -1072,14 +1085,14 @@ pub extern "C" fn molt_signal_set_wakeup_fd(fd_bits: u64) -> u64 {
             if flags < 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &std::io::Error::last_os_error().to_string(),
                 );
             }
             if flags & libc::O_NONBLOCK == 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "the fd must be in non-blocking mode",
                 );
             }
@@ -1427,7 +1440,7 @@ unsafe fn bits_to_sigset(_py: &PyToken<'_>, list_ptr: *mut u8) -> Result<libc::s
                 _ => {
                     return Err(raise_exception::<u64>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "invalid signal number in set",
                     ));
                 }
@@ -1457,7 +1470,7 @@ unsafe fn sigset_to_list_bits(_py: &PyToken<'_>, set: &libc::sigset_t) -> u64 {
 pub extern "C" fn molt_signal_default_int_handler(_signum_bits: u64, _frame_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let _ = (_signum_bits, _frame_bits);
-        raise_exception::<u64>(_py, "KeyboardInterrupt", "")
+        raise_exception::<u64>(_py, BuiltinExc::KeyboardInterrupt, "")
     })
 }
 
@@ -1542,12 +1555,20 @@ pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> 
             let how = match to_i64(how_obj) {
                 Some(v) => v as libc::c_int,
                 None => {
-                    return raise_exception::<u64>(_py, "TypeError", "how must be an integer");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "how must be an integer",
+                    );
                 }
             };
             // Validate how value against platform constants.
             if how != libc::SIG_BLOCK && how != libc::SIG_UNBLOCK && how != libc::SIG_SETMASK {
-                return raise_exception::<u64>(_py, "ValueError", "invalid value for how");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "invalid value for how",
+                );
             }
 
             let mask_obj = obj_from_bits(mask_bits);
@@ -1556,7 +1577,7 @@ pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> 
                 None => {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "mask must be a list of signal numbers",
                     );
                 }
@@ -1570,7 +1591,7 @@ pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> 
             if rc != 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &std::io::Error::last_os_error().to_string(),
                 );
             }
@@ -1581,7 +1602,7 @@ pub extern "C" fn molt_signal_pthread_sigmask(how_bits: u64, mask_bits: u64) -> 
             let _ = (how_bits, mask_bits);
             raise_exception::<u64>(
                 _py,
-                "OSError",
+                BuiltinExc::OSError,
                 "pthread_sigmask not available on this platform",
             )
         }
@@ -1607,7 +1628,7 @@ pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64
                 None => {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "thread_id must be an integer",
                     );
                 }
@@ -1620,7 +1641,7 @@ pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64
             if rc != 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &std::io::Error::from_raw_os_error(rc).to_string(),
                 );
             }
@@ -1631,7 +1652,7 @@ pub extern "C" fn molt_signal_pthread_kill(thread_id_bits: u64, signum_bits: u64
             let _ = (thread_id_bits, signum_bits);
             raise_exception::<u64>(
                 _py,
-                "OSError",
+                BuiltinExc::OSError,
                 "pthread_kill not available on this platform",
             )
         }
@@ -1656,7 +1677,7 @@ pub extern "C" fn molt_signal_sigpending() -> u64 {
             if rc != 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &std::io::Error::last_os_error().to_string(),
                 );
             }
@@ -1664,7 +1685,11 @@ pub extern "C" fn molt_signal_sigpending() -> u64 {
         }
         #[cfg(any(not(unix), target_arch = "wasm32"))]
         {
-            raise_exception::<u64>(_py, "OSError", "sigpending not available on this platform")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::OSError,
+                "sigpending not available on this platform",
+            )
         }
     })
 }
@@ -1688,7 +1713,7 @@ pub extern "C" fn molt_signal_sigwait(sigset_bits: u64) -> u64 {
                 None => {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "sigset must be a list of signal numbers",
                     );
                 }
@@ -1706,7 +1731,7 @@ pub extern "C" fn molt_signal_sigwait(sigset_bits: u64) -> u64 {
             if rc != 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &std::io::Error::from_raw_os_error(rc).to_string(),
                 );
             }
@@ -1715,7 +1740,11 @@ pub extern "C" fn molt_signal_sigwait(sigset_bits: u64) -> u64 {
         #[cfg(any(not(unix), target_arch = "wasm32"))]
         {
             let _ = sigset_bits;
-            raise_exception::<u64>(_py, "OSError", "sigwait not available on this platform")
+            raise_exception::<u64>(
+                _py,
+                BuiltinExc::OSError,
+                "sigwait not available on this platform",
+            )
         }
     })
 }
@@ -1904,7 +1933,9 @@ mod delivery_tests {
     }
 
     extern "C" fn raising_handler(_signum_bits: u64, _frame_bits: u64) -> u64 {
-        crate::with_gil_entry_nopanic!(py, { raise_exception::<u64>(py, "ValueError", "handler") })
+        crate::with_gil_entry_nopanic!(py, {
+            raise_exception::<u64>(py, BuiltinExc::ValueError, "handler")
+        })
     }
 
     fn handler_object(py: &PyToken<'_>, address: *const ()) -> u64 {
@@ -2201,7 +2232,7 @@ mod delivery_tests {
         crate::with_gil_entry_nopanic!(py, {
             let sigint = libc::SIGINT;
             let old = install(py, sigint, HANDLER_DEFAULT_INT);
-            let _ = raise_exception::<u64>(py, "RuntimeError", "already propagating");
+            let _ = raise_exception::<u64>(py, BuiltinExc::RuntimeError, "already propagating");
             assert_eq!(signal_set_interrupt(sigint as i64), 0);
             assert!(
                 !signal_safepoint(py),

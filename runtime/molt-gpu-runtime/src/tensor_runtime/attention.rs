@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::OwnedRuntimeValue;
 
 fn normalized_hadamard_in_place(values: &mut [f32]) {
@@ -50,7 +51,7 @@ fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<V
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} must be a list or tuple"),
         ));
     };
@@ -58,7 +59,7 @@ fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<V
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} must be a list or tuple"),
         ));
     }
@@ -78,7 +79,7 @@ fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<V
     decoded.ok_or_else(|| {
         raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} elements must be numbers"),
         )
     })
@@ -92,7 +93,7 @@ fn decode_u64_sequence_bits(
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} must be a list or tuple"),
         ));
     };
@@ -100,7 +101,7 @@ fn decode_u64_sequence_bits(
     if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label} must be a list or tuple"),
         ));
     }
@@ -119,7 +120,7 @@ fn require_attr_bits(
     if bits == missing {
         return Err(raise_exception::<u64>(
             _py,
-            "AttributeError",
+            BuiltinExc::AttributeError,
             &format!("object is missing required attribute {attr_name}"),
         ));
     }
@@ -136,7 +137,7 @@ fn decode_i64_attr(
     let Some(value) = to_i64(obj_from_bits(bits)) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{attr_name} must be an integer"),
         ));
     };
@@ -319,7 +320,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         if q_shape.len() != 4 || k_shape.len() != 4 || v_shape.len() != 4 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "scaled dot product attention requires rank-4 tensors",
             );
         }
@@ -339,7 +340,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "scaled dot product attention shape mismatch",
             );
         }
@@ -349,7 +350,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "scaled dot product attention currently requires f32 tensors",
             );
         }
@@ -359,20 +360,20 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         } else if let Some(value) = to_i64(obj_from_bits(scale_bits)) {
             value as f32
         } else {
-            return raise_exception::<_>(_py, "TypeError", "scale must be a float");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "scale must be a float");
         };
 
         let q_total = product(&q_shape);
         let k_total = product(&k_shape);
         let v_total = product(&v_shape);
         let Some(q_required) = q_total.checked_mul(ScalarFormat::F32.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "q shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "q shape overflow");
         };
         let Some(k_required) = k_total.checked_mul(ScalarFormat::F32.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "k shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "k shape overflow");
         };
         let Some(v_required) = v_total.checked_mul(ScalarFormat::F32.itemsize()) else {
-            return raise_exception::<_>(_py, "OverflowError", "v shape overflow");
+            return raise_exception::<_>(_py, BuiltinExc::OverflowError, "v shape overflow");
         };
         if q.buffer.data_view.len < q_required
             || k.buffer.data_view.len < k_required
@@ -380,7 +381,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
         {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "scaled dot product attention input buffer is too small",
             );
         }
@@ -395,7 +396,7 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
             if mask_shape.len() != 4 || mask.buffer.format != ScalarFormat::F32 {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "scaled dot product attention mask must be a rank-4 f32 tensor",
                 );
             }
@@ -404,19 +405,19 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                 if *dim_value != 1 && *dim_value != *expected_value {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "scaled dot product attention mask shape mismatch",
                     );
                 }
             }
             let mask_total = product(&mask_shape);
             let Some(mask_required) = mask_total.checked_mul(ScalarFormat::F32.itemsize()) else {
-                return raise_exception::<_>(_py, "OverflowError", "mask shape overflow");
+                return raise_exception::<_>(_py, BuiltinExc::OverflowError, "mask shape overflow");
             };
             if mask.buffer.data_view.len < mask_required {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "scaled dot product attention mask buffer is too small",
                 );
             }
@@ -429,7 +430,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
             .and_then(|n| n.checked_mul(seq_q))
             .and_then(|n| n.checked_mul(value_dim))
         else {
-            return raise_exception::<_>(_py, "OverflowError", "attention output shape overflow");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::OverflowError,
+                "attention output shape overflow",
+            );
         };
         if std::env::var("MOLT_TRACE_GPU_SDPA").as_deref() == Ok("1") {
             eprintln!(
@@ -443,13 +448,19 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
             let browser_result: Result<u64, u64> = (|| {
                 let q_bytes =
                     bytes_like_view_to_webgpu_bytes(q.buffer.data_view, ScalarFormat::F32)
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
                 let k_bytes =
                     bytes_like_view_to_webgpu_bytes(k.buffer.data_view, ScalarFormat::F32)
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
                 let v_bytes =
                     bytes_like_view_to_webgpu_bytes(v.buffer.data_view, ScalarFormat::F32)
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
                 let (mask_bytes, has_mask_i32) =
                     if let Some((mask, mask_shape, mask_strides)) = &mask_info {
                         (
@@ -462,7 +473,9 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                                 seq_q,
                                 seq_k,
                             )
-                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                            .map_err(|msg| {
+                                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                            })?,
                             1i32,
                         )
                     } else {
@@ -470,23 +483,37 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                     };
                 let mut out_webgpu = vec![0u8; out_elems * 4];
                 let batch_bytes = i32::try_from(batch)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32"))?
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, BuiltinExc::OverflowError, "batch exceeds i32")
+                    })?
                     .to_le_bytes();
                 let heads_bytes = i32::try_from(heads)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "heads exceeds i32"))?
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, BuiltinExc::OverflowError, "heads exceeds i32")
+                    })?
                     .to_le_bytes();
                 let seq_q_bytes = i32::try_from(seq_q)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32"))?
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, BuiltinExc::OverflowError, "seq_q exceeds i32")
+                    })?
                     .to_le_bytes();
                 let seq_k_bytes = i32::try_from(seq_k)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32"))?
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, BuiltinExc::OverflowError, "seq_k exceeds i32")
+                    })?
                     .to_le_bytes();
                 let dim_bytes = i32::try_from(dim)
-                    .map_err(|_| raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32"))?
+                    .map_err(|_| {
+                        raise_exception::<u64>(_py, BuiltinExc::OverflowError, "dim exceeds i32")
+                    })?
                     .to_le_bytes();
                 let value_dim_bytes = i32::try_from(value_dim)
                     .map_err(|_| {
-                        raise_exception::<u64>(_py, "OverflowError", "value_dim exceeds i32")
+                        raise_exception::<u64>(
+                            _py,
+                            BuiltinExc::OverflowError,
+                            "value_dim exceeds i32",
+                        )
                     })?
                     .to_le_bytes();
                 let scale_bytes = scale.to_le_bytes();
@@ -496,7 +523,11 @@ pub extern "C" fn molt_gpu_tensor__tensor_scaled_dot_product_attention(
                     0
                 } else {
                     u32::try_from(out_elems.div_ceil(workgroup_size as usize)).map_err(|_| {
-                        raise_exception::<u64>(_py, "OverflowError", "attention grid exceeds u32")
+                        raise_exception::<u64>(
+                            _py,
+                            BuiltinExc::OverflowError,
+                            "attention grid exceeds u32",
+                        )
                     })?
                 };
                 let source =
@@ -741,7 +772,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if q_shape.len() != 4 || !matches!(q.buffer.format, ScalarFormat::F32 | ScalarFormat::F64) {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention expects a rank-4 float query tensor",
             );
         }
@@ -752,7 +783,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if dim == 0 || (dim & (dim - 1)) != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention currently requires a power-of-two head dimension",
             );
         }
@@ -761,7 +792,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if requested_gpu_backend() == Some(GpuBackend::Cuda) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "cuda gpu backend requested but molt-gpu was built without cuda-backend",
             );
         }
@@ -769,7 +800,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if requested_gpu_backend() == Some(GpuBackend::Cuda) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "cuda turboquant attention path is not yet implemented",
             );
         }
@@ -777,7 +808,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if requested_gpu_backend() == Some(GpuBackend::Hip) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "hip gpu backend requested but molt-gpu was built without hip-backend",
             );
         }
@@ -785,7 +816,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if requested_gpu_backend() == Some(GpuBackend::Hip) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "hip turboquant attention path is not yet implemented",
             );
         }
@@ -794,25 +825,29 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         let Some(kv_cache_name) = attr_name_bits_from_bytes(_py, b"_kv_cache") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _kv_cache attribute name",
             );
         };
         let Some(role_name) = attr_name_bits_from_bytes(_py, b"_kv_role") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _kv_role attribute name",
             );
         };
         let Some(codec_name) = attr_name_bits_from_bytes(_py, b"codec") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern codec attribute");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "failed to intern codec attribute",
+            );
         };
         let Some(runtime_mse_signs_name) = attr_name_bits_from_bytes(_py, b"_runtime_mse_signs")
         else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _runtime_mse_signs attribute",
             );
         };
@@ -820,38 +855,42 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _runtime_qjl_signs attribute",
             );
         };
         let Some(mse_rotation_name) = attr_name_bits_from_bytes(_py, b"mse_rotation") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern mse_rotation attribute",
             );
         };
         let Some(qjl_rotation_name) = attr_name_bits_from_bytes(_py, b"qjl_rotation") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern qjl_rotation attribute",
             );
         };
         let Some(signs_name) = attr_name_bits_from_bytes(_py, b"signs") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern signs attribute");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "failed to intern signs attribute",
+            );
         };
         let Some(key_vectors_name) = attr_name_bits_from_bytes(_py, b"_key_vectors") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _key_vectors attribute",
             );
         };
         let Some(value_vectors_name) = attr_name_bits_from_bytes(_py, b"_value_vectors") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _value_vectors attribute",
             );
         };
@@ -860,7 +899,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _runtime_key_mse_weight_rows attribute",
             );
         };
@@ -869,7 +908,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _runtime_key_residual_sign_rows attribute",
             );
         };
@@ -878,7 +917,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _runtime_key_residual_scale_rows attribute",
             );
         };
@@ -886,34 +925,42 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern _runtime_value_rows attribute",
             );
         };
         let Some(heads_name) = attr_name_bits_from_bytes(_py, b"_heads") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _heads attribute");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "failed to intern _heads attribute",
+            );
         };
         let Some(batch_name) = attr_name_bits_from_bytes(_py, b"_batch") else {
-            return raise_exception::<_>(_py, "RuntimeError", "failed to intern _batch attribute");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "failed to intern _batch attribute",
+            );
         };
         let Some(mse_weights_name) = attr_name_bits_from_bytes(_py, b"mse_weights") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern mse_weights attribute",
             );
         };
         let Some(residual_signs_name) = attr_name_bits_from_bytes(_py, b"residual_signs") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern residual_signs attribute",
             );
         };
         let Some(residual_scale_name) = attr_name_bits_from_bytes(_py, b"residual_scale") else {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to intern residual_scale attribute",
             );
         };
@@ -923,7 +970,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if k_cache_bits == missing || v_cache_bits == missing || k_cache_bits != v_cache_bits {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention expects matching key/value cache views",
             );
         }
@@ -945,21 +992,21 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         let Some(k_role) = k_role_owner.string_bytes(_py).map(String::from_utf8_lossy) else {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention key view is missing _kv_role",
             );
         };
         let Some(v_role) = v_role_owner.string_bytes(_py).map(String::from_utf8_lossy) else {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention value view is missing _kv_role",
             );
         };
         if k_role != "key" || v_role != "value" {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention expects key/value cache view roles",
             );
         }
@@ -984,7 +1031,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 if mse_signs_shape != vec![dim] || qjl_signs_shape != vec![dim] {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "turboquant runtime sign shadow tensors do not match query head dimension",
                     );
                 }
@@ -1031,7 +1078,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if mse_signs.len() != dim || qjl_signs.len() != dim {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention rotation signs do not match query head dimension",
             );
         }
@@ -1047,14 +1094,14 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if cache_batch != batch {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention query batch must match cache batch",
             );
         }
         if query_heads < kv_heads || query_heads % kv_heads != 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant attention query heads are incompatible with cache heads",
             );
         }
@@ -1064,7 +1111,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         } else if let Some(value) = to_i64(obj_from_bits(scale_bits)) {
             value as f32
         } else {
-            return raise_exception::<_>(_py, "TypeError", "scale must be a float");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "scale must be a float");
         };
 
         let mask_info = if obj_from_bits(mask_bits).is_none() {
@@ -1079,7 +1126,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "turboquant attention mask must be a rank-4 float tensor",
                 );
             }
@@ -1087,21 +1134,21 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             if mask_shape[0] != 1 && mask_shape[0] != expected[0] {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "turboquant attention mask batch mismatch",
                 );
             }
             if mask_shape[1] != 1 && mask_shape[1] != expected[1] {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "turboquant attention mask head mismatch",
                 );
             }
             if mask_shape[2] != 1 && mask_shape[2] != expected[2] {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "turboquant attention mask query mismatch",
                 );
             }
@@ -1170,7 +1217,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     {
                         return Err(raise_exception::<u64>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "turboquant native webgpu shadow tensor shape mismatch",
                         ));
                     }
@@ -1247,22 +1294,22 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         key_mse.buffer.data_view,
                         key_mse.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let key_sign_bytes = bytes_like_view_to_webgpu_bytes(
                         key_sign.buffer.data_view,
                         key_sign.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let key_scale_bytes = bytes_like_view_to_webgpu_bytes(
                         key_scale.buffer.data_view,
                         key_scale.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let value_rows_bytes = bytes_like_view_to_webgpu_bytes(
                         value_rows.buffer.data_view,
                         value_rows.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let (mask_bytes, has_mask_i32): (Vec<u8>, i32) =
                         if let Some((mask, mask_shape, mask_strides)) = &mask_info {
                             (
@@ -1275,7 +1322,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                     query_seq,
                                     seq_k,
                                 )
-                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                                .map_err(|msg| {
+                                    raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                                })?,
                                 1i32,
                             )
                         } else {
@@ -1285,32 +1334,56 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let mut out_gpu = vec![0u8; out_elems * 4];
                     let batch_bytes = i32::try_from(batch)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "batch exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let query_heads_bytes = i32::try_from(query_heads)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "query_heads exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let kv_heads_bytes = i32::try_from(kv_heads)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "kv_heads exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let seq_q_bytes = i32::try_from(query_seq)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "seq_q exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let seq_k_bytes = i32::try_from(seq_k)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "seq_k exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let dim_bytes = i32::try_from(dim)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "dim exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let scale_bytes = scale.to_le_bytes();
@@ -1332,15 +1405,16 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             |_| {
                                 raise_exception::<u64>(
                                     _py,
-                                    "OverflowError",
+                                    BuiltinExc::OverflowError,
                                     "turboquant attention grid exceeds u32",
                                 )
                             },
                         )?
                     };
 
-                    let device = RuntimeWebGpuDevice::new()
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let device = RuntimeWebGpuDevice::new().map_err(|msg| {
+                        raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                    })?;
                     let pipeline = device
                         .compile_pipeline(
                             "turboquant_attention_packed",
@@ -1349,7 +1423,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                 workgroup_size,
                             ),
                         )
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
 
                     let buffer_payloads: [&[u8]; 8] = [
                         query_pair_bytes.as_slice(),
@@ -1363,23 +1439,26 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     ];
                     let mut owned_buffers: Vec<wgpu::Buffer> = Vec::new();
                     for data in buffer_payloads {
-                        let (_, gpu_buf) = device
-                            .alloc_buffer(data.len().max(1))
-                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        let (_, gpu_buf) =
+                            device.alloc_buffer(data.len().max(1)).map_err(|msg| {
+                                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                            })?;
                         if !data.is_empty() {
-                            device
-                                .copy_to_buffer(&gpu_buf, data)
-                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                            device.copy_to_buffer(&gpu_buf, data).map_err(|msg| {
+                                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                            })?;
                         }
                         owned_buffers.push(gpu_buf);
                     }
                     let refs: Vec<&wgpu::Buffer> = owned_buffers.iter().collect();
-                    device
-                        .dispatch(&pipeline, grid, &refs)
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    device.dispatch(&pipeline, grid, &refs).map_err(|msg| {
+                        raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                    })?;
                     out_gpu = device
                         .copy_from_buffer(&owned_buffers[5], out_elems * 4)
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
 
                     let data_ptr = alloc_bytearray(_py, out_gpu.as_slice());
                     if data_ptr.is_null() {
@@ -1494,7 +1573,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     {
                         return Err(raise_exception::<u64>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "turboquant metal shadow tensor shape mismatch",
                         ));
                     }
@@ -1566,22 +1645,22 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         key_mse.buffer.data_view,
                         key_mse.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let key_sign_bytes = bytes_like_view_to_webgpu_bytes(
                         key_sign.buffer.data_view,
                         key_sign.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let key_scale_bytes = bytes_like_view_to_webgpu_bytes(
                         key_scale.buffer.data_view,
                         key_scale.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let value_rows_bytes = bytes_like_view_to_webgpu_bytes(
                         value_rows.buffer.data_view,
                         value_rows.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let q_rotated_bytes = rotated_q_bytes;
                     let q_sketch_bytes = query_sketch_bytes;
                     let (mask_bytes, has_mask_i32): (Vec<u8>, i32) =
@@ -1596,7 +1675,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                     query_seq,
                                     seq_k,
                                 )
-                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                                .map_err(|msg| {
+                                    raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                                })?,
                                 1i32,
                             )
                         } else {
@@ -1606,39 +1687,64 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let mut out_gpu = vec![0u8; out_elems * 4];
                     let batch_bytes = i32::try_from(batch)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "batch exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let query_heads_bytes = i32::try_from(query_heads)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "query_heads exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let kv_heads_bytes = i32::try_from(kv_heads)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "kv_heads exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let seq_q_bytes = i32::try_from(query_seq)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "seq_q exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let seq_k_bytes = i32::try_from(seq_k)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "seq_k exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let dim_bytes = i32::try_from(dim)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "dim exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let scale_bytes = scale.to_le_bytes();
                     let has_mask_bytes = has_mask_i32.to_le_bytes();
 
-                    let device = RuntimeMetalDevice::new()
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    let device = RuntimeMetalDevice::new().map_err(|msg| {
+                        raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                    })?;
                     let pipeline = device
                         .compile_pipeline(
                             "turboquant_attention_packed",
@@ -1646,7 +1752,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                 "turboquant_attention_packed",
                             ),
                         )
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
 
                     let buffer_payloads: [&[u8]; 16] = [
                         q_rotated_bytes.as_slice(),
@@ -1668,13 +1776,13 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     ];
                     let mut owned_buffers: Vec<MetalBuffer> = Vec::new();
                     for data in buffer_payloads {
-                        let metal_buf = device
-                            .alloc_buffer(data.len())
-                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        let metal_buf = device.alloc_buffer(data.len()).map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
                         if !data.is_empty() {
-                            device
-                                .copy_to_buffer(&metal_buf, data)
-                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                            device.copy_to_buffer(&metal_buf, data).map_err(|msg| {
+                                raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                            })?;
                         }
                         owned_buffers.push(metal_buf);
                     }
@@ -1689,10 +1797,14 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                 .min(out_elems.max(1)),
                             &refs,
                         )
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
                     out_gpu = device
                         .copy_from_buffer(&owned_buffers[6], out_elems * 4)
-                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                        .map_err(|msg| {
+                            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                        })?;
 
                     let data_ptr = alloc_bytearray(_py, out_gpu.as_slice());
                     if data_ptr.is_null() {
@@ -1804,7 +1916,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     {
                         return Err(raise_exception::<u64>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "turboquant browser shadow tensor shape mismatch",
                         ));
                     }
@@ -1881,22 +1993,22 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         key_mse.buffer.data_view,
                         key_mse.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let key_sign_bytes = bytes_like_view_to_webgpu_bytes(
                         key_sign.buffer.data_view,
                         key_sign.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let key_scale_bytes = bytes_like_view_to_webgpu_bytes(
                         key_scale.buffer.data_view,
                         key_scale.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let value_rows_bytes = bytes_like_view_to_webgpu_bytes(
                         value_rows.buffer.data_view,
                         value_rows.buffer.format,
                     )
-                    .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
+                    .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg))?;
                     let (mask_bytes, has_mask_i32) =
                         if let Some((mask, mask_shape, mask_strides)) = &mask_info {
                             (
@@ -1909,7 +2021,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                     query_seq,
                                     seq_k,
                                 )
-                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?,
+                                .map_err(|msg| {
+                                    raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
+                                })?,
                                 1i32,
                             )
                         } else {
@@ -1919,32 +2033,56 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     let mut out_webgpu = vec![0u8; out_elems * 4];
                     let batch_bytes = i32::try_from(batch)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "batch exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "batch exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let query_heads_bytes = i32::try_from(query_heads)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "query_heads exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "query_heads exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let kv_heads_bytes = i32::try_from(kv_heads)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "kv_heads exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "kv_heads exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let seq_q_bytes = i32::try_from(query_seq)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "seq_q exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "seq_q exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let seq_k_bytes = i32::try_from(seq_k)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "seq_k exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "seq_k exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let dim_bytes = i32::try_from(dim)
                         .map_err(|_| {
-                            raise_exception::<u64>(_py, "OverflowError", "dim exceeds i32")
+                            raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::OverflowError,
+                                "dim exceeds i32",
+                            )
                         })?
                         .to_le_bytes();
                     let scale_bytes = scale.to_le_bytes();
@@ -1966,7 +2104,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             |_| {
                                 raise_exception::<u64>(
                                     _py,
-                                    "OverflowError",
+                                    BuiltinExc::OverflowError,
                                     "turboquant attention grid exceeds u32",
                                 )
                             },
@@ -2068,7 +2206,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "turboquant runtime shadow tensors have invalid rank",
                 );
             }
@@ -2082,7 +2220,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "turboquant runtime shadow tensor shape mismatch",
                 );
             }
@@ -2105,7 +2243,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                         Err(()) => {
                             return raise_exception::<_>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 "turboquant attention query heads are incompatible with cache heads",
                             );
                         }
@@ -2169,7 +2307,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                                 if mask_shape[3] != 1 && mask_shape[3] != seq_k {
                                     return raise_exception::<_>(
                                         _py,
-                                        "ValueError",
+                                        BuiltinExc::ValueError,
                                         "turboquant attention mask key width mismatch",
                                     );
                                 }
@@ -2303,7 +2441,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
         if key_batches.len() != batch || value_batches.len() != batch {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "turboquant cache batch structure mismatch",
             );
         }
@@ -2331,7 +2469,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
             if key_heads.len() != kv_heads || value_heads.len() != kv_heads {
                 return raise_exception::<_>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "turboquant cache head structure mismatch",
                 );
             }
@@ -2342,7 +2480,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     Err(()) => {
                         return raise_exception::<_>(
                             _py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "turboquant attention query heads are incompatible with cache heads",
                         );
                     }
@@ -2366,7 +2504,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                 if key_rows.len() != value_rows.len() {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "turboquant key/value row count mismatch",
                     );
                 }
@@ -2439,14 +2577,14 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             } else {
                                 return raise_exception::<_>(
                                     _py,
-                                    "TypeError",
+                                    BuiltinExc::TypeError,
                                     "residual_scale must be numeric",
                                 );
                             };
                         if mse_weights.len() != dim || residual_signs.len() != dim {
                             return raise_exception::<_>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 "turboquant encoded row dimension mismatch",
                             );
                         }
@@ -2465,7 +2603,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             if mask_shape[3] != 1 && mask_shape[3] != seq_k {
                                 return raise_exception::<_>(
                                     _py,
-                                    "ValueError",
+                                    BuiltinExc::ValueError,
                                     "turboquant attention mask key width mismatch",
                                 );
                             }
@@ -2544,7 +2682,7 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             } else {
                                 return raise_exception::<_>(
                                     _py,
-                                    "TypeError",
+                                    BuiltinExc::TypeError,
                                     "residual_scale must be numeric",
                                 );
                             };

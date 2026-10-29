@@ -1,5 +1,6 @@
 //! C-API callbacks forward to the native Context owner without Python imports.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::contextvars as owner;
 use molt_cpython_abi::hooks::OwnedHandleResult;
 pub(super) unsafe extern "C" fn type_admit(pointer: usize) -> i32 {
@@ -14,7 +15,11 @@ pub(super) unsafe extern "C" fn type_admit(pointer: usize) -> i32 {
         } else if pointer == (&raw mut molt_cpython_abi::abi_types::PyContextToken_Type).addr() {
             owner::token_class(&py)
         } else {
-            crate::raise_exception::<u64>(&py, "SystemError", "unknown Context static shell");
+            crate::raise_exception::<u64>(
+                &py,
+                BuiltinExc::SystemError,
+                "unknown Context static shell",
+            );
             return -1;
         };
         if bits == 0 || crate::exception_pending(&py) {

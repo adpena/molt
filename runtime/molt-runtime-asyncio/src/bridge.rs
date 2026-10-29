@@ -60,7 +60,11 @@ impl ExceptionSentinel for () {
     fn from_bits(_bits: u64) -> Self {}
 }
 
-pub fn raise_exception<T: ExceptionSentinel>(_py: &PyToken, type_name: &str, msg: &str) -> T {
+pub fn raise_exception<T: ExceptionSentinel>(
+    _py: &PyToken,
+    type_name: impl Into<ExcKind>,
+    msg: &str,
+) -> T {
     T::from_bits(rt_raise_str(type_name, msg))
 }
 

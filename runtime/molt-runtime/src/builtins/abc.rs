@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
 use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
@@ -101,7 +102,7 @@ fn iter_type(_py: &crate::PyToken<'_>, iterable_bits: u64) -> Result<u64, u64> {
     if !is_type_object(iter_type_bits) {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "iterator type resolution did not return a type",
         ));
     }
@@ -511,7 +512,7 @@ fn abc_init_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
     if !is_type_object(cls_bits) {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "abc init expects class",
         ));
     }
@@ -613,7 +614,7 @@ fn abc_subclasscheck_impl_inner(
     if !is_type_object(subclass_bits) {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "issubclass() arg 1 must be a class",
         ));
     }
@@ -685,7 +686,7 @@ fn abc_subclasscheck_impl_inner(
                 }
                 return Err(raise_exception::<_>(
                     _py,
-                    "AssertionError",
+                    BuiltinExc::AssertionError,
                     "__subclasshook__ must return either False, True, or NotImplemented",
                 ));
             }
@@ -924,7 +925,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         if obj_from_bits(mappingproxy).is_none() || !is_type_object(mappingproxy) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "mappingproxy type is unavailable while lowering collections.abc",
             );
         }
@@ -962,7 +963,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
             if !is_type_object(bits) {
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "collections.abc runtime type payload contained non-type value",
                 );
             }
@@ -974,7 +975,7 @@ pub extern "C" fn molt_collections_abc_runtime_types() -> u64 {
         if !is_type_object(builtins.async_generator) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "collections.abc async_generator runtime type is unavailable",
             );
         }
@@ -1008,7 +1009,7 @@ pub extern "C" fn molt_abc_init(cls_bits: u64) -> u64 {
 pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if !is_type_object(subclass_bits) {
-            return raise_exception::<_>(_py, "TypeError", "Can only register classes");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "Can only register classes");
         }
         if let Err(bits) = abc_ensure_init(_py, cls_bits) {
             return bits;
@@ -1019,7 +1020,7 @@ pub extern "C" fn molt_abc_register(cls_bits: u64, subclass_bits: u64) -> u64 {
         if mro_contains(cls_bits, subclass_bits) {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "Refusing to create an inheritance cycle",
             );
         }
@@ -1515,7 +1516,7 @@ fn protocol_check_impl(
     if !is_truthy(_py, obj_from_bits(rt_flag)) {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "Instance and class checks can only be used with @runtime_checkable protocols",
         ));
     }
@@ -1579,7 +1580,7 @@ pub extern "C" fn molt_protocol_check(proto_bits: u64, obj_bits: u64) -> u64 {
 pub extern "C" fn molt_protocol_register(proto_bits: u64, subclass_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if !is_type_object(subclass_bits) {
-            return raise_exception::<_>(_py, "TypeError", "Can only register classes");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "Can only register classes");
         }
         // Delegate to the ABC register machinery which already handles
         // registry, cache invalidation, and cycle detection.

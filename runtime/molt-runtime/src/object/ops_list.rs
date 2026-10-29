@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 //\! List, tuple, and bisect operations — extracted from ops.rs.
 
 use super::ops::{eq_bool_from_bits, is_truthy};
@@ -233,13 +234,13 @@ pub extern "C" fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if len == 0 {
-            return raise_exception(py, "IndexError", "pop from empty list");
+            return raise_exception(py, BuiltinExc::IndexError, "pop from empty list");
         }
         if index < 0 {
             index += len as i64;
         }
         if index < 0 || index as usize >= len {
-            return raise_exception(py, "IndexError", "pop index out of range");
+            return raise_exception(py, BuiltinExc::IndexError, "pop index out of range");
         }
         storage.pop(index as isize)
     })
@@ -436,7 +437,7 @@ pub extern "C" fn molt_list_remove(list_bits: u64, val_bits: u64) -> u64 {
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
-        raise_exception(py, "ValueError", "list.remove(x): x not in list")
+        raise_exception(py, BuiltinExc::ValueError, "list.remove(x): x not in list")
     })
 }
 
@@ -688,7 +689,11 @@ fn sort_storage(
                 // Key destruction is part of the mutation window. Select
                 // this error while the original list is still detached;
                 // restoration then retires added values under that error.
-                let _ = raise_exception::<u64>(_py, "ValueError", "list modified during sort");
+                let _ = raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "list modified during sort",
+                );
             }
             if reverse {
                 items.reverse();
@@ -995,7 +1000,11 @@ pub extern "C" fn molt_list_index_range(
         // reverted to the static "list.index(x): x not in list" and
         // does not call __repr__.
         if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
-            return raise_exception::<_>(_py, "ValueError", "list.index(x): x not in list");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "list.index(x): x not in list",
+            );
         }
         let repr_bits = crate::molt_repr_from_obj(val_bits);
         if exception_pending(_py) {
@@ -1005,7 +1014,7 @@ pub extern "C" fn molt_list_index_range(
             .unwrap_or_default();
         dec_ref_bits(_py, repr_bits);
         let msg = format!("{rendered} is not in list");
-        raise_exception::<_>(_py, "ValueError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::ValueError, &msg)
     })
 }
 
@@ -1113,6 +1122,6 @@ pub extern "C" fn molt_tuple_index_range(
                 return int_bits_from_i64(py, index as i64);
             }
         }
-        raise_exception(py, "ValueError", "tuple.index(x): x not in tuple")
+        raise_exception(py, BuiltinExc::ValueError, "tuple.index(x): x not in tuple")
     })
 }

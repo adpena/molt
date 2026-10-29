@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::builtins::attr::lookup_special_method_bits;
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::*;
@@ -14,7 +15,7 @@ pub(crate) fn native_constructor_receiver(
     let Some(class) = receiver else {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label}.__new__(): not enough arguments"),
         );
     };
@@ -24,7 +25,7 @@ pub(crate) fn native_constructor_receiver(
     else {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "{label}.__new__(X): X is not a type object ({})",
                 type_name(py, obj_from_bits(class)),
@@ -35,7 +36,7 @@ pub(crate) fn native_constructor_receiver(
         let name = class_name_for_error(class);
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{label}.__new__({name}): {name} is not a subtype of {label}"),
         );
     }
@@ -43,7 +44,7 @@ pub(crate) fn native_constructor_receiver(
     if declaring == builtins.int && class == builtins.bool {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "int.__new__(bool) is not safe, use bool.__new__()",
         );
     }
@@ -105,7 +106,11 @@ fn structural_classinfo_match(
     protocol: ClassInfoProtocol,
 ) -> Option<bool> {
     if !real_class(py, class)? {
-        return raise_exception(py, "TypeError", classinfo_type_error_message(protocol));
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            classinfo_type_error_message(protocol),
+        );
     }
     let result = unsafe {
         match protocol {
@@ -114,7 +119,11 @@ fn structural_classinfo_match(
             }
             ClassInfoProtocol::Subclass => {
                 if !real_class(py, value)? {
-                    return raise_exception(py, "TypeError", "issubclass() arg 1 must be a class");
+                    return raise_exception(
+                        py,
+                        BuiltinExc::TypeError,
+                        "issubclass() arg 1 must be a class",
+                    );
                 }
                 crate::object::class_layout::try_is_real_subtype(py, value, class)
             }
@@ -268,7 +277,7 @@ fn check_abstract_class(py: &PyToken<'_>, class: u64, message: &str) -> Option<(
     if abstract_bases(py, class)?.is_some() {
         Some(())
     } else {
-        raise_exception(py, "TypeError", message)
+        raise_exception(py, BuiltinExc::TypeError, message)
     }
 }
 
@@ -823,7 +832,13 @@ mod tests {
                 let field = match string_obj_to_owned(obj_from_bits(name)).as_deref() {
                     Some("__bases__") => b"bases_result".as_slice(),
                     Some("__class__") => b"class_result".as_slice(),
-                    _ => return raise_exception(py, "AttributeError", "fixture attribute missing"),
+                    _ => {
+                        return raise_exception(
+                            py,
+                            BuiltinExc::AttributeError,
+                            "fixture attribute missing",
+                        );
+                    }
                 };
                 let field =
                     ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, field).unwrap());
@@ -834,7 +849,9 @@ mod tests {
                         inc_ref_bits(py, value);
                         value
                     }
-                    None => raise_exception(py, "AttributeError", "fixture attribute missing"),
+                    None => {
+                        raise_exception(py, BuiltinExc::AttributeError, "fixture attribute missing")
+                    }
                 }
             }
         })
@@ -986,10 +1003,10 @@ mod tests {
                     None
                 );
                 let raised = ExceptionValue::adopt(py, crate::molt_exception_last_pending());
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     raised.bits(),
-                    "TypeError"
+                    crate::BuiltinExc::TypeError
                 ));
                 clear_exception(py);
                 let bad_branch = tuple(py, &[malformed.bits()], native);
@@ -1013,7 +1030,7 @@ mod tests {
             let root = protocol_object(py, class.bits(), b"bases_result", empty.bits());
             let failure = crate::builtins::exceptions::alloc_exception(
                 py,
-                "LookupError",
+                BuiltinExc::LookupError,
                 "classinfo callback",
             );
             assert!(!failure.is_null());

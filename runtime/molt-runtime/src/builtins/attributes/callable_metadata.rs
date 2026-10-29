@@ -1,5 +1,6 @@
 //! Declared callable members/getsets over existing private function/binding storage.
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::CallableMetadata;
 use crate::object::function_metadata::FunctionMetadataField as Field;
 
@@ -98,7 +99,7 @@ pub(crate) unsafe fn read(
         if obj_from_bits(value).is_none()
             && matches!(field, Field::Name | Field::QualName | Field::Owner)
         {
-            raise_exception::<()>(py, "AttributeError", field.name());
+            raise_exception::<()>(py, BuiltinExc::AttributeError, field.name());
             return Err(());
         }
         inc_ref_bits(py, value);
@@ -114,7 +115,7 @@ pub(crate) unsafe fn write(
 ) -> Result<(), ()> {
     unsafe {
         let CallableMetadata::Stored(field) = declared else {
-            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(py, BuiltinExc::AttributeError, "readonly attribute");
             return Err(());
         };
         if object_type_id(object) == TYPE_ID_FUNCTION
@@ -123,7 +124,7 @@ pub(crate) unsafe fn write(
             return crate::object::function_metadata::write_public(py, object, field, value);
         }
         if field != Field::Module {
-            raise_exception::<()>(py, "AttributeError", "readonly attribute");
+            raise_exception::<()>(py, BuiltinExc::AttributeError, "readonly attribute");
             return Err(());
         }
         if object_type_id(object) == TYPE_ID_BOUND_METHOD {

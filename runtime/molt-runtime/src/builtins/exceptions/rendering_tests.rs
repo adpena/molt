@@ -4,6 +4,7 @@
 //! exception_message_storage.py differential case independently covers Python.
 
 use super::*;
+use crate::BuiltinExc;
 use std::cell::{Cell, RefCell};
 
 thread_local! {
@@ -45,8 +46,12 @@ fn exception<'a, 'py>(py: &'a PyToken<'py>, class: u64, args: &[u64]) -> Excepti
     ExceptionValue::adopt(py, MoltObject::from_ptr(pointer).bits())
 }
 
-fn builtin<'a, 'py>(py: &'a PyToken<'py>, name: &str, args: &[u64]) -> ExceptionValue<'a, 'py> {
-    exception(py, exception_type_bits_from_name(py, name), args)
+fn builtin<'a, 'py>(
+    py: &'a PyToken<'py>,
+    name: crate::BuiltinExc,
+    args: &[u64],
+) -> ExceptionValue<'a, 'py> {
+    exception(py, exception_class_bits(py, name), args)
 }
 
 fn assert_text(py: &PyToken<'_>, result: u64, expected: &[u8]) -> u64 {
@@ -71,11 +76,10 @@ fn set_field(py: &PyToken<'_>, error: u64, field: ExceptionTypedField, value: u6
     assert!(!exception_pending(py));
 }
 
-fn call_declared(py: &PyToken<'_>, owner: &str, name: &str, error: u64) -> u64 {
-    let descriptor =
-        exception_render_method_bits(py, exception_type_bits_from_name(py, owner), name)
-            .expect("method lookup succeeds")
-            .expect("declaring descriptor must exist before C publication");
+fn call_declared(py: &PyToken<'_>, owner: crate::BuiltinExc, name: &str, error: u64) -> u64 {
+    let descriptor = exception_render_method_bits(py, exception_class_bits(py, owner), name)
+        .expect("method lookup succeeds")
+        .expect("declaring descriptor must exist before C publication");
     unsafe { call_callable1(py, descriptor, error) }
 }
 
@@ -202,21 +206,21 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     let message = text(py, b"message");
     let new_message = text(py, b"new args");
     for name in [
-        "BaseException",
-        "Exception",
-        "RuntimeError",
-        "ValueError",
-        "LookupError",
-        "NotImplementedError",
-        "RecursionError",
-        "SystemExit",
-        "StopIteration",
-        "AttributeError",
-        "NameError",
-        "Warning",
-        "UserWarning",
-        "ImportError",
-        "SyntaxError",
+        crate::BuiltinExc::BaseException,
+        crate::BuiltinExc::Exception,
+        crate::BuiltinExc::RuntimeError,
+        crate::BuiltinExc::ValueError,
+        crate::BuiltinExc::LookupError,
+        crate::BuiltinExc::NotImplementedError,
+        crate::BuiltinExc::RecursionError,
+        crate::BuiltinExc::SystemExit,
+        crate::BuiltinExc::StopIteration,
+        crate::BuiltinExc::AttributeError,
+        crate::BuiltinExc::NameError,
+        crate::BuiltinExc::Warning,
+        crate::BuiltinExc::UserWarning,
+        crate::BuiltinExc::ImportError,
+        crate::BuiltinExc::SyntaxError,
     ] {
         let error = builtin(py, name, &[message.bits()]);
         assert_eq!(
@@ -230,12 +234,12 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
             format!("{name}('message')").as_bytes(),
         );
     }
-    let empty = builtin(py, "RuntimeError", &[]);
+    let empty = builtin(py, crate::BuiltinExc::RuntimeError, &[]);
     str_eq(py, empty.bits(), b"");
     assert_text(py, molt_repr_from_obj(empty.bits()), b"RuntimeError()");
     let pair = builtin(
         py,
-        "RuntimeError",
+        crate::BuiltinExc::RuntimeError,
         &[message.bits(), MoltObject::from_int(7).bits()],
     );
     str_eq(py, pair.bits(), b"('message', 7)");
@@ -244,41 +248,44 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         molt_repr_from_obj(pair.bits()),
         b"RuntimeError('message', 7)",
     );
-    let key = builtin(py, "KeyError", &[message.bits()]);
+    let key = builtin(py, crate::BuiltinExc::KeyError, &[message.bits()]);
     str_eq(py, key.bits(), b"'message'");
     assert_eq!(
         assert_text(
             py,
-            call_declared(py, "BaseException", "__str__", key.bits()),
+            call_declared(py, crate::BuiltinExc::BaseException, "__str__", key.bits()),
             b"message"
         ),
         message.bits()
     );
     assert_text(
         py,
-        call_declared(py, "BaseException", "__repr__", key.bits()),
+        call_declared(py, crate::BuiltinExc::BaseException, "__repr__", key.bits()),
         b"KeyError('message')",
     );
-    let invalid = ExceptionValue::adopt(py, call_declared(py, "KeyError", "__str__", empty.bits()));
+    let invalid = ExceptionValue::adopt(
+        py,
+        call_declared(py, crate::BuiltinExc::KeyError, "__str__", empty.bits()),
+    );
     assert!(
         exception_pending(py),
         "explicit derived descriptor must reject a sibling receiver"
     );
-    assert!(exception_matches_builtin_name(
+    assert!(exception_matches_kind(
         py,
         exception_last_bits_noinc(py).unwrap(),
-        "TypeError"
+        crate::BuiltinExc::TypeError
     ));
     clear_exception(py);
     drop(invalid);
     for name in [
-        "RuntimeError",
-        "ValueError",
-        "ExceptionGroup",
-        "IndentationError",
-        "ModuleNotFoundError",
+        crate::BuiltinExc::RuntimeError,
+        crate::BuiltinExc::ValueError,
+        crate::BuiltinExc::ExceptionGroup,
+        crate::BuiltinExc::IndentationError,
+        crate::BuiltinExc::ModuleNotFoundError,
     ] {
-        let class = exception_type_bits_from_name(py, name);
+        let class = exception_class_bits(py, name);
         assert!(
             exception_render_method_bits(py, class, "__str__")
                 .expect("renderer lookup succeeds")
@@ -293,17 +300,17 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         );
     }
     for name in [
-        "BaseException",
-        "BaseExceptionGroup",
-        "KeyError",
-        "SyntaxError",
-        "ImportError",
-        "OSError",
-        "UnicodeDecodeError",
-        "UnicodeEncodeError",
-        "UnicodeTranslateError",
+        crate::BuiltinExc::BaseException,
+        crate::BuiltinExc::BaseExceptionGroup,
+        crate::BuiltinExc::KeyError,
+        crate::BuiltinExc::SyntaxError,
+        crate::BuiltinExc::ImportError,
+        crate::BuiltinExc::OSError,
+        crate::BuiltinExc::UnicodeDecodeError,
+        crate::BuiltinExc::UnicodeEncodeError,
+        crate::BuiltinExc::UnicodeTranslateError,
     ] {
-        let class = exception_type_bits_from_name(py, name);
+        let class = exception_class_bits(py, name);
         let name_bits = text(py, b"__str__");
         let dictionary =
             obj_from_bits(unsafe { class_dict_bits(obj_from_bits(class).as_ptr().unwrap()) })
@@ -318,7 +325,10 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
             "own namespace {name}.__str__"
         );
     }
-    for name in ["SyntaxError", "ImportError"] {
+    for name in [
+        crate::BuiltinExc::SyntaxError,
+        crate::BuiltinExc::ImportError,
+    ] {
         let error = builtin(py, name, &[message.bits()]);
         let replacement = tuple(py, &[new_message.bits()]);
         exception_replace_field_bits(
@@ -331,13 +341,18 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         assert_eq!(str_eq(py, error.bits(), b"message"), message.bits());
         assert_text(
             py,
-            call_declared(py, "BaseException", "__str__", error.bits()),
+            call_declared(
+                py,
+                crate::BuiltinExc::BaseException,
+                "__str__",
+                error.bits(),
+            ),
             b"new args",
         );
     }
     let os = builtin(
         py,
-        "OSError",
+        crate::BuiltinExc::OSError,
         &[MoltObject::from_int(5).bits(), message.bits()],
     );
     str_eq(py, os.bits(), b"[Errno 5] message");
@@ -361,7 +376,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     );
     str_eq(py, os.bits(), b"[Errno 5] message");
     let filename = text(py, b"sample.py");
-    let syntax = builtin(py, "SyntaxError", &[message.bits()]);
+    let syntax = builtin(py, crate::BuiltinExc::SyntaxError, &[message.bits()]);
     set_field(
         py,
         syntax.bits(),
@@ -383,7 +398,11 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     );
     str_eq(py, syntax.bits(), b"message (sample.py)");
     let children = tuple(py, &[empty.bits()]);
-    let group = builtin(py, "ExceptionGroup", &[message.bits(), children.bits()]);
+    let group = builtin(
+        py,
+        crate::BuiltinExc::ExceptionGroup,
+        &[message.bits(), children.bits()],
+    );
     let replacement = tuple(py, &[new_message.bits()]);
     exception_replace_field_bits(
         py,
@@ -394,11 +413,15 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     .unwrap();
     str_eq(py, group.bits(), b"message (1 sub-exception)");
     let children = tuple(py, &[empty.bits(), key.bits()]);
-    let group = builtin(py, "ExceptionGroup", &[message.bits(), children.bits()]);
+    let group = builtin(
+        py,
+        crate::BuiltinExc::ExceptionGroup,
+        &[message.bits(), children.bits()],
+    );
     str_eq(py, group.bits(), b"message (2 sub-exceptions)");
 
     let surrogate = text(py, b"\xed\xa0\x80");
-    let error = builtin(py, "ValueError", &[surrogate.bits()]);
+    let error = builtin(py, crate::BuiltinExc::ValueError, &[surrogate.bits()]);
     assert_eq!(str_eq(py, error.bits(), b"\xed\xa0\x80"), surrogate.bits());
     assert_text(
         py,
@@ -412,7 +435,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     let bytes = ExceptionValue::adopt(py, MoltObject::from_ptr(bytes).bits());
     let decode = builtin(
         py,
-        "UnicodeDecodeError",
+        crate::BuiltinExc::UnicodeDecodeError,
         &[
             encoding.bits(),
             bytes.bits(),
@@ -451,7 +474,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     str_eq(py, decode.bits(), b"");
     let encode = builtin(
         py,
-        "UnicodeEncodeError",
+        crate::BuiltinExc::UnicodeEncodeError,
         &[
             encoding.bits(),
             surrogate.bits(),
@@ -467,7 +490,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     );
     let translate = builtin(
         py,
-        "UnicodeTranslateError",
+        crate::BuiltinExc::UnicodeTranslateError,
         &[
             surrogate.bits(),
             MoltObject::from_int(0).bits(),
@@ -481,7 +504,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         b"can't translate character '\\ud800' in position 0: bad",
     );
 
-    let base = exception_type_bits_from_name(py, "ValueError");
+    let base = exception_class_bits(py, BuiltinExc::ValueError);
     let payload_class = subclass(
         py,
         b"RenderPayload",
@@ -497,7 +520,12 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     events(&["str"]);
     assert_text(
         py,
-        call_declared(py, "BaseException", "__str__", payload.bits()),
+        call_declared(
+            py,
+            crate::BuiltinExc::BaseException,
+            "__str__",
+            payload.bits(),
+        ),
         b"",
     );
     events(&[]);
@@ -511,16 +539,25 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
     });
     assert_text(
         py,
-        call_declared(py, "BaseException", "__repr__", payload.bits()),
+        call_declared(
+            py,
+            crate::BuiltinExc::BaseException,
+            "__repr__",
+            payload.bits(),
+        ),
         b"Named()",
     );
-    let single = builtin(py, "ValueError", &[payload.bits()]);
+    let single = builtin(py, crate::BuiltinExc::ValueError, &[payload.bits()]);
     OWNER.with(|slot| slot.set(single.bits()));
     REPLACEMENT.with(|slot| slot.set(replacement.bits()));
     assert_eq!(str_eq(py, single.bits(), b"message"), message.bits());
     events(&["str"]);
     str_eq(py, single.bits(), b"new args");
-    let outer = builtin(py, "ValueError", &[payload.bits(), new_message.bits()]);
+    let outer = builtin(
+        py,
+        crate::BuiltinExc::ValueError,
+        &[payload.bits(), new_message.bits()],
+    );
     OWNER.with(|slot| slot.set(outer.bits()));
     REPLACEMENT.with(|slot| slot.set(replacement.bits()));
     assert_text(
@@ -539,9 +576,9 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         &[(b"__str__", fn_addr!(failed_str))],
     );
     let failing_payload = exception(py, failure_class.bits(), &[]);
-    let failure = builtin(py, "LookupError", &[message.bits()]);
+    let failure = builtin(py, crate::BuiltinExc::LookupError, &[message.bits()]);
     FAILURE.with(|slot| slot.set(failure.bits()));
-    let failing_outer = builtin(py, "ValueError", &[failing_payload.bits()]);
+    let failing_outer = builtin(py, crate::BuiltinExc::ValueError, &[failing_payload.bits()]);
     let result = ExceptionValue::adopt(py, molt_exception_message(failing_outer.bits()));
     assert!(exception_pending(py));
     assert_eq!(
@@ -764,9 +801,13 @@ mod native_fields {
                 let mut class = native_subclass(&raw mut PyTuple_Type, c"rendering.NativeTuple");
                 class.tp_as_sequence = (&raw mut *slots).cast();
                 let message = text(py, b"group");
-                let child = builtin(py, "ValueError", &[message.bits()]);
+                let child = builtin(py, crate::BuiltinExc::ValueError, &[message.bits()]);
                 let children = tuple(py, &[child.bits()]);
-                let group = builtin(py, "ExceptionGroup", &[message.bits(), children.bits()]);
+                let group = builtin(
+                    py,
+                    crate::BuiltinExc::ExceptionGroup,
+                    &[message.bits(), children.bits()],
+                );
                 let child_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(child.bits());
                 assert!(!child_view.is_null());
                 for (native_class, count, expected) in [
@@ -792,7 +833,12 @@ mod native_fields {
                     assert_text(py, super::super::group_str(group.bits()), expected);
                     assert_text(
                         py,
-                        call_declared(py, "BaseExceptionGroup", "__str__", group.bits()),
+                        call_declared(
+                            py,
+                            crate::BuiltinExc::BaseExceptionGroup,
+                            "__str__",
+                            group.bits(),
+                        ),
                         expected,
                     );
                     assert_eq!((*native.as_ptr()).ob_refcnt, refs);
@@ -811,7 +857,7 @@ mod native_fields {
                     &[(b"__str__", fn_addr!(failed_str))],
                 );
                 let payload = exception(py, failed.bits(), &[]);
-                let failure = builtin(py, "LookupError", &[message.bits()]);
+                let failure = builtin(py, crate::BuiltinExc::LookupError, &[message.bits()]);
                 FAILURE.with(|slot| slot.set(failure.bits()));
                 // Group fields are read-only to Python; the C typed snapshot
                 // may nevertheless publish arbitrary message objects.
@@ -842,7 +888,7 @@ mod native_fields {
                 let mut subclass = native_subclass(&raw mut PyLong_Type, c"rendering.NativeLong");
                 subclass.tp_as_number = (&raw mut *number_slots).cast();
                 let message = text(py, b"syntax");
-                let error = builtin(py, "SyntaxError", &[message.bits()]);
+                let error = builtin(py, crate::BuiltinExc::SyntaxError, &[message.bits()]);
                 for (value, expected) in [
                     (0, b"syntax (line 0)".as_slice()),
                     (12, b"syntax (line 12)".as_slice()),
@@ -905,7 +951,7 @@ mod native_fields {
                 let bytes = ExceptionValue::adopt(py, MoltObject::from_ptr(pointer).bits());
                 let error = builtin(
                     py,
-                    "UnicodeDecodeError",
+                    crate::BuiltinExc::UnicodeDecodeError,
                     &[
                         encoding.bits(),
                         bytes.bits(),
@@ -928,7 +974,7 @@ mod native_fields {
                 assert!(exception_matches_type(
                     py,
                     failure.bits(),
-                    exception_type_bits_from_name(py, "TypeError")
+                    exception_class_bits(py, BuiltinExc::TypeError)
                 ));
                 clear_exception(py);
                 assert_text(
@@ -951,7 +997,7 @@ mod native_fields {
                 let mut subclass =
                     native_subclass(&raw mut PyUnicode_Type, c"rendering.NativeString");
                 let message = text(py, b"fallback");
-                let error = builtin(py, "ImportError", &[message.bits()]);
+                let error = builtin(py, crate::BuiltinExc::ImportError, &[message.bits()]);
                 // No payload read is requested here: ImportError's exact-str
                 // slot returns msg by identity. Raw native text extraction is
                 // separately owned by the C unicode storage authority.

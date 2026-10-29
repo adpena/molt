@@ -1,5 +1,6 @@
 //! Native callable identity is declared before publication, independently of its
 //! portable function payload and private argument-binding metadata.
+use crate::BuiltinExc;
 use crate::object::object_replace_class_edge;
 use crate::*;
 use std::sync::atomic::AtomicU64;
@@ -234,7 +235,7 @@ unsafe fn owner_qualname_bytes(py: &PyToken<'_>, owner: u64) -> Result<Vec<u8>, 
                 || {
                     raise_exception::<()>(
                         py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "native callable owner has no qualified name",
                     );
                 },
@@ -243,7 +244,11 @@ unsafe fn owner_qualname_bytes(py: &PyToken<'_>, owner: u64) -> Result<Vec<u8>, 
         let view = match crate::object::class_layout::real_class_view(owner) {
             Ok(Some(view)) => view,
             Ok(None) => {
-                raise_exception::<()>(py, "SystemError", "native callable owner is not a type");
+                raise_exception::<()>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "native callable owner is not a type",
+                );
                 return Err(());
             }
             Err(()) => {
@@ -275,7 +280,7 @@ unsafe fn owner_qualname_bytes(py: &PyToken<'_>, owner: u64) -> Result<Vec<u8>, 
         bytes.ok_or_else(|| {
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "native callable owner qualified name is not a string",
             );
         })
@@ -403,7 +408,11 @@ pub(crate) unsafe fn configure_native_callable(
                 CFunctionConvention::NoArgs => BIND_KIND_FIXED_NOARGS,
                 CFunctionConvention::OneObject => BIND_KIND_FIXED_ONE_OBJECT,
                 _ => {
-                    raise_exception::<()>(py, "ValueError", "expected a fixed calling convention");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::ValueError,
+                        "expected a fixed calling convention",
+                    );
                     return false;
                 }
             };
@@ -427,7 +436,7 @@ pub(crate) unsafe fn configure_native_callable(
             {
                 raise_exception::<()>(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "fixed builtin requires a published string __qualname__",
                 );
                 return false;
@@ -442,7 +451,7 @@ pub(crate) unsafe fn configure_native_callable(
             {
                 raise_exception::<()>(
                     py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "fixed builtin declaration does not match executable signature",
                 );
                 return false;
@@ -464,7 +473,7 @@ pub(crate) unsafe fn configure_native_callable(
         {
             raise_exception::<u64>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "native callable identity is already published",
             );
             return false;
@@ -595,7 +604,7 @@ pub(crate) unsafe fn native_function_error_name(
             .load(pointer)
             .filter(|bits| !obj_from_bits(*bits).is_none())
         else {
-            raise_exception::<()>(py, "AttributeError", "__qualname__");
+            raise_exception::<()>(py, BuiltinExc::AttributeError, "__qualname__");
             return Err(());
         };
         let module = Field::Module
@@ -680,7 +689,11 @@ unsafe fn descriptor_class_name(py: &PyToken<'_>, class: u64) -> Result<Vec<u8>,
             })
         };
         let Some(bytes) = bytes else {
-            raise_exception::<()>(py, "SystemError", "native descriptor class has no name");
+            raise_exception::<()>(
+                py,
+                BuiltinExc::SystemError,
+                "native descriptor class has no name",
+            );
             return Err(());
         };
         // Native diagnostic labels share the target-version C-string
@@ -813,7 +826,11 @@ unsafe fn raise_descriptor_receiver_error(
             ]
             .concat()
         };
-        crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+        crate::builtins::exceptions::raise_exception_bytes::<()>(
+            py,
+            BuiltinExc::TypeError,
+            &message,
+        );
         Ok(())
     }
 }
@@ -993,7 +1010,7 @@ pub(crate) unsafe fn admit_native_call(
             Ok(None) => {
                 raise_exception::<u64>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "native descriptor call admitted no receiver",
                 );
                 false
@@ -1032,7 +1049,11 @@ pub(crate) unsafe fn admit_native_noargs(
             ),
             crate::call::bind::ReceiverOrigin::Bound => {
                 let Some(&receiver) = positional.first() else {
-                    raise_exception::<()>(py, "SystemError", "bound native call has no receiver");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::SystemError,
+                        "bound native call has no receiver",
+                    );
                     return Some(false);
                 };
                 let class = match crate::object::class_layout::real_type_bits(py, receiver) {
@@ -1053,7 +1074,7 @@ pub(crate) unsafe fn admit_native_noargs(
             Err(()) => return Some(false),
         };
         let Some(name) = native_callable_name(function) else {
-            raise_exception::<()>(py, "SystemError", "native descriptor has no name");
+            raise_exception::<()>(py, BuiltinExc::SystemError, "native descriptor has no name");
             return Some(false);
         };
         message.push(b'.');
@@ -1069,7 +1090,11 @@ pub(crate) unsafe fn admit_native_noargs(
                 .as_bytes(),
             );
         }
-        crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+        crate::builtins::exceptions::raise_exception_bytes::<()>(
+            py,
+            BuiltinExc::TypeError,
+            &message,
+        );
         Some(false)
     }
 }

@@ -294,7 +294,7 @@ fn fraction_from_obj_bits(_py: &PyToken, bits: u64) -> Result<FractionHandle, u6
     let Some(ptr) = opaque_handle_ptr_from_bits(bits) else {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "expected Fraction handle",
         ));
     };
@@ -310,14 +310,22 @@ fn fraction_from_obj_bits(_py: &PyToken, bits: u64) -> Result<FractionHandle, u6
 pub extern "C" fn molt_fraction_new(num_bits: u64, den_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(n) = to_bigint(obj_from_bits(num_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "Fraction numerator must be int");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "Fraction numerator must be int",
+            );
         };
         let Some(d) = to_bigint(obj_from_bits(den_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "Fraction denominator must be int");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "Fraction denominator must be int",
+            );
         };
         match FractionHandle::new(n, d) {
             Ok(h) => fraction_bits(h),
-            Err(msg) => raise_exception::<u64>(_py, "ZeroDivisionError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ZeroDivisionError, msg),
         }
     })
 }
@@ -326,11 +334,11 @@ pub extern "C" fn molt_fraction_new(num_bits: u64, den_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_from_float(f_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(f) = to_f64(obj_from_bits(f_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "argument must be float");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be float");
         };
         match fraction_from_f64(f) {
             Ok(h) => fraction_bits(h),
-            Err(msg) => raise_exception::<u64>(_py, "ValueError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ValueError, msg),
         }
     })
 }
@@ -339,11 +347,11 @@ pub extern "C" fn molt_fraction_from_float(f_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_from_str(s_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(s_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "argument must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be str");
         };
         match fraction_from_str(&s) {
             Ok(h) => fraction_bits(h),
-            Err(msg) => raise_exception::<u64>(_py, "ValueError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ValueError, msg),
         }
     })
 }
@@ -352,10 +360,10 @@ pub extern "C" fn molt_fraction_from_str(s_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_add(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         fraction_bits(a.add(&b))
     })
@@ -365,10 +373,10 @@ pub extern "C" fn molt_fraction_add(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_sub(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         fraction_bits(a.sub(&b))
     })
@@ -378,10 +386,10 @@ pub extern "C" fn molt_fraction_sub(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_mul(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         fraction_bits(a.mul(&b))
     })
@@ -391,14 +399,14 @@ pub extern "C" fn molt_fraction_mul(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_truediv(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         match a.truediv(&b) {
             Ok(h) => fraction_bits(h),
-            Err(msg) => raise_exception::<u64>(_py, "ZeroDivisionError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ZeroDivisionError, msg),
         }
     })
 }
@@ -407,14 +415,14 @@ pub extern "C" fn molt_fraction_truediv(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_floordiv(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         match a.floordiv(&b) {
             Ok(big) => int_bits_from_bigint(_py, big),
-            Err(msg) => raise_exception::<u64>(_py, "ZeroDivisionError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ZeroDivisionError, msg),
         }
     })
 }
@@ -423,14 +431,14 @@ pub extern "C" fn molt_fraction_floordiv(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_mod(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         match a.modulo(&b) {
             Ok(h) => fraction_bits(h),
-            Err(msg) => raise_exception::<u64>(_py, "ZeroDivisionError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::ZeroDivisionError, msg),
         }
     })
 }
@@ -439,7 +447,7 @@ pub extern "C" fn molt_fraction_mod(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_neg(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         fraction_bits(a.neg())
     })
@@ -449,7 +457,7 @@ pub extern "C" fn molt_fraction_neg(a_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_abs(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         fraction_bits(a.abs())
     })
@@ -459,10 +467,10 @@ pub extern "C" fn molt_fraction_abs(a_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_eq(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         MoltObject::from_bool(a.numer == b.numer && a.denom == b.denom).bits()
     })
@@ -472,10 +480,10 @@ pub extern "C" fn molt_fraction_eq(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_lt(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         // a/b < c/d  <=>  ad < bc  (denominators always positive)
         let lhs = &a.numer * &b.denom;
@@ -488,10 +496,10 @@ pub extern "C" fn molt_fraction_lt(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_le(a_bits: u64, b_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Ok(b) = fraction_from_obj_bits(_py, b_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let lhs = &a.numer * &b.denom;
         let rhs = &b.numer * &a.denom;
@@ -503,7 +511,7 @@ pub extern "C" fn molt_fraction_le(a_bits: u64, b_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_numerator(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         int_bits_from_bigint(_py, a.numer.clone())
     })
@@ -513,7 +521,7 @@ pub extern "C" fn molt_fraction_numerator(a_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_denominator(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         int_bits_from_bigint(_py, a.denom.clone())
     })
@@ -523,17 +531,17 @@ pub extern "C" fn molt_fraction_denominator(a_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_to_float(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         match ratio_to_f64(&a.numer, &a.denom) {
             Ok(value) => MoltObject::from_float(value).bits(),
             Err(RatioFloatError::Overflow) => raise_exception::<u64>(
                 _py,
-                "OverflowError",
+                BuiltinExc::OverflowError,
                 "integer division result too large for a float",
             ),
             Err(RatioFloatError::ZeroDenominator) => {
-                raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero")
+                raise_exception::<u64>(_py, BuiltinExc::ZeroDivisionError, "division by zero")
             }
         }
     })
@@ -543,15 +551,17 @@ pub extern "C" fn molt_fraction_to_float(a_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_to_str(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let s = match a.decimal_string(_py) {
             Ok(text) => text,
-            Err(error) => return raise_exception::<u64>(_py, "ValueError", &error.to_string()),
+            Err(error) => {
+                return raise_exception::<u64>(_py, BuiltinExc::ValueError, &error.to_string());
+            }
         };
         let ptr = alloc_string(_py, s.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -561,13 +571,21 @@ pub extern "C" fn molt_fraction_to_str(a_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_limit_denominator(a_bits: u64, max_den_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let Some(max_den_big) = to_bigint(obj_from_bits(max_den_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "max_denominator must be int");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "max_denominator must be int",
+            );
         };
         if max_den_big <= BigInt::zero() {
-            return raise_exception::<u64>(_py, "ValueError", "max_denominator must be positive");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "max_denominator must be positive",
+            );
         }
         let result = limit_denominator(&a, &max_den_big);
         fraction_bits(result)
@@ -578,7 +596,7 @@ pub extern "C" fn molt_fraction_limit_denominator(a_bits: u64, max_den_bits: u64
 pub extern "C" fn molt_fraction_as_integer_ratio(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         let num_bits = int_bits_from_bigint(_py, a.numer.clone());
         let den_bits = int_bits_from_bigint(_py, a.denom.clone());
@@ -586,7 +604,7 @@ pub extern "C" fn molt_fraction_as_integer_ratio(a_bits: u64) -> u64 {
         dec_ref_bits(_py, num_bits);
         dec_ref_bits(_py, den_bits);
         if tuple_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(tuple_ptr).bits()
     })
@@ -596,7 +614,7 @@ pub extern "C" fn molt_fraction_as_integer_ratio(a_bits: u64) -> u64 {
 pub extern "C" fn molt_fraction_hash(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Ok(a) = fraction_from_obj_bits(_py, a_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected Fraction handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected Fraction handle");
         };
         // The shared target numeric hash may exceed the inline-int window.
         // The integer constructor preserves the full value and chooses its

@@ -67,9 +67,9 @@ impl GraphState {
     }
 
     fn lookup_node_index(&self, _py: &PyToken, node_bits: u64) -> Result<Option<usize>, u64> {
-        let dict_ptr = self
-            .node_map_ptr()
-            .ok_or_else(|| raise_exception::<u64>(_py, "RuntimeError", "graph state lost"))?;
+        let dict_ptr = self.node_map_ptr().ok_or_else(|| {
+            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "graph state lost")
+        })?;
         let found = unsafe { dict_get_in_place(_py, dict_ptr, node_bits) }
             .map_err(|molt_runtime_core::ErrorIndicatorSet| MoltObject::none().bits())?;
         let Some(idx_bits) = found else {
@@ -78,14 +78,14 @@ impl GraphState {
         let Some(idx) = to_i64(obj_from_bits(idx_bits)) else {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "graph index corrupted",
             ));
         };
         if idx < 0 {
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "graph index corrupted",
             ));
         }
@@ -96,9 +96,9 @@ impl GraphState {
         if let Some(idx) = self.lookup_node_index(_py, node_bits)? {
             return Ok(idx);
         }
-        let dict_ptr = self
-            .node_map_ptr()
-            .ok_or_else(|| raise_exception::<u64>(_py, "RuntimeError", "graph state lost"))?;
+        let dict_ptr = self.node_map_ptr().ok_or_else(|| {
+            raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "graph state lost")
+        })?;
         let idx = self.nodes.len();
         self.nodes.push(NodeInfo {
             node_bits,
@@ -208,7 +208,7 @@ fn prepare_graph(_py: &PyToken, state: &mut GraphState) -> Result<Option<Vec<usi
     if state.ready_nodes.is_some() {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "cannot prepare() more than once",
         ));
     }
@@ -253,13 +253,13 @@ pub extern "C" fn molt_graphlib_new() -> u64 {
 pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
         let mut state = handle.state.lock().unwrap();
         if state.ready_nodes.is_some() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Nodes cannot be added after a call to prepare()",
             );
         }
@@ -271,12 +271,22 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
         let preds_obj = obj_from_bits(preds_bits);
         let preds_ptr = match preds_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return raise_exception::<_>(_py, "TypeError", "predecessors must be a tuple"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "predecessors must be a tuple",
+                );
+            }
         };
         unsafe {
             let type_id = object_type_id(preds_ptr);
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
-                return raise_exception::<_>(_py, "TypeError", "predecessors must be a tuple");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "predecessors must be a tuple",
+                );
             }
             let elems = seq_snapshot(preds_ptr);
             let pred_count = elems.len();
@@ -299,7 +309,7 @@ pub extern "C" fn molt_graphlib_add(handle_bits: u64, node_bits: u64, preds_bits
 pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
         let mut state = handle.state.lock().unwrap();
         let cycle = match prepare_graph(_py, &mut state) {
@@ -317,13 +327,17 @@ pub extern "C" fn molt_graphlib_prepare(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
         let mut state = handle.state.lock().unwrap();
         let ready = match state.ready_nodes.as_ref() {
             Some(nodes) => nodes.clone(),
             None => {
-                return raise_exception::<_>(_py, "ValueError", "prepare() must be called first");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "prepare() must be called first",
+                );
             }
         };
         for &idx in ready.iter() {
@@ -341,11 +355,15 @@ pub extern "C" fn molt_graphlib_get_ready(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
         let state = handle.state.lock().unwrap();
         let Some(ready_nodes) = state.ready_nodes.as_ref() else {
-            return raise_exception::<_>(_py, "ValueError", "prepare() must be called first");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "prepare() must be called first",
+            );
         };
         MoltObject::from_bool(state.nfinished < state.npassedout || !ready_nodes.is_empty()).bits()
     })
@@ -355,24 +373,30 @@ pub extern "C" fn molt_graphlib_is_active(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
         let mut state = handle.state.lock().unwrap();
         let ready_nodes_present = state.ready_nodes.is_some();
         if !ready_nodes_present {
-            return raise_exception::<_>(_py, "ValueError", "prepare() must be called first");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "prepare() must be called first",
+            );
         }
         let mut newly_ready: Vec<usize> = Vec::new();
 
         let nodes_obj = obj_from_bits(nodes_bits);
         let nodes_ptr = match nodes_obj.as_ptr() {
             Some(ptr) => ptr,
-            None => return raise_exception::<_>(_py, "TypeError", "nodes must be a tuple"),
+            None => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "nodes must be a tuple");
+            }
         };
         unsafe {
             let type_id = object_type_id(nodes_ptr);
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
-                return raise_exception::<_>(_py, "TypeError", "nodes must be a tuple");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "nodes must be a tuple");
             }
             let elems = seq_snapshot(nodes_ptr);
             for &node_bits in elems.iter() {
@@ -384,7 +408,7 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
                             Err(err) => return err,
                         };
                         let msg = format!("node {repr} was not added using add()");
-                        return raise_exception::<_>(_py, "ValueError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                     }
                     Err(err) => return err,
                 };
@@ -396,14 +420,14 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
                     };
                     if stat >= 0 {
                         let msg = format!("node {repr} was not passed out (still not ready)");
-                        return raise_exception::<_>(_py, "ValueError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                     }
                     if stat == NODE_DONE {
                         let msg = format!("node {repr} was already marked done");
-                        return raise_exception::<_>(_py, "ValueError", &msg);
+                        return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg);
                     }
                     let msg = format!("node {repr}: unknown status {stat}");
-                    return raise_exception::<_>(_py, "AssertionError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::AssertionError, &msg);
                 }
 
                 state.nodes[node_idx].npredecessors = NODE_DONE;
@@ -429,7 +453,7 @@ pub extern "C" fn molt_graphlib_done(handle_bits: u64, nodes_bits: u64) -> u64 {
 pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = graph_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid graph handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid graph handle");
         };
         let mut state = handle.state.lock().unwrap();
         let cycle = match prepare_graph(_py, &mut state) {
@@ -449,7 +473,7 @@ pub extern "C" fn molt_graphlib_static_order(handle_bits: u64) -> u64 {
                 None => {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "prepare() must be called first",
                     );
                 }

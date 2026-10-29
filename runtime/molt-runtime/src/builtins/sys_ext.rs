@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime/src/builtins/sys_ext.rs ===
+use crate::BuiltinExc;
 //
 // Additional sys intrinsics for CPython 3.12+ parity.
 // These supplement the existing sys intrinsics in object/ops.rs, io.rs, and platform.rs.
@@ -131,7 +132,7 @@ fn ensure_trace_or_profile_callable(
     if !is_callable {
         return Err(raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("{api_name}() argument must be callable"),
         ));
     }
@@ -455,7 +456,7 @@ pub extern "C" fn molt_sys_intern(s_bits: u64) -> u64 {
             None => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "intern() argument 1 must be str, not other type",
                 );
             }
@@ -876,13 +877,13 @@ pub extern "C" fn molt_sys_setswitchinterval(interval_bits: u64) -> u64 {
         let val = match to_f64(obj) {
             Some(v) => v,
             None => {
-                return raise_exception::<u64>(_py, "TypeError", "a float is required");
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "a float is required");
             }
         };
         if val <= 0.0 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "switch interval must be strictly positive",
             );
         }
@@ -929,7 +930,7 @@ pub extern "C" fn molt_sys_set_int_max_str_digits(maxdigits_bits: u64) -> u64 {
                 "maxdigits must be 0 or larger than {}",
                 INT_STR_DIGITS_CHECK_THRESHOLD
             );
-            return raise_exception::<u64>(_py, "ValueError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
         }
         sys_state(_py)
             .int_max_str_digits
@@ -949,7 +950,7 @@ pub extern "C" fn molt_sys_call_tracing_validate(func_bits: u64, args_bits: u64)
         if !is_truthy(_py, obj_from_bits(molt_is_callable(func_bits))) {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "call_tracing() argument 1 must be callable",
             );
         }
@@ -962,7 +963,7 @@ pub extern "C" fn molt_sys_call_tracing_validate(func_bits: u64, args_bits: u64)
         }
         raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "call_tracing() argument 2 must be a tuple",
         )
     })
@@ -976,10 +977,10 @@ pub extern "C" fn molt_sys_addaudithook(hook_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if !audit_event_noargs(_py, "sys.addaudithook") {
             let exception = molt_exception_last_pending();
-            let suppressed = crate::builtins::exceptions::exception_matches_builtin_name(
+            let suppressed = crate::builtins::exceptions::exception_matches_kind(
                 _py,
                 exception,
-                "Exception",
+                crate::BuiltinExc::Exception,
             );
             if suppressed {
                 clear_exception(_py);
@@ -1094,13 +1095,17 @@ pub extern "C" fn molt_sys_audit(event_bits: u64, args_bits: u64) -> u64 {
             } else {
                 format!("expected str for argument 'event', not {name}")
             };
-            return raise_exception::<u64>(py, "TypeError", &message);
+            return raise_exception::<u64>(py, BuiltinExc::TypeError, &message);
         };
         let tuple = obj_from_bits(args_bits)
             .as_ptr()
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TUPLE });
         if !tuple {
-            return raise_exception::<u64>(py, "TypeError", "audit arguments must be a tuple");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "audit arguments must be a tuple",
+            );
         }
         let event_length = unsafe { string_len(event_ptr) };
         let normalized_length = unsafe {
@@ -1114,7 +1119,7 @@ pub extern "C" fn molt_sys_audit(event_bits: u64, args_bits: u64) -> u64 {
         if normalized_length != event_length
             && crate::object::ops_sys::runtime_target_minor(py) >= 14
         {
-            return raise_exception::<u64>(py, "ValueError", "embedded null character");
+            return raise_exception::<u64>(py, BuiltinExc::ValueError, "embedded null character");
         }
         if sys_state(py)
             .audit_hooks
@@ -1248,7 +1253,7 @@ mod tests {
             drop(budget);
             clear_exception(py);
 
-            raise_exception::<u64>(py, "ValueError", "original metadata error");
+            raise_exception::<u64>(py, BuiltinExc::ValueError, "original metadata error");
             let original = molt_exception_last_pending();
             inc_ref_bits(py, field);
             assert!(obj_from_bits(sys_tuple_from_owned(py, &[field])).is_none());
@@ -1378,10 +1383,10 @@ mod tests {
                     dec_ref_bits(py, bits);
                     assert!(exception_pending(py));
                     let error = molt_exception_last_pending();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         error,
-                        "OverflowError"
+                        crate::BuiltinExc::OverflowError
                     ));
                     clear_exception(py);
                     dec_ref_bits(py, error);
@@ -1469,8 +1474,8 @@ mod tests {
                 b"sys.addaudithook",
             ) {
                 match AUDIT_VETO.load(AtomicOrdering::Relaxed) {
-                    1 => return raise_exception::<u64>(py, "ValueError", "veto"),
-                    2 => return raise_exception::<u64>(py, "KeyboardInterrupt", "veto"),
+                    1 => return raise_exception::<u64>(py, BuiltinExc::ValueError, "veto"),
+                    2 => return raise_exception::<u64>(py, BuiltinExc::KeyboardInterrupt, "veto"),
                     _ => {}
                 }
             }
@@ -1521,16 +1526,16 @@ mod tests {
             molt_sys_addaudithook(late);
             assert!(exception_pending(py));
             let exception = molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 exception,
-                "KeyboardInterrupt"
+                crate::BuiltinExc::KeyboardInterrupt
             ));
             clear_exception(py);
             dec_ref_bits(py, exception);
             assert_eq!(sys_state(py).audit_hooks.lock().unwrap().len(), count);
             AUDIT_VETO.store(0, AtomicOrdering::Relaxed);
-            raise_exception::<u64>(py, "ValueError", "incoming");
+            raise_exception::<u64>(py, BuiltinExc::ValueError, "incoming");
             let incoming = molt_exception_last_pending();
             assert!(audit_event_noargs(py, "molt.audit.inner"));
             let restored = molt_exception_last_pending();
@@ -1542,10 +1547,10 @@ mod tests {
             assert!(!audit_event_noargs(py, "sys.addaudithook"));
             let replacement = molt_exception_last_pending();
             assert_ne!(replacement, incoming);
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 replacement,
-                "KeyboardInterrupt"
+                crate::BuiltinExc::KeyboardInterrupt
             ));
             clear_exception(py);
             dec_ref_bits(py, incoming);

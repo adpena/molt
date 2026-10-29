@@ -1,5 +1,6 @@
 use super::target_capability::{base_socket_type, socket_type_requests_nonblocking};
 use super::*;
+use crate::BuiltinExc;
 
 #[cfg(molt_has_net_io)]
 #[unsafe(no_mangle)]
@@ -15,11 +16,11 @@ pub extern "C" fn molt_socket_new(
         }
         let family = match to_i64(obj_from_bits(family_bits)) {
             Some(val) => val as i32,
-            None => return raise_exception::<_>(_py, "TypeError", "family must be int"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "family must be int"),
         };
         let sock_type = match to_i64(obj_from_bits(type_bits)) {
             Some(val) => val as i32,
-            None => return raise_exception::<_>(_py, "TypeError", "type must be int"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "type must be int"),
         };
         let proto = to_i64(obj_from_bits(proto_bits)).unwrap_or(0) as i32;
         let fileno = if obj_from_bits(fileno_bits).is_none() {
@@ -28,7 +29,11 @@ pub extern "C" fn molt_socket_new(
             match to_i64(obj_from_bits(fileno_bits)) {
                 Some(val) => Some(val),
                 None => {
-                    return raise_exception::<_>(_py, "TypeError", "fileno must be int or None");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "fileno must be int or None",
+                    );
                 }
             }
         };
@@ -293,10 +298,18 @@ pub unsafe extern "C" fn molt_socket_settimeout(sock_bits: u64, timeout_bits: u6
             return MoltObject::none().bits();
         }
         let Some(timeout) = to_f64(obj) else {
-            return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "timeout must be float or None",
+            );
         };
         if !timeout.is_finite() || timeout < 0.0 {
-            return raise_exception::<_>(_py, "ValueError", "timeout must be non-negative");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "timeout must be non-negative",
+            );
         }
         let duration = if timeout == 0.0 {
             Duration::ZERO
@@ -349,7 +362,7 @@ pub unsafe extern "C" fn molt_socket_bind(sock_bits: u64, addr_bits: u64) -> u64
             };
             let sockaddr = match sockaddr_from_bits(_py, addr_bits, family) {
                 Ok(addr) => addr,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let res = with_socket_mut(socket_ptr, |inner| match &inner.kind {
                 MoltSocketKind::Pending(sock) => sock.bind(&sockaddr),
@@ -543,7 +556,11 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
                 if addr_bits == 0 {
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_READ) {
                         if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::TimeoutError,
+                                "timed out",
+                            );
                         }
                         if wait_err.kind() == ErrorKind::WouldBlock {
                             if matches!(timeout, Some(val) if val == Duration::ZERO) {
@@ -595,7 +612,7 @@ pub unsafe extern "C" fn molt_socket_connect(sock_bits: u64, addr_bits: u64) -> 
             };
             let sockaddr = match sockaddr_from_bits(_py, addr_bits, family) {
                 Ok(addr) => addr,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let timeout = socket_timeout(socket_ptr);
             let res = with_socket_mut(socket_ptr, |inner| {

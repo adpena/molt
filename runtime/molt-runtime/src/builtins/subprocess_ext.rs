@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime/src/builtins/subprocess_ext.rs ===
+use crate::BuiltinExc;
 //
 // High-level subprocess helpers: run, check_output, check_call, and the
 // symbolic PIPE / STDOUT / DEVNULL constants.
@@ -137,11 +138,11 @@ fn build_command(
     env_bits: u64,
 ) -> Result<std::process::Command, u64> {
     let argv = argv_from_obj(_py, args_bits)
-        .map_err(|msg| raise_exception::<u64>(_py, "TypeError", &msg))?;
+        .map_err(|msg| raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg))?;
     if argv.is_empty() {
         return Err(raise_exception::<u64>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "args must not be empty",
         ));
     }
@@ -166,7 +167,7 @@ fn build_command(
                     cmd.env(k, v);
                 }
             }
-            Err(msg) => return Err(raise_exception::<u64>(_py, "TypeError", &msg)),
+            Err(msg) => return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg)),
         }
     }
 
@@ -299,8 +300,12 @@ pub extern "C" fn molt_subprocess_run(
 
         // Raise CalledProcessError if check=True and returncode != 0.
         if check && returncode != 0 {
-            let msg = format!("Command returned non-zero exit status {returncode}");
-            return raise_exception::<u64>(_py, "CalledProcessError", &msg);
+            let (output, stderr) = if capture_output {
+                (Some(stdout_bytes.as_slice()), Some(stderr_bytes.as_slice()))
+            } else {
+                (None, None)
+            };
+            return raise_called_process_error(_py, returncode, args_bits, output, stderr);
         }
 
         // Build return tuple (returncode, stdout_bytes, stderr_bytes).
@@ -318,6 +323,38 @@ pub extern "C" fn molt_subprocess_run(
         }
         MoltObject::from_ptr(tup).bits()
     })
+}
+
+/// Raise `subprocess.CalledProcessError(returncode, cmd, output, stderr)` with
+/// the owner's class, so its own `__init__` sets the fields and `__str__`.
+#[cfg(not(target_arch = "wasm32"))]
+fn raise_called_process_error(
+    py: &PyToken<'_>,
+    returncode: i32,
+    cmd_bits: u64,
+    output: Option<&[u8]>,
+    stderr: Option<&[u8]>,
+) -> u64 {
+    use crate::builtins::exceptions::ExceptionValue;
+    let optional_bytes = |bytes: Option<&[u8]>| match bytes {
+        Some(bytes) => ExceptionValue::adopt(py, bytes_to_bits(py, bytes)),
+        None => ExceptionValue::adopt(py, MoltObject::none().bits()),
+    };
+    let output = optional_bytes(output);
+    let stderr = optional_bytes(stderr);
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    crate::builtins::exceptions::raise_module_exception_with_args(
+        py,
+        crate::ModuleExc::SubprocessCalledProcessError,
+        &[
+            MoltObject::from_int(returncode as i64).bits(),
+            cmd_bits,
+            output.bits(),
+            stderr.bits(),
+        ],
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -385,7 +422,7 @@ pub extern "C" fn molt_subprocess_run(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "subprocess.run is not available on this platform",
         )
     })
@@ -466,8 +503,13 @@ pub extern "C" fn molt_subprocess_check_output(
         };
 
         if returncode != 0 {
-            let msg = format!("Command returned non-zero exit status {returncode}");
-            return raise_exception::<u64>(_py, "CalledProcessError", &msg);
+            return raise_called_process_error(
+                _py,
+                returncode,
+                args_bits,
+                Some(stdout_bytes.as_slice()),
+                None,
+            );
         }
 
         bytes_to_bits(_py, &stdout_bytes)
@@ -486,7 +528,7 @@ pub extern "C" fn molt_subprocess_check_output(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "subprocess.check_output is not available on this platform",
         )
     })
@@ -544,8 +586,7 @@ pub extern "C" fn molt_subprocess_check_call(
         };
 
         if returncode != 0 {
-            let msg = format!("Command returned non-zero exit status {returncode}");
-            return raise_exception::<u64>(_py, "CalledProcessError", &msg);
+            return raise_called_process_error(_py, returncode, args_bits, None, None);
         }
 
         MoltObject::from_int(0).bits()
@@ -563,7 +604,7 @@ pub extern "C" fn molt_subprocess_check_call(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             "subprocess.check_call is not available on this platform",
         )
     })
@@ -590,7 +631,7 @@ fn extract_bytes(_py: &PyToken<'_>, bits: u64) -> Result<Vec<u8>, u64> {
     }
     Err(raise_exception::<u64>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "input must be bytes or bytearray",
     ))
 }

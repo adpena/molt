@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 #[path = "generators_async_stream.rs"]
 mod generators_async_stream;
 pub(crate) use generators_async_stream::*;
@@ -123,17 +124,24 @@ unsafe fn asyncio_close_connection_best_effort(_py: &PyToken<'_>, conn_bits: u64
 }
 
 fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64) -> Option<i64> {
-    if !crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, "OSError") {
-        return None;
-    }
-    if crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, "BlockingIOError")
-    {
-        return Some(libc::EWOULDBLOCK as i64);
-    }
-    if crate::builtins::exceptions::exception_matches_builtin_name(
+    if !crate::builtins::exceptions::exception_matches_kind(
         _py,
         exc_bits,
-        "InterruptedError",
+        crate::BuiltinExc::OSError,
+    ) {
+        return None;
+    }
+    if crate::builtins::exceptions::exception_matches_kind(
+        _py,
+        exc_bits,
+        crate::BuiltinExc::BlockingIOError,
+    ) {
+        return Some(libc::EWOULDBLOCK as i64);
+    }
+    if crate::builtins::exceptions::exception_matches_kind(
+        _py,
+        exc_bits,
+        crate::BuiltinExc::InterruptedError,
     ) {
         return Some(libc::EINTR as i64);
     }
@@ -495,7 +503,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
             if payload_bytes < 6 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio fd watcher payload",
                 );
             }
@@ -698,7 +706,7 @@ pub unsafe extern "C" fn molt_asyncio_server_accept_loop_poll(obj_bits: u64) -> 
             if payload_bytes < 8 * std::mem::size_of::<u64>() {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid asyncio server accept loop payload",
                 );
             }
@@ -899,7 +907,8 @@ mod exception_storage_tests {
                 let native = OwnedPyObject::from_owned(native);
                 let native_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
                 let managed =
-                    MoltObject::from_ptr(crate::alloc_exception(py, "OSError", "retry")).bits();
+                    MoltObject::from_ptr(crate::alloc_exception(py, BuiltinExc::OSError, "retry"))
+                        .bits();
                 let args = MoltObject::from_ptr(alloc_tuple(
                     py,
                     &[MoltObject::from_int(libc::EINTR as i64).bits()],

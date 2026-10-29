@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -38,7 +39,7 @@ extern "C" fn mutate_dictionary_during_add(self_bits: u64, _other: u64) -> u64 {
         }
         match CALLBACK_MODE.load(Ordering::SeqCst) {
             1 => MoltObject::none().bits(),
-            2 => raise_exception::<u64>(py, "RuntimeError", "increment callback failure"),
+            2 => raise_exception::<u64>(py, BuiltinExc::RuntimeError, "increment callback failure"),
             _ => MoltObject::from_int(42).bits(),
         }
     })

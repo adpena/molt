@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crossbeam_channel::{Receiver, Sender};
 #[cfg(molt_has_net_io)]
 use std::net::TcpStream;
@@ -137,7 +138,7 @@ pub extern "C" fn molt_ws_pair_obj(capacity_bits: u64) -> u64 {
         // The pointer-output ABI retains its raw capacity/status contract.
         let rc = unsafe { molt_ws_pair(capacity as u64, &mut left, &mut right) };
         if rc != 0 {
-            return raise_exception::<_>(_py, "RuntimeError", "molt_ws_pair failed");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "molt_ws_pair failed");
         }
         ws_pair_into_tuple(_py, left, right)
     })
@@ -279,7 +280,7 @@ extern "C" fn ws_send_host_hook(ctx: *mut u8, data_ptr: *const u8, len: usize) -
             let guard = crate::GilGuard::new();
             raise_exception::<i64>(
                 &guard.token(),
-                "OSError",
+                BuiltinExc::OSError,
                 &format!("websocket host send failed with errno {}", -errno),
             )
         }
@@ -678,16 +679,16 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
             return MoltObject::none().bits();
         }
         let Some(host) = string_obj_to_owned(obj_from_bits(host_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "host must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "host must be str");
         };
         if host.is_empty() {
-            return raise_exception::<u64>(_py, "ValueError", "host cannot be empty");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "host cannot be empty");
         }
         let Some(port_raw) = to_i64(obj_from_bits(port_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "port must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "port must be int");
         };
         if !(0..=65535).contains(&port_raw) {
-            return raise_exception::<u64>(_py, "OverflowError", "port out of range");
+            return raise_exception::<u64>(_py, BuiltinExc::OverflowError, "port out of range");
         }
         let server_name = if obj_from_bits(server_hostname_bits).is_none() {
             host.clone()
@@ -695,14 +696,14 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
             let Some(name) = string_obj_to_owned(obj_from_bits(server_hostname_bits)) else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "server_hostname must be str or None",
                 );
             };
             if name.is_empty() {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "server_hostname cannot be empty",
                 );
             }
@@ -726,7 +727,7 @@ pub extern "C" fn molt_asyncio_tls_client_connect_new(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "asyncio TLS client transport is unavailable on wasm",
         )
     })
@@ -745,10 +746,10 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
             return MoltObject::none().bits();
         }
         let Some(fd_raw) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "fd must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "fd must be int");
         };
         if fd_raw < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "fd must be >= 0");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "fd must be >= 0");
         }
         let server_name = if obj_from_bits(server_hostname_bits).is_none() {
             "localhost".to_string()
@@ -756,14 +757,14 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
             let Some(name) = string_obj_to_owned(obj_from_bits(server_hostname_bits)) else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "server_hostname must be str or None",
                 );
             };
             if name.is_empty() {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "server_hostname cannot be empty",
                 );
             }
@@ -771,7 +772,11 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
         };
         let stream_ptr = tls_client_from_fd_native(fd_raw, &server_name);
         if stream_ptr.is_null() {
-            return raise_exception::<u64>(_py, "OSError", "asyncio TLS start_tls upgrade failed");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::OSError,
+                "asyncio TLS start_tls upgrade failed",
+            );
         }
         opaque_handle_bits(stream_ptr)
     })
@@ -786,7 +791,7 @@ pub extern "C" fn molt_asyncio_tls_client_from_fd_new(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "asyncio TLS start_tls upgrade is unavailable on wasm",
         )
     })
@@ -807,7 +812,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
         {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "server ssl requires a context with certfile/keyfile",
             );
         }
@@ -821,7 +826,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
             Ok(None) => {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "server ssl context is missing certfile",
                 );
             }
@@ -837,7 +842,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(ssl_bits: u64) -> u64 {
             Ok(None) => {
                 return raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "server ssl context is missing keyfile",
                 );
             }
@@ -871,7 +876,7 @@ pub extern "C" fn molt_asyncio_tls_server_payload(_ssl_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "asyncio TLS server payload is unavailable on wasm",
         )
     })
@@ -891,26 +896,30 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
             return MoltObject::none().bits();
         }
         let Some(fd_raw) = to_i64(obj_from_bits(fd_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "fd must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "fd must be int");
         };
         if fd_raw < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "fd must be >= 0");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "fd must be >= 0");
         }
         let Some(certfile) = string_obj_to_owned(obj_from_bits(certfile_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "certfile must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "certfile must be str");
         };
         if certfile.is_empty() {
-            return raise_exception::<u64>(_py, "ValueError", "certfile cannot be empty");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "certfile cannot be empty");
         }
         let Some(keyfile) = string_obj_to_owned(obj_from_bits(keyfile_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "keyfile must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "keyfile must be str");
         };
         if keyfile.is_empty() {
-            return raise_exception::<u64>(_py, "ValueError", "keyfile cannot be empty");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "keyfile cannot be empty");
         }
         let stream_ptr = tls_server_from_fd_native(fd_raw, &certfile, &keyfile);
         if stream_ptr.is_null() {
-            return raise_exception::<u64>(_py, "OSError", "asyncio TLS server upgrade failed");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::OSError,
+                "asyncio TLS server upgrade failed",
+            );
         }
         opaque_handle_bits(stream_ptr)
     })
@@ -926,7 +935,7 @@ pub extern "C" fn molt_asyncio_tls_server_from_fd_new(
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "asyncio TLS server transport is unavailable on wasm",
         )
     })
@@ -992,7 +1001,7 @@ pub extern "C" fn molt_ws_connect_obj(url_bits: u64) -> u64 {
         let url = match string_obj_to_owned(obj_from_bits(url_bits)) {
             Some(val) => val,
             None => {
-                return raise_exception::<_>(_py, "TypeError", "url must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "url must be str");
             }
         };
         let mut handle: u64 = 0;
@@ -1025,19 +1034,27 @@ mod tests {
 #[cfg(molt_net)]
 fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
     match code {
-        1 => raise_exception::<_>(_py, "ValueError", "websocket url payload is invalid"),
-        2 => raise_exception::<_>(_py, "RuntimeError", "websocket output pointer is invalid"),
+        1 => raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "websocket url payload is invalid",
+        ),
+        2 => raise_exception::<_>(
+            _py,
+            BuiltinExc::RuntimeError,
+            "websocket output pointer is invalid",
+        ),
         6 => raise_exception::<_>(
             _py,
-            "PermissionError",
+            BuiltinExc::PermissionError,
             "missing websocket.connect capability",
         ),
         7 => raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "websocket connect failed or host transport is unavailable",
         ),
-        _ => raise_exception::<_>(_py, "RuntimeError", "websocket connect failed"),
+        _ => raise_exception::<_>(_py, BuiltinExc::RuntimeError, "websocket connect failed"),
     }
 }
 
@@ -1108,7 +1125,7 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
         }
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
-            return raise_exception::<_>(_py, "TypeError", "invalid websocket");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid websocket");
         }
         let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.closed.load(AtomicOrdering::Relaxed) || !ws_is_native(ws) {
@@ -1116,10 +1133,10 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
         }
         let events = match to_i64(obj_from_bits(events_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "events must be int"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "events must be int"),
         };
         if events == 0 {
-            return raise_exception::<_>(_py, "ValueError", "events must be non-zero");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
         let obj_bits = crate::molt_future_new(
             ws_wait_poll_fn_addr(),
@@ -1150,7 +1167,7 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
         }
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
-            return raise_exception::<_>(_py, "TypeError", "invalid websocket");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid websocket");
         }
         let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
         if ws.closed.load(AtomicOrdering::Relaxed) {
@@ -1159,16 +1176,16 @@ pub extern "C" fn molt_ws_wait_new(ws_bits: u64, events_bits: u64, timeout_bits:
         if ws_host_handle(ws).is_none() {
             return raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "websocket wait unavailable on wasm host transport",
             );
         }
         let events = match to_i64(obj_from_bits(events_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "events must be int"),
+            None => return raise_exception::<_>(_py, BuiltinExc::TypeError, "events must be int"),
         };
         if events == 0 {
-            return raise_exception::<_>(_py, "ValueError", "events must be non-zero");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
         let obj_bits = crate::molt_future_new(
             ws_wait_poll_fn_addr(),
@@ -1206,7 +1223,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         let payload_bytes = unsafe { crate::object::object_payload_size(obj_ptr) };
         let payload_len = payload_bytes / std::mem::size_of::<u64>();
         if payload_len < 2 {
-            return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
+            return raise_exception::<i64>(_py, BuiltinExc::TypeError, "ws wait payload too small");
         }
         let payload_ptr = obj_ptr as *mut u64;
         // SAFETY: payload layout is validated by `payload_len` above.
@@ -1215,7 +1232,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         let events_bits = unsafe { *payload_ptr.add(1) };
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
-            return raise_exception::<i64>(_py, "TypeError", "invalid websocket");
+            return raise_exception::<i64>(_py, BuiltinExc::TypeError, "invalid websocket");
         }
         // SAFETY: ws bits are expected to point to a live websocket.
         let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
@@ -1225,7 +1242,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         }
         let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
         if events == 0 {
-            return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
+            return raise_exception::<i64>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
         // SAFETY: header points at the awaitable header allocated for this object.
         if crate::object::object_state(obj_ptr) == 0 {
@@ -1239,7 +1256,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                         if !val.is_finite() || val < 0.0 {
                             return raise_exception::<i64>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 "timeout must be non-negative",
                             );
                         }
@@ -1247,7 +1264,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                     } else {
                         return raise_exception::<i64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "timeout must be float or None",
                         );
                     }
@@ -1256,13 +1273,17 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             let mut deadline_bits = None;
             if let Some(val) = timeout {
                 if val == 0.0 {
-                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                    return raise_exception::<i64>(_py, BuiltinExc::TimeoutError, "timed out");
                 }
                 let deadline = monotonic_now_secs(_py) + val;
                 deadline_bits = Some(MoltObject::from_float(deadline).bits());
             }
             if !ws_is_native(ws) {
-                return raise_exception::<i64>(_py, "RuntimeError", "websocket wait unavailable");
+                return raise_exception::<i64>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "websocket wait unavailable",
+                );
             }
             let poll_stream = ws_prepare_poll_stream(ws);
             let (stream, poll_ctx) = match poll_stream {
@@ -1298,7 +1319,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                 if let Some(poller) = runtime_state(_py).io_poller.get() {
                     poller.cancel_waiter(obj_ptr);
                 }
-                return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                return raise_exception::<i64>(_py, BuiltinExc::TimeoutError, "timed out");
             }
         }
         pending_bits_i64()
@@ -1321,7 +1342,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         let payload_bytes = unsafe { crate::object::object_payload_size(obj_ptr) };
         let payload_len = payload_bytes / std::mem::size_of::<u64>();
         if payload_len < 2 {
-            return raise_exception::<i64>(_py, "TypeError", "ws wait payload too small");
+            return raise_exception::<i64>(_py, BuiltinExc::TypeError, "ws wait payload too small");
         }
         let payload_ptr = obj_ptr as *mut u64;
         // SAFETY: payload layout is validated by `payload_len` above.
@@ -1330,7 +1351,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         let events_bits = unsafe { *payload_ptr.add(1) };
         let ws_ptr = ptr_from_bits(ws_bits);
         if ws_ptr.is_null() {
-            return raise_exception::<i64>(_py, "TypeError", "invalid websocket");
+            return raise_exception::<i64>(_py, BuiltinExc::TypeError, "invalid websocket");
         }
         // SAFETY: ws bits are expected to point to a live websocket.
         let ws = unsafe { &*(ws_ptr as *mut MoltWebSocket) };
@@ -1340,7 +1361,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
         }
         let events = to_i64(obj_from_bits(events_bits)).unwrap_or(0) as u32;
         if events == 0 {
-            return raise_exception::<i64>(_py, "ValueError", "events must be non-zero");
+            return raise_exception::<i64>(_py, BuiltinExc::ValueError, "events must be non-zero");
         }
         // SAFETY: header points at mutable state for this awaitable object.
         if crate::object::object_state(obj_ptr) == 0 {
@@ -1354,7 +1375,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                         if !val.is_finite() || val < 0.0 {
                             return raise_exception::<i64>(
                                 _py,
-                                "ValueError",
+                                BuiltinExc::ValueError,
                                 "timeout must be non-negative",
                             );
                         }
@@ -1362,7 +1383,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                     } else {
                         return raise_exception::<i64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "timeout must be float or None",
                         );
                     }
@@ -1371,7 +1392,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             let mut deadline_bits = None;
             if let Some(val) = timeout {
                 if val == 0.0 {
-                    return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                    return raise_exception::<i64>(_py, BuiltinExc::TimeoutError, "timed out");
                 }
                 let deadline = monotonic_now_secs(_py) + val;
                 deadline_bits = Some(MoltObject::from_float(deadline).bits());
@@ -1379,7 +1400,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             let Some(handle) = ws_host_handle(ws) else {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "websocket wait unavailable on wasm host transport",
                 );
             };
@@ -1389,7 +1410,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
             {
                 return raise_exception::<i64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     &format!(
                         "websocket wait registration failed on wasm host transport: {}",
                         err
@@ -1416,7 +1437,7 @@ pub unsafe extern "C" fn molt_ws_wait(obj_bits: u64) -> i64 {
                 if let Some(poller) = runtime_state(_py).io_poller.get() {
                     poller.cancel_waiter(obj_ptr);
                 }
-                return raise_exception::<i64>(_py, "TimeoutError", "timed out");
+                return raise_exception::<i64>(_py, BuiltinExc::TimeoutError, "timed out");
             }
         }
         pending_bits_i64()
@@ -1459,7 +1480,7 @@ pub unsafe extern "C" fn molt_ws_send_obj(ws_bits: u64, data_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let send_data = match send_data_from_bits(data_bits) {
             Ok(data) => data,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let (data_ptr, data_len, owned): (*const u8, usize, Option<Vec<u8>>) = match send_data {
             SendData::Borrowed(ptr, len) => (ptr, len, None),
@@ -1578,7 +1599,11 @@ mod host_send_result_tests {
                 assert!(!crate::ptr_from_bits(left).is_null());
                 assert!(!crate::ptr_from_bits(right).is_null());
                 let _prior_error = if has_prior_error {
-                    crate::raise_exception::<()>(py, "ValueError", "prior caller failure");
+                    crate::raise_exception::<()>(
+                        py,
+                        crate::BuiltinExc::ValueError,
+                        "prior caller failure",
+                    );
                     let prior = crate::builtins::exceptions::ExceptionValue::adopt(
                         py,
                         crate::builtins::exceptions::molt_exception_last_pending(),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static HOOK_A: AtomicU64 = AtomicU64::new(0);
@@ -70,7 +71,11 @@ extern "C" fn protocol_property_returns_callable(self_bits: u64) -> u64 {
         BIND_A.store(self_bits, Ordering::SeqCst);
         let callable_bits = INDIRECT_RETURN_CALLABLE.load(Ordering::SeqCst);
         if callable_bits == 0 {
-            return raise_exception::<u64>(_py, "RuntimeError", "missing protocol callable");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "missing protocol callable",
+            );
         }
         inc_ref_bits(_py, callable_bits);
         callable_bits
@@ -84,7 +89,11 @@ extern "C" fn protocol_custom_hook_get(self_bits: u64, instance_bits: u64, owner
         BIND_C.store(owner_bits, Ordering::SeqCst);
         let callable_bits = INDIRECT_RETURN_CALLABLE.load(Ordering::SeqCst);
         if callable_bits == 0 {
-            return raise_exception::<u64>(_py, "RuntimeError", "missing protocol callable");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "missing protocol callable",
+            );
         }
         inc_ref_bits(_py, callable_bits);
         callable_bits
@@ -164,7 +173,7 @@ extern "C" fn protocol_mutating_getattribute(_self_bits: u64, _name_bits: u64) -
         if exception_pending(_py) {
             MoltObject::none().bits()
         } else {
-            raise_exception::<u64>(_py, "AttributeError", "primary miss")
+            raise_exception::<u64>(_py, BuiltinExc::AttributeError, "primary miss")
         }
     })
 }
@@ -186,20 +195,24 @@ extern "C" fn protocol_literal_getattribute(_self_bits: u64, name_bits: u64) -> 
         match crate::string_obj_to_owned(obj_from_bits(name_bits)).as_deref() {
             Some("__getattribute__") => MoltObject::from_int(303).bits(),
             Some("__getattr__") => MoltObject::from_int(304).bits(),
-            _ => raise_exception::<u64>(_py, "AttributeError", "literal test miss"),
+            _ => raise_exception::<u64>(_py, BuiltinExc::AttributeError, "literal test miss"),
         }
     })
 }
 
 extern "C" fn protocol_call_property_attribute_error(_self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "AttributeError", "property call bind failure")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::AttributeError,
+            "property call bind failure",
+        )
     })
 }
 
 extern "C" fn protocol_call_property_runtime_error(_self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "property call bind failure")
+        raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "property call bind failure")
     })
 }
 
@@ -209,7 +222,11 @@ extern "C" fn protocol_call_descriptor_attribute_error(
     _owner_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "AttributeError", "descriptor call bind failure")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::AttributeError,
+            "descriptor call bind failure",
+        )
     })
 }
 
@@ -219,13 +236,17 @@ extern "C" fn protocol_call_descriptor_runtime_error(
     _owner_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "descriptor call bind failure")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::RuntimeError,
+            "descriptor call bind failure",
+        )
     })
 }
 
 extern "C" fn protocol_error_set(_self_bits: u64, _instance_bits: u64, _value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "RuntimeError", "protocol set failure")
+        raise_exception::<u64>(_py, BuiltinExc::RuntimeError, "protocol set failure")
     })
 }
 
@@ -298,10 +319,10 @@ fn test_type_bits(
     class_bits
 }
 
-fn assert_and_clear_error(_py: &PyToken<'_>, expected: &str) {
+fn assert_and_clear_error(_py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(_py));
     let error_bits = crate::builtins::exceptions::molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         _py, error_bits, expected
     ));
     crate::molt_exception_clear();
@@ -333,7 +354,7 @@ fn set_runtime_arg_names(_py: &PyToken<'_>, function_bits: u64, names: &[&[u8]])
     }
 }
 
-fn assert_call_binding_error(_py: &PyToken<'_>, callable_bits: u64, expected: &str) {
+fn assert_call_binding_error(_py: &PyToken<'_>, callable_bits: u64, expected: crate::BuiltinExc) {
     assert!(crate::builtins::callable::is_callable_impl(
         _py,
         callable_bits
@@ -358,7 +379,7 @@ fn assert_call_binding_error(_py: &PyToken<'_>, callable_bits: u64, expected: &s
     dec_ref_bits(_py, keyword_name);
 }
 
-fn assert_mutation_binding_errors(_py: &PyToken<'_>, hook_bits: u64, expected: &str) {
+fn assert_mutation_binding_errors(_py: &PyToken<'_>, hook_bits: u64, expected: crate::BuiltinExc) {
     let target_name = string_bits(_py, b"target");
     let setter_class = test_class_bits(
         _py,
@@ -495,7 +516,7 @@ fn wrapped_descriptor_get_is_raw_while_mutation_hooks_bind() {
             };
             if classmethod {
                 assert!(get_result.is_err());
-                assert_and_clear_error(_py, "TypeError");
+                assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
                 assert_eq!(HOOK_A.load(Ordering::SeqCst), 0);
             } else {
                 let get_result = get_result
@@ -608,7 +629,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
             unsafe { crate::call_callable0(_py, classmethod) },
             MoltObject::none().bits()
         );
-        assert_and_clear_error(_py, "TypeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
         let wrapped_classmethod = wrapped_bits(_py, classmethod, false);
         assert!(crate::builtins::callable::is_callable_impl(
             _py,
@@ -618,7 +639,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
             unsafe { crate::call_callable0(_py, wrapped_classmethod) },
             MoltObject::none().bits()
         );
-        assert_and_clear_error(_py, "TypeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
 
         let noncallable = wrapped_bits(_py, MoltObject::from_int(9).bits(), false);
         assert!(crate::builtins::callable::is_callable_impl(
@@ -629,7 +650,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
             unsafe { crate::call_callable0(_py, noncallable) },
             MoltObject::none().bits()
         );
-        assert_and_clear_error(_py, "TypeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
 
         assert_eq!(
             unsafe { crate::call_callable0(_py, wrapper0) },
@@ -734,7 +755,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
             crate::molt_call_bind(wrapper2, unknown_builder),
             MoltObject::none().bits()
         );
-        assert_and_clear_error(_py, "TypeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
         assert_eq!(HOOK_A.load(Ordering::SeqCst), 0);
         dec_ref_bits(_py, unexpected_name);
 
@@ -754,7 +775,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
             crate::molt_call_bind(wrapper2, duplicate_builder),
             MoltObject::none().bits()
         );
-        assert_and_clear_error(_py, "TypeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
         assert_eq!(HOOK_A.load(Ordering::SeqCst), 0);
         dec_ref_bits(_py, first_name);
 
@@ -783,7 +804,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
             unsafe { crate::call_callable0(_py, deep_target) },
             MoltObject::none().bits()
         );
-        assert_and_clear_error(_py, "RecursionError");
+        assert_and_clear_error(_py, crate::BuiltinExc::RecursionError);
         assert_eq!(heap_refcount(observed_wrapper), observed_refcount);
         for wrapper in deep_wrappers.into_iter().rev() {
             dec_ref_bits(_py, wrapper);
@@ -848,12 +869,12 @@ fn descriptor_binding_errors_survive_call_and_mutation_consumers() {
             (
                 "protocol_call_property_attribute_error",
                 protocol_call_property_attribute_error as *const (),
-                "AttributeError",
+                crate::BuiltinExc::AttributeError,
             ),
             (
                 "protocol_call_property_runtime_error",
                 protocol_call_property_runtime_error as *const (),
-                "RuntimeError",
+                crate::BuiltinExc::RuntimeError,
             ),
         ] {
             let getter_bits = runtime_function_bits(_py, name, target, 1);
@@ -885,12 +906,12 @@ fn descriptor_binding_errors_survive_call_and_mutation_consumers() {
             (
                 "protocol_call_descriptor_attribute_error",
                 protocol_call_descriptor_attribute_error as *const (),
-                "AttributeError",
+                crate::BuiltinExc::AttributeError,
             ),
             (
                 "protocol_call_descriptor_runtime_error",
                 protocol_call_descriptor_runtime_error as *const (),
-                "RuntimeError",
+                crate::BuiltinExc::RuntimeError,
             ),
         ] {
             let get_bits = runtime_function_bits(_py, name, target, 3);
@@ -947,12 +968,12 @@ fn descriptor_call_policies_are_versioned_only_for_binding_errors() {
 
             for (kind, binding_target, body_target) in [
                 (
-                    "AttributeError",
+                    crate::BuiltinExc::AttributeError,
                     protocol_call_descriptor_attribute_error as *const (),
                     protocol_call_property_attribute_error as *const (),
                 ),
                 (
-                    "RuntimeError",
+                    crate::BuiltinExc::RuntimeError,
                     protocol_call_descriptor_runtime_error as *const (),
                     protocol_call_property_runtime_error as *const (),
                 ),
@@ -971,11 +992,11 @@ fn descriptor_call_policies_are_versioned_only_for_binding_errors() {
                     (DescriptorCallPolicy::Required, true),
                     (
                         DescriptorCallPolicy::Optional,
-                        minor < 14 || kind == "RuntimeError",
+                        minor < 14 || kind == crate::BuiltinExc::RuntimeError,
                     ),
                     (
                         DescriptorCallPolicy::RichComparison,
-                        minor >= 14 && kind == "RuntimeError",
+                        minor >= 14 && kind == crate::BuiltinExc::RuntimeError,
                     ),
                 ] {
                     let binding_result = unsafe {
@@ -1062,7 +1083,7 @@ fn descriptor_valued_get_is_raw_while_mutation_hooks_bind() {
             },
             Err(())
         );
-        assert_and_clear_error(_py, "TypeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
         assert_eq!(BIND_A.load(Ordering::SeqCst), 0);
         INDIRECT_RETURN_CALLABLE.store(setter_bits, Ordering::SeqCst);
         reset_hook_args();
@@ -1113,7 +1134,7 @@ fn descriptor_valued_get_is_raw_while_mutation_hooks_bind() {
             },
             Err(())
         );
-        assert_and_clear_error(_py, "TypeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::TypeError);
         assert_eq!(BIND_A.load(Ordering::SeqCst), 0);
         INDIRECT_RETURN_CALLABLE.store(delete_callable_bits, Ordering::SeqCst);
         reset_hook_args();
@@ -1562,7 +1583,7 @@ fn mutation_outcomes_and_self_replacing_hook_are_stable() {
             },
             DescriptorMutationOutcome::Error
         );
-        assert_and_clear_error(_py, "AttributeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::AttributeError);
         assert_eq!(
             unsafe {
                 descriptor_mutate(
@@ -1574,7 +1595,7 @@ fn mutation_outcomes_and_self_replacing_hook_are_stable() {
             },
             DescriptorMutationOutcome::Error
         );
-        assert_and_clear_error(_py, "AttributeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::AttributeError);
         assert_eq!(
             unsafe {
                 descriptor_mutate(
@@ -1606,7 +1627,7 @@ fn mutation_outcomes_and_self_replacing_hook_are_stable() {
             },
             DescriptorMutationOutcome::Error
         );
-        assert_and_clear_error(_py, "RuntimeError");
+        assert_and_clear_error(_py, crate::BuiltinExc::RuntimeError);
 
         let replacing_bits = runtime_function_bits(
             _py,

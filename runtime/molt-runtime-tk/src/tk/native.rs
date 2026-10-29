@@ -175,7 +175,11 @@ pub(super) fn tcl_obj_alloc_typed_from_bits(
             };
             let o = unsafe { api.new_byte_array_obj(slice.as_ptr(), slice.len()) }.inspect_err(
                 |error| {
-                    let _ = raise_exception_u64(py, "OverflowError", error);
+                    let _ = raise_exception_u64(
+                        py,
+                        molt_runtime_core::BuiltinExc::OverflowError,
+                        error,
+                    );
                 },
             )?;
             return non_null_obj(o, "Tcl_NewByteArrayObj returned null");
@@ -338,7 +342,7 @@ pub(super) fn tcl_obj_result_to_bits(
             // Genuine allocation failure.
             return raise_exception_u64(
                 py,
-                "MemoryError",
+                molt_runtime_core::BuiltinExc::MemoryError,
                 "failed to allocate tkinter result tuple",
             );
         }

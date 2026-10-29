@@ -5,6 +5,7 @@
 //! no user-visible class spelling identifies a parameter.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::object::seq_access::pin_tuple;
 use crate::state::recursion::RecursionGuard;
 use molt_runtime_core::ProtectedRuntimeValue;
@@ -35,7 +36,7 @@ fn append_parameter<'py>(
     if parameters.try_reserve(1).is_err() {
         raise_exception::<()>(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "type parameter collection allocation failed",
         );
         return Err(());
@@ -54,7 +55,7 @@ fn collect_parameters(py: &PyToken<'_>, arguments: u64) -> Result<u64, ()> {
     let Some(mut pointer) = obj_from_bits(arguments).as_ptr() else {
         raise_exception::<()>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "type parameter arguments require a sequence",
         );
         return Err(());
@@ -78,7 +79,7 @@ fn collect_parameters(py: &PyToken<'_>, arguments: u64) -> Result<u64, ()> {
         if !exception_pending(py) {
             raise_exception::<()>(
                 py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "type parameter arguments require a sequence",
             );
         }

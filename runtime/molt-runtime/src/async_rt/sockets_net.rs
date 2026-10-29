@@ -3,6 +3,7 @@
 //!
 //! Split from sockets.rs to reduce file size.
 
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::*;
 
@@ -52,7 +53,7 @@ fn getnameinfo_service_buffer_len() -> usize {
 }
 
 fn raise_gaierror(_py: &PyToken<'_>, code: i64, message: &str) -> u64 {
-    let class = exception_type_bits_from_name(_py, "gaierror");
+    let class = exception_class_bits(_py, BuiltinExc::SocketGaiError);
     crate::builtins::exceptions::raise_os_error_errno_with_class(_py, class, code, message)
 }
 
@@ -73,7 +74,7 @@ fn raise_native_resolver_error(
         }
         Err(_) => raise_exception(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid native resolver success status",
         ),
     }
@@ -81,12 +82,12 @@ fn raise_native_resolver_error(
 
 #[cfg(molt_has_net_io)]
 fn reverse_lookup_error(_py: &PyToken<'_>) -> u64 {
-    let resolver_class = exception_type_bits_from_name(_py, "gaierror");
+    let resolver_class = exception_class_bits(_py, BuiltinExc::SocketGaiError);
     let is_resolver = exception_last_bits_noinc(_py)
         .is_some_and(|error| exception_matches_type(_py, error, resolver_class));
     if is_resolver {
         clear_exception(_py);
-        return raise_exception(_py, "herror", "host name lookup failure");
+        return raise_exception(_py, BuiltinExc::SocketHError, "host name lookup failure");
     }
     MoltObject::none().bits()
 }
@@ -110,7 +111,7 @@ fn getaddrinfo_host_status(
         Ok(ResolverStatus::Success) if out_len <= capacity => Ok(AddrInfoHostStatus::Complete),
         Ok(ResolverStatus::Success) => Err(raise_exception(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "getaddrinfo payload exceeds host buffer",
         )),
         Ok(ResolverStatus::System(GuestErrno::ENOSYS)) => Ok(AddrInfoHostStatus::NumericOnly),
@@ -127,7 +128,7 @@ fn getaddrinfo_host_status(
         }
         Err(_) => Err(raise_exception(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid getaddrinfo host status",
         )),
     }
@@ -203,7 +204,11 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
             } else {
                 match to_i64(obj_from_bits(family_bits)) {
                     Some(val) => val as i32,
-                    None => raise_exception::<_>(_py, "TypeError", "family must be int or None"),
+                    None => raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "family must be int or None",
+                    ),
                 }
             };
             let sock_type = if obj_from_bits(type_bits).is_none() {
@@ -211,7 +216,9 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
             } else {
                 match to_i64(obj_from_bits(type_bits)) {
                     Some(val) => val as i32,
-                    None => raise_exception::<_>(_py, "TypeError", "type must be int or None"),
+                    None => {
+                        raise_exception::<_>(_py, BuiltinExc::TypeError, "type must be int or None")
+                    }
                 }
             };
             let proto = if obj_from_bits(proto_bits).is_none() {
@@ -219,7 +226,11 @@ pub unsafe extern "C" fn molt_socketpair(family_bits: u64, type_bits: u64, proto
             } else {
                 match to_i64(obj_from_bits(proto_bits)) {
                     Some(val) => val as i32,
-                    None => raise_exception::<_>(_py, "TypeError", "proto must be int or None"),
+                    None => raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "proto must be int or None",
+                    ),
                 }
             };
             #[cfg(unix)]
@@ -340,7 +351,9 @@ pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bit
         } else {
             match to_i64(obj_from_bits(_family_bits)) {
                 Some(val) => val as i32,
-                None => return raise_exception::<_>(_py, "TypeError", "family must be int"),
+                None => {
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "family must be int");
+                }
             }
         };
         let sock_type = if obj_from_bits(_type_bits).is_none() {
@@ -348,7 +361,9 @@ pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bit
         } else {
             match to_i64(obj_from_bits(_type_bits)) {
                 Some(val) => val as i32,
-                None => return raise_exception::<_>(_py, "TypeError", "type must be int"),
+                None => {
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "type must be int");
+                }
             }
         };
         let proto = if obj_from_bits(_proto_bits).is_none() {
@@ -356,7 +371,9 @@ pub extern "C" fn molt_socketpair(_family_bits: u64, _type_bits: u64, _proto_bit
         } else {
             match to_i64(obj_from_bits(_proto_bits)) {
                 Some(val) => val as i32,
-                None => return raise_exception::<_>(_py, "TypeError", "proto must be int"),
+                None => {
+                    return raise_exception::<_>(_py, BuiltinExc::TypeError, "proto must be int");
+                }
             }
         };
         let mut left: u64 = 0;
@@ -410,11 +427,11 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
             }
             let host = match host_from_bits(_py, host_bits) {
                 Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let service = match service_from_bits(_py, port_bits) {
                 Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let family = to_i64(obj_from_bits(family_bits)).unwrap_or(0) as i32;
             let sock_type = to_i64(obj_from_bits(type_bits)).unwrap_or(0) as i32;
@@ -428,10 +445,18 @@ pub unsafe extern "C" fn molt_socket_getaddrinfo(
                 .as_ref()
                 .and_then(|val| CString::new(val.as_str()).ok());
             if host.is_some() && host_cstr.is_none() {
-                return raise_exception::<u64>(_py, "TypeError", "host contains NUL byte");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "host contains NUL byte",
+                );
             }
             if service.is_some() && service_cstr.is_none() {
-                return raise_exception::<u64>(_py, "TypeError", "service contains NUL byte");
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "service contains NUL byte",
+                );
             }
             let mut hints: libc::addrinfo = std::mem::zeroed();
             hints.ai_family = family;
@@ -561,11 +586,11 @@ pub extern "C" fn molt_socket_getaddrinfo(
         }
         let host = match host_from_bits(_py, _host_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let service = match service_from_bits(_py, _port_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let family = to_i64(obj_from_bits(_family_bits)).unwrap_or(0) as i32;
         let sock_type = to_i64(obj_from_bits(_type_bits)).unwrap_or(0) as i32;
@@ -574,10 +599,10 @@ pub extern "C" fn molt_socket_getaddrinfo(
         let host_bytes = host.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
         let service_bytes = service.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
         if host_bytes.contains(&0) {
-            return raise_exception::<_>(_py, "TypeError", "host contains NUL byte");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "host contains NUL byte");
         }
         if service_bytes.contains(&0) {
-            return raise_exception::<_>(_py, "TypeError", "service contains NUL byte");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "service contains NUL byte");
         }
         let mut cap = 4096usize;
         let mut buf = vec![0u8; cap];
@@ -633,7 +658,11 @@ pub extern "C" fn molt_socket_getaddrinfo(
                 Some(val) => match val.parse::<u16>() {
                     Ok(port) => port,
                     Err(_) => {
-                        return raise_exception::<_>(_py, "TypeError", "service must be int");
+                        return raise_exception::<_>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            "service must be int",
+                        );
                     }
                 },
                 None => 0,
@@ -701,7 +730,7 @@ pub extern "C" fn molt_socket_getaddrinfo(
         }
         let data = &buf[..out_len as usize];
         if data.len() < 4 {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "invalid addrinfo payload");
         }
         let mut offset = 0usize;
         let count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
@@ -709,7 +738,11 @@ pub extern "C" fn molt_socket_getaddrinfo(
         let mut out: Vec<u64> = Vec::with_capacity(count);
         for _ in 0..count {
             if offset + 12 > data.len() {
-                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "invalid addrinfo payload",
+                );
             }
             let family = i32::from_le_bytes([
                 data[offset],
@@ -731,7 +764,11 @@ pub extern "C" fn molt_socket_getaddrinfo(
             ]);
             offset += 12;
             if offset + 4 > data.len() {
-                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "invalid addrinfo payload",
+                );
             }
             let canon_len = u32::from_le_bytes([
                 data[offset],
@@ -741,7 +778,11 @@ pub extern "C" fn molt_socket_getaddrinfo(
             ]) as usize;
             offset += 4;
             if offset + canon_len > data.len() {
-                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "invalid addrinfo payload",
+                );
             }
             let canon_bits = if canon_len > 0 {
                 let ptr = alloc_string(_py, &data[offset..offset + canon_len]);
@@ -754,7 +795,11 @@ pub extern "C" fn molt_socket_getaddrinfo(
             };
             offset += canon_len;
             if offset + 4 > data.len() {
-                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "invalid addrinfo payload",
+                );
             }
             let addr_len = u32::from_le_bytes([
                 data[offset],
@@ -764,11 +809,15 @@ pub extern "C" fn molt_socket_getaddrinfo(
             ]) as usize;
             offset += 4;
             if offset + addr_len > data.len() {
-                return raise_exception::<_>(_py, "RuntimeError", "invalid addrinfo payload");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "invalid addrinfo payload",
+                );
             }
             let sockaddr_bits = match decode_sockaddr(_py, &data[offset..offset + addr_len]) {
                 Ok(bits) => bits,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             offset += addr_len;
             let family_bits = MoltObject::from_int(family as i64).bits();
@@ -815,11 +864,11 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
             let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as i32;
             let obj = obj_from_bits(addr_bits);
             let Some(ptr) = obj.as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "sockaddr must be tuple");
             };
             let type_id = object_type_id(ptr);
             if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
-                return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "sockaddr must be tuple");
             }
             let family = if crate::object::seq_access::len(ptr) >= 4 {
                 libc::AF_INET6
@@ -828,7 +877,7 @@ pub unsafe extern "C" fn molt_socket_getnameinfo(addr_bits: u64, flags_bits: u64
             };
             let sockaddr = match sockaddr_from_bits(_py, addr_bits, family) {
                 Ok(addr) => addr,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let mut host_buf = vec![0u8; libc::NI_MAXHOST as usize + 1];
             let mut serv_buf = vec![0u8; getnameinfo_service_buffer_len()];
@@ -886,11 +935,11 @@ pub extern "C" fn molt_socket_getnameinfo(_addr_bits: u64, _flags_bits: u64) -> 
         let _flags = to_i64(obj_from_bits(_flags_bits)).unwrap_or(0) as i32;
         let obj = obj_from_bits(_addr_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "sockaddr must be tuple");
         };
         let type_id = unsafe { object_type_id(ptr) };
         if type_id != TYPE_ID_TUPLE && type_id != TYPE_ID_LIST {
-            return raise_exception::<_>(_py, "TypeError", "sockaddr must be tuple");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "sockaddr must be tuple");
         }
         let Some(elems) = (unsafe {
             crate::object::seq_access::snapshot(
@@ -902,16 +951,22 @@ pub extern "C" fn molt_socket_getnameinfo(_addr_bits: u64, _flags_bits: u64) -> 
             return MoltObject::none().bits();
         };
         if elems.len() < 2 {
-            return raise_exception::<_>(_py, "TypeError", "sockaddr must be (host, port)");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "sockaddr must be (host, port)",
+            );
         }
         let host = match host_from_bits(_py, elems[0]) {
             Ok(Some(val)) => val,
-            Ok(None) => return raise_exception::<_>(_py, "TypeError", "host cannot be None"),
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Ok(None) => {
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "host cannot be None");
+            }
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let port = match port_from_bits(_py, elems[1]) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let host_ptr = alloc_string(_py, host.as_bytes());
         if host_ptr.is_null() {
@@ -1056,7 +1111,7 @@ fn socket_addrinfo_first_host_bits(_py: &PyToken<'_>, info_bits: u64) -> Result<
     let Some(info_ptr) = obj_from_bits(info_bits).as_ptr() else {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "getaddrinfo returned invalid value",
         ));
     };
@@ -1064,7 +1119,7 @@ fn socket_addrinfo_first_host_bits(_py: &PyToken<'_>, info_bits: u64) -> Result<
     if info_type != TYPE_ID_LIST && info_type != TYPE_ID_TUPLE {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "getaddrinfo returned invalid value",
         ));
     }
@@ -1364,9 +1419,13 @@ pub extern "C" fn molt_socket_gethostbyname_ex(host_bits: u64) -> u64 {
         let host = match host_from_bits(_py, host_bits) {
             Ok(Some(val)) => val,
             Ok(None) => {
-                return raise_exception::<_>(_py, "TypeError", "host name cannot be None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "host name cannot be None",
+                );
             }
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
 
         // Resolve the primary address first via gethostbyname.
@@ -1418,8 +1477,14 @@ pub extern "C" fn molt_socket_gethostbyaddr(host_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let host = match host_from_bits(_py, host_bits) {
             Ok(Some(val)) => val,
-            Ok(None) => return raise_exception::<_>(_py, "TypeError", "host name cannot be None"),
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Ok(None) => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "host name cannot be None",
+                );
+            }
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let parsed_host_ip = host.parse::<IpAddr>().ok();
         let mut resolved = host.clone();
@@ -1577,7 +1642,7 @@ pub extern "C" fn molt_socket_getfqdn(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut target = match host_from_bits(_py, name_bits) {
             Ok(value) => value.unwrap_or_default(),
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         if target.is_empty() || target == "0.0.0.0" {
             let hostname_bits = socket_gethostname_call();
@@ -1692,23 +1757,31 @@ pub unsafe extern "C" fn molt_socket_getservbyname(name_bits: u64, proto_bits: u
             let name = match host_from_bits(_py, name_bits) {
                 Ok(Some(val)) => val,
                 Ok(None) => {
-                    return raise_exception::<_>(_py, "TypeError", "service name cannot be None");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "service name cannot be None",
+                    );
                 }
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let proto = match host_from_bits(_py, proto_bits) {
                 Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let name_cstr = CString::new(name).map_err(|_| ()).ok();
             if name_cstr.is_none() {
-                return raise_exception::<_>(_py, "TypeError", "service name contains NUL byte");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "service name contains NUL byte",
+                );
             }
             let proto_cstr = proto
                 .as_ref()
                 .and_then(|val| CString::new(val.as_str()).ok());
             if proto.is_some() && proto_cstr.is_none() {
-                return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "proto contains NUL byte");
             }
             let serv = libc::getservbyname(
                 name_cstr.as_ref().unwrap().as_ptr(),
@@ -1733,21 +1806,29 @@ pub extern "C" fn molt_socket_getservbyname(_name_bits: u64, _proto_bits: u64) -
         let name = match host_from_bits(_py, _name_bits) {
             Ok(Some(val)) => val,
             Ok(None) => {
-                return raise_exception::<_>(_py, "TypeError", "service name cannot be None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "service name cannot be None",
+                );
             }
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let proto = match host_from_bits(_py, _proto_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let name_bytes = name.as_bytes();
         let proto_bytes = proto.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
         if name_bytes.contains(&0) {
-            return raise_exception::<_>(_py, "TypeError", "service name contains NUL byte");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "service name contains NUL byte",
+            );
         }
         if proto_bytes.contains(&0) {
-            return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "proto contains NUL byte");
         }
         let rc = unsafe {
             crate::molt_socket_getservbyname_host(
@@ -1773,17 +1854,17 @@ pub unsafe extern "C" fn molt_socket_getservbyport(port_bits: u64, proto_bits: u
         crate::with_gil_entry_nopanic!(_py, {
             let port = match to_i64(obj_from_bits(port_bits)) {
                 Some(val) if val >= 0 && val <= u16::MAX as i64 => val as u16,
-                _ => return raise_exception::<_>(_py, "TypeError", "port must be int"),
+                _ => return raise_exception::<_>(_py, BuiltinExc::TypeError, "port must be int"),
             };
             let proto = match host_from_bits(_py, proto_bits) {
                 Ok(val) => val,
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let proto_cstr = proto
                 .as_ref()
                 .and_then(|val| CString::new(val.as_str()).ok());
             if proto.is_some() && proto_cstr.is_none() {
-                return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "proto contains NUL byte");
             }
             let serv = libc::getservbyport(
                 libc::htons(port) as i32,
@@ -1811,15 +1892,15 @@ pub extern "C" fn molt_socket_getservbyport(_port_bits: u64, _proto_bits: u64) -
     crate::with_gil_entry_nopanic!(_py, {
         let port = match to_i64(obj_from_bits(_port_bits)) {
             Some(val) if val >= 0 && val <= u16::MAX as i64 => val as u16,
-            _ => return raise_exception::<_>(_py, "TypeError", "port must be int"),
+            _ => return raise_exception::<_>(_py, BuiltinExc::TypeError, "port must be int"),
         };
         let proto = match host_from_bits(_py, _proto_bits) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let proto_bytes = proto.as_ref().map(|val| val.as_bytes()).unwrap_or(&[]);
         if proto_bytes.contains(&0) {
-            return raise_exception::<_>(_py, "TypeError", "proto contains NUL byte");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "proto contains NUL byte");
         }
         let mut buf = vec![0u8; 256];
         let mut out_len: u32 = 0;
@@ -1867,16 +1948,20 @@ pub unsafe extern "C" fn molt_socket_getprotobyname(name_bits: u64) -> u64 {
             let name = match host_from_bits(_py, name_bits) {
                 Ok(Some(val)) => val,
                 Ok(None) => {
-                    return raise_exception::<_>(_py, "TypeError", "protocol name cannot be None");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "protocol name cannot be None",
+                    );
                 }
-                Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+                Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
             };
             let name_cstr = match CString::new(name.as_str()) {
                 Ok(cs) => cs,
                 Err(_) => {
                     return raise_exception::<_>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "protocol name contains NUL byte",
                     );
                 }
@@ -1901,9 +1986,13 @@ pub extern "C" fn molt_socket_getprotobyname(name_bits: u64) -> u64 {
         let name = match host_from_bits(_py, name_bits) {
             Ok(Some(val)) => val,
             Ok(None) => {
-                return raise_exception::<_>(_py, "TypeError", "protocol name cannot be None");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "protocol name cannot be None",
+                );
             }
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg),
         };
         let key = name.to_ascii_lowercase();
         let proto = match key.as_str() {
@@ -2018,7 +2107,7 @@ pub extern "C" fn molt_socket_if_nametoindex(name_bits: u64) -> u64 {
             None => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "if_nametoindex() argument must be a string",
                 );
             }
@@ -2028,7 +2117,7 @@ pub extern "C" fn molt_socket_if_nametoindex(name_bits: u64) -> u64 {
             Err(_) => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "interface name contains NUL byte",
                 );
             }
@@ -2053,7 +2142,7 @@ pub extern "C" fn molt_socket_if_nametoindex(_name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "OSError",
+            BuiltinExc::OSError,
             "if_nametoindex is not supported on this platform",
         )
     })
@@ -2068,7 +2157,7 @@ pub extern "C" fn molt_socket_if_indextoname(index_bits: u64) -> u64 {
             _ => {
                 return raise_exception::<u64>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "if_indextoname() argument out of range",
                 );
             }
@@ -2099,7 +2188,7 @@ pub extern "C" fn molt_socket_if_indextoname(_index_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "OSError",
+            BuiltinExc::OSError,
             "if_indextoname is not supported on this platform",
         )
     })
@@ -2154,7 +2243,7 @@ pub unsafe extern "C" fn molt_socket_send_fds(
                     None => {
                         return raise_exception::<u64>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "file descriptors must be integers",
                         );
                     }
@@ -2206,7 +2295,11 @@ pub unsafe extern "C" fn molt_socket_send_fds(
     _address_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "OSError", "send_fds is not supported on this platform")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::OSError,
+            "send_fds is not supported on this platform",
+        )
     })
 }
 
@@ -2223,12 +2316,18 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
     crate::with_gil_entry_nopanic!(_py, {
         let maxfds = match to_i64(obj_from_bits(maxfds_bits)) {
             Some(v) if v > 0 => v as usize,
-            _ => return raise_exception::<u64>(_py, "ValueError", "maxfds must be at least 1"),
+            _ => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "maxfds must be at least 1",
+                );
+            }
         };
         let fd_size = std::mem::size_of::<c_int>();
         let fds_payload_size = maxfds * fd_size;
         let Ok(payload_u32) = u32::try_from(fds_payload_size) else {
-            return raise_exception::<u64>(_py, "OverflowError", "maxfds too large");
+            return raise_exception::<u64>(_py, BuiltinExc::OverflowError, "maxfds too large");
         };
         let ancbufsize = unsafe { libc::CMSG_SPACE(payload_u32) as i64 };
         let ancbufsize_bits = MoltObject::from_int(ancbufsize).bits();
@@ -2256,7 +2355,7 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
             dec_ref_bits(_py, result_bits);
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "recvmsg returned unexpected result",
             );
         }
@@ -2355,7 +2454,11 @@ pub unsafe extern "C" fn molt_socket_recv_fds(
     _flags_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "OSError", "recv_fds is not supported on this platform")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::OSError,
+            "recv_fds is not supported on this platform",
+        )
     })
 }
 
@@ -2376,11 +2479,17 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
-            return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
+            return raise_exception::<u64>(_py, BuiltinExc::OSError, "invalid socket handle");
         }
         let file_fd = match to_i64(obj_from_bits(file_fd_bits)) {
             Some(v) => v as c_int,
-            None => return raise_exception::<u64>(_py, "TypeError", "file_fd must be an integer"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "file_fd must be an integer",
+                );
+            }
         };
         let mut offset = to_i64(obj_from_bits(offset_bits)).unwrap_or(0) as libc::off_t;
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(0);
@@ -2422,7 +2531,11 @@ pub unsafe extern "C" fn molt_socket_sendfile(
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                         if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::TimeoutError,
+                                "timed out",
+                            );
                         }
                         return raise_os_error::<u64>(_py, wait_err, "sendfile");
                     }
@@ -2448,11 +2561,17 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
-            return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
+            return raise_exception::<u64>(_py, BuiltinExc::OSError, "invalid socket handle");
         }
         let file_fd = match to_i64(obj_from_bits(file_fd_bits)) {
             Some(v) => v as c_int,
-            None => return raise_exception::<u64>(_py, "TypeError", "file_fd must be an integer"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "file_fd must be an integer",
+                );
+            }
         };
         let offset = to_i64(obj_from_bits(offset_bits)).unwrap_or(0) as libc::off_t;
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(0);
@@ -2510,7 +2629,11 @@ pub unsafe extern "C" fn molt_socket_sendfile(
                     }
                     if let Err(wait_err) = socket_wait_ready(_py, socket_ptr, IO_EVENT_WRITE) {
                         if wait_err.kind() == ErrorKind::TimedOut {
-                            return raise_exception::<u64>(_py, "TimeoutError", "timed out");
+                            return raise_exception::<u64>(
+                                _py,
+                                BuiltinExc::TimeoutError,
+                                "timed out",
+                            );
                         }
                         return raise_os_error::<u64>(_py, wait_err, "sendfile");
                     }
@@ -2543,11 +2666,17 @@ pub unsafe extern "C" fn molt_socket_sendfile(
     crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
-            return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
+            return raise_exception::<u64>(_py, BuiltinExc::OSError, "invalid socket handle");
         }
         let file_fd = match to_i64(obj_from_bits(file_fd_bits)) {
             Some(v) => v as c_int,
-            None => return raise_exception::<u64>(_py, "TypeError", "file_fd must be an integer"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "file_fd must be an integer",
+                );
+            }
         };
         let offset = to_i64(obj_from_bits(offset_bits)).unwrap_or(0);
         let count = to_i64(obj_from_bits(count_bits)).unwrap_or(0);
@@ -2621,7 +2750,11 @@ pub extern "C" fn molt_socket_sendfile(
     _count_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "OSError", "sendfile is not supported on this platform")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::OSError,
+            "sendfile is not supported on this platform",
+        )
     })
 }
 
@@ -2640,7 +2773,7 @@ pub unsafe extern "C" fn molt_socket_sethostname(name_bits: u64) -> u64 {
             None => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "sethostname() argument must be str",
                 );
             }
@@ -2662,7 +2795,7 @@ pub extern "C" fn molt_socket_sethostname(_name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(
             _py,
-            "OSError",
+            BuiltinExc::OSError,
             "sethostname is not supported on this platform",
         )
     })
@@ -2693,7 +2826,7 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
     crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);
         if socket_ptr.is_null() {
-            return raise_exception::<u64>(_py, "OSError", "invalid socket handle");
+            return raise_exception::<u64>(_py, BuiltinExc::OSError, "invalid socket handle");
         }
         let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as c_int;
 
@@ -2742,7 +2875,13 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
         msghdr.msg_control = anc_buf.as_mut_ptr() as *mut c_void;
         msghdr.msg_controllen = match molt_runtime_platform::msghdr::msg_controllen(ancdata_size) {
             Some(len) => len,
-            None => return raise_exception::<u64>(_py, "OSError", "ancillary data too large"),
+            None => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::OSError,
+                    "ancillary data too large",
+                );
+            }
         };
 
         // Fill in the cmsg entries
@@ -2810,7 +2949,11 @@ pub extern "C" fn molt_socket_sendmsg_afalg(
     _flags_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(_py, "OSError", "sendmsg_afalg is only supported on Linux")
+        raise_exception::<u64>(
+            _py,
+            BuiltinExc::OSError,
+            "sendmsg_afalg is only supported on Linux",
+        )
     })
 }
 

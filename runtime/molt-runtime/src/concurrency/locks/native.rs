@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::MoltObject;
 use crate::builtins::threading_helpers::{ThreadTimeoutPolicy, parse_thread_timeout};
 
@@ -713,7 +714,7 @@ pub unsafe extern "C" fn molt_lock_acquire(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid lock handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid lock handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
         let timeout =
@@ -738,10 +739,10 @@ pub unsafe extern "C" fn molt_lock_acquire(
 pub unsafe extern "C" fn molt_lock_release(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(lock) = lock_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid lock handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid lock handle");
         };
         if !lock.release() {
-            return raise_exception::<_>(_py, "RuntimeError", "release unlocked lock");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "release unlocked lock");
         }
         MoltObject::none().bits()
     })
@@ -793,7 +794,7 @@ pub unsafe extern "C" fn molt_rlock_acquire(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid rlock handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
         let timeout =
@@ -818,10 +819,14 @@ pub unsafe extern "C" fn molt_rlock_acquire(
 pub unsafe extern "C" fn molt_rlock_release(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid rlock handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
         if !lock.release() {
-            return raise_exception::<_>(_py, "RuntimeError", "cannot release un-acquired lock");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "cannot release un-acquired lock",
+            );
         }
         MoltObject::none().bits()
     })
@@ -854,11 +859,15 @@ pub unsafe extern "C" fn molt_rlock_is_owned(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid rlock handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
         match lock.release_save() {
             Some(saved) => MoltObject::from_int(saved as i64).bits(),
-            None => raise_exception::<_>(_py, "RuntimeError", "cannot release un-acquired lock"),
+            None => raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "cannot release un-acquired lock",
+            ),
         }
     })
 }
@@ -868,13 +877,13 @@ pub unsafe extern "C" fn molt_rlock_release_save(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_rlock_acquire_restore(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(lock) = rlock_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid rlock handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid rlock handle");
         };
         let Some(count) = crate::to_i64(obj_from_bits(count_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "count must be an integer");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "count must be an integer");
         };
         if count < 0 {
-            return raise_exception::<_>(_py, "ValueError", "count must be >= 0");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "count must be >= 0");
         }
         lock.acquire_restore(count as u64);
         MoltObject::none().bits()
@@ -912,7 +921,7 @@ pub unsafe extern "C" fn molt_condition_new() -> u64 {
 pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid condition handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid condition handle");
         };
         let timeout = match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Condition)
         {
@@ -932,10 +941,14 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
 pub unsafe extern "C" fn molt_condition_notify(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(condition) = condition_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid condition handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid condition handle");
         };
         let Some(count) = crate::to_i64(obj_from_bits(count_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "notify count must be an integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "notify count must be an integer",
+            );
         };
         if count <= 0 {
             return MoltObject::none().bits();
@@ -976,7 +989,7 @@ pub unsafe extern "C" fn molt_event_new() -> u64 {
 pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid event handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid event handle");
         };
         event.set();
         MoltObject::none().bits()
@@ -988,7 +1001,7 @@ pub unsafe extern "C" fn molt_event_set(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_event_clear(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid event handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid event handle");
         };
         event.clear();
         MoltObject::none().bits()
@@ -1011,7 +1024,7 @@ pub unsafe extern "C" fn molt_event_is_set(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(event) = event_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid event handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid event handle");
         };
         if event.is_set() {
             return MoltObject::from_bool(true).bits();
@@ -1052,12 +1065,16 @@ pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) 
         let Some(value) = crate::to_i64(obj_from_bits(value_bits)) else {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "semaphore initial value must be an integer",
             );
         };
         if value < 0 {
-            return raise_exception::<_>(_py, "ValueError", "semaphore initial value must be >= 0");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "semaphore initial value must be >= 0",
+            );
         }
         let bounded = is_truthy(_py, obj_from_bits(bounded_bits));
         let sem = Arc::new(MoltSemaphore::new(value, bounded));
@@ -1075,13 +1092,13 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(sem) = semaphore_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid semaphore handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid semaphore handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
         if !blocking && !obj_from_bits(timeout_bits).is_none() {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "can't specify timeout for non-blocking acquire",
             );
         }
@@ -1109,16 +1126,24 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
 pub unsafe extern "C" fn molt_semaphore_release(handle_bits: u64, count_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(sem) = semaphore_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid semaphore handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid semaphore handle");
         };
         let Some(count) = crate::to_i64(obj_from_bits(count_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "release count must be an integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "release count must be an integer",
+            );
         };
         if count < 1 {
-            return raise_exception::<_>(_py, "ValueError", "semaphore release count must be >= 1");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "semaphore release count must be >= 1",
+            );
         }
         if let Err(msg) = sem.release(count) {
-            return raise_exception::<_>(_py, "ValueError", msg);
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, msg);
         }
         MoltObject::none().bits()
     })
@@ -1145,12 +1170,16 @@ pub unsafe extern "C" fn molt_semaphore_drop(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(parties) = crate::to_i64(obj_from_bits(parties_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "barrier parties must be an integer");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "barrier parties must be an integer",
+            );
         };
         if parties <= 0 {
             return raise_exception::<_>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "barrier parties must be greater than zero",
             );
         }
@@ -1170,7 +1199,7 @@ pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) 
 pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid barrier handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
         let timeout = match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Condition)
         {
@@ -1183,7 +1212,7 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
         };
         match out {
             Ok(index) => MoltObject::from_int(index as i64).bits(),
-            Err(()) => raise_exception::<_>(_py, "RuntimeError", "broken barrier"),
+            Err(()) => raise_exception::<_>(_py, BuiltinExc::RuntimeError, "broken barrier"),
         }
     })
 }
@@ -1193,7 +1222,7 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
 pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid barrier handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
         barrier.abort();
         MoltObject::none().bits()
@@ -1205,7 +1234,7 @@ pub unsafe extern "C" fn molt_barrier_abort(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid barrier handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
         barrier.reset();
         MoltObject::none().bits()
@@ -1217,7 +1246,7 @@ pub unsafe extern "C" fn molt_barrier_reset(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid barrier handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
         MoltObject::from_int(barrier.parties as i64).bits()
     })
@@ -1228,7 +1257,7 @@ pub unsafe extern "C" fn molt_barrier_parties(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid barrier handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
         let waiting = barrier.state.lock().unwrap().waiting;
         MoltObject::from_int(waiting as i64).bits()
@@ -1240,7 +1269,7 @@ pub unsafe extern "C" fn molt_barrier_n_waiting(handle_bits: u64) -> u64 {
 pub unsafe extern "C" fn molt_barrier_broken(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(barrier) = barrier_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid barrier handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid barrier handle");
         };
         let broken = barrier.state.lock().unwrap().broken;
         MoltObject::from_bool(broken).bits()
@@ -1278,7 +1307,7 @@ pub unsafe extern "C" fn molt_local_new() -> u64 {
 pub unsafe extern "C" fn molt_local_get_dict(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(local) = local_from_bits(handle_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "invalid local handle");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "invalid local handle");
         };
         let tid = current_thread_id();
         let mut guard = local.state.lock().unwrap();

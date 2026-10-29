@@ -1,4 +1,5 @@
 use super::super::generators_async::asyncio_clear_pending_exception;
+use crate::BuiltinExc;
 use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
 use crate::*;
 #[cfg(not(target_arch = "wasm32"))]
@@ -149,7 +150,7 @@ fn set_command_stdio(cmd: &mut Command, slot: NativeStdioSlot, stdio: Stdio) {
 fn invalid_fd_error(_py: &PyToken<'_>, slot: NativeStdioSlot) -> u64 {
     raise_exception::<u64>(
         _py,
-        "ValueError",
+        BuiltinExc::ValueError,
         &format!("invalid {} file descriptor", slot.name()),
     )
 }
@@ -264,16 +265,28 @@ pub(super) fn process_stdio_mode(_py: &PyToken<'_>, bits: u64, name: &str) -> i3
     match to_i64(obj) {
         Some(val) => {
             let Ok(val) = i32::try_from(val) else {
-                return raise_exception::<_>(_py, "ValueError", &format!("invalid {name} mode"));
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    &format!("invalid {name} mode"),
+                );
             };
             match val {
                 PROCESS_STDIO_INHERIT | PROCESS_STDIO_PIPE | PROCESS_STDIO_DEVNULL => val,
                 PROCESS_STDIO_STDOUT if name == "stderr" => val,
                 val if val >= PROCESS_STDIO_FD_BASE => val,
-                _ => raise_exception::<_>(_py, "ValueError", &format!("invalid {name} mode")),
+                _ => raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    &format!("invalid {name} mode"),
+                ),
             }
         }
-        None => raise_exception::<_>(_py, "TypeError", &format!("{name} must be int or None")),
+        None => raise_exception::<_>(
+            _py,
+            BuiltinExc::TypeError,
+            &format!("{name} must be int or None"),
+        ),
     }
 }
 
@@ -297,42 +310,42 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
         let Some(inherit_mode) = to_i64(obj_from_bits(inherit_mode_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid asyncio subprocess stdio inherit mode constant",
             );
         };
         let Some(pipe_mode) = to_i64(obj_from_bits(pipe_mode_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid asyncio subprocess stdio pipe mode constant",
             );
         };
         let Some(devnull_mode) = to_i64(obj_from_bits(devnull_mode_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid asyncio subprocess stdio devnull mode constant",
             );
         };
         let Some(stdout_mode) = to_i64(obj_from_bits(stdout_mode_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid asyncio subprocess stdio stdout mode constant",
             );
         };
         let Some(fd_base) = to_i64(obj_from_bits(fd_base_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid asyncio subprocess stdio fd_base constant",
             );
         };
         let Some(fd_max) = to_i64(obj_from_bits(fd_max_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "invalid asyncio subprocess stdio fd_max constant",
             );
         };
@@ -372,14 +385,14 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
                 unsafe { asyncio_clear_pending_exception(_py) };
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "unsupported subprocess stdio option",
                 );
             }
             if fileno_bits == missing {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "unsupported subprocess stdio option",
                 );
             }
@@ -389,7 +402,7 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
                 }
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "unsupported subprocess stdio option",
                 );
             }
@@ -404,7 +417,7 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
                 }
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "unsupported subprocess stdio option",
                 );
             }
@@ -414,17 +427,31 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
             }
         }
         let Some(fd) = fd else {
-            return raise_exception::<u64>(_py, "TypeError", "unsupported subprocess stdio option");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "unsupported subprocess stdio option",
+            );
         };
         if fd < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "file descriptor must be >= 0");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "file descriptor must be >= 0",
+            );
         }
         if fd > fd_max {
-            return raise_exception::<u64>(_py, "ValueError", "file descriptor is too large");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "file descriptor is too large",
+            );
         }
         match fd_base.checked_add(fd) {
             Some(encoded) => MoltObject::from_int(encoded).bits(),
-            None => raise_exception::<u64>(_py, "ValueError", "file descriptor is too large"),
+            None => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "file descriptor is too large")
+            }
         }
     })
 }

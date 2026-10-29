@@ -1,4 +1,5 @@
 //! Managed C GC controls are projections of runtime membership/header state.
+use crate::BuiltinExc;
 use molt_cpython_abi::hooks::ManagedGcAction;
 use std::os::raw::c_int;
 
@@ -59,7 +60,7 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
         let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
             crate::raise_exception::<()>(
                 &py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "GC traversal requires a managed object",
             );
             return -1;
@@ -80,7 +81,11 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
             }
         });
         if !reserved {
-            crate::raise_exception::<()>(&py, "MemoryError", "cannot snapshot builtin GC edges");
+            crate::raise_exception::<()>(
+                &py,
+                BuiltinExc::MemoryError,
+                "cannot snapshot builtin GC edges",
+            );
             return -1;
         }
         if status != 0 {
@@ -102,7 +107,11 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
 pub(super) unsafe extern "C" fn hook_managed_gc_clear(bits: u64) -> c_int {
     crate::concurrency::gil::with_gil(|py| unsafe {
         let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
-            crate::raise_exception::<()>(&py, "SystemError", "GC clear requires a managed object");
+            crate::raise_exception::<()>(
+                &py,
+                BuiltinExc::SystemError,
+                "GC clear requires a managed object",
+            );
             return -1;
         };
         crate::inc_ref_bits(&py, bits);

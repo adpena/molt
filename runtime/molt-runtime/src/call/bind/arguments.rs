@@ -3,6 +3,7 @@
 //! State stays with its existing owner; calls preserve transaction and drop order.
 
 use super::*;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 /// CPython's two call instructions, fixed by the compiler at each call site.
@@ -348,7 +349,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         {
             return Err(raise_exception::<_>(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "call arguments allocation failed",
             ));
         }
@@ -394,7 +395,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         {
             return Err(raise_exception::<_>(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "call arguments allocation failed",
             ));
         }
@@ -567,7 +568,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             release_stack_arguments(py, receiver, positional);
             return Err(raise_exception::<_>(
                 py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "call arguments allocation failed",
             ));
         }
@@ -650,14 +651,14 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             let Some(count) = values.len().checked_add(1) else {
                 return Err(raise_exception::<_>(
                     self.py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "call arguments allocation failed",
                 ));
             };
             if owned.try_reserve_exact(count).is_err() {
                 return Err(raise_exception::<_>(
                     self.py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "call arguments allocation failed",
                 ));
             }
@@ -678,7 +679,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         if self.positional.owned_mut().try_reserve(1).is_err() {
             return Err(raise_exception::<_>(
                 self.py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "call arguments allocation failed",
             ));
         }
@@ -731,7 +732,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         if pairs.try_reserve_exact(2 * (values.len() - start)).is_err() {
             return Err(raise_exception::<_>(
                 self.py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "call keywords allocation failed",
             ));
         }
@@ -766,7 +767,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             {
                 return Err(raise_exception::<_>(
                     self.py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "call keywords allocation failed",
                 ));
             }
@@ -1055,14 +1056,14 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
     if builder_ptr.is_null() {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid callargs builder",
         ));
     }
     if unsafe { object_type_id(builder_ptr) } != TYPE_ID_CALLARGS {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid callargs builder",
         ));
     }
@@ -1091,7 +1092,11 @@ pub(crate) unsafe fn clone_callargs_builder_bits(
             return Err(if exception_pending(_py) {
                 keywords
             } else {
-                raise_exception::<_>(_py, "MemoryError", "call keywords allocation failed")
+                raise_exception::<_>(
+                    _py,
+                    BuiltinExc::MemoryError,
+                    "call keywords allocation failed",
+                )
             });
         }
         unsafe { (*callargs_ptr(ptr_from_bits(clone_bits))).keywords = keywords };
@@ -1108,7 +1113,7 @@ pub(crate) unsafe fn callargs_positional_snapshot(
     if builder_ptr.is_null() {
         return Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "invalid callargs builder",
         ));
     }
@@ -1117,7 +1122,7 @@ pub(crate) unsafe fn callargs_positional_snapshot(
     if unsafe { args.keyword_count() } != 0 {
         return Err(raise_exception::<_>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "gpu kernel launch does not support keyword arguments",
         ));
     }
@@ -1173,7 +1178,7 @@ pub(super) unsafe fn require_callargs_ptr(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "invalid callargs builder",
             ));
         }
@@ -1187,7 +1192,7 @@ pub(super) unsafe fn require_callargs_ptr(
             }
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "invalid callargs storage",
             ));
         }
@@ -1280,7 +1285,11 @@ fn callargs_new_with_form(
         decode_capacity(pos_capacity_bits),
         decode_capacity(kw_capacity_bits),
     ) else {
-        raise_exception::<()>(_py, "TypeError", "callargs capacity expects an integer");
+        raise_exception::<()>(
+            _py,
+            BuiltinExc::TypeError,
+            "callargs capacity expects an integer",
+        );
         return 0;
     };
     let mut args = Box::new(CallArgs {
@@ -1289,7 +1298,11 @@ fn callargs_new_with_form(
         form,
     });
     if args.pos.try_reserve_exact(pos_capacity).is_err() {
-        raise_exception::<()>(_py, "MemoryError", "call arguments allocation failed");
+        raise_exception::<()>(
+            _py,
+            BuiltinExc::MemoryError,
+            "call arguments allocation failed",
+        );
         return 0;
     }
     if kw_capacity != 0 {
@@ -1344,7 +1357,11 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
                 return MoltObject::none().bits();
             }
             if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid callargs builder",
+                );
             }
             if trace_callargs_enabled() {
                 eprintln!(
@@ -1383,7 +1400,7 @@ pub unsafe extern "C" fn molt_callargs_push_pos(builder_bits: u64, val: u64) -> 
             if args.pos.try_reserve(1).is_err() {
                 return raise_exception::<_>(
                     _py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "call arguments allocation failed",
                 );
             }
@@ -1457,7 +1474,11 @@ pub unsafe extern "C" fn molt_callargs_push_kw(
                 return MoltObject::none().bits();
             }
             if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid callargs builder",
+                );
             }
             callargs_push_kw(_py, builder_ptr, name_bits, val_bits)
         })
@@ -1478,7 +1499,11 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                 return MoltObject::none().bits();
             }
             if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid callargs builder",
+                );
             }
             if trace_callargs_enabled() {
                 eprintln!(
@@ -1516,7 +1541,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
             if (*args_ptr).pos.try_reserve(hint).is_err() {
                 return raise_exception::<_>(
                     _py,
-                    "MemoryError",
+                    BuiltinExc::MemoryError,
                     "call arguments allocation failed",
                 );
             }
@@ -1527,7 +1552,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                             dec_ref_bits(_py, item);
                             return raise_exception::<_>(
                                 _py,
-                                "MemoryError",
+                                BuiltinExc::MemoryError,
                                 "call arguments allocation failed",
                             );
                         }
@@ -1556,7 +1581,11 @@ pub unsafe extern "C" fn molt_callargs_expand_kwstar(builder_bits: u64, mapping_
                 return MoltObject::none().bits();
             }
             if !callargs_builder_is_live(_py, builder_ptr) {
-                return raise_exception::<_>(_py, "TypeError", "invalid callargs builder");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "invalid callargs builder",
+                );
             }
             let args = match require_callargs_ptr(_py, builder_ptr) {
                 Ok(args) => args,

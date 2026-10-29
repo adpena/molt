@@ -262,7 +262,7 @@ pub(crate) fn clinic_input<'py>(
     if !rt_target_at_least(3, 13) && !input.is_c_contiguous() {
         return Err(raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "{function}() argument '{argument}' must be contiguous buffer, not {}",
                 type_name(py, obj_from_bits(bits))
@@ -289,14 +289,14 @@ pub(crate) fn hash_input<'py>(py: &'py PyToken, bits: u64) -> Result<ByteInput<'
         if unsafe { strings::PyUnicode_Check(object.as_ptr()) } != 0 {
             return Err(raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "Strings must be encoded before hashing",
             ));
         }
         if unsafe { buffer::PyObject_CheckBuffer(object.as_ptr()) } == 0 {
             return Err(raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "object supporting the buffer API required",
             ));
         }
@@ -305,7 +305,7 @@ pub(crate) fn hash_input<'py>(py: &'py PyToken, bits: u64) -> Result<ByteInput<'
     if input.ndim() > 1 {
         return Err(raise_exception::<u64>(
             py,
-            "BufferError",
+            BuiltinExc::BufferError,
             "Buffer must be single dimension",
         ));
     }
@@ -406,7 +406,7 @@ fn hash_options<'py>(
     else {
         return Err(raise_exception::<u64>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "hashlib options must be dict",
         ));
     };
@@ -507,68 +507,68 @@ fn parse_blake2_options<'py>(
         } else {
             format!("digest_size must be between 1 and {max_digest} bytes")
         };
-        return Err(raise_exception::<u64>(py, "ValueError", &message));
+        return Err(raise_exception::<u64>(py, BuiltinExc::ValueError, &message));
     }
     if bytes(1).len() > max_salt {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("maximum salt length is {max_salt} bytes"),
         ));
     }
     if bytes(2).len() > max_person {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("maximum person length is {max_person} bytes"),
         ));
     }
     if !(0..=255).contains(&fanout) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "fanout must be between 0 and 255",
         ));
     }
     if !(1..=255).contains(&depth) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "depth must be between 1 and 255",
         ));
     }
     if leaf_size > u32::MAX as u64 {
         return Err(raise_exception::<u64>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "leaf_size is too large",
         ));
     }
     if max_digest == 32 && node_offset > 0xffff_ffff_ffff {
         return Err(raise_exception::<u64>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "node_offset is too large",
         ));
     }
     if !(0..=255).contains(&node_depth) {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "node_depth must be between 0 and 255",
         ));
     }
     if inner_size < 0 || inner_size as usize > max_digest {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("inner_size must be between 0 and is {max_digest}"),
         ));
     }
     if bytes(0).len() > max_key {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!("maximum key length is {max_key} bytes"),
         ));
     }
@@ -772,9 +772,11 @@ pub fn build_hash_handle<'py>(
                 class,
                 "[digital envelope routines] unsupported",
             ),
-            None => {
-                raise_exception::<u64>(_py, "ValueError", &format!("unsupported hash type {name}"))
-            }
+            None => raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                &format!("unsupported hash type {name}"),
+            ),
         }),
     }
 }
@@ -814,7 +816,7 @@ pub extern "C" fn molt_hash_new(
         };
         let Some(name) = name else {
             if legacy_provider {
-                return raise_exception::<u64>(_py, "TypeError", "name must be a string");
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "name must be a string");
             }
             let actual_type = if name_obj.is_none() {
                 "None".to_owned()
@@ -823,15 +825,15 @@ pub extern "C" fn molt_hash_new(
             };
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("new() argument 'name' must be str, not {actual_type}"),
             );
         };
         if name.contains('\0') {
             return if legacy_provider {
-                raise_exception::<u64>(_py, "TypeError", "name must be a string")
+                raise_exception::<u64>(_py, BuiltinExc::TypeError, "name must be a string")
             } else {
-                raise_exception::<u64>(_py, "ValueError", "embedded null character")
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, "embedded null character")
             };
         }
         let mut option_values = if let Some(values) = early_options {
@@ -917,7 +919,7 @@ pub extern "C" fn molt_hash_new(
 pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(owner) = hash_owner(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid hash handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hash handle");
         };
         let data = match hash_input(_py, data_bits) {
             Ok(slice) => slice,
@@ -934,7 +936,7 @@ pub extern "C" fn molt_hash_update(handle_bits: u64, data_bits: u64) -> u64 {
 pub extern "C" fn molt_hash_copy(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(owner) = hash_owner(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid hash handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hash handle");
         };
         let copy = owner
             .lock()
@@ -947,7 +949,7 @@ pub extern "C" fn molt_hash_copy(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(owner) = hash_owner(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid hash handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hash handle");
         };
         let length_obj = obj_from_bits(length_bits);
         let is_xof = owner
@@ -958,7 +960,7 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
             if length_obj.is_none() {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "digest() missing required argument 'length' (pos 1)",
                 );
             }
@@ -969,7 +971,7 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
             if val < 0 {
                 return raise_exception::<u64>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "Negative size passed to PyBytes_FromStringAndSize",
                 );
             }
@@ -978,7 +980,7 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
             if !length_obj.is_none() {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "HASH.digest() takes no arguments (1 given)",
                 );
             }
@@ -993,14 +995,14 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
             Err(HashError::XofLengthMissing) => {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "digest() missing required argument 'length' (pos 1)",
                 );
             }
         };
         let ptr = alloc_bytes(_py, &out);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -1031,7 +1033,7 @@ fn checked_input_length(py: &PyToken, input: &ByteInput<'_>, name: &str) -> Resu
     if unsafe { input.bytes(py) }.len() > i32::MAX as usize {
         return Err(raise_exception::<u64>(
             py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             &format!("{name} is too long."),
         ));
     }
@@ -1053,10 +1055,10 @@ pub extern "C" fn molt_pbkdf2_hmac(
         let Some(name) = string_obj_to_owned(name_obj) else {
             let type_name = type_name(_py, name_obj);
             let msg = format!("pbkdf2_hmac() argument 'hash_name' must be str, not {type_name}");
-            return raise_exception::<u64>(_py, "TypeError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         };
         if name.contains('\0') {
-            return raise_exception::<u64>(_py, "ValueError", "embedded null character");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "embedded null character");
         }
         // Clinic owns password then salt and retires them in that same order.
         let mut inputs = [None, None];
@@ -1082,7 +1084,7 @@ pub extern "C" fn molt_pbkdf2_hmac(
         let Some(default_dklen) = pbkdf2_digest_size(normalized) else {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "[digital envelope routines] unsupported",
             );
         };
@@ -1094,12 +1096,16 @@ pub extern "C" fn molt_pbkdf2_hmac(
         if iterations < 1 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "iteration value must be greater than 0.",
             );
         }
         if iterations > i32::MAX as c_long {
-            return raise_exception::<u64>(_py, "OverflowError", "iteration value is too great.");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::OverflowError,
+                "iteration value is too great.",
+            );
         }
         let rounds = iterations as u32;
         let dklen = if obj_from_bits(dklen_bits).is_none() {
@@ -1111,15 +1117,23 @@ pub extern "C" fn molt_pbkdf2_hmac(
             }
         };
         if dklen < 1 {
-            return raise_exception::<u64>(_py, "ValueError", "key length must be greater than 0.");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::ValueError,
+                "key length must be greater than 0.",
+            );
         }
         if dklen > i32::MAX as c_long {
-            return raise_exception::<u64>(_py, "OverflowError", "key length is too great.");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::OverflowError,
+                "key length is too great.",
+            );
         }
         let dklen = dklen as usize;
         let mut out = Vec::new();
         if out.try_reserve_exact(dklen).is_err() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         out.resize(dklen, 0);
         let password = unsafe { inputs[0].as_ref().unwrap().bytes(_py) };
@@ -1156,14 +1170,14 @@ pub extern "C" fn molt_pbkdf2_hmac(
             _ => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "[digital envelope routines] unsupported",
                 );
             }
         }
         let ptr = alloc_bytes(_py, &out);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -1226,7 +1240,7 @@ pub extern "C" fn molt_scrypt(
                 if !is_int {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         &format!(
                             "scrypt() argument '{name}' must be int, not {}",
                             type_name(_py, obj_from_bits(bits))
@@ -1256,7 +1270,7 @@ pub extern "C" fn molt_scrypt(
         }
         let n = nrp[0];
         if n < 2 || !n.is_power_of_two() {
-            return raise_exception::<u64>(_py, "ValueError", "n must be a power of 2.");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "n must be a power of 2.");
         }
         if !modern {
             nrp[1] = match scrypt_legacy_unsigned(_py, r_bits, "r") {
@@ -1272,35 +1286,35 @@ pub extern "C" fn molt_scrypt(
         if !(0..=i32::MAX as c_long).contains(&maxmem) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "maxmem must be positive and smaller than 2147483647",
             );
         }
         if dklen < 1 || dklen > i32::MAX as c_long {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "dklen must be greater than 0 and smaller than 2147483647",
             );
         }
         if r > u32::MAX as u64 || p > u32::MAX as u64 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "[digital envelope routines] parameter too large",
             );
         }
         if r == 0 || p == 0 {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Invalid parameter combination for n, r, p, maxmem.",
             );
         }
         if u128::from(r) * u128::from(p) >= (1u128 << 30) || (r < 4 && n >= (1u64 << (16 * r))) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "[digital envelope routines] memory limit exceeded",
             );
         }
@@ -1310,7 +1324,7 @@ pub extern "C" fn molt_scrypt(
             Err(_) => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "Invalid parameter combination for n, r, p, maxmem.",
                 );
             }
@@ -1327,14 +1341,14 @@ pub extern "C" fn molt_scrypt(
         if required > limit {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "[digital envelope routines] memory limit exceeded",
             );
         }
         let dklen = dklen as usize;
         let mut out = Vec::new();
         if out.try_reserve_exact(dklen).is_err() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         out.resize(dklen, 0);
         let password = unsafe { inputs[0].as_ref().unwrap().bytes(_py) };
@@ -1342,13 +1356,13 @@ pub extern "C" fn molt_scrypt(
         if scrypt::scrypt(password, salt, &params, &mut out).is_err() {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "Invalid parameter combination for n, r, p, maxmem.",
             );
         }
         let ptr = alloc_bytes(_py, &out);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })

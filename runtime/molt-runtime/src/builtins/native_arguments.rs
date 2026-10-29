@@ -128,7 +128,7 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
         else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label}() expects positional arguments tuple"),
             );
         };
@@ -141,7 +141,7 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
         else {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label}() expects keyword arguments dict"),
             );
         };
@@ -153,7 +153,7 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
         let keyword_entries = unsafe { dict_snapshot(py, kwargs_ptr, DictSnapshotKind::Entries)? };
         for &key in keyword_entries.iter().step_by(2) {
             if unsafe { with_string_bytes(obj_from_bits(key), |_| ()) }.is_none() {
-                return raise_exception(py, "TypeError", "keywords must be strings");
+                return raise_exception(py, BuiltinExc::TypeError, "keywords must be strings");
             }
         }
         Some(Self {
@@ -184,7 +184,7 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
 
     pub(crate) fn receiver(&self, py: &PyToken<'_>) -> Option<u64> {
         self.positional.first().copied().or_else(|| {
-            raise_exception::<()>(py, "TypeError", "constructor requires a receiver");
+            raise_exception::<()>(py, BuiltinExc::TypeError, "constructor requires a receiver");
             None
         })
     }
@@ -229,14 +229,14 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
         if !allow_keywords && !self.keyword_entries.is_empty() {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("{label}() takes no keyword arguments"),
             );
         }
         if self.values().len() > 1 {
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "{label} expected at most 1 argument, got {}",
                     self.values().len(),
@@ -267,7 +267,7 @@ pub(crate) fn bind_named<const N: usize>(
     if owners.try_reserve_exact(N).is_err() {
         return raise_exception(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "native parameter custody allocation failed",
         );
     }
@@ -300,13 +300,17 @@ pub(crate) fn bind_named_slots<T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
 ) -> Option<NamedBinding<T>> {
     let count = names.len();
     if slots.as_ref().len() != count || required > count {
-        return raise_exception(py, "SystemError", "invalid native parameter metadata");
+        return raise_exception(
+            py,
+            BuiltinExc::SystemError,
+            "invalid native parameter metadata",
+        );
     }
     let given = values.len() + keywords.names().len();
     if given > count {
         return raise_exception(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "{label}() takes at most {count} {}argument{} ({given} given)",
                 if values.is_empty() { "keyword " } else { "" },
@@ -321,7 +325,7 @@ pub(crate) fn bind_named_slots<T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
     if bound.owners.try_reserve_exact(count).is_err() {
         return raise_exception(
             py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "native binding custody allocation failed",
         );
     }
@@ -350,7 +354,7 @@ pub(crate) fn bind_named_slots<T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
             let name = string_obj_to_owned(obj_from_bits(parameter))?;
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "{label}() missing required argument '{name}' (pos {})",
                     index + 1,
@@ -370,7 +374,7 @@ pub(crate) fn bind_named_slots<T: AsRef<[Option<u64>]> + AsMut<[Option<u64>]>>(
             let name = string_obj_to_owned(obj_from_bits(parameter))?;
             return raise_exception(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "argument for {label}() given by name ('{name}') and position ({})",
                     index + 1,
@@ -390,7 +394,7 @@ fn unexpected_keyword(
 ) -> Option<()> {
     for keyword in keywords {
         if unsafe { with_string_bytes(obj_from_bits(keyword), |_| ()) }.is_none() {
-            return raise_exception(py, "TypeError", "keywords must be strings");
+            return raise_exception(py, BuiltinExc::TypeError, "keywords must be strings");
         }
         let mut matched = false;
         for &parameter in parameters {
@@ -471,7 +475,7 @@ fn unexpected_keyword(
                     .and_then(|size| size.checked_add(suffix.len()));
                 if capacity.is_none() || message.try_reserve_exact(capacity.unwrap_or(0)).is_err() {
                     return Err(FormatError::Diagnostic(
-                        "MemoryError",
+                        crate::BuiltinExc::MemoryError,
                         "keyword diagnostic allocation failed".into(),
                     ));
                 }
@@ -485,14 +489,16 @@ fn unexpected_keyword(
             });
         return match result {
             Err(error) => error.raise(py),
-            Ok(message) => {
-                crate::builtins::exceptions::raise_exception_bytes(py, "TypeError", &message)
-            }
+            Ok(message) => crate::builtins::exceptions::raise_exception_bytes(
+                py,
+                BuiltinExc::TypeError,
+                &message,
+            ),
         };
     }
     raise_exception(
         py,
-        "TypeError",
+        BuiltinExc::TypeError,
         &format!("invalid keyword argument for {label}()"),
     )
 }

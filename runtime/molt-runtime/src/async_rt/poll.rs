@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 use molt_obj_model::MoltObject;
 
@@ -465,7 +466,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                 if normalized_poll_fn_addr < crate::wasm_table_base() {
                     return raise_exception::<i64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "invalid wasm poll function",
                     );
                 }
@@ -520,7 +521,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                 else {
                     return crate::raise_exception::<i64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         &format!("async poll target 0x{poll_fn_addr:x} does not resolve"),
                     );
                 };

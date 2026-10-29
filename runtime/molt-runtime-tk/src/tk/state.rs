@@ -6,6 +6,7 @@ use super::tcl::TclInterpreter;
 use crate::bridge::{
     alloc_string_result, dec_ref_bits, has_capability, inc_ref_bits, raise_exception_u64, to_i64,
 };
+use molt_runtime_core::BuiltinExc;
 use molt_runtime_core::host_capabilities_generated::CapabilityId;
 use molt_runtime_core::prelude::{PyToken, obj_from_bits};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -542,34 +543,34 @@ pub(super) fn raise_tk_gate_error(py: &PyToken, op: TkOperation, state: &TkGateS
     if state.wasm_unsupported {
         return raise_exception_u64(
             py,
-            "NotImplementedError",
+            BuiltinExc::NotImplementedError,
             &format_tk_unavailable_message(op, state),
         );
     }
     if state.backend_unimplemented {
         return raise_exception_u64(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format_tk_unavailable_message(op, state),
         );
     }
     if state.missing_gui_window || state.missing_process_spawn {
         return raise_exception_u64(
             py,
-            "PermissionError",
+            BuiltinExc::PermissionError,
             &format_permission_error_message(state),
         );
     }
     if has_platform_preflight_blockers(state) {
         return raise_exception_u64(
             py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             &format_tk_unavailable_message(op, state),
         );
     }
     raise_exception_u64(
         py,
-        "RuntimeError",
+        BuiltinExc::RuntimeError,
         &format!("internal tkinter gate error ({})", op.symbol()),
     )
 }
@@ -609,7 +610,11 @@ pub(super) fn require_tk_app_new(py: &PyToken, _use_tk: bool) -> Result<(), u64>
 }
 
 pub(super) fn raise_tcl_error(py: &PyToken, message: &str) -> u64 {
-    raise_exception_u64(py, "RuntimeError", &format!("TclError: {message}"))
+    raise_exception_u64(
+        py,
+        BuiltinExc::RuntimeError,
+        &format!("TclError: {message}"),
+    )
 }
 
 pub(super) fn alloc_string_bits(py: &PyToken, value: &str) -> Result<u64, u64> {
@@ -628,7 +633,7 @@ pub(super) fn app_tcl_error_locked(
 }
 
 pub(super) fn raise_invalid_handle_error(py: &PyToken) -> u64 {
-    raise_exception_u64(py, "ValueError", "invalid tkinter app handle")
+    raise_exception_u64(py, BuiltinExc::ValueError, "invalid tkinter app handle")
 }
 
 pub(super) fn parse_app_handle(py: &PyToken, app_bits: u64) -> Result<i64, u64> {

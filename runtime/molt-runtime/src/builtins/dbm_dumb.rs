@@ -7,6 +7,7 @@
 //! - `.dir`: text index, one `'key', (offset, size)\n` per entry
 //! - `.dat`: binary data, values stored at offsets
 
+use crate::BuiltinExc;
 use crate::{
     MoltObject, PyToken, TYPE_ID_BYTES, alloc_bytes, alloc_list, bytes_data, bytes_len,
     obj_from_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64,
@@ -126,7 +127,7 @@ fn extract_key(_py: &PyToken, key_bits: u64) -> Option<String> {
     if let Some(data) = extract_raw_bytes(key_bits) {
         return Some(String::from_utf8_lossy(&data).into_owned());
     }
-    let _ = raise_exception::<u64>(_py, "TypeError", "dbm key must be str or bytes");
+    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "dbm key must be str or bytes");
     None
 }
 
@@ -138,7 +139,7 @@ fn extract_bytes_value(_py: &PyToken, bits: u64) -> Option<Vec<u8>> {
     if let Some(s) = string_obj_to_owned(obj_from_bits(bits)) {
         return Some(s.into_bytes());
     }
-    let _ = raise_exception::<u64>(_py, "TypeError", "dbm value must be str or bytes");
+    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, "dbm value must be str or bytes");
     None
 }
 
@@ -192,11 +193,15 @@ pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits:
     crate::with_gil_entry_nopanic!(_py, {
         let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "TypeError", "expected str for path"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str for path");
+            }
         };
         let flag_str = match string_obj_to_owned(obj_from_bits(flag_bits)) {
             Some(s) => s,
-            None => return raise_exception::<u64>(_py, "TypeError", "expected str for flag"),
+            None => {
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, "expected str for flag");
+            }
         };
         let flag = match flag_str.as_str() {
             "r" => b'r',
@@ -206,7 +211,7 @@ pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits:
             _ => {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     &format!("invalid flag: {flag_str:?}"),
                 );
             }
@@ -220,14 +225,14 @@ pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits:
             if let Err(e) = fs::write(&dir_file, "") {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &format!("cannot create {}: {}", dir_file, e),
                 );
             }
             if let Err(e) = fs::write(&dat_file, b"") {
                 return raise_exception::<u64>(
                     _py,
-                    "OSError",
+                    BuiltinExc::OSError,
                     &format!("cannot create {}: {}", dat_file, e),
                 );
             }
@@ -239,21 +244,21 @@ pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits:
                     if flag == b'r' || flag == b'w' {
                         return raise_exception::<u64>(
                             _py,
-                            "FileNotFoundError",
+                            BuiltinExc::FileNotFoundError,
                             &format!("need '{}' for flag='{}'", dir_file, flag_str),
                         );
                     }
                     if let Err(e) = fs::write(&dir_file, "") {
                         return raise_exception::<u64>(
                             _py,
-                            "OSError",
+                            BuiltinExc::OSError,
                             &format!("cannot create {}: {}", dir_file, e),
                         );
                     }
                     if let Err(e) = fs::write(&dat_file, b"") {
                         return raise_exception::<u64>(
                             _py,
-                            "OSError",
+                            BuiltinExc::OSError,
                             &format!("cannot create {}: {}", dat_file, e),
                         );
                     }
@@ -262,7 +267,7 @@ pub extern "C" fn molt_dbm_dumb_open(path_bits: u64, flag_bits: u64, _mode_bits:
                 Err(e) => {
                     return raise_exception::<u64>(
                         _py,
-                        "OSError",
+                        BuiltinExc::OSError,
                         &format!("cannot open {}: {}", dir_file, e),
                     );
                 }
@@ -292,7 +297,7 @@ pub extern "C" fn molt_dbm_dumb_getitem(handle_bits: u64, key_bits: u64) -> u64 
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
+            None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
         };
 
         let key = match extract_key(_py, key_bits) {
@@ -314,8 +319,8 @@ pub extern "C" fn molt_dbm_dumb_getitem(handle_bits: u64, key_bits: u64) -> u64 
 
         match result {
             Ok(data) => ptr_to_bits(alloc_bytes(_py, &data)),
-            Err("__KeyError__") => raise_exception::<u64>(_py, "KeyError", &key),
-            Err(msg) => raise_exception::<u64>(_py, "OSError", msg),
+            Err("__KeyError__") => raise_exception::<u64>(_py, BuiltinExc::KeyError, &key),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, msg),
         }
     })
 }
@@ -326,7 +331,7 @@ pub extern "C" fn molt_dbm_dumb_setitem(handle_bits: u64, key_bits: u64, value_b
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
+            None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
         };
 
         let key = match extract_key(_py, key_bits) {
@@ -359,7 +364,7 @@ pub extern "C" fn molt_dbm_dumb_setitem(handle_bits: u64, key_bits: u64, value_b
 
         match result {
             Ok(()) => MoltObject::none().bits(),
-            Err(msg) => raise_exception::<u64>(_py, "OSError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, msg),
         }
     })
 }
@@ -370,7 +375,7 @@ pub extern "C" fn molt_dbm_dumb_delitem(handle_bits: u64, key_bits: u64) -> u64 
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
+            None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
         };
 
         let key = match extract_key(_py, key_bits) {
@@ -396,8 +401,8 @@ pub extern "C" fn molt_dbm_dumb_delitem(handle_bits: u64, key_bits: u64) -> u64 
 
         match result {
             Ok(()) => MoltObject::none().bits(),
-            Err("__KeyError__") => raise_exception::<u64>(_py, "KeyError", &key),
-            Err(msg) => raise_exception::<u64>(_py, "OSError", msg),
+            Err("__KeyError__") => raise_exception::<u64>(_py, BuiltinExc::KeyError, &key),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, msg),
         }
     })
 }
@@ -408,7 +413,7 @@ pub extern "C" fn molt_dbm_dumb_contains(handle_bits: u64, key_bits: u64) -> u64
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
+            None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
         };
 
         let key = match extract_key(_py, key_bits) {
@@ -426,7 +431,7 @@ pub extern "C" fn molt_dbm_dumb_contains(handle_bits: u64, key_bits: u64) -> u64
 
         match result {
             Ok(v) => MoltObject::from_bool(v).bits(),
-            Err(msg) => raise_exception::<u64>(_py, "OSError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, msg),
         }
     })
 }
@@ -437,7 +442,7 @@ pub extern "C" fn molt_dbm_dumb_keys(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
+            None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
         };
 
         let result = DBM_HANDLES.with(|map| {
@@ -460,7 +465,7 @@ pub extern "C" fn molt_dbm_dumb_keys(handle_bits: u64) -> u64 {
 
         match result {
             Ok(items) => ptr_to_bits(alloc_list(_py, &items)),
-            Err(msg) => raise_exception::<u64>(_py, "OSError", msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, msg),
         }
     })
 }
@@ -471,7 +476,7 @@ pub extern "C" fn molt_dbm_dumb_sync(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
+            None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
         };
 
         let result = DBM_HANDLES.with(|map| {
@@ -488,7 +493,7 @@ pub extern "C" fn molt_dbm_dumb_sync(handle_bits: u64) -> u64 {
 
         match result {
             Ok(()) => MoltObject::none().bits(),
-            Err(msg) => raise_exception::<u64>(_py, "OSError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, &msg),
         }
     })
 }
@@ -499,7 +504,7 @@ pub extern "C" fn molt_dbm_dumb_close(handle_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid handle"),
+            None => return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid handle"),
         };
 
         // Close consumes the registry owner even when final synchronization
@@ -514,7 +519,7 @@ pub extern "C" fn molt_dbm_dumb_close(handle_bits: u64) -> u64 {
 
         match result {
             Ok(()) => MoltObject::none().bits(),
-            Err(msg) => raise_exception::<u64>(_py, "OSError", &msg),
+            Err(msg) => raise_exception::<u64>(_py, BuiltinExc::OSError, &msg),
         }
     })
 }
@@ -523,7 +528,7 @@ pub extern "C" fn molt_dbm_dumb_close(handle_bits: u64) -> u64 {
 mod tests {
     use super::*;
     use crate::builtins::exceptions::{
-        exception_matches_builtin_name, format_exception_message, molt_exception_clear,
+        exception_matches_kind, format_exception_message, molt_exception_clear,
         molt_exception_last_pending,
     };
 
@@ -543,7 +548,11 @@ mod tests {
     fn take_os_error(py: &PyToken<'_>) -> String {
         assert!(crate::exception_pending(py));
         let error = molt_exception_last_pending();
-        assert!(exception_matches_builtin_name(py, error, "OSError"));
+        assert!(exception_matches_kind(
+            py,
+            error,
+            crate::BuiltinExc::OSError
+        ));
         let message = format_exception_message(py, obj_from_bits(error).as_ptr().unwrap());
         molt_exception_clear();
         crate::dec_ref_bits(py, error);

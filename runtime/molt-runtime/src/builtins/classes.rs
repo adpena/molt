@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::{GilGuard, PyToken};
 use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 use std::sync::{Mutex, TryLockError};
@@ -1679,18 +1680,22 @@ builtin_class_names! {
 pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "builtin class name must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "builtin class name must be str",
+            );
         };
         if let Some(bits) = builtin_class_bits_from_name(_py, &name) {
             return bits;
         }
         if let Some(bits) =
-            crate::builtins::exceptions::builtin_exception_type_bits_from_name(_py, &name)
+            crate::builtins::exceptions::builtin_exception_class_owned_by_name(_py, &name)
         {
             return bits;
         }
         let msg = format!("builtin class unavailable: {name}");
-        raise_exception::<_>(_py, "RuntimeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg)
     })
 }
 
@@ -1767,10 +1772,10 @@ mod tests {
                     assert!(super::set_class_attr_text(py, class, name, value).is_none());
                 }
                 let error = exception_last_bits_noinc(py).expect("allocation failure");
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     error,
-                    "MemoryError",
+                    crate::BuiltinExc::MemoryError,
                 ));
                 clear_exception(py);
                 assert_eq!(unsafe { dict_len(dict) }, 0);
@@ -1779,7 +1784,7 @@ mod tests {
 
                 // A prior error is not the status of this publication. The same
                 // operation succeeds after admission is restored and keeps it.
-                raise_exception::<()>(py, "ValueError", "preexisting metadata error");
+                raise_exception::<()>(py, BuiltinExc::ValueError, "preexisting metadata error");
                 let prior = exception_last_bits_noinc(py).unwrap();
                 assert!(super::set_class_attr_text(py, class, name, value).is_some());
                 assert_eq!(exception_last_bits_noinc(py), Some(prior));

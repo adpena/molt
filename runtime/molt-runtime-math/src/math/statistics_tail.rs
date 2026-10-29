@@ -1,4 +1,5 @@
 use super::*;
+use molt_runtime_core::BuiltinExc;
 
 enum StatisticsNormalDistSamplesMode {
     Gauss,
@@ -121,7 +122,7 @@ impl StatisticsRandomRng {
 fn statistics_seed_type_error<T>(_py: &PyToken) -> Option<T> {
     raise_exception::<Option<T>>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "The only supported seed types are:\nNone, int, float, str, bytes, and bytearray.",
     )
 }
@@ -152,7 +153,7 @@ fn statistics_seed_bigint(_py: &PyToken, seed_bits: u64) -> Option<BigInt> {
             }
             return raise_exception::<Option<BigInt>>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "hash() should return an integer",
             );
         };
@@ -210,7 +211,7 @@ fn statistics_normal_dist_sample_count(_py: &PyToken, n_bits: u64) -> Option<usi
     }
     raise_exception::<Option<usize>>(
         _py,
-        "OverflowError",
+        BuiltinExc::OverflowError,
         "Python int too large to convert to C ssize_t",
     )
 }
@@ -313,7 +314,7 @@ fn statistics_normal_dist_samples_value(
                 if probability <= 0.0 || probability >= 1.0 {
                     return raise_exception::<Option<u64>>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "inv_cdf undefined for these parameters",
                     );
                 }
@@ -340,7 +341,7 @@ fn statistics_normal_dist_params(
     if sigma < 0.0 {
         return raise_exception::<Option<(f64, f64)>>(
             _py,
-            "StatisticsError",
+            BuiltinExc::StatisticsError,
             "sigma must be non-negative",
         );
     }
@@ -522,7 +523,7 @@ pub extern "C" fn molt_statistics_fmean(data_bits: u64) -> u64 {
         if values.is_empty() {
             return raise_exception::<_>(
                 _py,
-                "StatisticsError",
+                BuiltinExc::StatisticsError,
                 "fmean requires at least one data point",
             );
         }
@@ -544,7 +545,11 @@ pub extern "C" fn molt_statistics_median(data_bits: u64) -> u64 {
         };
         let n = values.len();
         if n == 0 {
-            return raise_exception::<u64>(py, "StatisticsError", "no median for empty data");
+            return raise_exception::<u64>(
+                py,
+                BuiltinExc::StatisticsError,
+                "no median for empty data",
+            );
         }
         if n % 2 == 1 {
             inc_ref_bits(py, values[n / 2]);
@@ -577,7 +582,7 @@ pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
                 }
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "median_low expected sorted list payload",
                 );
             }
@@ -591,7 +596,7 @@ pub extern "C" fn molt_statistics_median_low(data_bits: u64) -> u64 {
                 }
                 return raise_exception::<_>(
                     _py,
-                    "StatisticsError",
+                    BuiltinExc::StatisticsError,
                     "median_low requires at least one data point",
                 );
             }
@@ -623,7 +628,7 @@ pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
                 }
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "median_high expected sorted list payload",
                 );
             }
@@ -637,7 +642,7 @@ pub extern "C" fn molt_statistics_median_high(data_bits: u64) -> u64 {
                 }
                 return raise_exception::<_>(
                     _py,
-                    "StatisticsError",
+                    BuiltinExc::StatisticsError,
                     "median_high requires at least one data point",
                 );
             }
@@ -677,7 +682,7 @@ pub extern "C" fn molt_statistics_median_grouped(data_bits: u64, interval_bits: 
         if f == 0.0 {
             return raise_exception::<_>(
                 _py,
-                "StatisticsError",
+                BuiltinExc::StatisticsError,
                 "no grouped median for empty class",
             );
         }
@@ -844,7 +849,7 @@ pub extern "C" fn molt_statistics_normal_dist_inv_cdf(
         if p <= 0.0 || p >= 1.0 {
             return raise_exception::<_>(
                 _py,
-                "StatisticsError",
+                BuiltinExc::StatisticsError,
                 "p must be in the range 0.0 < p < 1.0",
             );
         }
@@ -866,7 +871,7 @@ pub extern "C" fn molt_statistics_normal_dist_pdf(
         if variance == 0.0 {
             return raise_exception::<_>(
                 _py,
-                "StatisticsError",
+                BuiltinExc::StatisticsError,
                 "pdf() not defined when sigma is zero",
             );
         }
@@ -893,7 +898,7 @@ pub extern "C" fn molt_statistics_normal_dist_cdf(
         if sigma == 0.0 {
             return raise_exception::<_>(
                 _py,
-                "StatisticsError",
+                BuiltinExc::StatisticsError,
                 "cdf() not defined when sigma is zero",
             );
         }
@@ -917,7 +922,7 @@ pub extern "C" fn molt_statistics_normal_dist_zscore(
         if sigma == 0.0 {
             return raise_exception::<_>(
                 _py,
-                "StatisticsError",
+                BuiltinExc::StatisticsError,
                 "zscore() not defined when sigma is zero",
             );
         }
@@ -955,7 +960,7 @@ pub extern "C" fn molt_statistics_normal_dist_overlap(
         if x_var == 0.0 || y_var == 0.0 {
             return raise_exception::<_>(
                 _py,
-                "StatisticsError",
+                BuiltinExc::StatisticsError,
                 "overlap() not defined when sigma is zero",
             );
         }
@@ -968,7 +973,11 @@ pub extern "C" fn molt_statistics_normal_dist_overlap(
         let a = mu_x * y_var - mu_y * x_var;
         let inner = dm * dm + dv * math_log(y_var / x_var);
         if inner < 0.0 {
-            return raise_exception::<_>(_py, "StatisticsError", "overlap() domain error");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::StatisticsError,
+                "overlap() domain error",
+            );
         }
         let b = sigma_x * sigma_y * math_sqrt(inner);
         let x1 = (a + b) / dv;

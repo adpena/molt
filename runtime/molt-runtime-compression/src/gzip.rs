@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
-        return raise_exception(_py, "MemoryError", "out of memory");
+        return raise_exception(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -41,7 +41,7 @@ pub extern "C" fn molt_gzip_open(
     molt_runtime_core::with_gil_entry!(_py, {
         let name_obj = obj_from_bits(filename_bits);
         let Some(name) = string_obj_to_owned(name_obj) else {
-            return raise_exception(_py, "TypeError", "filename must be str");
+            return raise_exception(_py, BuiltinExc::TypeError, "filename must be str");
         };
         let mode_obj = obj_from_bits(mode_bits);
         let mode = string_obj_to_owned(mode_obj).unwrap_or_else(|| "rb".to_string());
@@ -51,18 +51,22 @@ pub extern "C" fn molt_gzip_open(
                     Ok(f) => f,
                     Err(e) => {
                         let msg = format!("gzip.open: {e}");
-                        return raise_exception(_py, "OSError", &msg);
+                        return raise_exception(_py, BuiltinExc::OSError, &msg);
                     }
                 };
                 let reader = match crate::zlib::GzipReader::new(BufReader::new(file)) {
                     Ok(reader) => reader,
                     Err(libz_rs_sys::Z_MEM_ERROR) => {
-                        return raise_exception(_py, "MemoryError", "gzip reader out of memory");
+                        return raise_exception(
+                            _py,
+                            BuiltinExc::MemoryError,
+                            "gzip reader out of memory",
+                        );
                     }
                     Err(_) => {
                         return raise_exception(
                             _py,
-                            "OSError",
+                            BuiltinExc::OSError,
                             "gzip reader initialization failed",
                         );
                     }
@@ -72,7 +76,7 @@ pub extern "C" fn molt_gzip_open(
             _ => {
                 return raise_exception(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "native gzip reader requires 'r' or 'rb'",
                 );
             }
@@ -89,7 +93,7 @@ pub extern "C" fn molt_gzip_open(
 pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_owner) = gzip_handle_from_bits(handle_bits) else {
-            return raise_exception(_py, "OSError", "invalid gzip handle");
+            return raise_exception(_py, BuiltinExc::OSError, "invalid gzip handle");
         };
 
         let size = {
@@ -109,7 +113,7 @@ pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
             .unwrap_or_else(|error| error.into_inner());
         let GzipHandleInner::Reading(ref mut reader) = handle.inner else {
             drop(handle);
-            return raise_exception(_py, "OSError", "file not open for reading");
+            return raise_exception(_py, BuiltinExc::OSError, "file not open for reading");
         };
 
         let mut out = Vec::new();
@@ -127,7 +131,7 @@ pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
         };
         if !ok {
             drop(handle);
-            return raise_exception(_py, "OSError", "gzip read failed");
+            return raise_exception(_py, BuiltinExc::OSError, "gzip read failed");
         }
         drop(handle);
         return_bytes(_py, &out)
@@ -139,7 +143,7 @@ pub extern "C" fn molt_gzip_read(handle_bits: u64, size_bits: u64) -> u64 {
 pub extern "C" fn molt_gzip_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle_owner) = gzip_handle_from_bits(handle_bits) else {
-            return raise_exception(_py, "OSError", "invalid gzip handle");
+            return raise_exception(_py, BuiltinExc::OSError, "invalid gzip handle");
         };
 
         let mut handle = handle_owner

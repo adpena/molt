@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 /// One native method declaration drives attribute lookup and namespace
 /// materialization. Only the requested owner is materialized for __dict__.
 macro_rules! native_method_table {
@@ -83,7 +84,7 @@ pub(crate) fn method_dispatch(
             if !crate::exception_pending(py) {
                 crate::raise_exception::<u64>(
                     py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "builtin method lookup returned a null callable without an exception",
                 );
             }
@@ -153,10 +154,10 @@ mod tests {
                     dec_ref_bits(py, constructed);
                     assert!(exception_pending(py));
                     let exception = molt_exception_last();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
-                        "TypeError",
+                        crate::BuiltinExc::TypeError,
                     ));
                     crate::clear_exception(py);
                     dec_ref_bits(py, exception);
@@ -168,10 +169,10 @@ mod tests {
                 dec_ref_bits(py, inherited);
                 assert!(exception_pending(py));
                 let exception = molt_exception_last();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
-                    "TypeError",
+                    crate::BuiltinExc::TypeError,
                 ));
                 crate::clear_exception(py);
                 dec_ref_bits(py, exception);
@@ -277,10 +278,10 @@ mod tests {
                     dec_ref_bits(py, result);
                     assert!(exception_pending(py));
                     let exception = molt_exception_last();
-                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    assert!(crate::builtins::exceptions::exception_matches_kind(
                         py,
                         exception,
-                        "StopIteration"
+                        crate::BuiltinExc::StopIteration
                     ));
                     crate::clear_exception(py);
                     dec_ref_bits(py, exception);
@@ -295,10 +296,10 @@ mod tests {
                 dec_ref_bits(py, result);
                 assert!(exception_pending(py));
                 let exception = molt_exception_last();
-                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                assert!(crate::builtins::exceptions::exception_matches_kind(
                     py,
                     exception,
-                    "TypeError"
+                    crate::BuiltinExc::TypeError
                 ));
                 crate::clear_exception(py);
                 dec_ref_bits(py, exception);
@@ -323,7 +324,11 @@ mod tests {
             let failure = std::cell::Cell::new(0);
             assert_eq!(
                 method_dispatch(py, || {
-                    raise_exception::<()>(py, "MemoryError", "method allocation test failure");
+                    raise_exception::<()>(
+                        py,
+                        BuiltinExc::MemoryError,
+                        "method allocation test failure",
+                    );
                     failure.set(molt_exception_last_pending());
                     Ok(Some(0))
                 }),

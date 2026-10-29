@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::object::ops_sys::runtime_target_minor;
 use crate::state::runtime_state::{AtexitCallbackEntry, ExitRegistry};
 use crate::{
@@ -93,19 +94,21 @@ fn raise_exit_registry_error(
 ) -> u64 {
     match error {
         ExitRegistryError::OutOfMemory => {
-            raise_exception::<u64>(_py, "MemoryError", memory_message)
+            raise_exception::<u64>(_py, BuiltinExc::MemoryError, memory_message)
         }
         ExitRegistryError::RegistrationIdExhausted => raise_exception::<u64>(
             _py,
-            "OverflowError",
+            BuiltinExc::OverflowError,
             "atexit registration id space exhausted",
         ),
-        ExitRegistryError::CapacityExhausted => {
-            raise_exception::<u64>(_py, "OverflowError", "atexit registry capacity exhausted")
-        }
+        ExitRegistryError::CapacityExhausted => raise_exception::<u64>(
+            _py,
+            BuiltinExc::OverflowError,
+            "atexit registry capacity exhausted",
+        ),
         ExitRegistryError::InvalidPreparedCapacity => raise_exception::<u64>(
             _py,
-            "RuntimeError",
+            BuiltinExc::RuntimeError,
             "invalid prepared atexit registry capacity",
         ),
     }
@@ -226,7 +229,11 @@ fn atexit_register_impl(
         return MoltObject::none().bits();
     }
     if !is_truthy(_py, obj_from_bits(callable_bits)) {
-        return raise_exception::<u64>(_py, "TypeError", "the first argument must be callable");
+        return raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "the first argument must be callable",
+        );
     }
 
     if !obj_from_bits(func_bits).is_none() {
@@ -328,7 +335,7 @@ fn atexit_unregister_impl(_py: &PyToken<'_>, func_bits: u64) -> u64 {
         if candidates.try_reserve_exact(capacity).is_err() {
             return raise_exception::<u64>(
                 _py,
-                "MemoryError",
+                BuiltinExc::MemoryError,
                 "atexit unregister snapshot allocation failed",
             );
         }
@@ -378,7 +385,7 @@ fn atexit_unregister_impl(_py: &PyToken<'_>, func_bits: u64) -> u64 {
         }
         return raise_exception::<u64>(
             _py,
-            "MemoryError",
+            BuiltinExc::MemoryError,
             "atexit unregister removal allocation failed",
         );
     }

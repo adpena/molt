@@ -28,6 +28,10 @@ from molt._intrinsic_symbols import INTRINSIC_SIGNATURES
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError, CompatibilityReporter
 from molt.frontend.cfg_analysis import CFGGraph, ControlMaps, build_cfg
+from molt.frontend.exception_kinds_generated import (
+    BUILTIN_EXCEPTION_CODES,
+    BUILTIN_EXCEPTION_NAMES,
+)
 from molt.frontend.module_publication import SourceModulePublication
 from molt.type_facts import normalize_type_hint
 
@@ -634,102 +638,29 @@ _BUILTIN_FAST_METHODS: dict[str, frozenset[str]] = {
     "dict": frozenset({"get"}),
 }
 
-BUILTIN_EXCEPTION_NAMES = {
-    "BaseException",
-    "BaseExceptionGroup",
-    "Exception",
-    "ExceptionGroup",
-    "ArithmeticError",
-    "AssertionError",
-    "AttributeError",
-    "BufferError",
-    "EOFError",
-    "FloatingPointError",
-    "GeneratorExit",
-    "ImportError",
-    "ModuleNotFoundError",
-    "IndexError",
-    "KeyError",
-    "KeyboardInterrupt",
-    "LookupError",
-    "MemoryError",
-    "NameError",
-    "UnboundLocalError",
-    "NotImplementedError",
-    "PythonFinalizationError",
-    "OSError",
-    "EnvironmentError",
-    "IOError",
-    "WindowsError",
-    "BlockingIOError",
-    "ChildProcessError",
-    "ConnectionError",
-    "BrokenPipeError",
-    "ConnectionAbortedError",
-    "ConnectionRefusedError",
-    "ConnectionResetError",
-    "FileExistsError",
-    "OverflowError",
-    "PermissionError",
-    "FileNotFoundError",
-    "InterruptedError",
-    "IsADirectoryError",
-    "NotADirectoryError",
-    "RecursionError",
-    "ReferenceError",
-    "RuntimeError",
-    "StopIteration",
-    "StopAsyncIteration",
-    "SyntaxError",
-    "IndentationError",
-    "TabError",
-    "SystemError",
-    "SystemExit",
-    "TimeoutError",
-    "ProcessLookupError",
-    "TypeError",
-    "UnicodeError",
-    "UnicodeDecodeError",
-    "UnicodeEncodeError",
-    "UnicodeTranslateError",
-    "ValueError",
-    "ZeroDivisionError",
-    "Warning",
-    "DeprecationWarning",
-    "PendingDeprecationWarning",
-    "RuntimeWarning",
-    "SyntaxWarning",
-    "UserWarning",
-    "FutureWarning",
-    "ImportWarning",
-    "UnicodeWarning",
-    "BytesWarning",
-    "ResourceWarning",
-    "EncodingWarning",
-}
 
 OBJECT_CLASS = BuiltinClass("object")
 
+# The builtin exceptions the frontend constructs and matches by tag. A tag is
+# the class's `BuiltinExc` code (runtime/exception_kinds.toml), which the
+# runtime decodes with `ExcKind::from_code`; no second ordinal table exists.
 BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS = {
-    name: idx
-    for idx, name in enumerate(
-        (
-            "BaseException",
-            "Exception",
-            "KeyError",
-            "IndexError",
-            "ValueError",
-            "TypeError",
-            "RuntimeError",
-            "StopIteration",
-            "StopAsyncIteration",
-            "AssertionError",
-            "ImportError",
-            "NameError",
-            "UnboundLocalError",
-            "NotImplementedError",
-        ),
-        start=1,
+    name: BUILTIN_EXCEPTION_CODES[name]
+    for name in (
+        "BaseException",
+        "Exception",
+        "KeyError",
+        "IndexError",
+        "ValueError",
+        "TypeError",
+        "RuntimeError",
+        "StopIteration",
+        "StopAsyncIteration",
+        "AssertionError",
+        "ImportError",
+        "NameError",
+        "UnboundLocalError",
+        "NotImplementedError",
     )
 }
 

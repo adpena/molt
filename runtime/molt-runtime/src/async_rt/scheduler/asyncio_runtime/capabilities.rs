@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::PyToken;
 use crate::audit::AuditArgs;
 use crate::object::ops::string_obj_to_owned;
@@ -22,14 +23,14 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
         let Some(operation) = string_obj_to_owned(obj_from_bits(operation_bits)) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "asyncio SSL transport operation must be str",
             );
         };
         if operation.is_empty() {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "asyncio SSL transport operation cannot be empty",
             );
         }
@@ -46,7 +47,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
         if !(is_client_operation || is_server_operation || is_tls_upgrade) {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "unsupported asyncio SSL transport operation",
             );
         }
@@ -55,28 +56,28 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
         if obj_from_bits(ssl_bits).is_none() {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "ssl transport requires an ssl context or ssl=True",
             );
         }
         let Some(server_side_raw) = to_i64(obj_from_bits(server_side_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "server_side must be bool");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "server_side must be bool");
         };
         if server_side_raw != 0 && server_side_raw != 1 {
-            return raise_exception::<u64>(_py, "TypeError", "server_side must be bool");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "server_side must be bool");
         }
         let server_side = server_side_raw == 1;
         if is_client_operation && server_side {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "client SSL operations require server_side=False",
             );
         }
         if is_server_operation && !server_side {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "server SSL operations require server_side=True",
             );
         }
@@ -85,21 +86,21 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
             else {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "server_hostname must be str or None",
                 );
             };
             if server_hostname.is_empty() {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "server_hostname cannot be an empty string",
                 );
             }
             if server_side {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "server_hostname is only meaningful for client connections",
                 );
             }
@@ -108,14 +109,14 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
             if is_tls_upgrade {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "start_tls requires an SSL context",
                 );
             }
             if !obj_from_bits(server_hostname_bits).is_none() {
                 return raise_exception::<u64>(
                     _py,
-                    "ValueError",
+                    BuiltinExc::ValueError,
                     "server_hostname requires an active SSL transport",
                 );
             }
@@ -124,14 +125,14 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
         if is_client_operation && obj_from_bits(server_hostname_bits).is_none() {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "you have to pass server_hostname when using ssl",
             );
         }
         if !asyncio_has_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "missing net capability for asyncio SSL transport",
             );
         }
@@ -151,7 +152,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
                 {
                     return raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "asyncio SSL unix transport is unavailable on wasm",
                     );
                 }
@@ -159,7 +160,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
                 {
                     return raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "asyncio SSL unix transport is unavailable on Windows",
                     );
                 }
@@ -167,7 +168,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
                 {
                     return raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "asyncio SSL unix transport is unavailable on this host",
                     );
                 }
@@ -176,7 +177,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
                 "unsupported asyncio SSL transport operation '{}'",
                 operation
             );
-            return raise_exception::<u64>(_py, "ValueError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
         }
         if is_server_operation {
             return bool_true_bits;
@@ -188,7 +189,7 @@ pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
             "asyncio SSL transport operation '{}' is not yet available in this runtime",
             operation
         );
-        raise_exception::<u64>(_py, "RuntimeError", &msg)
+        raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
     })
 }
 
@@ -198,7 +199,7 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
         if !asyncio_has_net_capability(_py) {
             return raise_exception::<u64>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "missing net capability for asyncio unix sockets",
             );
         }
@@ -206,7 +207,7 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
         {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "asyncio unix sockets are unavailable on wasm",
             )
         }
@@ -214,7 +215,7 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
         {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "asyncio unix sockets are unavailable on Windows",
             )
         }
@@ -226,7 +227,7 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
         {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "asyncio unix sockets are unavailable on this host",
             )
         }
@@ -239,7 +240,7 @@ pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
         if !asyncio_has_process_capability(_py) {
             return raise_exception::<u64>(
                 _py,
-                "PermissionError",
+                BuiltinExc::PermissionError,
                 "missing process capability for asyncio child watchers",
             );
         }
@@ -247,7 +248,7 @@ pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
         {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "asyncio child watchers are unavailable on this host",
             )
         }
@@ -259,7 +260,7 @@ pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
         {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "asyncio child watchers are unavailable on this host",
             )
         }

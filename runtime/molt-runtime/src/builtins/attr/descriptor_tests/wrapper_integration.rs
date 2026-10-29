@@ -200,7 +200,11 @@ fn property_member_binding_reads_storage_and_rejects_mutation() {
             unsafe { descriptor_mutate(py, descriptor, property, DescriptorMutation::Set(none)) };
         assert!(matches!(result, DescriptorMutationOutcome::Error));
         let error = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(exception_matches_builtin_name(py, error, "AttributeError"));
+        assert!(exception_matches_kind(
+            py,
+            error,
+            crate::BuiltinExc::AttributeError
+        ));
         clear_exception(py);
         dec_ref_bits(py, error);
         let preserved = crate::molt_get_attr_name(property, name);

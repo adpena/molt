@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 struct FileMode {
@@ -122,7 +123,7 @@ fn open_arg_type(_py: &PyToken<'_>, bits: u64, name: &str, allow_none: bool) -> 
     } else {
         format!("open() argument '{name}' must be str, not {type_name}")
     };
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 pub(super) fn open_arg_newline(_py: &PyToken<'_>, bits: u64) -> Option<String> {
@@ -133,13 +134,13 @@ pub(super) fn open_arg_newline(_py: &PyToken<'_>, bits: u64) -> Option<String> {
     let Some(text) = string_obj_to_owned(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, bits));
         let msg = format!("open() argument 'newline' must be str or None, not {type_name}");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     match text.as_str() {
         "" | "\n" | "\r" | "\r\n" => Some(text),
         _ => {
             let msg = format!("illegal newline value: {text}");
-            raise_exception::<_>(_py, "ValueError", &msg)
+            raise_exception::<_>(_py, BuiltinExc::ValueError, &msg)
         }
     }
 }
@@ -154,7 +155,7 @@ pub(super) fn reconfigure_arg_type(_py: &PyToken<'_>, bits: u64, name: &str) -> 
     }
     let type_name = class_name_for_error(type_of_bits(_py, bits));
     let msg = format!("reconfigure() argument '{name}' must be str or None, not {type_name}");
-    raise_exception::<_>(_py, "TypeError", &msg)
+    raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
 }
 
 pub(super) fn reconfigure_arg_newline(_py: &PyToken<'_>, bits: u64) -> Option<String> {
@@ -165,13 +166,13 @@ pub(super) fn reconfigure_arg_newline(_py: &PyToken<'_>, bits: u64) -> Option<St
     let Some(text) = string_obj_to_owned(obj) else {
         let type_name = class_name_for_error(type_of_bits(_py, bits));
         let msg = format!("reconfigure() argument 'newline' must be str or None, not {type_name}");
-        return raise_exception::<_>(_py, "TypeError", &msg);
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     };
     match text.as_str() {
         "" | "\n" | "\r" | "\r\n" => Some(text),
         _ => {
             let msg = format!("illegal newline value: {text}");
-            raise_exception::<_>(_py, "ValueError", &msg)
+            raise_exception::<_>(_py, BuiltinExc::ValueError, &msg)
         }
     }
 }
@@ -426,7 +427,7 @@ fn open_impl(
     if mode_obj.is_none() {
         return raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "open() argument 'mode' must be str, not NoneType",
         );
     }
@@ -435,12 +436,12 @@ fn open_impl(
         None => {
             let type_name = class_name_for_error(type_of_bits(_py, mode_bits));
             let msg = format!("open() argument 'mode' must be str, not {type_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
     };
     let mode_info = match parse_file_mode(&mode) {
         Ok(parsed) => parsed,
-        Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+        Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
     };
     let operation = if mode_info.readable && mode_info.writable {
         crate::OperationId::IoOpenReadwrite
@@ -454,7 +455,7 @@ fn open_impl(
         if obj.is_none() {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "'NoneType' object cannot be interpreted as an integer",
             );
         }
@@ -466,12 +467,16 @@ fn open_impl(
         return MoltObject::none().bits();
     }
     if buffering < -1 {
-        return raise_exception::<_>(_py, "ValueError", "buffering must be >= -1");
+        return raise_exception::<_>(_py, BuiltinExc::ValueError, "buffering must be >= -1");
     }
     let buffering = if buffering < 0 { -1 } else { buffering };
     let line_buffering = buffering == 1 && mode_info.text;
     if buffering == 0 && mode_info.text {
-        return raise_exception::<_>(_py, "ValueError", "can't have unbuffered text I/O");
+        return raise_exception::<_>(
+            _py,
+            BuiltinExc::ValueError,
+            "can't have unbuffered text I/O",
+        );
     }
 
     let encoding = if mode_info.text {
@@ -479,7 +484,7 @@ fn open_impl(
     } else if !obj_from_bits(encoding_bits).is_none() {
         return raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "binary mode doesn't take an encoding argument",
         );
     } else {
@@ -493,7 +498,7 @@ fn open_impl(
     } else if !obj_from_bits(errors_bits).is_none() {
         return raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "binary mode doesn't take an errors argument",
         );
     } else {
@@ -507,7 +512,7 @@ fn open_impl(
     } else if !obj_from_bits(newline_bits).is_none() {
         return raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "binary mode doesn't take a newline argument",
         );
     } else {
@@ -536,7 +541,7 @@ fn open_impl(
         // opener results instead retain their checked-conversion exception.
         let i = i64::from(i);
         if i < 0 {
-            return raise_exception::<_>(_py, "ValueError", "negative file descriptor");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "negative file descriptor");
         }
         fd = Some(i);
         if debug_open_fd {
@@ -560,7 +565,7 @@ fn open_impl(
                 if !closefd {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "Cannot use closefd=False with file name",
                     );
                 }
@@ -592,7 +597,9 @@ fn open_impl(
             mode_info.writable,
         ) {
             Ok(requirements) => Some(requirements),
-            Err(error) => return raise_exception::<_>(_py, "PermissionError", &error.to_string()),
+            Err(error) => {
+                return raise_exception::<_>(_py, BuiltinExc::PermissionError, &error.to_string());
+            }
         },
         None => None,
     };
@@ -611,7 +618,7 @@ fn open_impl(
         .as_ref()
         .is_some_and(|requirements| requirements.read_only)
     {
-        return raise_exception::<_>(_py, "PermissionError", "Read-only file system");
+        return raise_exception::<_>(_py, BuiltinExc::PermissionError, "Read-only file system");
     }
 
     let mut file = None;
@@ -619,7 +626,11 @@ fn open_impl(
     let mut crt_fd: Option<i64> = None;
     if let Some(fd_val) = fd {
         if !opener_is_none {
-            return raise_exception::<_>(_py, "ValueError", "opener only works with file path");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "opener only works with file path",
+            );
         }
         let effective_fd = if closefd {
             fd_val
@@ -627,7 +638,7 @@ fn open_impl(
             match dup_fd(fd_val) {
                 Some(val) => val,
                 None => {
-                    return raise_exception::<_>(_py, "OSError", "open failed");
+                    return raise_exception::<_>(_py, BuiltinExc::OSError, "open failed");
                 }
             }
         };
@@ -642,7 +653,7 @@ fn open_impl(
             unsafe {
                 libc::close(effective_fd as libc::c_int);
             }
-            return raise_exception::<_>(_py, "OSError", "open failed");
+            return raise_exception::<_>(_py, BuiltinExc::OSError, "open failed");
         }
     } else if let Some(path) = path {
         let flags = file_mode_to_flags(&mode_info);
@@ -650,7 +661,7 @@ fn open_impl(
             if !is_truthy(_py, obj_from_bits(molt_is_callable(opener_bits))) {
                 let type_name = class_name_for_error(type_of_bits(_py, opener_bits));
                 let msg = format!("'{type_name}' object is not callable");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let path_bits = path_name_bits;
             let flags_bits = MoltObject::from_int(flags as i64).bits();
@@ -671,7 +682,7 @@ fn open_impl(
                 if fd_val < 0 {
                     return raise_exception::<_>(
                         _py,
-                        "ValueError",
+                        BuiltinExc::ValueError,
                         "opener returned a negative file descriptor",
                     );
                 }
@@ -686,12 +697,12 @@ fn open_impl(
                     unsafe {
                         libc::close(fd_val as libc::c_int);
                     }
-                    return raise_exception::<_>(_py, "OSError", "open failed");
+                    return raise_exception::<_>(_py, BuiltinExc::OSError, "open failed");
                 }
             } else {
                 let type_name = class_name_for_error(type_of_bits(_py, fd_bits));
                 let msg = format!("expected opener to return int, got {type_name}");
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         } else {
             if let Some((_mount_prefix, backend, rel_path)) = vfs_route {
@@ -733,7 +744,7 @@ fn open_impl(
                 let initial_pos = if mode_info.append { data.len() } else { 0 };
                 let bytearray_ptr = alloc_bytearray(_py, &data);
                 if bytearray_ptr.is_null() {
-                    return raise_exception::<_>(_py, "OSError", "open failed");
+                    return raise_exception::<_>(_py, BuiltinExc::OSError, "open failed");
                 }
                 let mem_bits = MoltObject::from_ptr(bytearray_ptr).bits();
                 let vfs_state = Arc::new(MoltFileState {
@@ -756,7 +767,7 @@ fn open_impl(
                         Ok(val) => val,
                         Err(msg) => {
                             dec_ref_bits(_py, mem_bits);
-                            return raise_exception::<_>(_py, "LookupError", &msg);
+                            return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                         }
                     };
                     (Some(label), Some(display))
@@ -901,7 +912,7 @@ fn open_impl(
         }
     }
     let Some(file) = file else {
-        return raise_exception::<_>(_py, "OSError", "open failed");
+        return raise_exception::<_>(_py, BuiltinExc::OSError, "open failed");
     };
 
     let state = Arc::new(MoltFileState {
@@ -961,7 +972,7 @@ fn open_impl(
         }
         let (label, display) = match selected_text_encoding(_py, encoding.as_deref()) {
             Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "LookupError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg),
         };
         (Some(label), Some(display))
     } else {
@@ -1395,10 +1406,14 @@ pub extern "C" fn molt_file_io_new(
         } else {
             let type_name = class_name_for_error(type_of_bits(_py, mode_bits));
             let msg = format!("FileIO() argument 'mode' must be str, not {type_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if mode.contains('t') {
-            return raise_exception::<_>(_py, "ValueError", "FileIO() doesn't take text mode");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::ValueError,
+                "FileIO() doesn't take text mode",
+            );
         }
         if !mode.contains('b') {
             mode.push('b');

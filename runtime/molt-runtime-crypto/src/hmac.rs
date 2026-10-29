@@ -165,7 +165,7 @@ fn build_hmac_handle(
     if inner.is_xof {
         return Err(raise_exception::<u64>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "no reason supplied",
         ));
     }
@@ -216,10 +216,20 @@ pub extern "C" fn molt_hmac_new(
             Some(1) => HmacOperation::SingleShot,
             Some(2) => HmacOperation::BuiltinNew,
             Some(3) => HmacOperation::BuiltinSingleShot,
-            _ => return raise_exception::<u64>(_py, "SystemError", "invalid HMAC operation role"),
+            _ => {
+                return raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "invalid HMAC operation role",
+                );
+            }
         };
         let Some(digestmod_present) = obj_from_bits(digestmod_present_bits).as_bool() else {
-            return raise_exception::<u64>(_py, "SystemError", "invalid HMAC digestmod presence");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::SystemError,
+                "invalid HMAC digestmod presence",
+            );
         };
         let error = OwnedRuntimeValue::retain(_py, error_bits);
         let builtin = matches!(
@@ -234,7 +244,7 @@ pub extern "C" fn molt_hmac_new(
             if !digestmod_present {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "new() missing 1 required argument 'digestmod'",
                 );
             }
@@ -271,7 +281,11 @@ pub extern "C" fn molt_hmac_new(
             if single {
                 drop(inputs);
             }
-            return raise_exception::<u64>(_py, "OverflowError", "key length exceeds 4294967295");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::OverflowError,
+                "key length exceeds 4294967295",
+            );
         }
         if single {
             inputs[msg_index] = Some(
@@ -293,7 +307,7 @@ pub extern "C" fn molt_hmac_new(
                 drop(inputs);
                 return raise_exception::<u64>(
                     _py,
-                    "OverflowError",
+                    BuiltinExc::OverflowError,
                     "message length exceeds 4294967295",
                 );
             }
@@ -305,7 +319,7 @@ pub extern "C" fn molt_hmac_new(
                 {
                     return raise_exception::<u64>(
                         _py,
-                        "OverflowError",
+                        BuiltinExc::OverflowError,
                         &format!("{name} is too long."),
                     );
                 }
@@ -313,7 +327,7 @@ pub extern "C" fn molt_hmac_new(
             if !digestmod_present {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "Missing required parameter 'digestmod'.",
                 );
             }
@@ -349,14 +363,20 @@ pub extern "C" fn molt_hmac_new(
         if single {
             let output = match handle.finalize_bytes() {
                 Ok(output) => output,
-                Err(_) => return raise_exception::<u64>(_py, "ValueError", "no reason supplied"),
+                Err(_) => {
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "no reason supplied",
+                    );
+                }
             };
             if builtin {
                 drop(inputs);
             }
             let pointer = alloc_bytes(_py, &output);
             if pointer.is_null() {
-                return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+                return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
             }
             return MoltObject::from_ptr(pointer).bits();
         }
@@ -396,7 +416,7 @@ pub extern "C" fn molt_hmac_new(
 pub extern "C" fn molt_hmac_update(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(owner) = hmac_owner(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid hmac handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hmac handle");
         };
         let data = match hash_input(_py, data_bits) {
             Ok(slice) => slice,
@@ -413,7 +433,7 @@ pub extern "C" fn molt_hmac_update(handle_bits: u64, data_bits: u64) -> u64 {
 pub extern "C" fn molt_hmac_copy(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(owner) = hmac_owner(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid hmac handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hmac handle");
         };
         let copy = owner
             .lock()
@@ -426,7 +446,7 @@ pub extern "C" fn molt_hmac_copy(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(owner) = hmac_owner(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid hmac handle");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "invalid hmac handle");
         };
         let handle = owner
             .lock()
@@ -434,11 +454,13 @@ pub extern "C" fn molt_hmac_digest(handle_bits: u64) -> u64 {
             .clone();
         let out = match handle.finalize_bytes() {
             Ok(bytes) => bytes,
-            Err(_) => return raise_exception::<u64>(_py, "ValueError", "no reason supplied"),
+            Err(_) => {
+                return raise_exception::<u64>(_py, BuiltinExc::ValueError, "no reason supplied");
+            }
         };
         let ptr = alloc_bytes(_py, &out);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -470,7 +492,7 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
             if !a.is_ascii() || !b.is_ascii() {
                 return raise_exception::<u64>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "comparing strings with non-ASCII characters is not supported",
                 );
             }
@@ -507,7 +529,7 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
                 {
                     return raise_exception::<u64>(
                         _py,
-                        "TypeError",
+                        BuiltinExc::TypeError,
                         "comparing strings with non-ASCII characters is not supported",
                     );
                 }
@@ -550,7 +572,7 @@ pub extern "C" fn molt_compare_digest(a_bits: u64, b_bits: u64) -> u64 {
                 if (*inputs[index].as_ref().unwrap().descriptor()).ndim > 1 {
                     return raise_exception::<u64>(
                         _py,
-                        "BufferError",
+                        BuiltinExc::BufferError,
                         "Buffer must be single dimension",
                     );
                 }

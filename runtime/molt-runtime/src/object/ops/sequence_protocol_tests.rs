@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use molt_cpython_abi::abi_types::{self, PyObject, PySequenceMethods, PyTypeObject};
 use molt_cpython_abi::api::{errors, object, refcount};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
@@ -55,8 +56,11 @@ fn cold_projection_preserves_independent_raised_channels() {
         let c_error = errors::take_current_error().expect("C error");
         let c_type = c_error.exc_type;
         let c_value = c_error.value;
-        let runtime_ptr =
-            crate::builtins::exceptions::alloc_exception(&py, "KeyError", "runtime error");
+        let runtime_ptr = crate::builtins::exceptions::alloc_exception(
+            &py,
+            BuiltinExc::KeyError,
+            "runtime error",
+        );
         let runtime = MoltObject::from_ptr(runtime_ptr).bits();
         // Restore already-owned independent channels without a new semantic
         // raise, which correctly replaces either previous indicator.
@@ -82,7 +86,7 @@ fn cold_projection_preserves_independent_raised_channels() {
 
 extern "C" fn forbidden_storage_iteration(_: u64) -> u64 {
     crate::with_gil(|py| {
-        crate::raise_exception::<u64>(&py, "AssertionError", "iterated list storage")
+        crate::raise_exception::<u64>(&py, BuiltinExc::AssertionError, "iterated list storage")
     })
 }
 
@@ -395,7 +399,7 @@ fn sequence_headers_share_admission_materialization_and_pending_error_custody() 
             assert_eq!(observed, incoming);
             drop(observed_owner);
             drop(incoming_owner);
-            crate::raise_exception::<()>(&py, "LookupError", "incoming runtime error");
+            crate::raise_exception::<()>(&py, BuiltinExc::LookupError, "incoming runtime error");
             let incoming = crate::builtins::exceptions::molt_exception_last_pending();
             assert_eq!(probe(list_view), 1);
             assert_eq!(probe(dict_view), 0);
@@ -508,7 +512,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
         let payload_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(payload);
         let stop = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
             &py,
-            "StopIteration",
+            BuiltinExc::StopIteration,
             "completion",
         ))
         .bits();
@@ -550,7 +554,7 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
 
         let failure = MoltObject::from_ptr(crate::builtins::exceptions::alloc_exception(
             &py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "iterator callback",
         ))
         .bits();

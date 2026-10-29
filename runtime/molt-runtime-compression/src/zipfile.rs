@@ -87,10 +87,10 @@ fn next_zip_id(_py: &PyToken) -> i64 {
 pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(path) = string_obj_to_owned(obj_from_bits(path_bits)) else {
-            return raise_exception(_py, "TypeError", "path must be a string");
+            return raise_exception(_py, BuiltinExc::TypeError, "path must be a string");
         };
         let Some(mode) = string_obj_to_owned(obj_from_bits(mode_bits)) else {
-            return raise_exception(_py, "TypeError", "mode must be a string");
+            return raise_exception(_py, BuiltinExc::TypeError, "mode must be a string");
         };
 
         let id = next_zip_id(_py);
@@ -98,7 +98,13 @@ pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
             "r" => {
                 let data = match std::fs::read(&path) {
                     Ok(d) => d,
-                    Err(e) => return raise_exception(_py, "FileNotFoundError", &format!("{}", e)),
+                    Err(e) => {
+                        return raise_exception(
+                            _py,
+                            BuiltinExc::FileNotFoundError,
+                            &format!("{}", e),
+                        );
+                    }
                 };
                 zip_state(_py)
                     .archives
@@ -115,7 +121,7 @@ pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
                     },
                 );
             }
-            _ => return raise_exception(_py, "ValueError", "unsupported zipfile mode"),
+            _ => return raise_exception(_py, BuiltinExc::ValueError, "unsupported zipfile mode"),
         }
         MoltObject::from_int(id).bits()
     })
@@ -125,7 +131,7 @@ pub extern "C" fn molt_zipfile_open(path_bits: u64, mode_bits: u64) -> u64 {
 pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception(_py, "TypeError", "invalid handle");
+            return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
         let state = zip_state(_py).archives.lock().unwrap().remove(&id);
         match state {
@@ -133,7 +139,7 @@ pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
                 // Write the zip file using the `zip` crate
                 let file = match std::fs::File::create(&path) {
                     Ok(f) => f,
-                    Err(e) => return raise_exception(_py, "IOError", &format!("{}", e)),
+                    Err(e) => return raise_exception(_py, BuiltinExc::OSError, &format!("{}", e)),
                 };
                 let mut writer = zip::ZipWriter::new(file);
                 for (name, data, method) in &entries {
@@ -145,14 +151,14 @@ pub extern "C" fn molt_zipfile_close(handle_bits: u64) -> u64 {
                         },
                     );
                     if let Err(e) = writer.start_file(name.as_str(), options) {
-                        return raise_exception(_py, "IOError", &format!("{}", e));
+                        return raise_exception(_py, BuiltinExc::OSError, &format!("{}", e));
                     }
                     if let Err(e) = writer.write_all(data) {
-                        return raise_exception(_py, "IOError", &format!("{}", e));
+                        return raise_exception(_py, BuiltinExc::OSError, &format!("{}", e));
                     }
                 }
                 if let Err(e) = writer.finish() {
-                    return raise_exception(_py, "IOError", &format!("{}", e));
+                    return raise_exception(_py, BuiltinExc::OSError, &format!("{}", e));
                 }
             }
             Some(ZipState::Reader { .. }) => { /* Nothing to do for readers */ }
@@ -171,10 +177,10 @@ pub extern "C" fn molt_zipfile_writestr(
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception(_py, "TypeError", "invalid handle");
+            return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception(_py, "TypeError", "name must be a string");
+            return raise_exception(_py, BuiltinExc::TypeError, "name must be a string");
         };
         let method = to_i64(obj_from_bits(method_bits)).unwrap_or(0) as u16;
 
@@ -188,22 +194,22 @@ pub extern "C" fn molt_zipfile_writestr(
                 let raw = unsafe { bytes_data(ptr) };
                 unsafe { std::slice::from_raw_parts(raw, len) }.to_vec()
             } else {
-                return raise_exception(_py, "TypeError", "data must be bytes or str");
+                return raise_exception(_py, BuiltinExc::TypeError, "data must be bytes or str");
             }
         } else {
-            return raise_exception(_py, "TypeError", "data must be bytes or str");
+            return raise_exception(_py, BuiltinExc::TypeError, "data must be bytes or str");
         };
 
         let mut archives = zip_state(_py).archives.lock().unwrap();
         let Some(state) = archives.get_mut(&id) else {
-            return raise_exception(_py, "ValueError", "invalid zip handle");
+            return raise_exception(_py, BuiltinExc::ValueError, "invalid zip handle");
         };
         match state {
             ZipState::Writer { entries, .. } => {
                 entries.push((name, data, method));
                 MoltObject::none().bits()
             }
-            _ => raise_exception(_py, "ValueError", "writestr requires mode='w'"),
+            _ => raise_exception(_py, BuiltinExc::ValueError, "writestr requires mode='w'"),
         }
     })
 }
@@ -212,13 +218,13 @@ pub extern "C" fn molt_zipfile_writestr(
 pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception(_py, "TypeError", "invalid handle");
+            return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
 
         let names: Result<Vec<String>, u64> = {
             let archives = zip_state(_py).archives.lock().unwrap();
             let Some(state) = archives.get(&id) else {
-                return raise_exception(_py, "ValueError", "invalid zip handle");
+                return raise_exception(_py, BuiltinExc::ValueError, "invalid zip handle");
             };
             match state {
                 ZipState::Reader { data } => {
@@ -226,7 +232,11 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
                     let mut archive = match zip::ZipArchive::new(cursor) {
                         Ok(a) => a,
                         Err(e) => {
-                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e));
+                            return raise_exception(
+                                _py,
+                                BuiltinExc::ValueError,
+                                &format!("bad zip: {}", e),
+                            );
                         }
                     };
                     let mut names = Vec::with_capacity(archive.len());
@@ -265,16 +275,16 @@ pub extern "C" fn molt_zipfile_namelist(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception(_py, "TypeError", "invalid handle");
+            return raise_exception(_py, BuiltinExc::TypeError, "invalid handle");
         };
         let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception(_py, "TypeError", "name must be a string");
+            return raise_exception(_py, BuiltinExc::TypeError, "name must be a string");
         };
 
         let read_result: Result<Vec<u8>, u64> = {
             let archives = zip_state(_py).archives.lock().unwrap();
             let Some(state) = archives.get(&id) else {
-                return raise_exception(_py, "ValueError", "invalid zip handle");
+                return raise_exception(_py, BuiltinExc::ValueError, "invalid zip handle");
             };
             match state {
                 ZipState::Reader { data } => {
@@ -282,20 +292,32 @@ pub extern "C" fn molt_zipfile_read(handle_bits: u64, name_bits: u64) -> u64 {
                     let mut archive = match zip::ZipArchive::new(cursor) {
                         Ok(a) => a,
                         Err(e) => {
-                            return raise_exception(_py, "ValueError", &format!("bad zip: {}", e));
+                            return raise_exception(
+                                _py,
+                                BuiltinExc::ValueError,
+                                &format!("bad zip: {}", e),
+                            );
                         }
                     };
                     let mut entry = match archive.by_name(&name) {
                         Ok(e) => e,
-                        Err(_) => return raise_exception(_py, "KeyError", &name),
+                        Err(_) => return raise_exception(_py, BuiltinExc::KeyError, &name),
                     };
                     let mut buf = Vec::new();
                     if let Err(e) = entry.read_to_end(&mut buf) {
-                        return raise_exception(_py, "ValueError", &format!("read error: {}", e));
+                        return raise_exception(
+                            _py,
+                            BuiltinExc::ValueError,
+                            &format!("read error: {}", e),
+                        );
                     }
                     Ok(buf)
                 }
-                _ => Err(raise_exception(_py, "ValueError", "read requires mode='r'")),
+                _ => Err(raise_exception(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "read requires mode='r'",
+                )),
             }
         };
         match read_result {

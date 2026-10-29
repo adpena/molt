@@ -84,6 +84,7 @@ the source of truth.
 - Toolchain fact cache (one host store of toolchain probe answers keyed by tool identity, argv, cwd, typed environment and file inputs, after Cargo `.rustc_info.json` and Go tool IDs; HF-357): [design/toolchain_fact_cache.md](design/toolchain_fact_cache.md)
 - Frontend semantic fingerprint (the declared producer set that keys lowering records; rustc tracked options, Bazel action keys; HF-254, HF-182): [design/frontend_semantic_fingerprint.md](design/frontend_semantic_fingerprint.md)
 - Op-kind registry and generated dispatch/classifier direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
+- Typed exception identity (`runtime/exception_kinds.toml`, `BuiltinExc`/`ModuleExc`): [design/foundation/exception_kinds.md](design/foundation/exception_kinds.md)
 - One SimpleIR optimization pipeline for every target: [design/foundation/76_simple_ir_pass_pipeline.md](design/foundation/76_simple_ir_pass_pipeline.md)
 - Generator fusion and deforestation routing: [design/generator_fusion.md](design/generator_fusion.md)
 - Frontend hot-pass profiling contract and first Rust candidate:

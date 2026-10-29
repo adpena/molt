@@ -13,18 +13,13 @@ use crate::*;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_graphlib_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
+    kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let type_name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, type_name, msg)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 
@@ -217,10 +212,10 @@ mod tests {
             molt_graphlib_add(handle, node, predecessors);
             assert!(exception_pending(py));
             let error = molt_exception_last_pending();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            assert!(crate::builtins::exceptions::exception_matches_kind(
                 py,
                 error,
-                "TypeError"
+                crate::BuiltinExc::TypeError
             ));
             molt_exception_clear();
             dec_ref_bits(py, error);

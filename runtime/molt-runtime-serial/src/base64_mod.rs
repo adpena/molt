@@ -86,7 +86,7 @@ fn encode_bytes_like_arg(_py: &PyToken, bits: u64, flags: i32) -> Result<Vec<u8>
 fn alloc_bytes_result(_py: &PyToken, data: &[u8]) -> u64 {
     let ptr = alloc_bytes(_py, data);
     if ptr.is_null() {
-        return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        return raise_exception::<_>(_py, BuiltinExc::MemoryError, "out of memory");
     }
     MoltObject::from_ptr(ptr).bits()
 }
@@ -812,7 +812,7 @@ pub extern "C" fn molt_base64_b64encode(data_bits: u64, altchars_bits: u64) -> u
             if alt.len() != 2 {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "altchars must be a length-2 bytes-like object",
                 );
             }
@@ -852,7 +852,7 @@ pub extern "C" fn molt_base64_b64decode(
             if alt.len() != 2 {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "altchars must be a length-2 bytes-like object",
                 );
             }
@@ -1059,7 +1059,7 @@ pub extern "C" fn molt_base64_a85decode(
         let adobe = bool_from_bits(adobe_bits);
         let decoded = match a85_decode(&raw, foldspaces, adobe) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         };
         alloc_bytes_result(_py, &decoded)
     })
@@ -1087,7 +1087,7 @@ pub extern "C" fn molt_base64_b85decode(data_bits: u64) -> u64 {
         };
         let decoded = match b85_decode(&raw) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
+            Err(msg) => return raise_exception::<_>(_py, BuiltinExc::ValueError, &msg),
         };
         alloc_bytes_result(_py, &decoded)
     })

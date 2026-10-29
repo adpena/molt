@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::runtime_flags::{self, RuntimeFlag};
 
 use super::*;
@@ -78,7 +79,7 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
         }
         let _ = raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("type __qualname__ must be a str, not {type_label}"),
         );
         return false;
@@ -203,7 +204,7 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
                     String::from_utf8_lossy(name),
                     type_repr,
                 );
-                let _ = raise_exception::<u64>(_py, "TypeError", &message);
+                let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &message);
                 return false;
             };
             unsafe { crate::object::cells::cell_replace_value(_py, cell_ptr, value) };
@@ -242,11 +243,11 @@ pub extern "C" fn molt_class_new(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "class name must be str");
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "class name must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "class name must be str");
             }
         }
         let ptr = alloc_class_obj(_py, name_bits);
@@ -301,10 +302,16 @@ pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let tag = match to_i64(obj_from_bits(tag_bits)) {
             Some(val) => val,
-            None => return raise_exception::<_>(_py, "TypeError", "builtin type tag must be int"),
+            None => {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "builtin type tag must be int",
+                );
+            }
         };
         let Some(bits) = builtin_type_bits(_py, tag) else {
-            return raise_exception::<_>(_py, "TypeError", "unknown builtin type tag");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "unknown builtin type tag");
         };
         if trace_builtin_type_enabled() {
             eprintln!("molt builtin_type tag={} bits=0x{:x}", tag, bits);
@@ -351,20 +358,24 @@ pub extern "C" fn molt_type_new(
             });
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "type.__new__ expects type");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "type.__new__ expects type");
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "type.__new__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "type.__new__ expects type",
+                );
             }
         }
         let name_obj = obj_from_bits(name_bits);
         let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "class name must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "class name must be str");
         };
         unsafe {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "class name must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "class name must be str");
             }
         }
 
@@ -428,7 +439,7 @@ pub extern "C" fn molt_type_new(
                     _ => {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "bases must be a tuple of types",
                         );
                     }
@@ -617,11 +628,11 @@ pub extern "C" fn molt_type_mro(cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "mro expects type");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "mro expects type");
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "mro expects type");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "mro expects type");
             }
         }
         let mro = class_mro_vec(cls_bits);
@@ -728,11 +739,15 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "object.__new__ expects type");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "object.__new__ expects type");
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "object.__new__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "object.__new__ expects type",
+                );
             }
             if crate::object::class_finish_definition(_py, cls_ptr).is_err() {
                 return MoltObject::none().bits();
@@ -748,7 +763,7 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
             let class_name = class_name_for_error(cls_bits);
             let msg =
                 format!("object.__new__({class_name}) is not safe, use {class_name}.__new__()");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         }
         unsafe {
             if reject_abstract_object_new(_py, cls_ptr) {
@@ -822,7 +837,7 @@ unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
         };
         raise_exception::<()>(
             py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!(
                 "Can't instantiate abstract class {} without an implementation for abstract method{plural} '{joined}'",
                 class_name_for_error(class_bits),
@@ -837,11 +852,15 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
     crate::with_gil_entry_nopanic!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "tuple.__new__ expects type");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "tuple.__new__ expects type");
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "tuple.__new__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "tuple.__new__ expects type",
+                );
             }
         }
         if unsafe {
@@ -854,13 +873,13 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
             if unsafe { crate::builtins::structseq::disallows_instantiation(_py, cls_ptr) } {
                 return raise_exception(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!("cannot create '{name}' instances"),
                 );
             }
             return raise_exception(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("tuple.__new__({name}) is not safe, use {name}.__new__()"),
             );
         }
@@ -957,7 +976,7 @@ unsafe fn class_attachment_layouts_match(
 }
 
 fn reject_class_attachment<T: ExceptionSentinel>(_py: &PyToken<'_>) -> T {
-    raise_exception::<T>(_py, "TypeError", CLASS_ATTACHMENT_LAYOUT_ERROR)
+    raise_exception::<T>(_py, BuiltinExc::TypeError, CLASS_ATTACHMENT_LAYOUT_ERROR)
 }
 
 pub(crate) unsafe fn object_set_class(
@@ -970,7 +989,11 @@ pub(crate) unsafe fn object_set_class(
             return Err(());
         }
         if crate::object::object_shape_is_task(crate::object::object_shape_id(obj_ptr)) {
-            raise_exception::<()>(_py, "TypeError", "cannot set class on async object");
+            raise_exception::<()>(
+                _py,
+                BuiltinExc::TypeError,
+                "cannot set class on async object",
+            );
             return Err(());
         }
         if class_bits == 0 || obj_from_bits(class_bits).is_none() {
@@ -1032,7 +1055,7 @@ pub(crate) unsafe fn object_set_class(
         if !class_attachment_layouts_match(_py, obj_ptr, current_class, class_ptr) {
             raise_exception::<()>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!(
                     "__class__ assignment: '{}' object layout differs from '{}'",
                     class_name_for_error(class_bits),

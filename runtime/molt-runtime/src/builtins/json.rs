@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use crate::resource::TempArena;
 use crate::*;
 use std::collections::HashSet;
@@ -454,7 +455,7 @@ pub extern "C" fn molt_json_encode_basestring_obj(obj_bits: u64) -> u64 {
         let Some(value) = string_obj_to_owned(obj_from_bits(obj_bits)) else {
             let type_name = type_name(_py, obj_from_bits(obj_bits));
             let msg = format!("first argument must be a string, not {type_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let encoded = json_encode_basestring_impl(value.as_str(), false);
         let ptr = alloc_string(_py, encoded.as_bytes());
@@ -471,7 +472,7 @@ pub extern "C" fn molt_json_encode_basestring_ascii_obj(obj_bits: u64) -> u64 {
         let Some(value) = string_obj_to_owned(obj_from_bits(obj_bits)) else {
             let type_name = type_name(_py, obj_from_bits(obj_bits));
             let msg = format!("first argument must be a string, not {type_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let encoded = json_encode_basestring_impl(value.as_str(), true);
         let ptr = alloc_string(_py, encoded.as_bytes());
@@ -489,15 +490,15 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
         else {
             let type_name = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("first argument must be a string, not {type_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let Some(end_i64) = to_i64(obj_from_bits(end_bits)) else {
             let type_name = type_name(_py, obj_from_bits(end_bits));
             let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if end_i64 < 0 {
-            return raise_exception::<_>(_py, "ValueError", "end is out of bounds");
+            return raise_exception::<_>(_py, BuiltinExc::ValueError, "end is out of bounds");
         }
         let strict = is_truthy(_py, obj_from_bits(strict_bits));
         let end = end_i64 as usize;
@@ -522,11 +523,11 @@ pub extern "C" fn molt_json_scanstring_obj(text_bits: u64, end_bits: u64, strict
             }
             Err((msg, pos)) => {
                 if msg == "end is out of bounds" {
-                    return raise_exception::<_>(_py, "ValueError", msg.as_str());
+                    return raise_exception::<_>(_py, BuiltinExc::ValueError, msg.as_str());
                 }
                 let (lineno, colno) = json_string_line_col(&text, pos);
                 let detail = format!("{msg}: line {lineno} column {colno} (char {pos})");
-                raise_exception::<_>(_py, "ValueError", detail.as_str())
+                raise_exception::<_>(_py, BuiltinExc::ValueError, detail.as_str())
             }
         }
     })
@@ -1029,12 +1030,12 @@ pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "json.parse expects str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "json.parse expects str");
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
                 let msg = format!("json.parse expects str, got {}", type_name(_py, obj));
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let len = string_len(ptr);
             let data = string_bytes(ptr);
@@ -1046,7 +1047,7 @@ pub extern "C" fn molt_json_parse_scalar_obj(obj_bits: u64) -> u64 {
             });
             match obj {
                 Ok(val) => val.bits(),
-                Err(_) => raise_exception::<_>(_py, "ValueError", "invalid JSON payload"),
+                Err(_) => raise_exception::<_>(_py, BuiltinExc::ValueError, "invalid JSON payload"),
             }
         }
     })
@@ -1058,13 +1059,13 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "msgpack.parse expects bytes");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "msgpack.parse expects bytes");
         };
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
                 let msg = format!("msgpack.parse expects bytes, got {}", type_name(_py, obj));
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let len = bytes_len(ptr);
             let data = bytes_data(ptr);
@@ -1073,7 +1074,11 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
             let v = match rmpv::decode::read_value(&mut cursor) {
                 Ok(val) => val,
                 Err(_) => {
-                    return raise_exception::<u64>(_py, "ValueError", "invalid msgpack payload");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "invalid msgpack payload",
+                    );
                 }
             };
             let obj = PARSE_ARENA.with(|arena| {
@@ -1084,7 +1089,9 @@ pub extern "C" fn molt_msgpack_parse_scalar_obj(obj_bits: u64) -> u64 {
             });
             match obj {
                 Ok(val) => val.bits(),
-                Err(_) => raise_exception::<u64>(_py, "ValueError", "invalid msgpack payload"),
+                Err(_) => {
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid msgpack payload")
+                }
             }
         }
     })
@@ -1096,13 +1103,13 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
         let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "cbor.parse expects bytes");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "cbor.parse expects bytes");
         };
         unsafe {
             let type_id = object_type_id(ptr);
             if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
                 let msg = format!("cbor.parse expects bytes, got {}", type_name(_py, obj));
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
             let len = bytes_len(ptr);
             let data = bytes_data(ptr);
@@ -1110,7 +1117,11 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
             let v: serde_cbor::Value = match serde_cbor::from_slice(slice) {
                 Ok(val) => val,
                 Err(_) => {
-                    return raise_exception::<u64>(_py, "ValueError", "invalid cbor payload");
+                    return raise_exception::<u64>(
+                        _py,
+                        BuiltinExc::ValueError,
+                        "invalid cbor payload",
+                    );
                 }
             };
             let obj = PARSE_ARENA.with(|arena| {
@@ -1121,7 +1132,9 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
             });
             match obj {
                 Ok(val) => val.bits(),
-                Err(_) => raise_exception::<u64>(_py, "ValueError", "invalid cbor payload"),
+                Err(_) => {
+                    raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid cbor payload")
+                }
             }
         }
     })
@@ -1248,7 +1261,7 @@ fn parse_json_indent_text(_py: &PyToken<'_>, indent_bits: u64) -> Result<Option<
     }
     Err(raise_exception::<u64>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "indent must be None, an integer, or a string",
     ))
 }
@@ -1256,7 +1269,7 @@ fn parse_json_indent_text(_py: &PyToken<'_>, indent_bits: u64) -> Result<Option<
 fn parse_json_separator(_py: &PyToken<'_>, bits: u64, name: &str) -> Result<String, u64> {
     let Some(text) = string_obj_to_owned(obj_from_bits(bits)) else {
         let msg = format!("{name} must be a string");
-        return Err(raise_exception::<u64>(_py, "TypeError", &msg));
+        return Err(raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg));
     };
     Ok(text)
 }
@@ -2076,7 +2089,7 @@ fn raise_json_parse_error(_py: &PyToken<'_>, text: &[u8], err: JsonParseError) -
         JsonParseError::Raised(bits) => bits,
         JsonParseError::Message { msg, pos } => {
             let detail = json_parse_error_message(text, &msg, pos);
-            raise_exception::<u64>(_py, "ValueError", &detail)
+            raise_exception::<u64>(_py, BuiltinExc::ValueError, &detail)
         }
     }
 }
@@ -2135,8 +2148,12 @@ pub extern "C" fn molt_json_dumps(
                 MoltObject::from_ptr(ptr).bits()
             }
             Err(JsonEncodeError::Raised(bits)) => bits,
-            Err(JsonEncodeError::Type(msg)) => raise_exception::<u64>(_py, "TypeError", &msg),
-            Err(JsonEncodeError::Value(msg)) => raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(JsonEncodeError::Type(msg)) => {
+                raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg)
+            }
+            Err(JsonEncodeError::Value(msg)) => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)
+            }
         }
     })
 }
@@ -2200,8 +2217,12 @@ pub extern "C" fn molt_json_dumps_ex(
                 MoltObject::from_ptr(ptr).bits()
             }
             Err(JsonEncodeError::Raised(bits)) => bits,
-            Err(JsonEncodeError::Type(msg)) => raise_exception::<u64>(_py, "TypeError", &msg),
-            Err(JsonEncodeError::Value(msg)) => raise_exception::<u64>(_py, "ValueError", &msg),
+            Err(JsonEncodeError::Type(msg)) => {
+                raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg)
+            }
+            Err(JsonEncodeError::Value(msg)) => {
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)
+            }
         }
     })
 }
@@ -2225,7 +2246,7 @@ pub extern "C" fn molt_json_loads_ex(
             if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
                 let tn = type_name(_py, payload_obj);
                 let msg = format!("the JSON object must be str, bytes or bytearray, not {tn}");
-                return raise_exception::<u64>(_py, "TypeError", &msg);
+                return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
             }
             let bytes = unsafe {
                 let len = bytes_len(ptr);
@@ -2239,7 +2260,7 @@ pub extern "C" fn molt_json_loads_ex(
         } else {
             let tn = type_name(_py, payload_obj);
             let msg = format!("the JSON object must be str, bytes or bytearray, not {tn}");
-            return raise_exception::<u64>(_py, "TypeError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         };
 
         let options = JsonLoadsOptions {
@@ -2273,15 +2294,15 @@ pub extern "C" fn molt_json_raw_decode_ex(
         else {
             let tn = type_name(_py, obj_from_bits(text_bits));
             let msg = format!("first argument must be a string, not {tn}");
-            return raise_exception::<u64>(_py, "TypeError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         };
         let Some(idx) = to_i64(obj_from_bits(idx_bits)) else {
             let tn = type_name(_py, obj_from_bits(idx_bits));
             let msg = format!("'{tn}' object cannot be interpreted as an integer");
-            return raise_exception::<u64>(_py, "TypeError", &msg);
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
         };
         if idx < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "idx cannot be negative");
+            return raise_exception::<u64>(_py, BuiltinExc::ValueError, "idx cannot be negative");
         }
 
         let options = JsonLoadsOptions {
@@ -2319,10 +2340,10 @@ pub extern "C" fn molt_json_raw_decode_ex(
 pub extern "C" fn molt_json_calc_lineno_col(doc_bits: u64, pos_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(doc) = crate::object::ops_format::string_obj_bytes(obj_from_bits(doc_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "doc must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "doc must be str");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "pos must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "pos must be int");
         };
         let pos = pos.max(0) as usize;
         let (lineno, colno) = json_string_line_col(&doc, pos);
@@ -2371,7 +2392,7 @@ pub extern "C" fn molt_json_coerce_text(payload_bits: u64) -> u64 {
         let name = type_name(_py, obj);
         raise_exception::<u64>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             &format!("the JSON object must be str, bytes or bytearray, not {name}"),
         )
     })
@@ -2410,13 +2431,13 @@ pub extern "C" fn molt_json_format_decode_error(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(msg) = string_obj_to_owned(obj_from_bits(msg_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "msg must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "msg must be str");
         };
         let Some(doc) = crate::object::ops_format::string_obj_bytes(obj_from_bits(doc_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "doc must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "doc must be str");
         };
         let Some(pos) = to_i64(obj_from_bits(pos_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "pos must be int");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "pos must be int");
         };
         let pos = pos.max(0) as usize;
         let (lineno, colno) = json_string_line_col(&doc, pos);

@@ -8,6 +8,7 @@
 //! alternate import dispatcher lives here.
 
 use super::*;
+use crate::BuiltinExc;
 use std::cell::RefCell;
 
 struct SysModulesSwap {
@@ -107,7 +108,7 @@ unsafe fn sys_list_attr_bits(_py: &PyToken<'_>, attr: &[u8]) -> Result<Option<u6
             dec_ref_bits(_py, value_bits);
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 &format!("sys.{} must be a list", String::from_utf8_lossy(attr)),
             ));
         }
@@ -157,7 +158,7 @@ unsafe fn begin_argv0_swap(_py: &PyToken<'_>, argv0: &str) -> Result<Option<Argv
             dec_ref_bits(_py, argv_bits);
             return Err(raise_exception::<_>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "failed to read sys.argv[0]",
             ));
         };
@@ -177,7 +178,11 @@ unsafe fn begin_argv0_swap(_py: &PyToken<'_>, argv0: &str) -> Result<Option<Argv
             return Err(if exception_pending(_py) {
                 MoltObject::none().bits()
             } else {
-                raise_exception::<_>(_py, "RuntimeError", "failed to replace sys.argv[0]")
+                raise_exception::<_>(
+                    _py,
+                    BuiltinExc::RuntimeError,
+                    "failed to replace sys.argv[0]",
+                )
             });
         }
         Ok(Some(Argv0Swap { previous_bits }))
@@ -230,7 +235,7 @@ unsafe fn begin_sys_path_swap(_py: &PyToken<'_>, path: &str) -> Result<Option<Sy
             return Err(if exception_pending(_py) {
                 MoltObject::none().bits()
             } else {
-                raise_exception::<_>(_py, "RuntimeError", "failed to prepend sys.path")
+                raise_exception::<_>(_py, BuiltinExc::RuntimeError, "failed to prepend sys.path")
             });
         }
         Ok(Some(SysPathSwap { path_bits }))
@@ -288,28 +293,28 @@ pub(super) unsafe fn module_dict_ptr(_py: &PyToken<'_>, module_bits: u64) -> Res
         let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module execution expects module",
             ));
         };
         if object_type_id(module_ptr) != TYPE_ID_MODULE {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module execution expects module",
             ));
         }
         let Some(dict_ptr) = obj_from_bits(module_dict_bits(module_ptr)).as_ptr() else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module dict missing",
             ));
         };
         if object_type_id(dict_ptr) != TYPE_ID_DICT {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "module dict missing",
             ));
         }
@@ -490,7 +495,7 @@ pub(super) fn on_module_publish(
         else {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "init_globals must be dict",
             ));
         };
@@ -743,7 +748,7 @@ pub(super) unsafe fn after_module_metadata_set(
             if obj_from_bits(effective_val_bits).is_none() {
                 return Err(raise_exception::<_>(
                     _py,
-                    "ImportError",
+                    BuiltinExc::ImportError,
                     "run_path import container has no module spec",
                 ));
             }
@@ -818,13 +823,12 @@ fn capture_pending_exception(_py: &PyToken<'_>, first: &mut Option<u64>) {
     }
 }
 
-fn pending_exception_is(_py: &PyToken<'_>, expected: &str) -> bool {
+fn pending_exception_is(_py: &PyToken<'_>, expected: crate::BuiltinExc) -> bool {
     if !exception_pending(_py) {
         return false;
     }
     let exc_bits = molt_exception_last_pending();
-    let matches =
-        crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, expected);
+    let matches = crate::builtins::exceptions::exception_matches_kind(_py, exc_bits, expected);
     if !obj_from_bits(exc_bits).is_none() {
         dec_ref_bits(_py, exc_bits);
     }
@@ -865,7 +869,7 @@ impl ModuleExecutionError {
         }
         raise_exception::<_>(
             _py,
-            "ImportError",
+            BuiltinExc::ImportError,
             &format!("module {module_name:?} has no compiler-emitted body in this binary"),
         )
     }
@@ -995,12 +999,12 @@ pub(crate) fn execute_compiled_module(
     if dispatched.is_ok() && ctx.module_bits == 0 && !exception_pending(_py) {
         let _ = raise_exception::<u64>(
             _py,
-            "ModuleNotFoundError",
+            BuiltinExc::ModuleNotFoundError,
             &format!("No module named {execution_name:?}"),
         );
     }
     let missing_compiled_body =
-        ctx.module_bits == 0 && pending_exception_is(_py, "ModuleNotFoundError");
+        ctx.module_bits == 0 && pending_exception_is(_py, BuiltinExc::ModuleNotFoundError);
     if let Some(bits) = ctx.init_globals_bits {
         dec_ref_bits(_py, bits);
     }

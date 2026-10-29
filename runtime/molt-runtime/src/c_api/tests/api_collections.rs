@@ -99,7 +99,7 @@ fn c_api_dictionary_completion_preserves_an_existing_error() {
         let value = MoltObject::from_int(23).bits();
         let other = MoltObject::from_int(8).bits();
         assert_eq!(PyDict_SetItem(updates, other, value), 0);
-        raise_exception::<()>(py, "LookupError", "existing caller error");
+        raise_exception::<()>(py, BuiltinExc::LookupError, "existing caller error");
         let original = molt_exception_last_pending();
         let _original_owner = unsafe {
             molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), original)
@@ -473,14 +473,14 @@ fn c_api_tuple_new_size_getitem_setitem() {
         // Out-of-bounds
         let bad = PyTuple_GetItem(tuple, 5);
         assert_eq!(bad, 0);
-        assert_pending_exception_class(_py, "IndexError");
+        assert_pending_exception_class(_py, crate::BuiltinExc::IndexError);
 
         // Negative index in SetItem should fail (CPython tuple uses non-negative only).
         let steal_val = MoltObject::from_int(1).bits();
         inc_ref_bits(_py, steal_val);
         let rc = PyTuple_SetItem(tuple, -1, steal_val);
         assert_eq!(rc, -1);
-        assert_pending_exception_class(_py, "IndexError");
+        assert_pending_exception_class(_py, crate::BuiltinExc::IndexError);
 
         dec_ref_bits(_py, tuple);
     });
@@ -758,9 +758,18 @@ fn c_api_number_power_zero_moduli_are_present_and_rejected_like_cpython() {
         let base = MoltObject::from_int(2).bits();
         let exponent = MoltObject::from_int(10).bits();
         for (modulus, expected) in [
-            (MoltObject::from_float(0.0).bits(), "TypeError"),
-            (MoltObject::from_float(-0.0).bits(), "TypeError"),
-            (MoltObject::from_int(0).bits(), "ValueError"),
+            (
+                MoltObject::from_float(0.0).bits(),
+                crate::BuiltinExc::TypeError,
+            ),
+            (
+                MoltObject::from_float(-0.0).bits(),
+                crate::BuiltinExc::TypeError,
+            ),
+            (
+                MoltObject::from_int(0).bits(),
+                crate::BuiltinExc::ValueError,
+            ),
         ] {
             assert_eq!(PyNumber_Power(base, exponent, modulus), 0);
             assert_pending_exception_class(_py, expected);
@@ -2795,7 +2804,7 @@ fn memoryview_from_c_buffer_rejects_invalid_readonly_flag() {
         source.format[0] = b'B';
 
         let view_bits = unsafe { molt_memoryview_from_buffer(&source as *const MoltBufferView) };
-        assert_none_with_exception_class(_py, view_bits, "BufferError");
+        assert_none_with_exception_class(_py, view_bits, crate::BuiltinExc::BufferError);
     });
 }
 #[test]
@@ -2883,20 +2892,20 @@ fn c_api_dict_update_rejects_pairs_but_python_update_accepts_them() {
         let pairs = MoltObject::from_ptr(pairs).bits();
         assert_eq!(PyDict_Update(target, pairs), -1);
         let error = molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
             error,
-            "AttributeError"
+            crate::BuiltinExc::AttributeError
         ));
         dec_ref_bits(py, error);
         clear_exception(py);
         assert_eq!(PyDict_Size(target), 0);
         crate::object::ops_dict::molt_dict_unpack(target, pairs);
         let error = molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+        assert!(crate::builtins::exceptions::exception_matches_kind(
             py,
             error,
-            "TypeError"
+            crate::BuiltinExc::TypeError
         ));
         dec_ref_bits(py, error);
         clear_exception(py);

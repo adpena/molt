@@ -1,0 +1,556 @@
+# Exception identity authority (HF-207).
+#
+# Every exception class the runtime raises, matches or constructs has exactly one
+# row here. `tools/gen_exception_kinds.py` renders the closed Rust types
+# `BuiltinExc`, `ModuleExc` and `ExcKind` (one dense u16 code space), the builtin
+# schema table, the module binding table and one bind intrinsic per owning
+# module. Runtime raise sites pass a typed kind, never a spelling.
+#
+# [[builtin]] rows are classes the runtime constructs itself, lazily, on first
+# use: the builtins namespace, plus native classes whose namespace is another
+# module (as CPython's C modules create `_io.UnsupportedOperation` or
+# `binascii.Error`). Fields:
+#   name          the class __name__/__qualname__
+#   variant       the Rust variant (default: name)
+#   bases         zero (the root), one or two builtin row names
+#   layout_root   the ExceptionLayoutRoot this row introduces (default: inherited)
+#   str_slot      the ExceptionStrSlot this row declares (default: inherited)
+#   declares_repr the row declares __repr__ (default false)
+#   module        the class __module__ (default "builtins"); another module makes
+#                 the class a heap type that is not bound in builtins
+#   builtin_binding  bound in the builtins namespace (default: module == "builtins")
+#   heap_type     a heap type although its module is builtins (default false)
+#   since_minor   first Python 3.x minor that binds the name (default 12)
+#   name_lookup   string boundaries (C API, string op kinds) resolve `name` to
+#                 this row (default true); false when `name` is not a builtins
+#                 spelling, as for `binascii.Error`
+#
+# [[alias]] rows are extra builtins spellings of one canonical builtin class.
+#
+# [[module]] rows are classes a Python stdlib module defines. On the first raise
+# of a row, the runtime takes the class from its owning module, which must
+# already be in sys.modules (nothing is imported), checks its __module__,
+# __qualname__ and base, and keeps it in the row's slot for the life of the
+# runtime, as CPython's `_asyncio` and `_zoneinfo` keep such classes in module
+# state. A row whose owner has not run raises SystemError: no class is minted
+# and no other namespace is searched. Fields:
+#   owner     the Python module that defines the class
+#   name      the class __qualname__ (an attribute of the owner)
+#   variant   the Rust variant
+#   base      the builtin row the class must derive from
+
+schema_version = 1
+
+[[builtin]]
+name = "BaseException"
+bases = []
+str_slot = "Base"
+declares_repr = true
+
+[[builtin]]
+name = "BaseExceptionGroup"
+bases = ["BaseException"]
+layout_root = "BaseExceptionGroup"
+str_slot = "Group"
+
+[[builtin]]
+name = "Exception"
+bases = ["BaseException"]
+
+[[builtin]]
+name = "ExceptionGroup"
+bases = ["BaseExceptionGroup", "Exception"]
+heap_type = true
+
+[[builtin]]
+name = "GeneratorExit"
+bases = ["BaseException"]
+
+[[builtin]]
+name = "KeyboardInterrupt"
+bases = ["BaseException"]
+
+[[builtin]]
+name = "SystemExit"
+bases = ["BaseException"]
+layout_root = "SystemExit"
+
+[[builtin]]
+name = "CancelledError"
+bases = ["BaseException"]
+module = "asyncio.exceptions"
+
+[[builtin]]
+name = "ArithmeticError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "AssertionError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "AttributeError"
+bases = ["Exception"]
+layout_root = "AttributeError"
+
+[[builtin]]
+name = "BufferError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "EOFError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "PickleError"
+bases = ["Exception"]
+module = "_pickle"
+
+[[builtin]]
+name = "PicklingError"
+bases = ["PickleError"]
+module = "_pickle"
+
+[[builtin]]
+name = "UnpicklingError"
+bases = ["PickleError"]
+module = "_pickle"
+
+[[builtin]]
+name = "ImportError"
+bases = ["Exception"]
+layout_root = "ImportError"
+str_slot = "Import"
+
+[[builtin]]
+name = "LookupError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "MemoryError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "NameError"
+bases = ["Exception"]
+layout_root = "NameError"
+
+[[builtin]]
+name = "OSError"
+bases = ["Exception"]
+layout_root = "OSError"
+str_slot = "OSError"
+
+[[builtin]]
+name = "gaierror"
+variant = "SocketGaiError"
+bases = ["OSError"]
+module = "socket"
+
+[[builtin]]
+name = "herror"
+variant = "SocketHError"
+bases = ["OSError"]
+module = "socket"
+
+[[builtin]]
+name = "ReferenceError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "RuntimeError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "_DeadlockError"
+variant = "DeadlockError"
+bases = ["RuntimeError"]
+module = "_frozen_importlib"
+
+[[builtin]]
+name = "StopIteration"
+bases = ["Exception"]
+layout_root = "StopIteration"
+
+[[builtin]]
+name = "StopAsyncIteration"
+bases = ["Exception"]
+
+[[builtin]]
+name = "SyntaxError"
+bases = ["Exception"]
+layout_root = "SyntaxError"
+str_slot = "Syntax"
+
+[[builtin]]
+name = "SystemError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "TypeError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "ValueError"
+bases = ["Exception"]
+
+[[builtin]]
+name = "StatisticsError"
+bases = ["ValueError"]
+module = "statistics"
+
+[[builtin]]
+name = "Error"
+variant = "BinasciiError"
+bases = ["ValueError"]
+module = "binascii"
+name_lookup = false
+
+[[builtin]]
+name = "Incomplete"
+variant = "BinasciiIncomplete"
+bases = ["Exception"]
+module = "binascii"
+name_lookup = false
+
+[[builtin]]
+name = "Warning"
+bases = ["Exception"]
+
+[[builtin]]
+name = "FloatingPointError"
+bases = ["ArithmeticError"]
+
+[[builtin]]
+name = "OverflowError"
+bases = ["ArithmeticError"]
+
+[[builtin]]
+name = "ZeroDivisionError"
+bases = ["ArithmeticError"]
+
+[[builtin]]
+name = "ModuleNotFoundError"
+bases = ["ImportError"]
+
+[[builtin]]
+name = "IndexError"
+bases = ["LookupError"]
+
+[[builtin]]
+name = "KeyError"
+bases = ["LookupError"]
+str_slot = "KeyError"
+
+[[builtin]]
+name = "UnboundLocalError"
+bases = ["NameError"]
+
+[[builtin]]
+name = "ConnectionError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "BrokenPipeError"
+bases = ["ConnectionError"]
+
+[[builtin]]
+name = "ConnectionAbortedError"
+bases = ["ConnectionError"]
+
+[[builtin]]
+name = "ConnectionRefusedError"
+bases = ["ConnectionError"]
+
+[[builtin]]
+name = "ConnectionResetError"
+bases = ["ConnectionError"]
+
+[[builtin]]
+name = "BlockingIOError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "ChildProcessError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "FileExistsError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "FileNotFoundError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "InterruptedError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "IsADirectoryError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "NotADirectoryError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "PermissionError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "ProcessLookupError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "TimeoutError"
+bases = ["OSError"]
+
+[[builtin]]
+name = "UnsupportedOperation"
+bases = ["OSError", "ValueError"]
+module = "_io"
+
+[[builtin]]
+name = "NotImplementedError"
+bases = ["RuntimeError"]
+
+[[builtin]]
+name = "PythonFinalizationError"
+bases = ["RuntimeError"]
+since_minor = 13
+
+[[builtin]]
+name = "RecursionError"
+bases = ["RuntimeError"]
+
+[[builtin]]
+name = "IndentationError"
+bases = ["SyntaxError"]
+
+[[builtin]]
+name = "TabError"
+bases = ["IndentationError"]
+
+[[builtin]]
+name = "UnicodeError"
+bases = ["ValueError"]
+
+[[builtin]]
+name = "UnicodeDecodeError"
+bases = ["UnicodeError"]
+layout_root = "UnicodeDecodeError"
+str_slot = "UnicodeDecode"
+
+[[builtin]]
+name = "UnicodeEncodeError"
+bases = ["UnicodeError"]
+layout_root = "UnicodeEncodeError"
+str_slot = "UnicodeEncode"
+
+[[builtin]]
+name = "UnicodeTranslateError"
+bases = ["UnicodeError"]
+layout_root = "UnicodeTranslateError"
+str_slot = "UnicodeTranslate"
+
+[[builtin]]
+name = "DeprecationWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "PendingDeprecationWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "RuntimeWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "SyntaxWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "UserWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "FutureWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "ImportWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "UnicodeWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "BytesWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "ResourceWarning"
+bases = ["Warning"]
+
+[[builtin]]
+name = "EncodingWarning"
+bases = ["Warning"]
+
+[[alias]]
+name = "EnvironmentError"
+canonical = "OSError"
+
+[[alias]]
+name = "IOError"
+canonical = "OSError"
+
+[[alias]]
+name = "WindowsError"
+canonical = "OSError"
+windows_only = true
+
+[[module]]
+owner = "asyncio.exceptions"
+name = "InvalidStateError"
+variant = "AsyncioInvalidStateError"
+base = "Exception"
+
+[[module]]
+owner = "asyncio.queues"
+name = "QueueEmpty"
+variant = "AsyncioQueueEmpty"
+base = "Exception"
+
+[[module]]
+owner = "asyncio.queues"
+name = "QueueFull"
+variant = "AsyncioQueueFull"
+base = "Exception"
+
+[[module]]
+owner = "asyncio.queues"
+name = "_QueueShutDown"
+variant = "AsyncioQueueShutDown"
+base = "Exception"
+
+[[module]]
+owner = "copy"
+name = "Error"
+variant = "CopyError"
+base = "Exception"
+
+[[module]]
+owner = "dataclasses"
+name = "FrozenInstanceError"
+variant = "DataclassesFrozenInstanceError"
+base = "AttributeError"
+
+[[module]]
+owner = "decimal"
+name = "Clamped"
+variant = "DecimalClamped"
+base = "ArithmeticError"
+
+[[module]]
+owner = "decimal"
+name = "InvalidOperation"
+variant = "DecimalInvalidOperation"
+base = "ArithmeticError"
+
+[[module]]
+owner = "decimal"
+name = "DivisionByZero"
+variant = "DecimalDivisionByZero"
+base = "ZeroDivisionError"
+
+[[module]]
+owner = "decimal"
+name = "Inexact"
+variant = "DecimalInexact"
+base = "ArithmeticError"
+
+[[module]]
+owner = "decimal"
+name = "InvalidContext"
+variant = "DecimalInvalidContext"
+base = "ArithmeticError"
+
+[[module]]
+owner = "decimal"
+name = "Rounded"
+variant = "DecimalRounded"
+base = "ArithmeticError"
+
+[[module]]
+owner = "decimal"
+name = "Subnormal"
+variant = "DecimalSubnormal"
+base = "ArithmeticError"
+
+[[module]]
+owner = "decimal"
+name = "Overflow"
+variant = "DecimalOverflow"
+base = "ArithmeticError"
+
+[[module]]
+owner = "decimal"
+name = "Underflow"
+variant = "DecimalUnderflow"
+base = "ArithmeticError"
+
+[[module]]
+owner = "http.client"
+name = "InvalidURL"
+variant = "HttpClientInvalidURL"
+base = "Exception"
+
+[[module]]
+owner = "ssl"
+name = "SSLError"
+variant = "SslError"
+base = "OSError"
+
+[[module]]
+owner = "subprocess"
+name = "CalledProcessError"
+variant = "SubprocessCalledProcessError"
+base = "Exception"
+
+[[module]]
+owner = "tarfile"
+name = "ReadError"
+variant = "TarfileReadError"
+base = "Exception"
+
+[[module]]
+owner = "tarfile"
+name = "ExtractError"
+variant = "TarfileExtractError"
+base = "Exception"
+
+[[module]]
+owner = "urllib.error"
+name = "URLError"
+variant = "UrllibURLError"
+base = "OSError"
+
+[[module]]
+owner = "urllib.error"
+name = "HTTPError"
+variant = "UrllibHTTPError"
+base = "OSError"
+
+[[module]]
+owner = "xml.etree.ElementTree"
+name = "ParseError"
+variant = "ElementTreeParseError"
+base = "SyntaxError"
+
+[[module]]
+owner = "zoneinfo"
+name = "ZoneInfoNotFoundError"
+variant = "ZoneInfoNotFoundError"
+base = "KeyError"

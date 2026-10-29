@@ -1,3 +1,4 @@
+use crate::BuiltinExc;
 use molt_obj_model::MoltObject;
 
 use crate::call::function::function_code_execution_kind;
@@ -1019,15 +1020,27 @@ fn inspect_cleandoc_impl(_py: &crate::PyToken<'_>, doc_bits: u64) -> u64 {
         return state_string(_py, b"");
     }
     let Some(ptr) = maybe_ptr_from_bits(doc_bits) else {
-        return raise_exception(_py, "TypeError", "inspect.cleandoc() argument must be str");
+        return raise_exception(
+            _py,
+            BuiltinExc::TypeError,
+            "inspect.cleandoc() argument must be str",
+        );
     };
     unsafe {
         if crate::object_type_id(ptr) != TYPE_ID_STRING {
-            return raise_exception(_py, "TypeError", "inspect.cleandoc() argument must be str");
+            return raise_exception(
+                _py,
+                BuiltinExc::TypeError,
+                "inspect.cleandoc() argument must be str",
+            );
         }
     }
     let Some(bytes) = string_obj_to_owned(obj_from_bits(doc_bits)) else {
-        return raise_exception(_py, "TypeError", "inspect.cleandoc() argument must be str");
+        return raise_exception(
+            _py,
+            BuiltinExc::TypeError,
+            "inspect.cleandoc() argument must be str",
+        );
     };
     let cleaned = inspect_cleandoc_text(&bytes);
     state_string(_py, cleaned.as_bytes())
@@ -1057,7 +1070,11 @@ pub extern "C" fn molt_inspect_signature_data(obj_bits: u64) -> u64 {
         }
 
         if is_builtin_fn {
-            return raise_exception(_py, "ValueError", "no signature found for builtin callable");
+            return raise_exception(
+                _py,
+                BuiltinExc::ValueError,
+                "no signature found for builtin callable",
+            );
         }
 
         // For Molt-defined (non-builtin) functions, prefer compiler-provided signature metadata.
@@ -1153,7 +1170,11 @@ pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) ->
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception(_py, "TypeError", "dir() did not return a sequence");
+            return raise_exception(
+                _py,
+                BuiltinExc::TypeError,
+                "dir() did not return a sequence",
+            );
         };
         let missing = missing_bits(_py);
         let mut pairs: Vec<u64> = Vec::new();
@@ -1574,8 +1595,11 @@ mod signature_snapshot_tests {
                     assert_eq!(owners(VARARG.load(Ordering::SeqCst)), 2);
                     assert_eq!(owners(VARKW.load(Ordering::SeqCst)), 2);
                     if FAIL.load(Ordering::SeqCst) != 0 {
-                        let out =
-                            raise_exception::<u64>(py, "ValueError", "signature defaults failed");
+                        let out = raise_exception::<u64>(
+                            py,
+                            BuiltinExc::ValueError,
+                            "signature defaults failed",
+                        );
                         ERROR.store(
                             crate::exception_last_bits_noinc(py).unwrap(),
                             Ordering::SeqCst,
@@ -1586,7 +1610,11 @@ mod signature_snapshot_tests {
                 }
                 "__kwdefaults__" => KWDEFAULTS.load(Ordering::SeqCst),
                 _ => {
-                    return raise_exception::<u64>(py, "AttributeError", "missing signature field");
+                    return raise_exception::<u64>(
+                        py,
+                        BuiltinExc::AttributeError,
+                        "missing signature field",
+                    );
                 }
             };
             crate::inc_ref_bits(py, bits);

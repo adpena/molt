@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 pub(super) struct ImportlibResourcesPathPayload {
     pub(super) basename: String,
@@ -254,7 +255,11 @@ pub(super) fn importlib_resources_open_resource_bytes_from_package_impl(
     if let Some(candidate) = importlib_resources_first_file_candidate(&payload.roots, resource) {
         return importlib_read_file_bytes(_py, &candidate);
     }
-    Err(raise_exception::<_>(_py, "FileNotFoundError", resource))
+    Err(raise_exception::<_>(
+        _py,
+        BuiltinExc::FileNotFoundError,
+        resource,
+    ))
 }
 pub(super) fn importlib_resources_join_parts_path(parts: &[String]) -> String {
     path_join_many_text(String::new(), parts, bootstrap_path_sep())
@@ -297,14 +302,22 @@ pub(super) fn importlib_resources_open_resource_bytes_from_package_parts_impl(
         }
     }
     if let Some(path) = first_dir {
-        return Err(raise_exception::<_>(_py, "IsADirectoryError", &path));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::IsADirectoryError,
+            &path,
+        ));
     }
     let not_found = if resource.is_empty() {
         package
     } else {
         resource.as_str()
     };
-    Err(raise_exception::<_>(_py, "FileNotFoundError", not_found))
+    Err(raise_exception::<_>(
+        _py,
+        BuiltinExc::FileNotFoundError,
+        not_found,
+    ))
 }
 pub(super) fn importlib_resources_is_resource_from_package_parts_impl(
     _py: &PyToken<'_>,
@@ -383,7 +396,11 @@ pub(super) fn importlib_resources_required_package_payload(
 ) -> Result<ImportlibResourcesPackagePayload, u64> {
     let payload = importlib_resources_package_payload(_py, package, search_paths, module_file);
     if payload.roots.is_empty() {
-        return Err(raise_exception::<_>(_py, "ModuleNotFoundError", package));
+        return Err(raise_exception::<_>(
+            _py,
+            BuiltinExc::ModuleNotFoundError,
+            package,
+        ));
     }
     Ok(payload)
 }
@@ -452,7 +469,7 @@ pub(super) fn importlib_validate_resource_name_text(
     if resource.is_empty() || resource == "." || resource == ".." {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!(
                 "'{}' must be only a file name",
                 resource.replace('\'', "\\'")
@@ -462,7 +479,7 @@ pub(super) fn importlib_validate_resource_name_text(
     if resource.contains('/') || resource.contains('\\') {
         return Err(raise_exception::<_>(
             _py,
-            "ValueError",
+            BuiltinExc::ValueError,
             &format!(
                 "'{}' must be only a file name",
                 resource.replace('\'', "\\'")

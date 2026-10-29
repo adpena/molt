@@ -1,6 +1,7 @@
 // Call dispatch, builtin wrappers, and type constructor builtins.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::BuiltinExc;
 use crate::builtins::frames::{
     CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, take_invocation_namespace,
 };
@@ -82,22 +83,34 @@ pub extern "C" fn molt_code_slots_init(count: u64) -> u64 {
 pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64, globals_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(slots) = runtime_state(_py).code_slots.get() else {
-            return raise_exception::<_>(_py, "RuntimeError", "code slots not initialized");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "code slots not initialized",
+            );
         };
         let Some(idx) = usize::try_from(code_id).ok() else {
-            return raise_exception::<_>(_py, "IndexError", "code slot out of range");
+            return raise_exception::<_>(_py, BuiltinExc::IndexError, "code slot out of range");
         };
         if idx >= slots.len() {
-            return raise_exception::<_>(_py, "IndexError", "code slot out of range");
+            return raise_exception::<_>(_py, BuiltinExc::IndexError, "code slot out of range");
         }
         if let Some(ptr) = obj_from_bits(code_bits).as_ptr() {
             unsafe {
                 if object_type_id(ptr) != TYPE_ID_CODE {
-                    return raise_exception::<_>(_py, "TypeError", "code slot expects code object");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        "code slot expects code object",
+                    );
                 }
             }
         } else {
-            return raise_exception::<_>(_py, "TypeError", "code slot expects code object");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "code slot expects code object",
+            );
         }
         let globals =
             match crate::builtins::frames::globals_namespace_storage_bits(_py, globals_bits) {
@@ -108,14 +121,18 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64, globals_bits:
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception::<_>(_py, "TypeError", "code slot expects globals dictionary");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "code slot expects globals dictionary",
+            );
         }
         if crate::builtins::frames::compiled_slot_for_code(code_bits)
             .is_some_and(|existing| existing != code_id)
         {
             return raise_exception::<_>(
                 _py,
-                "SystemError",
+                BuiltinExc::SystemError,
                 "code object cannot move between compiled slots",
             );
         }
@@ -123,7 +140,7 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64, globals_bits:
         // code object implies on this target; derive it once, here.
         let plan = match crate::builtins::frames::FramePlan::for_code(_py, code_bits) {
             Ok(plan) => plan,
-            Err(message) => return raise_exception::<_>(_py, "SystemError", message),
+            Err(message) => return raise_exception::<_>(_py, BuiltinExc::SystemError, message),
         };
         unsafe {
             crate::object::layout::code_set_frame_slot_id(
@@ -181,7 +198,7 @@ pub extern "C" fn molt_trace_enter_slot(code_id: u64) -> u64 {
                     TRACE_FRAME_PUSH_STACK.with(|stack| stack.borrow_mut().push(false));
                     return raise_exception::<u64>(
                         _py,
-                        "SystemError",
+                        BuiltinExc::SystemError,
                         "compiled frame slot is unbound",
                     );
                 };
@@ -284,7 +301,7 @@ pub extern "C" fn molt_guarded_call(fn_ptr: u64, args_ptr: *const u64, nargs: u6
         return crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "call target address exceeds the active address space",
             )
         });
@@ -293,7 +310,7 @@ pub extern "C" fn molt_guarded_call(fn_ptr: u64, args_ptr: *const u64, nargs: u6
         return crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "call argument range is invalid for the active target",
             )
         });
@@ -325,7 +342,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
         return crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "call target address exceeds the active address space",
             )
         });
@@ -334,7 +351,7 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
         return crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "call argument range is invalid for the active target",
             )
         });
@@ -527,7 +544,7 @@ unsafe fn molt_guarded_call_dispatch(
         crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "WASM indirect function call arity exceeds manifest call_indirect max",
             )
         })
@@ -855,7 +872,7 @@ unsafe fn molt_guarded_call_dispatch(
                 crate::with_gil_entry_nopanic!(_py, {
                     raise_exception::<u64>(
                         _py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         &format!(
                             "direct dispatch does not support {} arguments; \
                              use callargs dispatch for functions with >16 parameters",
@@ -886,7 +903,7 @@ pub extern "C" fn molt_call_func_dispatch(
         else {
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "call argument range is invalid for the active target",
             );
         };
@@ -951,7 +968,7 @@ pub extern "C" fn molt_call_func_owned(
             dec_ref_bits(_py, func_bits);
             return raise_exception::<u64>(
                 _py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "call argument range is invalid for the active target",
             );
         };
@@ -974,7 +991,7 @@ pub extern "C" fn molt_call_inputs_release(callable_bits: u64, args_ptr_bits: u6
             None => {
                 let _ = raise_exception::<u64>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "call argument range is invalid for the active target",
                 );
             }
@@ -1059,7 +1076,7 @@ unsafe fn direct_call_target_for_callable(callable_bits: u64, fn_ptr: u64) -> Op
 
 fn missing_direct_call_target(_py: &crate::concurrency::PyToken<'_>, fn_ptr: u64) -> u64 {
     let msg = format!("direct function call target 0x{fn_ptr:x} is not initialized");
-    raise_exception::<u64>(_py, "RuntimeError", &msg)
+    raise_exception::<u64>(_py, BuiltinExc::RuntimeError, &msg)
 }
 
 #[inline(always)]
@@ -1498,7 +1515,7 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
                 "format() argument 2 must be str, not {}",
                 type_name(_py, spec_obj)
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         unsafe {
             if object_type_id(spec_ptr) != TYPE_ID_STRING {
@@ -1506,7 +1523,7 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
                     "format() argument 2 must be str, not {}",
                     type_name(_py, spec_obj)
                 );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
             }
         }
         if let Some(rendered) = super::ops_format::format_override(_py, obj, spec_bits) {
@@ -1531,7 +1548,7 @@ pub extern "C" fn molt_format_builtin(val_bits: u64, spec_bits: u64) -> u64 {
         }
         let type_label = type_name(_py, obj);
         let msg = format!("unsupported format string passed to {type_label}.__format__");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -1641,7 +1658,7 @@ pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
         }
         let type_name = class_name_for_error(type_of_bits(_py, val_bits));
         let msg = format!("bad operand type for abs(): '{type_name}'");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -1760,7 +1777,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
         let left = class_name_for_error(type_of_bits(_py, a_bits));
         let right = class_name_for_error(type_of_bits(_py, b_bits));
         let msg = format!("unsupported operand type(s) for divmod(): '{left}' and '{right}'");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -1815,7 +1832,7 @@ pub extern "C" fn molt_vars_builtin(obj_bits: u64) -> u64 {
         if dict_bits == missing {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "vars() argument must have __dict__ attribute",
             );
         }
@@ -1947,14 +1964,14 @@ pub extern "C" fn molt_object_format_method(self_bits: u64, spec_bits: u64) -> u
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_STRING)
         else {
-            return raise_exception::<_>(_py, "TypeError", "format_spec must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "format_spec must be str");
         };
         if unsafe { string_len(spec_ptr) } == 0 {
             return molt_str_from_obj(self_bits);
         }
         let type_label = type_name(_py, obj_from_bits(self_bits));
         let msg = format!("unsupported format string passed to {type_label}.__format__");
-        raise_exception::<_>(_py, "TypeError", &msg)
+        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
     })
 }
 
@@ -2230,11 +2247,15 @@ pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cls_obj = obj_from_bits(cls_bits);
         let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "type.__call__ expects type");
         };
         unsafe {
             if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "type.__call__ expects type");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "type.__call__ expects type",
+                );
             }
             if runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_TYPE_CALL) {
                 let class_name = string_obj_to_owned(obj_from_bits(class_name_bits(cls_ptr)))
@@ -2345,7 +2366,7 @@ pub extern "C" fn molt_print_builtin(
             {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     &format!(
                         "{label} must be None or a string, not {}",
                         type_name(_py, obj)
@@ -2384,10 +2405,10 @@ pub extern "C" fn molt_print_builtin(
         }
 
         let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "print expects a tuple");
         };
         let Some(args) = (unsafe { crate::object::seq_access::pin_tuple(_py, args_ptr) }) else {
-            return raise_exception::<_>(_py, "TypeError", "print expects a tuple");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "print expects a tuple");
         };
         // CPython's argument converter tests flush before stream lookup and
         // separator validation. Its exception must prevent all later effects.
@@ -2406,7 +2427,11 @@ pub extern "C" fn molt_print_builtin(
                 // one owner; print never writes around the stream authority.
                 let stdout = molt_sys_stdout();
                 if obj_from_bits(stdout).is_none() && !exception_pending(_py) {
-                    return raise_exception::<_>(_py, "RuntimeError", "sys.stdout unavailable");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "sys.stdout unavailable",
+                    );
                 }
                 stdout
             } else {
@@ -2585,7 +2610,7 @@ mod print_stream_tests {
 pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py) else {
-            return raise_exception::<_>(_py, "RuntimeError", "sys module unavailable");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "sys module unavailable");
         };
         inc_ref_bits(_py, sys_bits);
 
@@ -2598,7 +2623,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         }
         if obj_from_bits(stdout_bits).is_none() {
             dec_ref_bits(_py, sys_bits);
-            return raise_exception::<_>(_py, "RuntimeError", "sys.stdout unavailable");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "sys.stdout unavailable");
         }
 
         let prompt_str_bits = molt_str_from_obj(prompt_bits);
@@ -2689,7 +2714,7 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         if obj_from_bits(stdin_bits).is_none() {
-            return raise_exception::<_>(_py, "RuntimeError", "sys.stdin unavailable");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "sys.stdin unavailable");
         }
 
         let mut stdin_is_handle = false;
@@ -2718,16 +2743,20 @@ pub extern "C" fn molt_input_builtin(prompt_bits: u64) -> u64 {
         }
 
         let Some(line_ptr) = obj_from_bits(line_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "input() returned non-string");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "input() returned non-string");
         };
         unsafe {
             if object_type_id(line_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "input() returned non-string");
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    "input() returned non-string",
+                );
             }
             let bytes = std::slice::from_raw_parts(string_bytes(line_ptr), string_len(line_ptr));
             if bytes.is_empty() {
                 dec_ref_bits(_py, line_bits);
-                return raise_exception::<_>(_py, "EOFError", "");
+                return raise_exception::<_>(_py, BuiltinExc::EOFError, "");
             }
             let mut end = bytes.len();
             if bytes[end - 1] == b'\n' {

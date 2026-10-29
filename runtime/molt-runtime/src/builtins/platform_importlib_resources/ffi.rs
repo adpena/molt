@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_resources_path_payload(path_bits: u64) -> u64 {
@@ -11,7 +12,11 @@ pub extern "C" fn molt_importlib_resources_path_payload(path_bits: u64) -> u64 {
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
@@ -86,7 +91,11 @@ pub extern "C" fn molt_importlib_resources_package_info(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -156,7 +165,11 @@ pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -209,7 +222,11 @@ pub extern "C" fn molt_importlib_resources_open_resource_bytes_from_package_part
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -264,7 +281,11 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -313,7 +334,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package(
                 dec_ref_bits(_py, bytes_bits);
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid bytes decode callable payload",
                 );
             }
@@ -380,7 +401,11 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -429,7 +454,7 @@ pub extern "C" fn molt_importlib_resources_read_text_from_package_parts(
                 dec_ref_bits(_py, bytes_bits);
                 return raise_exception::<_>(
                     _py,
-                    "RuntimeError",
+                    BuiltinExc::RuntimeError,
                     "invalid bytes decode callable payload",
                 );
             }
@@ -493,7 +518,11 @@ pub extern "C" fn molt_importlib_resources_contents_from_package(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -553,7 +582,11 @@ pub extern "C" fn molt_importlib_resources_contents_from_package_parts(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -605,7 +638,11 @@ pub extern "C" fn molt_importlib_resources_is_resource_from_package(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -659,7 +696,11 @@ pub extern "C" fn molt_importlib_resources_is_resource_from_package_parts(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -707,7 +748,11 @@ pub extern "C" fn molt_importlib_resources_resource_path_from_package(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -766,7 +811,11 @@ pub extern "C" fn molt_importlib_resources_resource_path_from_package_parts(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let package = match string_arg_from_bits(_py, package_bits, "package") {
             Ok(value) => value,
@@ -891,7 +940,11 @@ pub extern "C" fn molt_importlib_resources_files_payload(
             allowed,
         );
         if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::PermissionError,
+                "missing fs.read capability",
+            );
         }
         let search_paths =
             match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {

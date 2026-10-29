@@ -1,4 +1,5 @@
 use super::*;
+use crate::BuiltinExc;
 use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
 use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +44,9 @@ extern "C" fn same_hash_key_eq(self_bits: u64, _other_bits: u64) -> u64 {
         let call = PROBE_CALLS.fetch_add(1, Ordering::SeqCst);
         match PROBE_MODE.load(Ordering::SeqCst) {
             PROBE_EQUAL => MoltObject::from_bool(true).bits(),
-            PROBE_RAISE => raise_exception::<u64>(py, "RuntimeError", "probe equality failure"),
+            PROBE_RAISE => {
+                raise_exception::<u64>(py, BuiltinExc::RuntimeError, "probe equality failure")
+            }
             PROBE_RAISE_OWNED => {
                 crate::builtins::exceptions::molt_exception_set_last(
                     PROBE_VALUE.load(Ordering::SeqCst),
@@ -71,7 +74,7 @@ extern "C" fn same_hash_key_eq(self_bits: u64, _other_bits: u64) -> u64 {
                 if mode == PROBE_REPLACE_FIRST_REFUSE_REPEAT && call != 0 {
                     return raise_exception::<u64>(
                         py,
-                        "RuntimeError",
+                        BuiltinExc::RuntimeError,
                         "unexpected second equality",
                     );
                 }
@@ -243,10 +246,10 @@ unsafe fn exhaust_dict_usable_with_deleted_rows(py: &PyToken<'_>, dict: *mut u8)
     }
 }
 
-fn take_pending_error(py: &PyToken<'_>, expected: &str) {
+fn take_pending_error(py: &PyToken<'_>, expected: crate::BuiltinExc) {
     assert!(exception_pending(py));
     let error = crate::builtins::exceptions::molt_exception_last_pending();
-    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+    assert!(crate::builtins::exceptions::exception_matches_kind(
         py, error, expected
     ));
     crate::clear_exception(py);
@@ -408,7 +411,7 @@ fn probe_failure_leaves_every_binding_unchanged() {
             PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);
             assert!(failed);
             assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
-            take_pending_error(py, "RuntimeError");
+            take_pending_error(py, crate::BuiltinExc::RuntimeError);
             assert_eq!(
                 dict_live_entries(dict)
                     .flat_map(|row| [row.key, row.value])
@@ -608,7 +611,7 @@ fn string_binding_rejects_unbounded_repeated_or_inexact_keys() {
                 &unbounded[..],
             ] {
                 assert!(dict_bind_string_entries(py, dict, entries).is_err());
-                take_pending_error(py, "SystemError");
+                take_pending_error(py, crate::BuiltinExc::SystemError);
                 assert_eq!(dict_len(dict), 0);
             }
             dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
@@ -654,7 +657,7 @@ fn exact_string_reads_preserve_key_identity_borrowing_and_pending_error() {
             // Exact storage reads succeed under an admitted prior error, as
             // PyDict_GetItemWithError does; no callback or indicator inference
             // changes the lookup result or the caller's selected exception.
-            raise_exception::<u64>(py, "RuntimeError", "preexisting read error");
+            raise_exception::<u64>(py, BuiltinExc::RuntimeError, "preexisting read error");
             let pending = exception_last_bits_noinc(py);
             assert_eq!(dict_find_entry(py, dict, query).unwrap(), Some(0));
             assert_eq!(dict_get_in_place(py, dict, query).unwrap(), Some(value));
@@ -664,7 +667,7 @@ fn exact_string_reads_preserve_key_identity_borrowing_and_pending_error() {
             );
             assert_eq!(dict_get_in_place(py, dict, absent).unwrap(), None);
             assert_eq!(exception_last_bits_noinc(py), pending);
-            take_pending_error(py, "RuntimeError");
+            take_pending_error(py, crate::BuiltinExc::RuntimeError);
             assert!(dict_del_in_place(py, dict, stored).unwrap());
             assert_eq!(dict_get_in_place(py, dict, query).unwrap(), None);
             assert_eq!(dict_find_entry_kv_in_place(py, dict, query).unwrap(), None);
@@ -729,7 +732,7 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
                     assert_eq!(dict_get_in_place(py, dict, query), Err(()));
                 }
                 assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
-                take_pending_error(py, "RuntimeError");
+                take_pending_error(py, crate::BuiltinExc::RuntimeError);
                 assert_eq!(
                     dict_live_entries(dict)
                         .flat_map(|row| [row.key, row.value])
@@ -755,7 +758,7 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
                 );
                 assert_eq!(owners(default), default_owners);
                 assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
-                take_pending_error(py, "RuntimeError");
+                take_pending_error(py, crate::BuiltinExc::RuntimeError);
                 assert_eq!(
                     dict_live_entries(dict)
                         .flat_map(|row| [row.key, row.value])
@@ -891,7 +894,7 @@ static SETDEFAULT_HASH_CALLS: AtomicU64 = AtomicU64::new(0);
 extern "C" fn setdefault_hash_once(_self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         if SETDEFAULT_HASH_CALLS.fetch_add(1, Ordering::SeqCst) != 0 {
-            return raise_exception::<u64>(py, "RuntimeError", "setdefault hashed twice");
+            return raise_exception::<u64>(py, BuiltinExc::RuntimeError, "setdefault hashed twice");
         }
         MoltObject::from_int(37).bits()
     })
@@ -1004,7 +1007,7 @@ fn exact_string_reads_setdefault_reuses_probe_and_observes_reentrant_insertion()
                     match mode {
                         PROBE_RAISE => {
                             assert!(obj_from_bits(result).is_none());
-                            take_pending_error(py, "RuntimeError");
+                            take_pending_error(py, crate::BuiltinExc::RuntimeError);
                             assert_eq!(
                                 dict_live_entries(dict)
                                     .flat_map(|row| [row.key, row.value])
@@ -1506,7 +1509,11 @@ fn module_rollback_keeps_a_value_replaced_by_key_equality() {
                         PROBE_CALLS.store(0, Ordering::SeqCst);
                         PROBE_MODE.store(PROBE_REPLACE_FIRST_REFUSE_REPEAT, Ordering::SeqCst);
                         let pending = already_pending.then(|| {
-                            raise_exception::<()>(py, "ValueError", "original rollback failure");
+                            raise_exception::<()>(
+                                py,
+                                BuiltinExc::ValueError,
+                                "original rollback failure",
+                            );
                             crate::builtins::exceptions::molt_exception_last_pending()
                         });
                         crate::builtins::modules::module_cache_remove(
@@ -1580,7 +1587,7 @@ fn module_failure_cleanup_selects_exact_error_and_chains_callback_context() {
     use crate::builtins::exceptions::{self, ExceptionFieldSlot};
     for conditional in [false, true] {
         for pending in [false, true] {
-            for kind in ["KeyError", "RuntimeError"] {
+            for kind in [crate::BuiltinExc::KeyError, crate::BuiltinExc::RuntimeError] {
                 let _transaction = crate::test_support::RuntimeTestTransaction::new();
                 crate::with_gil_entry_nopanic!(py, {
                     unsafe {
@@ -1602,7 +1609,7 @@ fn module_failure_cleanup_selects_exact_error_and_chains_callback_context() {
                         ));
                         let prior = MoltObject::from_ptr(exceptions::alloc_exception(
                             py,
-                            "ValueError",
+                            BuiltinExc::ValueError,
                             "source body",
                         ))
                         .bits();
@@ -1625,7 +1632,8 @@ fn module_failure_cleanup_selects_exact_error_and_chains_callback_context() {
                         assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
                         assert!(exception_pending(py));
                         let selected = exceptions::molt_exception_last_pending();
-                        let preserves = pending && (conditional || kind == "KeyError");
+                        let preserves =
+                            pending && (conditional || kind == crate::BuiltinExc::KeyError);
                         assert_eq!(selected, if preserves { prior } else { cleanup });
                         let context =
                             exceptions::exception_field(py, cleanup, ExceptionFieldSlot::Context)
@@ -1744,7 +1752,7 @@ fn prehashed_setdefault_observes_reentrant_publication_and_lookup_errors() {
             assert!(
                 dict_setdefault_with_hash_in_place(py, dict, query, Some(proposed), hash).is_none()
             );
-            take_pending_error(py, "RuntimeError");
+            take_pending_error(py, crate::BuiltinExc::RuntimeError);
             assert_eq!(owners(proposed), before);
             assert_eq!(dict_len(dict), 2);
             PROBE_MODE.store(PROBE_UNEQUAL, Ordering::SeqCst);

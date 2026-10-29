@@ -51,7 +51,11 @@ impl<'py> PreparedKernelOutputs<'py> {
                 continue;
             }
             let data = obj_from_bits(buffer.data.bits()).as_ptr().ok_or_else(|| {
-                raise_exception::<u64>(py, "RuntimeError", "GPU output lost its storage owner")
+                raise_exception::<u64>(
+                    py,
+                    BuiltinExc::RuntimeError,
+                    "GPU output lost its storage owner",
+                )
             })?;
             if unsafe { object_type_id(data) } == TYPE_ID_BYTEARRAY {
                 continue;
@@ -132,7 +136,7 @@ impl KernelStoragePlan {
         args: &BTreeMap<String, RuntimeKernelArg<'_>>,
         prepared: &PreparedKernelOutputs<'_>,
     ) -> Result<Self, u64> {
-        let fail = |message: &str| raise_exception::<u64>(py, "RuntimeError", message);
+        let fail = |message: &str| raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
         let reads = descriptor
             .numeric
             .get("read_buffers")
@@ -271,7 +275,11 @@ impl KernelStoragePlan {
                 // Snapshot once, after every callback. Encoding and publication
                 // use this exact byte generation, including an untouched tail.
                 group.original.try_reserve_exact(view.len).map_err(|_| {
-                    raise_exception::<u64>(py, "MemoryError", "GPU snapshot allocation failed")
+                    raise_exception::<u64>(
+                        py,
+                        BuiltinExc::MemoryError,
+                        "GPU snapshot allocation failed",
+                    )
                 })?;
                 group
                     .original
@@ -284,7 +292,7 @@ impl KernelStoragePlan {
                         .map_err(|_| {
                             raise_exception::<u64>(
                                 py,
-                                "MemoryError",
+                                BuiltinExc::MemoryError,
                                 "GPU output allocation failed",
                             )
                         })?;
@@ -317,7 +325,11 @@ impl KernelStoragePlan {
                             .max(4),
                     )
                     .map_err(|_| {
-                        raise_exception::<u64>(py, "MemoryError", "GPU encoding allocation failed")
+                        raise_exception::<u64>(
+                            py,
+                            BuiltinExc::MemoryError,
+                            "GPU encoding allocation failed",
+                        )
                     })?;
                 let sign_relevant = group.hosts.iter().any(|name| reads.contains(name.as_str()));
                 for chunk in group.original[..extent].chunks_exact(format.itemsize()) {
@@ -343,7 +355,11 @@ impl KernelStoragePlan {
                 }
             } else {
                 group.bytes.try_reserve_exact(4).map_err(|_| {
-                    raise_exception::<u64>(py, "MemoryError", "GPU scalar allocation failed")
+                    raise_exception::<u64>(
+                        py,
+                        BuiltinExc::MemoryError,
+                        "GPU scalar allocation failed",
+                    )
                 })?;
                 let value = match &args[&group.name] {
                     RuntimeKernelArg::Int(value) => integral_integer(*value),
@@ -366,7 +382,11 @@ impl KernelStoragePlan {
             .ok_or_else(|| fail("GPU store flags exceed address space"))?;
         let mut flags = Vec::new();
         flags.try_reserve_exact(flag_bytes).map_err(|_| {
-            raise_exception::<u64>(py, "MemoryError", "GPU store flag allocation failed")
+            raise_exception::<u64>(
+                py,
+                BuiltinExc::MemoryError,
+                "GPU store flag allocation failed",
+            )
         })?;
         flags.resize(flag_bytes, 0);
         Ok(Self {
@@ -401,7 +421,7 @@ impl KernelStoragePlan {
         outputs: &BTreeMap<usize, Vec<u8>>,
         args: &BTreeMap<String, RuntimeKernelArg<'_>>,
     ) -> Result<(), u64> {
-        let fail = |message: &str| raise_exception::<u64>(py, "RuntimeError", message);
+        let fail = |message: &str| raise_exception::<u64>(py, BuiltinExc::RuntimeError, message);
         let expected = (0..self.binding_count())
             .filter(|&index| self.writable(index))
             .count();

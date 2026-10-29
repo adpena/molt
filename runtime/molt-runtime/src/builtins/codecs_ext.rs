@@ -1,4 +1,5 @@
 // === FILE: runtime/molt-runtime/src/builtins/codecs_ext.rs ===
+use crate::BuiltinExc;
 //
 // Intrinsics for incremental codecs, stream readers, BOM constants,
 // encoding normalization, and error handler registration.
@@ -57,10 +58,10 @@ pub extern "C" fn molt_codecs_register_error(name_bits: u64, handler_bits: u64) 
         let Some(name) = string_obj_to_owned(name_obj) else {
             let tn = type_name(_py, name_obj);
             let msg = format!("register_error() argument 'name' must be str, not {tn}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         if !crate::builtins::callable::is_callable_impl(_py, handler_bits) {
-            return raise_exception::<_>(_py, "TypeError", "handler must be callable");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "handler must be callable");
         }
         inc_ref_bits(_py, handler_bits);
         let previous = runtime_state(_py)
@@ -83,7 +84,7 @@ pub extern "C" fn molt_codecs_lookup_error(name_bits: u64) -> u64 {
         let Some(name) = string_obj_to_owned(name_obj) else {
             let tn = type_name(_py, name_obj);
             let msg = format!("lookup_error() argument must be str, not {tn}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let handler = runtime_state(_py)
             .codec_error_handlers
@@ -98,7 +99,7 @@ pub extern "C" fn molt_codecs_lookup_error(name_bits: u64) -> u64 {
             }
             None => {
                 let msg = format!("unknown error handler name '{name}'");
-                raise_exception::<_>(_py, "LookupError", &msg)
+                raise_exception::<_>(_py, BuiltinExc::LookupError, &msg)
             }
         }
     })
@@ -259,7 +260,11 @@ thread_local! {
 
 fn inc_enc_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
     to_i64(obj_from_bits(handle_bits)).or_else(|| {
-        let _ = raise_exception::<u64>(_py, "TypeError", "incremental encoder handle must be int");
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "incremental encoder handle must be int",
+        );
         None
     })
 }
@@ -269,7 +274,7 @@ fn inc_enc_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 pub extern "C" fn molt_codecs_incremental_encoder_new(encoding_bits: u64, errors_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(encoding) = string_obj_to_owned(obj_from_bits(encoding_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "encoding must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "encoding must be str");
         };
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
@@ -320,7 +325,11 @@ pub extern "C" fn molt_codecs_incremental_encoder_encode(
                         .unwrap_or_default()
                 });
                 if encoding.is_empty() {
-                    return raise_exception::<_>(_py, "RuntimeError", "invalid encoder handle");
+                    return raise_exception::<_>(
+                        _py,
+                        BuiltinExc::RuntimeError,
+                        "invalid encoder handle",
+                    );
                 }
 
                 let result = encode_string_with_errors(input_bytes, &encoding, Some(&errors));
@@ -337,7 +346,7 @@ pub extern "C" fn molt_codecs_incremental_encoder_encode(
                 }
             })
         }) else {
-            return raise_exception::<_>(_py, "TypeError", "input must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "input must be str");
         };
         result
     })
@@ -389,7 +398,11 @@ thread_local! {
 
 fn inc_dec_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
     to_i64(obj_from_bits(handle_bits)).or_else(|| {
-        let _ = raise_exception::<u64>(_py, "TypeError", "incremental decoder handle must be int");
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "incremental decoder handle must be int",
+        );
         None
     })
 }
@@ -399,7 +412,7 @@ fn inc_dec_id_from_bits(_py: &PyToken<'_>, handle_bits: u64) -> Option<i64> {
 pub extern "C" fn molt_codecs_incremental_decoder_new(encoding_bits: u64, errors_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(encoding) = string_obj_to_owned(obj_from_bits(encoding_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "encoding must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "encoding must be str");
         };
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
@@ -409,11 +422,11 @@ pub extern "C" fn molt_codecs_incremental_decoder_new(encoding_bits: u64, errors
             Ok(_) => {}
             Err(OpsDecodeTextError::UnknownEncoding(name)) => {
                 let msg = format!("unknown encoding: {name}");
-                return raise_exception::<_>(_py, "LookupError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
             }
             Err(OpsDecodeTextError::UnknownErrorHandler(name)) => {
                 let msg = format!("unknown error handler name '{name}'");
-                return raise_exception::<_>(_py, "LookupError", &msg);
+                return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
             }
             Err(OpsDecodeTextError::Failure(..)) => {}
         }
@@ -447,7 +460,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
         };
         let input_obj = obj_from_bits(input_bits);
         if input_obj.as_ptr().is_none() {
-            return raise_exception::<_>(_py, "TypeError", "input must be bytes");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "input must be bytes");
         }
         let input_export =
             match crate::object::buffer_exports::ScopedBuffer::simple(_py, input_bits) {
@@ -468,7 +481,7 @@ pub extern "C" fn molt_codecs_incremental_decoder_decode(
             })
         });
         let Some((encoding, errors, decode_input)) = captured else {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid decoder handle");
+            return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "invalid decoder handle");
         };
         drop(input_export);
         let is_final = is_truthy(_py, obj_from_bits(final_bits));
@@ -594,7 +607,11 @@ thread_local! {
 
 fn stream_rdr_id(_py: &PyToken<'_>, bits: u64) -> Option<i64> {
     to_i64(obj_from_bits(bits)).or_else(|| {
-        let _ = raise_exception::<u64>(_py, "TypeError", "stream reader handle must be int");
+        let _ = raise_exception::<u64>(
+            _py,
+            BuiltinExc::TypeError,
+            "stream reader handle must be int",
+        );
         None
     })
 }
@@ -609,7 +626,7 @@ pub extern "C" fn molt_codecs_stream_reader_new(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(encoding) = string_obj_to_owned(obj_from_bits(encoding_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "encoding must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "encoding must be str");
         };
         let errors =
             string_obj_to_owned(obj_from_bits(errors_bits)).unwrap_or_else(|| "strict".to_owned());
@@ -651,7 +668,11 @@ pub extern "C" fn molt_codecs_stream_reader_read(handle_bits: u64, size_bits: u6
                 .unwrap_or_default()
         });
         if encoding.is_empty() {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid stream reader handle");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "invalid stream reader handle",
+            );
         }
 
         // Read raw bytes from the underlying stream via molt_io read builtin.
@@ -736,7 +757,11 @@ pub extern "C" fn molt_codecs_stream_reader_readline(handle_bits: u64) -> u64 {
                 .unwrap_or_default()
         });
         if encoding.is_empty() {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid stream reader handle");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "invalid stream reader handle",
+            );
         }
 
         // Call the underlying readline.
@@ -869,7 +894,11 @@ pub extern "C" fn molt_codecs_charmap_build(table_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let table_obj = obj_from_bits(table_bits);
         let Some(table) = string_obj_to_owned(table_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "charmap_build argument must be str");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "charmap_build argument must be str",
+            );
         };
         // alloc_dict_with_pairs expects a flat &[u64] with alternating key, value
         let mut flat_pairs: Vec<u64> = Vec::new();
@@ -936,7 +965,7 @@ fn charmap_decode_undefined(
         }
         "xmlcharrefreplace" | "namereplace" => Err(raise_exception::<_>(
             _py,
-            "TypeError",
+            BuiltinExc::TypeError,
             "don't know how to handle UnicodeDecodeError in error callback",
         )),
         "strict" | "surrogatepass" | "surrogateescape" => Err(OpsDecodeTextError::Failure(
@@ -952,7 +981,7 @@ fn charmap_decode_undefined(
         .raise(_py, input)),
         other => {
             let msg = format!("unknown error handler name '{other}'");
-            Err(raise_exception::<_>(_py, "LookupError", &msg))
+            Err(raise_exception::<_>(_py, BuiltinExc::LookupError, &msg))
         }
     }
 }
@@ -966,7 +995,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
     crate::with_gil_entry_nopanic!(_py, {
         let input_obj = obj_from_bits(input_bits);
         if input_obj.as_ptr().is_none() {
-            return raise_exception::<_>(_py, "TypeError", "input must be bytes");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "input must be bytes");
         }
         let input_export =
             match crate::object::buffer_exports::ScopedBuffer::simple(_py, input_bits) {
@@ -1017,7 +1046,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
             None => {
                 return raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "mapping must be a dict, str, bytes, or None",
                 );
             }
@@ -1052,7 +1081,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
         if unsafe { object_type_id(map_ptr) } != TYPE_ID_DICT {
             return raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "mapping must be a dict, str, bytes, or None",
             );
         }
@@ -1089,14 +1118,14 @@ pub extern "C" fn molt_codecs_charmap_decode(
                             TYPE_ID_BYTES | TYPE_ID_BYTEARRAY => {
                                 return raise_exception::<_>(
                                     _py,
-                                    "TypeError",
+                                    BuiltinExc::TypeError,
                                     "character mapping must return integer, None or str",
                                 );
                             }
                             _ => {
                                 return raise_exception::<_>(
                                     _py,
-                                    "TypeError",
+                                    BuiltinExc::TypeError,
                                     "character mapping must return integer, None or str",
                                 );
                             }
@@ -1105,7 +1134,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
                         if !(0..=0x10FFFF).contains(&i) || (0xD800..=0xDFFF).contains(&(i as u32)) {
                             return raise_exception::<_>(
                                 _py,
-                                "TypeError",
+                                BuiltinExc::TypeError,
                                 "character mapping must be in range(0x110000)",
                             );
                         }
@@ -1113,7 +1142,7 @@ pub extern "C" fn molt_codecs_charmap_decode(
                     } else {
                         return raise_exception::<_>(
                             _py,
-                            "TypeError",
+                            BuiltinExc::TypeError,
                             "character mapping must return integer, None or str",
                         );
                     }
@@ -1175,14 +1204,14 @@ fn charmap_append_encode_value(
             TYPE_ID_STRING => {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "character mapping must return integer, bytes or None, not str",
                 ));
             }
             _ => {
                 return Err(raise_exception::<_>(
                     _py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "character mapping must return integer, bytes or None",
                 ));
             }
@@ -1192,7 +1221,7 @@ fn charmap_append_encode_value(
         if !(0..=255).contains(&i) {
             return Err(raise_exception::<_>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "character mapping must be in range(256)",
             ));
         }
@@ -1201,7 +1230,7 @@ fn charmap_append_encode_value(
     }
     Err(raise_exception::<_>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "character mapping must return integer, bytes or None",
     ))
 }
@@ -1270,7 +1299,7 @@ pub extern "C" fn molt_codecs_charmap_encode(
                     })
                 })
             }) else {
-                return raise_exception::<_>(_py, "TypeError", "input must be str");
+                return raise_exception::<_>(_py, BuiltinExc::TypeError, "input must be str");
             };
             return match result {
                 Ok((encoded, consumed)) => charmap_encode_tuple(_py, &encoded, consumed),
@@ -1278,15 +1307,23 @@ pub extern "C" fn molt_codecs_charmap_encode(
             };
         }
         let Some(input_str) = string_obj_to_owned(input_obj) else {
-            return raise_exception::<_>(_py, "TypeError", "input must be str");
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, "input must be str");
         };
 
         let mut out: Vec<u8> = Vec::new();
         let Some(map_ptr) = mapping_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "mapping must be a dict or None");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "mapping must be a dict or None",
+            );
         };
         if unsafe { object_type_id(map_ptr) } != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "TypeError", "mapping must be a dict or None");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "mapping must be a dict or None",
+            );
         }
         for (idx, ch) in input_str.chars().enumerate() {
             let found = match charmap_lookup_encode_char(_py, map_ptr, &mut out, ch as u32) {
@@ -1351,7 +1388,7 @@ pub extern "C" fn molt_codecs_charmap_encode(
                 }
                 other => {
                     let msg = format!("unknown error handler name '{other}'");
-                    return raise_exception::<_>(_py, "LookupError", &msg);
+                    return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
                 }
             }
         }
@@ -1369,7 +1406,11 @@ pub extern "C" fn molt_codecs_make_identity_dict(range_bits: u64) -> u64 {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return raise_exception::<_>(_py, "TypeError", "argument must be iterable of ints");
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::TypeError,
+                "argument must be iterable of ints",
+            );
         };
         // flat pairs: [key, val, key, val, ...]
         let mut flat_pairs: Vec<u64> = Vec::with_capacity(items.len() * 2);
@@ -1398,11 +1439,11 @@ pub extern "C" fn molt_codecs_normalize_encoding(name_bits: u64) -> u64 {
         let Some(name) = string_obj_to_owned(name_obj) else {
             let tn = type_name(_py, name_obj);
             let msg = format!("normalize_encoding() argument must be str, not {tn}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
         };
         let Some(kind) = crate::object::ops::normalize_encoding(&name) else {
             let msg = format!("unknown encoding: {name}");
-            return raise_exception::<_>(_py, "LookupError", &msg);
+            return raise_exception::<_>(_py, BuiltinExc::LookupError, &msg);
         };
         let canonical = crate::object::ops::encoding_kind_name(kind);
         let ptr = alloc_string(_py, canonical.as_bytes());

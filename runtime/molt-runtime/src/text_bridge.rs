@@ -4,6 +4,7 @@
 //! internal `pub(crate)` function.  The text crate declares matching
 //! `extern "C"` imports and they are resolved at link time.
 
+use crate::BuiltinExc;
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::object::ops::type_name as _type_name;
 use crate::*;
@@ -15,14 +16,14 @@ pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
             .as_ptr()
             .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
         else {
-            return raise_exception::<u64>(_py, "TypeError", "argument must be str");
+            return raise_exception::<u64>(_py, BuiltinExc::TypeError, "argument must be str");
         };
         let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
         let mut codes = molt_obj_model::text_storage::code_points(bytes);
         let Some(code) = codes.next().filter(|_| codes.next().is_none()) else {
             return raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "need a single Unicode character as parameter",
             );
         };
@@ -55,18 +56,13 @@ pub extern "C" fn __molt_text_unidata_version() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __molt_text_raise_exception(
-    type_ptr: *const u8,
-    type_len: usize,
+    kind_code: u16,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let type_name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(type_ptr, type_len))
-        };
-        let msg =
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(msg_ptr, msg_len)) };
-        raise_exception::<u64>(_py, type_name, msg)
+        let msg = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+        crate::builtins::exceptions::raise_exception_code_bytes(_py, kind_code, msg)
     })
 }
 

@@ -318,15 +318,15 @@ fn bigint_to_fixed_be<const N: usize>(value: &BigInt) -> Option<[u8; N]> {
 fn parse_ipv4_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv4Addr, u64> {
     let obj = obj_from_bits(addr_bits);
     if let Some(s) = string_obj_to_owned(obj) {
-        return s
-            .parse::<Ipv4Addr>()
-            .map_err(|_| raise_exception::<u64>(_py, "ValueError", "invalid IPv4 address"));
+        return s.parse::<Ipv4Addr>().map_err(|_| {
+            raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid IPv4 address")
+        });
     }
     if let Some(v) = to_bigint(obj) {
         let Some(octets) = bigint_to_fixed_be::<4>(&v) else {
             return Err(raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "IPv4 address must be in range 0-4294967295",
             ));
         };
@@ -334,7 +334,7 @@ fn parse_ipv4_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv4Addr, 
     }
     Err(raise_exception::<u64>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "expected str or int for IPv4 address",
     ))
 }
@@ -342,15 +342,15 @@ fn parse_ipv4_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv4Addr, 
 fn parse_ipv6_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv6Addr, u64> {
     let obj = obj_from_bits(addr_bits);
     if let Some(s) = string_obj_to_owned(obj) {
-        return s
-            .parse::<Ipv6Addr>()
-            .map_err(|_| raise_exception::<u64>(_py, "ValueError", "invalid IPv6 address"));
+        return s.parse::<Ipv6Addr>().map_err(|_| {
+            raise_exception::<u64>(_py, BuiltinExc::ValueError, "invalid IPv6 address")
+        });
     }
     if let Some(v) = to_bigint(obj) {
         let Some(octets) = bigint_to_fixed_be::<16>(&v) else {
             return Err(raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "IPv6 address must be in range 0-340282366920938463463374607431768211455",
             ));
         };
@@ -358,7 +358,7 @@ fn parse_ipv6_from_bits(_py: &CoreGilToken, addr_bits: u64) -> Result<Ipv6Addr, 
     }
     Err(raise_exception::<u64>(
         _py,
-        "TypeError",
+        BuiltinExc::TypeError,
         "expected str or int for IPv6 address",
     ))
 }
@@ -381,12 +381,16 @@ pub extern "C" fn molt_ipaddress_v4_new(addr_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_packed(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         let octets = h.addr.octets();
         let ptr = alloc_bytes(_py, &octets);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -396,7 +400,11 @@ pub extern "C" fn molt_ipaddress_v4_packed(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_int(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         int_bits_from_i64(_py, u32::from(h.addr) as i64)
     })
@@ -406,12 +414,16 @@ pub extern "C" fn molt_ipaddress_v4_int(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_str(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         let s = h.addr.to_string();
         let ptr = alloc_string(_py, s.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -421,7 +433,11 @@ pub extern "C" fn molt_ipaddress_v4_str(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_is_private(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         MoltObject::from_bool(ipv4_is_private(h.addr)).bits()
     })
@@ -431,7 +447,11 @@ pub extern "C" fn molt_ipaddress_v4_is_private(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_is_loopback(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         MoltObject::from_bool(ipv4_is_loopback(h.addr)).bits()
     })
@@ -441,7 +461,11 @@ pub extern "C" fn molt_ipaddress_v4_is_loopback(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_is_multicast(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         MoltObject::from_bool(ipv4_is_multicast(h.addr)).bits()
     })
@@ -451,7 +475,11 @@ pub extern "C" fn molt_ipaddress_v4_is_multicast(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_is_reserved(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         MoltObject::from_bool(ipv4_is_reserved(h.addr)).bits()
     })
@@ -461,7 +489,11 @@ pub extern "C" fn molt_ipaddress_v4_is_reserved(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_is_link_local(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         MoltObject::from_bool(ipv4_is_link_local(h.addr)).bits()
     })
@@ -471,7 +503,11 @@ pub extern "C" fn molt_ipaddress_v4_is_link_local(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_is_global(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         MoltObject::from_bool(ipv4_is_global(h.addr)).bits()
     })
@@ -481,7 +517,11 @@ pub extern "C" fn molt_ipaddress_v4_is_global(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_version(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(_h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         int_bits_from_i64(_py, 4)
     })
@@ -491,7 +531,11 @@ pub extern "C" fn molt_ipaddress_v4_version(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_max_prefixlen(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(_h) = ipv4_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 address handle",
+            );
         };
         int_bits_from_i64(_py, 32)
     })
@@ -515,12 +559,16 @@ pub extern "C" fn molt_ipaddress_v6_new(addr_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_packed(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         let octets = h.addr.octets();
         let ptr = alloc_bytes(_py, &octets);
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -530,7 +578,11 @@ pub extern "C" fn molt_ipaddress_v6_packed(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_int(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         let v = u128::from(h.addr);
         let big = BigInt::from(v);
@@ -542,12 +594,16 @@ pub extern "C" fn molt_ipaddress_v6_int(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_str(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         let s = h.addr.to_string();
         let ptr = alloc_string(_py, s.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -557,7 +613,11 @@ pub extern "C" fn molt_ipaddress_v6_str(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_is_private(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         MoltObject::from_bool(ipv6_is_private(h.addr)).bits()
     })
@@ -567,7 +627,11 @@ pub extern "C" fn molt_ipaddress_v6_is_private(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_is_loopback(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         MoltObject::from_bool(ipv6_is_loopback(h.addr)).bits()
     })
@@ -577,7 +641,11 @@ pub extern "C" fn molt_ipaddress_v6_is_loopback(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_is_multicast(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         MoltObject::from_bool(ipv6_is_multicast(h.addr)).bits()
     })
@@ -587,7 +655,11 @@ pub extern "C" fn molt_ipaddress_v6_is_multicast(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_is_link_local(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         MoltObject::from_bool(ipv6_is_link_local(h.addr)).bits()
     })
@@ -597,7 +669,11 @@ pub extern "C" fn molt_ipaddress_v6_is_link_local(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_is_global(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         MoltObject::from_bool(ipv6_is_global(h.addr)).bits()
     })
@@ -607,7 +683,11 @@ pub extern "C" fn molt_ipaddress_v6_is_global(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v6_version(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(_h) = ipv6_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv6 address handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv6 address handle",
+            );
         };
         int_bits_from_i64(_py, 6)
     })
@@ -621,7 +701,11 @@ pub extern "C" fn molt_ipaddress_v6_version(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_network_new(addr_bits: u64, strict_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(s) = string_obj_to_owned(obj_from_bits(addr_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "expected str for network address");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "expected str for network address",
+            );
         };
         let strict = {
             let obj = obj_from_bits(strict_bits);
@@ -629,13 +713,13 @@ pub extern "C" fn molt_ipaddress_v4_network_new(addr_bits: u64, strict_bits: u64
         };
         let (host_addr, prefix_len) = match parse_ipv4_network(&s) {
             Ok(v) => v,
-            Err(msg) => return raise_exception::<u64>(_py, "ValueError", msg),
+            Err(msg) => return raise_exception::<u64>(_py, BuiltinExc::ValueError, msg),
         };
         let network_addr = ipv4_network_address(host_addr, prefix_len);
         if strict && host_addr != network_addr {
             return raise_exception::<u64>(
                 _py,
-                "ValueError",
+                BuiltinExc::ValueError,
                 "host bits set in network address; use strict=False to suppress",
             );
         }
@@ -650,7 +734,11 @@ pub extern "C" fn molt_ipaddress_v4_network_new(addr_bits: u64, strict_bits: u64
 pub extern "C" fn molt_ipaddress_v4_network_hosts(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 network handle",
+            );
         };
         let base = u32::from(h.network);
         let prefix = h.prefix_len;
@@ -680,7 +768,7 @@ pub extern "C" fn molt_ipaddress_v4_network_hosts(handle_bits: u64) -> u64 {
             dec_ref_bits(_py, *b);
         }
         if list_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(list_ptr).bits()
     })
@@ -690,7 +778,11 @@ pub extern "C" fn molt_ipaddress_v4_network_hosts(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_network_contains(net_bits: u64, addr_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(net) = ipv4_network_handle_from_bits(net_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 network handle",
+            );
         };
         let addr = match parse_ipv4_from_bits(_py, addr_bits) {
             Ok(a) => a,
@@ -713,7 +805,11 @@ pub extern "C" fn molt_ipaddress_v4_network_contains(net_bits: u64, addr_bits: u
 pub extern "C" fn molt_ipaddress_v4_network_prefixlen(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 network handle",
+            );
         };
         int_bits_from_i64(_py, h.prefix_len as i64)
     })
@@ -723,12 +819,16 @@ pub extern "C" fn molt_ipaddress_v4_network_prefixlen(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_network_str(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 network handle",
+            );
         };
         let s = format!("{}/{}", h.network, h.prefix_len);
         let ptr = alloc_string(_py, s.as_bytes());
         if ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            return raise_exception::<u64>(_py, BuiltinExc::MemoryError, "out of memory");
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -738,7 +838,11 @@ pub extern "C" fn molt_ipaddress_v4_network_str(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_ipaddress_v4_network_broadcast(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let Some(h) = ipv4_network_handle_from_bits(handle_bits) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid IPv4 network handle");
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "invalid IPv4 network handle",
+            );
         };
         let broadcast = ipv4_broadcast_address(h.network, h.prefix_len);
         ipv4_bits(Ipv4Handle { addr: broadcast })

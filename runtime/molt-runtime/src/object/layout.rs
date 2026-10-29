@@ -1,4 +1,5 @@
 use super::class_storage::ClassReferenceSlot;
+use crate::BuiltinExc;
 use crate::{
     MoltObject, PyToken, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_LIST, TYPE_ID_MODULE,
     TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
@@ -1363,7 +1364,7 @@ pub(crate) unsafe fn prepare_function_code_bits(
             if code_validate_callable_identity(code_ptr, identity).is_err() {
                 crate::raise_exception::<u64>(
                     _py,
-                    "SystemError",
+                    BuiltinExc::SystemError,
                     "function and code object have conflicting callable identities",
                 );
                 return Err(());
@@ -1433,7 +1434,7 @@ impl PreparedFunctionCode {
             if code_published_execution_kind(ptr).is_some_and(|published| published != kind) {
                 crate::raise_exception::<u64>(
                     py,
-                    "TypeError",
+                    BuiltinExc::TypeError,
                     "code execution kind is already published",
                 );
                 return Err(());
@@ -1731,13 +1732,21 @@ unsafe fn prepare_code_declaration(
         if !super::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeQualname, qualname)
             || super::ops::exact_string_bytes(py, qualname).is_none()
         {
-            crate::raise_exception::<()>(py, "TypeError", "code qualname must be exact str");
+            crate::raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "code qualname must be exact str",
+            );
             return Err(());
         }
         if !super::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeDoc, doc)
             || (!obj_from_bits(doc).is_none() && super::ops::exact_string_bytes(py, doc).is_none())
         {
-            crate::raise_exception::<()>(py, "TypeError", "code doc must be exact str or None");
+            crate::raise_exception::<()>(
+                py,
+                BuiltinExc::TypeError,
+                "code doc must be exact str or None",
+            );
             return Err(());
         }
         let same = |left, right| {
@@ -1751,7 +1760,7 @@ unsafe fn prepare_code_declaration(
         {
             crate::raise_exception::<()>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "code declaration metadata is already published",
             );
             return Err(());
@@ -2104,7 +2113,7 @@ pub(crate) unsafe fn code_publish_gpu_descriptor(
         if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeGpuDescriptor, bits) {
             crate::raise_exception::<u64>(
                 py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "GPU code descriptor must be str or None",
             );
             return false;
@@ -2116,7 +2125,7 @@ pub(crate) unsafe fn code_publish_gpu_descriptor(
             }
             crate::raise_exception::<u64>(
                 py,
-                "RuntimeError",
+                BuiltinExc::RuntimeError,
                 "GPU code descriptor is already published",
             );
             return false;
@@ -2181,12 +2190,20 @@ pub(crate) unsafe fn validate_code_lexical_metadata(
         use crate::object::heap_kinds_generated::HeapAcyclicSlot;
         if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeFreevars, freevars_bits)
         {
-            crate::raise_exception::<u64>(_py, "TypeError", "code freevars must be a tuple of str");
+            crate::raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "code freevars must be a tuple of str",
+            );
             return Err(());
         }
         if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeCellvars, cellvars_bits)
         {
-            crate::raise_exception::<u64>(_py, "TypeError", "code cellvars must be a tuple of str");
+            crate::raise_exception::<u64>(
+                _py,
+                BuiltinExc::TypeError,
+                "code cellvars must be a tuple of str",
+            );
             return Err(());
         }
 
@@ -2199,7 +2216,7 @@ pub(crate) unsafe fn validate_code_lexical_metadata(
             }
             crate::raise_exception::<u64>(
                 _py,
-                "TypeError",
+                BuiltinExc::TypeError,
                 "code lexical metadata is already published",
             );
             return Err(());
@@ -2233,7 +2250,7 @@ pub(crate) fn prepare_code_signature(
     {
         crate::raise_exception::<u64>(
             py,
-            "SystemError",
+            BuiltinExc::SystemError,
             "code signature mutation violated generated code_metadata acyclic capability",
         );
         return Err(());
@@ -2261,7 +2278,11 @@ impl PreparedCodeSignature {
             if self.0 == published {
                 return Ok(None);
             }
-            crate::raise_exception::<u64>(py, "TypeError", "code signature is already published");
+            crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::TypeError,
+                "code signature is already published",
+            );
             Err(())
         }
     }
@@ -2500,7 +2521,7 @@ pub(crate) fn validate_class_name(py: &PyToken<'_>, bits: u64) -> bool {
     if name.contains(&0) {
         crate::raise_exception::<()>(
             py,
-            "ValueError",
+            BuiltinExc::ValueError,
             "type name must not contain null characters",
         );
         return false;
@@ -2961,7 +2982,11 @@ pub(crate) unsafe fn class_initialize_native_prefix_unpublished(
             return false;
         }
         let Some(values) = super::backing::tracked_vec_box_with_capacity::<u64>(0) else {
-            let _ = crate::raise_exception::<u64>(py, "MemoryError", "list allocation failed");
+            let _ = crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::MemoryError,
+                "list allocation failed",
+            );
             return false;
         };
         unsafe { *ptr.cast::<*mut Vec<u64>>() = values };
