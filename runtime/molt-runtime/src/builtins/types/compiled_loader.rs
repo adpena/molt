@@ -194,6 +194,10 @@ pub extern "C" fn molt_importlib_compiled_loader_find_spec(
         {
             return MoltObject::none().bits();
         }
+        if let Some(portions) = metadata.namespace_portions {
+            return crate::builtins::platform::compiled_namespace_spec(py, fullname_bits, portions)
+                .unwrap_or_else(|error| error);
+        }
         let origin = metadata.origin;
         let is_package = metadata.is_package;
         let origin_ptr = alloc_string(py, origin.as_bytes());

@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::analysis::{AnalysisManager, DomChildren, ImmediateDoms, StrictReachable};
 use crate::tir::blocks::BlockId;
-use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     GvnNumberingRole, opcode_gvn_numbering_role_table, opcode_gvn_value_key_spec_table,
@@ -28,7 +27,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // Dominator tree (exception-edge-aware) + dom-children, from the analysis
     // manager. The idom tree and its children map share a single dominator
     // computation across GVN/LICM/BCE/refcount-elim.
-    let idoms = am.get::<ImmediateDoms>(func).clone();
+    let tree = am.get::<ImmediateDoms>(func).clone();
     let dom_children = am.get::<DomChildren>(func).clone();
 
     // Strict-CFG reachability (terminator-only). Cross-block replacements are
@@ -96,7 +95,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let mut stack: Vec<Frame> = vec![Frame::Enter(func.entry_block)];
     // Guard against pathological cyclic idom maps (should never occur from
-    // compute_idoms, but the dominator walk must not loop forever).
+    // compute_dominator_tree, but the dominator walk must not loop forever).
     let mut visited: HashSet<BlockId> = HashSet::new();
 
     while let Some(frame) = stack.pop() {
@@ -256,7 +255,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                         let strict_ok = !cross_block
                             || (strict_reachable.contains(&leader_block)
                                 && strict_reachable.contains(&bid));
-                        if dominates(leader_block, bid, &idoms) && strict_ok {
+                        if tree.dominates(leader_block, bid) && strict_ok {
                             let prior = value_number.insert(result, leader);
                             vn_undo.push((result, prior));
                             replacements.push((bid, i, leader));

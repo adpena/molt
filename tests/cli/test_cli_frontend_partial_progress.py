@@ -71,7 +71,7 @@ def _run_batch(project_root: Path, module_graph: dict[str, Path]):
     names = sorted(module_graph)
     metadata = _ModuleGraphMetadata(
         logical_source_path_by_module={n: str(module_graph[n]) for n in names},
-        module_is_namespace_by_module={n: False for n in names},
+        namespace_portions_by_module={},
         module_is_package_by_module={n: False for n in names},
         module_execution_kind_by_module={n: "imported" for n in names},
         frontend_module_costs={n: 1.0 for n in names},

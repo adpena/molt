@@ -104,6 +104,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -158,7 +159,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_globals_dict_escaped: Any
     module_import_flow: ModuleImportFlow | None
     module_import_state: Any
-    module_is_namespace: Any
     module_is_package: Any
     module_name: Any
     module_obj: MoltValue | None
@@ -212,7 +212,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         type_facts_module: str | None = ...,
         module_name: str | None = ...,
         module_spec_name: str | None = ...,
-        module_is_namespace: bool = ...,
         module_execution_kind: ModuleExecutionKind | None = ...,
         module_source_role: ModuleSourceRole = ...,
         enable_phi: bool = ...,
@@ -1944,7 +1943,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         source_path: str | None,
         module_name: str | None,
         module_spec_name: str | None,
-        module_is_namespace: bool,
         module_execution_kind: ModuleExecutionKind | None,
         module_chunking: bool,
         module_chunk_max_ops: int,

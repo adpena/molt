@@ -1171,6 +1171,7 @@ tests/differential/stdlib/import_spec_shape.py
 tests/differential/stdlib/importlib_abc_frozen_import_intrinsic.py
 tests/differential/stdlib/importlib_basic.py
 tests/differential/stdlib/importlib_cached_module_identity.py
+tests/differential/stdlib/importlib_compiled_namespace_metadata.py
 tests/differential/stdlib/importlib_dotted_name_failure_shape.py
 tests/differential/stdlib/importlib_dunder_import_fromlist.py
 tests/differential/stdlib/importlib_dunder_import_math.py

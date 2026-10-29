@@ -456,7 +456,7 @@ def _build_module_registry(
     entry_module: str,
     module_graph: Mapping[str, Path],
     logical_source_path_by_module: Mapping[str, str],
-    module_is_namespace_by_module: Mapping[str, bool],
+    namespace_portions_by_module: Mapping[str, tuple[str, ...]],
     module_source_role_by_module: Mapping[str, ModuleSourceRole],
     module_order: Sequence[str],
     runtime_import_dispatch_roots: Collection[str],
@@ -498,7 +498,7 @@ def _build_module_registry(
             ModuleRegistryEntry(
                 name=name,
                 kind=kind,
-                has_location=not module_is_namespace_by_module[name],
+                has_location=True,
                 is_stdlib_provider=module_source_role_by_module[name] == "stdlib",
                 init_symbol=(
                     SimpleTIRGenerator.module_init_symbol(name) if has_init else ""
@@ -506,6 +506,17 @@ def _build_module_registry(
                 is_package=module_graph[name].name == "__init__.py",
                 # The origin is the module's own reported path (HF-372).
                 origin=logical_source_path_by_module[name],
+            )
+        )
+    for name, portions in sorted(namespace_portions_by_module.items()):
+        entries.append(
+            ModuleRegistryEntry(
+                name=name,
+                kind="namespace_parent",
+                has_location=False,
+                is_stdlib_provider=False,
+                is_package=True,
+                portions=portions,
             )
         )
     generated = set(generated_native_init_modules)
@@ -555,7 +566,7 @@ def _build_module_registry(
             ModuleRegistryEntry(
                 name="__main__",
                 kind="source",
-                has_location=not module_is_namespace_by_module[entry_module],
+                has_location=True,
                 # This fixed row is the explicit program entry capability,
                 # not an advertised named stdlib provider. The original named
                 # entry row retains its source provider role for imports.
@@ -1965,7 +1976,7 @@ def _prepare_backend_ir(
     entry_module: str,
     module_graph: Mapping[str, Path],
     logical_source_path_by_module: Mapping[str, str],
-    module_is_namespace_by_module: Mapping[str, bool],
+    namespace_portions_by_module: Mapping[str, tuple[str, ...]],
     module_source_role_by_module: Mapping[str, ModuleSourceRole],
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
@@ -2172,7 +2183,7 @@ def _prepare_backend_ir(
                 entry_module=entry_module,
                 module_graph=module_graph,
                 logical_source_path_by_module=logical_source_path_by_module,
-                module_is_namespace_by_module=module_is_namespace_by_module,
+                namespace_portions_by_module=namespace_portions_by_module,
                 module_source_role_by_module=module_source_role_by_module,
                 module_order=module_order,
                 runtime_import_dispatch_roots=native_runtime_import_dispatch_roots,

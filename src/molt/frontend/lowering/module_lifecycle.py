@@ -36,7 +36,6 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         source_path: str | None,
         module_name: str | None,
         module_spec_name: str | None,
-        module_is_namespace: bool,
         module_execution_kind: ModuleExecutionKind | None,
         module_chunking: bool,
         module_chunk_max_ops: int,
@@ -73,15 +72,12 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         self.module_obj: MoltValue | None = None
         self.source_path = source_path
         self.module_is_package = False
-        self.module_is_namespace = module_is_namespace
         if source_path:
             normalized_path = source_path.replace("\\", "/")
             if normalized_path.endswith("/__init__.py") or normalized_path.endswith(
                 "/__init__.pyi"
             ):
                 self.module_is_package = True
-        if self.module_is_namespace:
-            self.module_is_package = True
         import_context = ModuleImportContext(
             self.module_name,
             self.module_is_package,
@@ -176,7 +172,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         package_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[package_name], result=package_val))
         self._emit_module_attr_set_on(self.module_obj, "__package__", package_val)
-        if is_package and path_obj is not None and not self.module_is_namespace:
+        if is_package and path_obj is not None:
             package_dir = path_obj.parent.as_posix()
             path_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[package_dir], result=path_val))
@@ -210,7 +206,7 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
                 result=spec_val,
             )
         )
-        if path_obj is not None and not self.module_is_namespace:
+        if path_obj is not None:
             has_location = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=has_location))
             self.emit(

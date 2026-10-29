@@ -686,33 +686,6 @@ def test_stdlib_test_support_layout_resolves_like_cpython() -> None:
     assert warnings_helper == stdlib_root / "test" / "support" / "warnings_helper.py"
 
 
-def test_generated_module_source_avoids_rewriting_identical_content(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original_replace = ATOMIC_IO.file_publication.durable_replace
-    replaced_destinations: list[Path] = []
-
-    def record_replace(src: object, dst: object) -> None:
-        destination = Path(dst)
-        if destination.parent == tmp_path and destination.suffix == ".py":
-            replaced_destinations.append(destination)
-        original_replace(src, dst)
-
-    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
-
-    generated_path = cli_module_graph._write_generated_module_source(
-        "generated", "value = 42\n", tmp_path
-    )
-    assert (
-        cli_module_graph._write_generated_module_source(
-            "generated", "value = 42\n", tmp_path
-        )
-        == generated_path
-    )
-
-    assert replaced_destinations == [generated_path]
-
-
 def _frontend_main_ops_for_import_source(
     source: str, **kwargs: object
 ) -> list[dict[str, object]]:
@@ -3171,10 +3144,9 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
     assert frontend_analysis is not None
     module_graph_metadata = cli_module_graph._build_module_graph_metadata(
         import_plan.module_graph,
-        generated_module_source_paths=import_plan.generated_module_source_paths,
         entry_module="demo",
         entry_execution_kind="script",
-        namespace_module_names=import_plan.namespace_module_names,
+        namespace_portions_by_module=import_plan.namespace_portions_by_module,
         module_source_catalog=frontend_analysis.module_source_catalog,
         module_deps=frontend_analysis.module_deps,
         stdlib_root=import_plan.stdlib_root,
@@ -3643,7 +3615,7 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
 
     assert dict(prepared.module_graph) == before
     assert import_plan.module_graph["_molt_importer"] == user_importer
-    assert "_molt_importer" not in import_plan.generated_module_source_paths
+    assert "_molt_importer" not in import_plan.namespace_portions_by_module
     assert (
         import_plan.module_graph_metadata.module_source_role_by_module["_molt_importer"]
         == "user"
@@ -3773,7 +3745,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
-        module_is_namespace_by_module={name: False for name in module_graph},
+        namespace_portions_by_module={},
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -3854,7 +3826,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
-        module_is_namespace_by_module={name: False for name in module_graph},
+        namespace_portions_by_module={},
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -3974,7 +3946,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
-        module_is_namespace_by_module={name: False for name in module_graph},
+        namespace_portions_by_module={},
         known_modules=set(module_graph) | native_artifact_plan.native_module_names(),
         stdlib_allowlist=set(module_graph),
         integration_state=integration_state,
@@ -4188,14 +4160,17 @@ def test_pure_wasm_dme_mode_overrides_legacy_env(
     )
 
 
-def test_pure_wasm_dme_roots_do_not_seed_runtime_support_closure() -> None:
+@pytest.mark.parametrize("namespace_modules", [frozenset(), frozenset({"ns"})])
+def test_pure_wasm_dme_roots_retain_support_for_namespace_specs(
+    namespace_modules: frozenset[str],
+) -> None:
     import_plan = types.SimpleNamespace(
         explicit_imports=frozenset({"array"}),
         declared_root_modules=frozenset({"demo"}),
         package_parent_modules=frozenset(),
-        namespace_module_names=frozenset(),
+        namespace_module_names=namespace_modules,
         runtime_import_dispatch_roots=frozenset({"array", "importlib", "typing"}),
-        runtime_support_modules=frozenset({"importlib"}),
+        runtime_support_modules=frozenset({"importlib", "importlib.machinery"}),
         stdlib_support_modules=frozenset({"builtins", "sys", "typing"}),
     )
 
@@ -4204,7 +4179,22 @@ def test_pure_wasm_dme_roots_do_not_seed_runtime_support_closure() -> None:
         mode="pure-wasm",
     )
 
-    assert roots == {"array", "demo"}
+    expected = {"array", "demo"}
+    if namespace_modules:
+        expected.update({"importlib", "importlib.machinery"})
+    assert roots == expected
+    # Metadata-only namespace names have no source body; their support does.
+    order = ["demo", "array", "importlib", "importlib.machinery", "typing"]
+    kept, _layers, _removed = cli_frontend_pipeline._apply_dead_module_elimination(
+        order,
+        [order],
+        entry_module="demo",
+        module_deps={},
+        module_names=set(order),
+        extra_roots=roots,
+        safelist=cli_frontend_pipeline._dead_module_elimination_safelist("pure-wasm"),
+    )
+    assert set(kept) == expected
 
 
 def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
@@ -4236,33 +4226,6 @@ def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_suppor
     assert error is None
     assert prepared is not None
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
-
-
-def test_write_namespace_module_avoids_rewriting_identical_content(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original_replace = ATOMIC_IO.file_publication.durable_replace
-    replaced_destinations: list[Path] = []
-
-    def record_replace(src: object, dst: object) -> None:
-        destination = Path(dst)
-        if destination.parent == tmp_path and destination.suffix == ".py":
-            replaced_destinations.append(destination)
-        original_replace(src, dst)
-
-    monkeypatch.setattr(ATOMIC_IO.file_publication, "durable_replace", record_replace)
-
-    expected_path = cli_module_graph._write_namespace_module(
-        "demo.pkg", ["/tmp/demo/pkg"], tmp_path
-    )
-    assert (
-        cli_module_graph._write_namespace_module(
-            "demo.pkg", ["/tmp/demo/pkg"], tmp_path
-        )
-        == expected_path
-    )
-
-    assert replaced_destinations == [expected_path]
 
 
 def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
@@ -4327,21 +4290,16 @@ def test_build_module_lowering_metadata_precomputes_module_flags(
     }
     (
         logical_source_path_by_module,
-        namespace_by_module,
-        (is_package_by_module),
+        is_package_by_module,
         execution_kind_by_module,
     ) = cli_module_graph._build_module_lowering_metadata(
         module_graph,
-        generated_module_source_paths={"pkg": "/generated/pkg/__init__.py"},
         entry_module="app_entry",
         entry_execution_kind="script",
-        namespace_module_names={"pkg"},
     )
 
-    assert logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
+    assert logical_source_path_by_module["pkg"] == str(module_graph["pkg"])
     assert logical_source_path_by_module["pkg.mod"] == str(module_graph["pkg.mod"])
-    assert namespace_by_module["pkg"] is True
-    assert namespace_by_module["pkg.mod"] is False
     assert is_package_by_module["pkg"] is True
     assert is_package_by_module["pkg.mod"] is False
     assert execution_kind_by_module == {
@@ -9759,7 +9717,7 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         entry_module="application",
         module_graph={"application": Path("/virtual/application.py")},
         logical_source_path_by_module={"application": "/virtual/application.py"},
-        module_is_namespace_by_module={"application": False},
+        namespace_portions_by_module={},
         module_order=["application"],
         runtime_import_dispatch_roots=(),
         native_module_init_specs=(),
@@ -10119,10 +10077,9 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
             import_plan.native_support_function_roots_by_module
         ),
         pgo_hot_function_names=set(),
-        generated_module_source_paths=dict(import_plan.generated_module_source_paths),
         entry_module="field_solve",
         entry_execution_kind="script",
-        namespace_module_names=set(import_plan.namespace_module_names),
+        namespace_portions_by_module=import_plan.namespace_portions_by_module,
         module_source_catalog=analysis.module_source_catalog,
         is_wasm=True,
         frontend_parallel_details={},
@@ -16544,11 +16501,11 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
-def test_module_lowering_reuses_generated_source_across_output_paths(tmp_path):
-    source = "__path__ = []\n"
+def test_module_lowering_reuses_inline_source_across_output_paths(tmp_path):
+    source = "VALUE = 1\n"
     first, second = (
-        tmp_path / "run-a/namespace_pkg.py",
-        tmp_path / "run-b/namespace_pkg.py",
+        tmp_path / "run-a/pkg.py",
+        tmp_path / "run-b/pkg.py",
     )
 
     def context(path):
@@ -16556,7 +16513,7 @@ def test_module_lowering_reuses_generated_source_across_output_paths(tmp_path):
             "pkg",
             path,
             source_lease=cli_module_source._ModuleSourceLease.inline(path, source),
-            logical_source_path="/__molt_generated__/namespace/pkg.py",
+            logical_source_path="/program/pkg.py",
             module_execution_kind="imported",
             is_package=True,
             known_classes_snapshot={},
@@ -16568,7 +16525,6 @@ def test_module_lowering_reuses_generated_source_across_output_paths(tmp_path):
             known_func_defaults={},
             known_func_kinds={},
             module_deps={"pkg": set()},
-            module_is_namespace=True,
             module_chunking=False,
             module_chunk_max_ops=0,
             optimization_profile="dev",
@@ -17046,10 +17002,9 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     monkeypatch.setattr(cli_module_cache, "_read_persisted_module_lowering", fake_read)
     module_graph_metadata = cli_module_graph._build_module_graph_metadata(
         {"alpha": module_path},
-        generated_module_source_paths={},
         entry_module="__main__",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
@@ -17149,10 +17104,9 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
     monkeypatch.setattr(cli_module_cache, "_read_persisted_module_lowering", fake_read)
     module_graph_metadata = cli_module_graph._build_module_graph_metadata(
         {"alpha": module_path},
-        generated_module_source_paths={},
         entry_module="__main__",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
@@ -17298,7 +17252,6 @@ def test_load_cached_module_lowering_result_needs_no_module_stat(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"alpha": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -17414,10 +17367,9 @@ def test_frontend_analysis_resolves_known_native_artifact_dependencies(
     module_graph = {"field_solve": main_path}
     metadata = cli_module_graph._build_module_graph_metadata(
         module_graph,
-        generated_module_source_paths={},
         entry_module="field_solve",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
@@ -17480,7 +17432,6 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults(
             "beta": {"unused": "sync"},
         },
         module_deps={"main": {"alpha"}, "alpha": set(), "beta": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -17519,7 +17470,6 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -17573,7 +17523,6 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": {"alpha", "beta"}, "alpha": set(), "beta": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -17623,7 +17572,6 @@ def test_module_lowering_context_payload_scopes_known_classes(tmp_path: Path) ->
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -17652,7 +17600,6 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
             Path("/tmp/main.py"), "import alpha\n"
         ),
         type_hint_policy="ignore",
-        module_is_namespace=False,
         module_execution_kind="imported",
         type_facts=None,
         enable_phi=True,
@@ -17705,7 +17652,6 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
             Path("/tmp/main.py"), "VALUE = 1\n"
         ),
         type_hint_policy="ignore",
-        module_is_namespace=False,
         module_execution_kind="imported",
         type_facts=None,
         enable_phi=True,
@@ -17808,10 +17754,9 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     )
     module_graph_metadata = cli_module_graph._build_module_graph_metadata(
         module_graph,
-        generated_module_source_paths={},
         entry_module="__main__",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
@@ -17874,10 +17819,9 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
     module_source_catalog = cli_module_source._build_module_source_catalog(module_graph)
     module_graph_metadata = cli_module_graph._build_module_graph_metadata(
         module_graph,
-        generated_module_source_paths={},
         entry_module="main",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         module_source_catalog=module_source_catalog,
         module_deps={"main": {"alpha"}, "alpha": set()},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
@@ -17940,7 +17884,6 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
             logical_source_path=str(module_path),
             source_lease=lease,
             type_hint_policy="ignore",
-            module_is_namespace=False,
             module_execution_kind="imported",
             type_facts=None,
             enable_phi=True,
@@ -18001,7 +17944,6 @@ def test_module_lowering_context_payload_scopes_type_facts(tmp_path: Path) -> No
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -18038,7 +17980,6 @@ def test_module_worker_payload_scopes_type_facts() -> None:
             Path("/tmp/main.py"), "import alpha\n"
         ),
         type_hint_policy="trust",
-        module_is_namespace=False,
         module_execution_kind="imported",
         type_facts=type_facts,
         enable_phi=True,
@@ -18351,7 +18292,6 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -18397,7 +18337,6 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
             Path("/tmp/main.py"), "import alpha\n"
         ),
         type_hint_policy="ignore",
-        module_is_namespace=False,
         module_execution_kind="imported",
         type_facts=None,
         enable_phi=True,
@@ -18475,7 +18414,6 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"alpha": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -18501,7 +18439,6 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     gen = cli_frontend_worker._module_frontend_generator(
         module_name="main",
         logical_source_path="/tmp/main.py",
-        module_is_namespace=False,
         module_execution_kind="script",
         type_hint_policy="ignore",
         enable_phi=True,
@@ -18558,7 +18495,6 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -18599,7 +18535,6 @@ def test_module_lowering_context_digest_includes_native_callable_exports(
         "known_func_defaults": {},
         "known_func_kinds": {},
         "module_deps": {"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
-        "module_is_namespace": False,
         "module_chunking": False,
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",
@@ -18685,7 +18620,6 @@ def test_module_lowering_context_digest_includes_native_python_exports(
         "known_func_defaults": {},
         "known_func_kinds": {},
         "module_deps": {"main": {"nativepkg.ndimage"}, "nativepkg.ndimage": set()},
-        "module_is_namespace": False,
         "module_chunking": False,
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",
@@ -18737,7 +18671,6 @@ def test_module_lowering_context_digest_includes_target_sys_platform(
         "known_func_defaults": {},
         "known_func_kinds": {},
         "module_deps": {"main": {"sys"}, "sys": set()},
-        "module_is_namespace": False,
         "module_chunking": False,
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",
@@ -18791,7 +18724,6 @@ def test_module_lowering_context_digest_includes_scoped_func_kinds(
             "helpers": {"cpu_profile": {"params": 1, "defaults": []}}
         },
         "module_deps": {"main": {"helpers"}, "helpers": set()},
-        "module_is_namespace": False,
         "module_chunking": False,
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",
@@ -18863,7 +18795,6 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -18895,7 +18826,6 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise(
         known_func_defaults={},
         known_func_kinds={},
         module_deps={"main": set()},
-        module_is_namespace=False,
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -19673,10 +19603,9 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
     module_graph = {"main": main_path, "dep": dep_path}
     metadata = cli_module_graph._build_module_graph_metadata(
         module_graph,
-        generated_module_source_paths={},
         entry_module="main",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
     resolution_cache = cli_module_resolution._ModuleResolutionCache()
@@ -20452,17 +20381,17 @@ def test_build_module_graph_metadata_bundles_related_views(tmp_path: Path) -> No
     }
     metadata = cli_module_graph._build_module_graph_metadata(
         module_graph,
-        generated_module_source_paths={"pkg": "/generated/pkg/__init__.py"},
         entry_module="app_entry",
         entry_execution_kind="script",
-        namespace_module_names={"pkg"},
+        namespace_portions_by_module={"ns": (str(tmp_path / "ns"),)},
         module_sources={"app_entry": "print('ok')\n", "pkg": ""},
         module_deps={"app_entry": {"pkg"}, "pkg": set()},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
-    assert metadata.logical_source_path_by_module["pkg"] == "/generated/pkg/__init__.py"
-    assert metadata.module_is_namespace_by_module["pkg"] is True
+    assert metadata.logical_source_path_by_module["pkg"] == str(module_graph["pkg"])
+    assert metadata.namespace_portions_by_module == {"ns": (str(tmp_path / "ns"),)}
+    assert "ns" not in metadata.logical_source_path_by_module
     assert metadata.module_is_package_by_module["pkg"] is True
     assert metadata.module_execution_kind_by_module == {
         "app_entry": "script",
@@ -20789,10 +20718,9 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
     module_path.write_text("VALUE = 1\n", encoding="utf-8")
     metadata = cli_module_graph._build_module_graph_metadata(
         {"pkg": module_path},
-        generated_module_source_paths={"pkg": "generated/pkg.py"},
         entry_module="pkg",
         entry_execution_kind="module",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
 
@@ -20801,8 +20729,7 @@ def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -
         module_graph_metadata=metadata,
     )
 
-    assert view.logical_source_path == "generated/pkg.py"
-    assert view.module_is_namespace is False
+    assert view.logical_source_path == str(module_path)
     assert view.is_package is False
     assert view.module_execution_kind == "module"
     assert view.module_source_role == "user"
@@ -20815,10 +20742,9 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
     module_path.write_text("import alpha\n", encoding="utf-8")
     metadata = cli_module_graph._build_module_graph_metadata(
         {"main": module_path, "alpha": tmp_path / "alpha.py"},
-        generated_module_source_paths={"main": "generated/main.py"},
         entry_module="main",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=cli_module_resolution._stdlib_root_path(),
     )
     execution_view = cli_module_cache._module_lowering_execution_view(
@@ -20836,7 +20762,7 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
         pgo_hot_function_names_sorted=("main::hot",),
     )
 
-    assert execution_view.metadata.logical_source_path == "generated/main.py"
+    assert execution_view.metadata.logical_source_path == str(module_path)
     assert execution_view.scoped_inputs.known_modules == ("alpha", "main")
     assert execution_view.scoped_inputs.known_func_kinds == {"main": {"run": "sync"}}
     assert execution_view.scoped_inputs.pgo_hot_function_names == ("main::hot",)
@@ -20943,7 +20869,6 @@ def test_frontend_lower_module_worker_smoke(
             module_path, source
         ).worker_payload(),
         "type_hint_policy": "ignore",
-        "module_is_namespace": False,
         "module_execution_kind": "imported",
         "entry_module": None,
         "enable_phi": True,
@@ -20997,10 +20922,9 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         known_func_kinds={},
         native_callable_exports={},
         pgo_hot_function_names=set(),
-        generated_module_source_paths={},
         entry_module="entry",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         module_source_catalog=cli_module_source._build_module_source_catalog(
             {"entry": source_path},
             module_sources={"entry": "print('ok')\n"},
@@ -21053,10 +20977,9 @@ def test_prepare_frontend_lowering_config_keeps_guarded_policy_for_external_impo
         known_func_kinds={},
         native_callable_exports={},
         pgo_hot_function_names=set(),
-        generated_module_source_paths={},
         entry_module="entry",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         module_source_catalog=cli_module_source._build_module_source_catalog(
             {"entry": source_path},
             module_sources={
@@ -22091,7 +22014,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
 
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -22210,7 +22133,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -22342,7 +22265,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -22470,7 +22393,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -22605,7 +22528,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
     cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -25383,7 +25306,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     )
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -33663,7 +33586,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     warnings: list[str] = []
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -33746,7 +33669,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
     }
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,
@@ -33825,7 +33748,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
     }
     module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,

@@ -2,7 +2,7 @@
 
 Status: source implementation; native/WASM runtime qualification remains pending.
 Owner: module initialization, publication, import and runtime lifecycle.
-Registry schema 4 (`MOLTMOD4`) carries explicit file-location and stdlib-provider
+Registry schema 5 (`MOLTMOD5`) carries explicit file-location and stdlib-provider
 provenance in the existing flags byte; its native/LLVM/WASM projections share
 that authority. `ModuleSourceRole` is projected by the canonical metadata
 constructor from resolved compiler source paths and the actual stdlib root.
@@ -10,7 +10,8 @@ The superseded generated import dispatcher is removed; public imports use the
 canonical import transaction directly. Required metadata/worker/cache/registry
 inputs carry the role unchanged. A module name, path spelling or optimization
 hint never grants a provider/bootstrap role.
-The 48-byte header and 40-byte row layout stay fixed. Schema/magic admission
+The 56-byte header and 48-byte rows also carry ordered namespace portions in a
+separate table. Schema/magic admission
 rejects incompatible images instead of treating a missing fact as false.
 
 `ModuleTable` owns one ordinary Python dictionary from the first module
@@ -163,9 +164,11 @@ would duplicate those obligations without demonstrated benefit.
   a namespace spec with origin None whose locations are
   `_NamespacePath(name, portions, PathFinder._get_spec)`, which recomputes its
   portions when the parent path changes or `invalidate_caches` advances its
-  epoch. Compiled namespace packages are still generated source stubs (a list
-  `__path__`, the stub origin and the compiled loader); their parity needs a
-  typed namespace row that carries the portions in the module registry.
+  epoch. Compiled namespace packages carry those ordered portions in a typed
+  registry row, without a generated source stub or initializer. The compiled
+  finder uses the same `_NamespacePath` class and a loader-less spec with
+  origin `None`; module-from-spec binds `NamespaceLoader` and shares its path
+  object with the spec. Namespace identity is never derived from location flags.
   `ModuleSpec` starts with `has_location=False` even for a descriptive origin.
   File-location factories and compiler source SSA explicitly set the fact;
   catalog entries require it from the producer, encode flag `0x08`, and include

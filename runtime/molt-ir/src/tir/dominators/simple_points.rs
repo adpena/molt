@@ -89,28 +89,42 @@ impl SimpleExecutionDominance {
         self.dominance.dominates(definition, usage.node())
     }
 
-    /// Project before-operation nodes to the legacy public operation-index
-    /// view. Both existing lifecycle and loop-preheader consumers use this same
-    /// execution graph; only hidden result and invocation nodes are removed.
-    pub fn operation_dominators(&self) -> Vec<Option<usize>> {
-        (0..self.operation_count)
-            .map(|op| {
-                let mut parent = self
-                    .dominance
-                    .immediate_dominator(SimpleProgramPoint::Before(op).node());
-                while let Some(node) = parent {
-                    if node == 0 {
-                        return None;
-                    }
-                    let parent_op = (node - 1) / 2;
-                    if parent_op != op {
-                        return Some(parent_op);
-                    }
-                    parent = self.dominance.immediate_dominator(node);
-                }
-                None
-            })
-            .collect()
+    /// Whether execution can reach operation `op`.
+    pub fn operation_is_reachable(&self, op: usize) -> bool {
+        op < self.operation_count
+            && self
+                .dominance
+                .is_reachable(SimpleProgramPoint::Before(op).node())
+    }
+
+    /// Whether every execution path to operation `target` executes `dominator`
+    /// first; an operation dominates itself. The operation tree projects the
+    /// point tree onto before-operation points: an after-point's only
+    /// predecessor is its own before-point, so operation `dominator` is an
+    /// ancestor of `target` exactly when its before-point dominates the
+    /// target's. The answer is two interval comparisons, never a walk.
+    pub fn operation_dominates(&self, dominator: usize, target: usize) -> bool {
+        dominator == target
+            || (dominator < self.operation_count
+                && target < self.operation_count
+                && self.dominance.dominates(
+                    SimpleProgramPoint::Before(dominator).node(),
+                    SimpleProgramPoint::Before(target).node(),
+                ))
+    }
+
+    /// The nearest operation that dominates `op`, for diagnostics. The first
+    /// operation and unreachable operations have none.
+    pub fn operation_immediate_dominator(&self, op: usize) -> Option<usize> {
+        if op >= self.operation_count {
+            return None;
+        }
+        // A before-point's immediate dominator belongs to another operation,
+        // or is the invocation node.
+        self.dominance
+            .immediate_dominator(SimpleProgramPoint::Before(op).node())
+            .filter(|&node| node != 0)
+            .map(|node| (node - 1) / 2)
     }
 }
 
@@ -157,6 +171,77 @@ mod tests {
             ));
         }
     }
+    /// The operation tree as the immediate-dominator chain defines it: walk
+    /// from `target` through nearest dominating operations.
+    fn chain_dominates(points: &SimpleExecutionDominance, dominator: usize, target: usize) -> bool {
+        let mut current = target;
+        loop {
+            if current == dominator {
+                return true;
+            }
+            match points.operation_immediate_dominator(current) {
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+    }
+
+    #[test]
+    fn operation_intervals_match_the_immediate_dominator_chain() {
+        let shapes = [
+            // Loop with an early exit and a forward initializer.
+            vec![
+                op("jump", Some(9)),
+                op("label", Some(7)),
+                op("ret_void", None),
+                op("label", Some(9)),
+                op("const", None),
+                op("jump", Some(7)),
+            ],
+            // Observations that leave for a shared handler, and a dead tail.
+            vec![
+                op("const", None),
+                op("check_exception", Some(5)),
+                op("const", None),
+                op("check_exception", Some(5)),
+                op("ret_void", None),
+                op("label", Some(5)),
+                op("ret_void", None),
+                op("const", None),
+            ],
+            // A registration and a self-entering loop.
+            vec![
+                op("try_start", Some(3)),
+                op("label", Some(2)),
+                op("const", None),
+                op("jump", Some(2)),
+                op("label", Some(3)),
+                op("ret_void", None),
+            ],
+        ];
+        for ops in shapes {
+            let points = CFG::build(&ops).execution_points(&ops);
+            for target in 0..ops.len() {
+                // The first operation is always reachable; any other is
+                // reachable exactly when it has a dominating operation.
+                assert_eq!(
+                    points.operation_is_reachable(target),
+                    target == 0 || points.operation_immediate_dominator(target).is_some(),
+                    "{ops:?}: reachability of {target}"
+                );
+                for dominator in 0..ops.len() {
+                    assert_eq!(
+                        points.operation_dominates(dominator, target),
+                        chain_dominates(&points, dominator, target),
+                        "{ops:?}: {dominator} dom {target}"
+                    );
+                }
+            }
+            assert!(!points.operation_is_reachable(ops.len()));
+            assert!(!points.operation_dominates(0, ops.len()));
+        }
+    }
+
     #[test]
     fn invocation_and_forward_initializer_do_not_become_loop_carried_definitions() {
         let ops = vec![

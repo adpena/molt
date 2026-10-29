@@ -1760,6 +1760,73 @@ fn importlib_find_spec_object_bits(
     Ok(spec_bits)
 }
 
+/// The compiled finder supplies the same loader-less namespace spec as
+/// PathFinder, using the ordered directories carried by the typed catalog row.
+/// Module-from-spec alone binds NamespaceLoader and shares the path object.
+pub(crate) fn compiled_namespace_spec(
+    py: &PyToken<'_>,
+    name: u64,
+    portions: crate::builtins::module_table::NamespacePortions,
+) -> Result<u64, u64> {
+    use crate::builtins::exceptions::ExceptionValue;
+    let none = MoltObject::none().bits();
+    let dictionary = crate::builtins::module_table::module_dictionary(py).ok_or(none)?;
+    let machinery = ExceptionValue::adopt(
+        py,
+        importlib_module_support_bits(py, crate::ptr_from_bits(dictionary), "importlib.machinery")?,
+    );
+    let read = |object, name: &[u8]| -> Result<ExceptionValue<'_, '_>, u64> {
+        let key = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, name).ok_or(none)?);
+        crate::builtins::attributes::get_attr_name(py, object, key.bits())
+            .map(|bits| ExceptionValue::adopt(py, bits))
+            .map_err(|()| none)
+    };
+    let path_class = read(machinery.bits(), b"_NamespacePath")?;
+    let finder = read(machinery.bits(), b"PathFinder")?;
+    let get_spec = read(finder.bits(), b"_get_spec")?;
+    let mut directories = Vec::new();
+    for portion in portions.iter() {
+        directories.push(ExceptionValue::adopt(py, alloc_str_bits(py, portion)?));
+    }
+    let directory_bits: Vec<_> = directories.iter().map(ExceptionValue::bits).collect();
+    let list = alloc_list(py, &directory_bits);
+    if list.is_null() {
+        return Err(none);
+    }
+    let list = ExceptionValue::adopt(py, MoltObject::from_ptr(list).bits());
+    let path = ExceptionValue::adopt(
+        py,
+        call_callable_positional(py, path_class.bits(), &[name, list.bits(), get_spec.bits()])?,
+    );
+    let spec = ExceptionValue::adopt(
+        py,
+        crate::builtins::types::module_spec::alloc_module_spec(
+            py,
+            name,
+            none,
+            none,
+            MoltObject::from_bool(true).bits(),
+        )
+        .ok_or(none)?,
+    );
+    let key = ExceptionValue::adopt(
+        py,
+        attr_name_bits_from_bytes(py, b"submodule_search_locations").ok_or(none)?,
+    );
+    crate::builtins::attributes::mutate_attr_name(
+        py,
+        spec.bits(),
+        key.bits(),
+        crate::builtins::attr::DescriptorMutation::Set(path.bits()),
+        molt_cpython_abi::hooks::AttributeMutation::Normal,
+    )
+    .map_err(|()| none)?;
+    if exception_pending(py) {
+        return Err(none);
+    }
+    Ok(spec.into_bits())
+}
+
 fn importlib_module_support_bits(
     _py: &PyToken<'_>,
     modules_ptr: *mut u8,

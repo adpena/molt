@@ -2,6 +2,66 @@ use super::tests::BlobBuilder;
 use super::*;
 
 #[test]
+fn namespace_catalog_preserves_portion_order_without_body_or_file_provenance() {
+    let mut builder = BlobBuilder::new();
+    builder
+        .row("alias", 0, None, Some(1), MODULE_KIND_ALIAS, 0)
+        .row(
+            "pkg",
+            0,
+            None,
+            None,
+            MODULE_KIND_NAMESPACE_PARENT,
+            MODULE_FLAG_PACKAGE,
+        );
+    let mut blob = builder.build();
+    // Independent wire fixture: two length-prefixed directory strings.
+    let portions = b"\x06\x00\x00\x00/a/pkg\x06\x00\x00\x00/b/pkg";
+    blob[48..56].copy_from_slice(&(portions.len() as u64).to_le_bytes());
+    let row = MODULE_REGISTRY_HEADER_BYTES + MODULE_REGISTRY_ROW_BYTES;
+    blob[row + 40..row + 44].copy_from_slice(&(portions.len() as u32).to_le_bytes());
+    blob.extend_from_slice(portions);
+    let registry = ModuleRegistry::parse(blob.as_ptr()).unwrap();
+    for name in ["pkg", "alias"] {
+        let metadata = registry.compiled_spec(name).unwrap();
+        assert_eq!(metadata.provider_name, "pkg");
+        assert!(!metadata.has_body);
+        assert!(!metadata.has_location);
+        assert!(metadata.is_package);
+        assert_eq!(metadata.origin, "");
+        assert_eq!(
+            metadata
+                .namespace_portions
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>(),
+            ["/a/pkg", "/b/pkg"]
+        );
+    }
+    // Artifact corruption must fail at installation, before a finder reads it.
+    for (offset, bytes) in [
+        (row + 24, vec![MODULE_KIND_SOURCE]),
+        (
+            row + 25,
+            vec![MODULE_FLAG_PACKAGE | MODULE_FLAG_HAS_LOCATION],
+        ),
+        (row + 25, vec![MODULE_FLAG_PACKAGE | MODULE_FLAG_HAS_BODY]),
+        (row + 36, 1u32.to_le_bytes().to_vec()),
+        (row + 40, 0u32.to_le_bytes().to_vec()),
+        (blob.len() - portions.len(), 0u32.to_le_bytes().to_vec()),
+        (blob.len() - portions.len(), 7u32.to_le_bytes().to_vec()),
+        (blob.len() - 1, vec![0xff]),
+    ] {
+        let mut corrupt = blob.clone();
+        corrupt[offset..offset + bytes.len()].copy_from_slice(&bytes);
+        assert!(
+            ModuleRegistry::parse(corrupt.as_ptr()).is_err(),
+            "offset {offset}"
+        );
+    }
+}
+
+#[test]
 fn compiled_spec_projects_alias_provider_without_running_initializers() {
     static INITIALIZER_CALLS: AtomicUsize = AtomicUsize::new(0);
     extern "C" fn forbidden_initializer() -> u64 {
@@ -20,7 +80,7 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
             0,
             None,
             None,
-            MODULE_KIND_NAMESPACE_PARENT,
+            MODULE_KIND_SOURCE,
             MODULE_FLAG_PACKAGE,
         )
         .row(
@@ -59,6 +119,7 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
                 origin: "/catalog/package/__init__.py",
                 is_package: true,
                 has_location: true,
+                namespace_portions: None,
             })
         );
     }
@@ -71,6 +132,7 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
             origin: "",
             is_package: false,
             has_location: false,
+            namespace_portions: None,
         })
     );
     assert_eq!(
@@ -82,6 +144,7 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
             origin: "",
             is_package: false,
             has_location: false,
+            namespace_portions: None,
         }),
         "source kind alone does not admit a file location"
     );

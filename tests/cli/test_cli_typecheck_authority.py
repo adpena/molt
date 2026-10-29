@@ -42,10 +42,9 @@ def _prepare(source: Path, *, policy="check", is_wasm=False):
         known_func_kinds={},
         native_callable_exports={},
         pgo_hot_function_names=set(),
-        generated_module_source_paths={},
         entry_module="entry",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         module_source_catalog=module_source._build_module_source_catalog(
             {"entry": source},
             module_sources={"entry": source.read_text(encoding="utf-8")},

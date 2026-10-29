@@ -213,6 +213,19 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   Missing reaching definitions
   remain construction placeholders until actual uses materialize them locally;
   construction does not retain full variable environments at every block exit.
+- **Dominance**: one dominator core (`runtime/molt-ir/src/tir/dominators/indexed.rs`)
+  serves TIR block dominance (`DominatorTree`), program-point dominance, SimpleIR
+  operation dominance and SSA construction. Semi-NCA (Georgiadis, "Linear-Time
+  Algorithms for Dominators and Related Problems", 2005) builds each tree, as
+  LLVM's `DominatorTree` construction and Cranelift's `DominatorTree` do. One
+  iterative walk numbers the tree, and `dominates` compares two pre/post
+  intervals in O(1), as LLVM compares DFS in/out numbers and Cranelift compares
+  pre-order intervals. No query walks an idom chain. Trees are immutable: a CFG
+  change builds a new tree with its own numbering, and the analysis manager drops
+  the cached `ImmediateDoms` tree with every other CFG-sensitive analysis.
+  Dominance-frontier walks stop where an earlier walk for the same join already
+  recorded it, so frontier work is the frontier size plus the edges. No CFG or
+  dominator-tree walk recurses: function size never sets native stack depth.
 - **Executable edges**: typed block-argument meets and LIR branch parameters are
   computed only from blocks reachable from the function entry through explicit
   terminators or implicit exception edges. Structural loop metadata blocks that
