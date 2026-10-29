@@ -89,7 +89,6 @@ from tools.release.release_model import (  # noqa: E402
     phase_exit_filename,
     phase_exit_attestation_filename,
     project_version,
-    stable_release,
     release_subjects,
     sha256_file,
     spdx_document,
@@ -314,12 +313,8 @@ def resolve_source(requested_version: str, source_sha: str) -> dict[str, str]:
         "source_sha": head,
         "source_date_epoch": source_date_epoch,
         "release_exit_archive": release_exit_archive_filename(head),
-        "phase_exit_manifest": phase_exit_filename(head)
-        if stable_release(version)
-        else "",
-        "phase_exit_attestation": phase_exit_attestation_filename(head)
-        if stable_release(version)
-        else "",
+        "phase_exit_manifest": phase_exit_filename(head),
+        "phase_exit_attestation": phase_exit_attestation_filename(head),
     }
 
 
@@ -1470,7 +1465,7 @@ def assemble_index(
     output: Path,
     release_exit_archive: Path,
     release_exit_sha256: str,
-    phase_exit_manifest: Path | None = None,
+    phase_exit_manifest: Path,
 ) -> dict[str, object]:
     if type(source_date_epoch) is not int or source_date_epoch <= 0:
         raise ValueError("release epoch must be a positive integer")
@@ -1509,7 +1504,7 @@ def _assemble_index_stage(
     output: Path,
     release_exit_archive: Path,
     release_exit_sha256: str,
-    phase_exit_manifest: Path | None,
+    phase_exit_manifest: Path,
 ) -> dict[str, object]:
     evidence_record, phase_record = _stage_release_evidence(
         version=version,
@@ -1549,7 +1544,7 @@ def _stage_release_evidence(
     output: Path,
     release_exit_archive: Path,
     release_exit_sha256: str,
-    phase_exit_manifest: Path | None,
+    phase_exit_manifest: Path,
 ) -> tuple[dict[str, object], dict[str, dict[str, object]] | None]:
     """Snapshot and authenticate the planned source-named semantic evidence."""
     evidence_record = file_record(release_exit_archive, kind="release-exit-evidence")
@@ -1561,24 +1556,21 @@ def _stage_release_evidence(
     _copy_verified_release_file(
         release_exit_archive, output / release_exit_archive.name, evidence_record
     )
-    phase_record = None
-    if phase_exit_manifest is not None:
-        if phase_exit_manifest.name != phase_exit_filename(source_sha):
-            raise ValueError("H0 phase manifest must have its source-named filename")
-        phase_record = {}
-        for key, kind, path in (
-            ("manifest", PHASE_EXIT_KIND, phase_exit_manifest),
-            (
-                "attestation",
-                PHASE_ATTESTATION_KIND,
-                phase_exit_manifest.parent
-                / phase_exit_attestation_filename(source_sha),
-            ),
-        ):
-            record = file_record(path, kind=kind)
-            _copy_verified_release_file(path, output / path.name, record)
-            phase_record[key] = record
-    # Admission uses the exact archived/staged bytes, including H0 when required.
+    if phase_exit_manifest.name != phase_exit_filename(source_sha):
+        raise ValueError("H0 phase manifest must have its source-named filename")
+    phase_record: dict[str, dict[str, object]] = {}
+    for key, kind, path in (
+        ("manifest", PHASE_EXIT_KIND, phase_exit_manifest),
+        (
+            "attestation",
+            PHASE_ATTESTATION_KIND,
+            phase_exit_manifest.parent / phase_exit_attestation_filename(source_sha),
+        ),
+    ):
+        record = file_record(path, kind=kind)
+        _copy_verified_release_file(path, output / path.name, record)
+        phase_record[key] = record
+    # Admission uses the exact archived/staged bytes, including H0.
     with OwnedTemporaryDirectory(
         prefix=".release-admission-", dir=output.parent
     ) as temporary:
@@ -1589,9 +1581,7 @@ def _stage_release_evidence(
             output=Path(temporary) / "bundle",
             repo_root=ROOT,
             version=version,
-            phase_manifest=output / phase_exit_filename(source_sha)
-            if phase_record
-            else None,
+            phase_manifest=output / phase_exit_filename(source_sha),
             authenticate=True,
         )
     return evidence_record, phase_record
@@ -1674,7 +1664,7 @@ def _compose_index_metadata(
     published: list[dict[str, object]],
     llvm_inputs: dict[str, dict[str, Any]],
     evidence_record: dict[str, object],
-    phase_record: dict[str, dict[str, object]] | None,
+    phase_record: dict[str, dict[str, object]],
 ) -> dict[str, object]:
     """Project the index, checksums and SBOM from the staged release subjects."""
     config = load_config()
@@ -1928,7 +1918,7 @@ def main() -> None:
     index.add_argument("--output", type=Path, required=True)
     index.add_argument("--release-exit-archive", type=Path, required=True)
     index.add_argument("--release-exit-sha256", required=True)
-    index.add_argument("--phase-exit-manifest", type=Path)
+    index.add_argument("--phase-exit-manifest", type=Path, required=True)
 
     verify = subparsers.add_parser("verify-promotion")
     verify.add_argument("--local", type=Path, required=True)

@@ -22,7 +22,7 @@ required_markers = [
 [[authority]]
 path = "ROADMAP.md"
 required_markers = [
-  "Version 1.0 is Molt's first public release",
+  "Molt's first public release is numbered v0.0.1 and must meet the v1.0 quality",
   "String-literal identity is absolute poison",
   "typed refusal",
   "No import-system redesign lands unless the `test_importlib` cell",
