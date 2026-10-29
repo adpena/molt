@@ -116,7 +116,7 @@ use super::ownership_lattice_min::Replacements;
 use super::value_range::ValueRange;
 use crate::tir::analysis::{AnalysisManager, ImmediateDoms, StrictReachable};
 use crate::tir::blocks::BlockId;
-use crate::tir::dominators::dominates;
+use crate::tir::dominators::DominatorTree;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -151,7 +151,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // this OpsOnly pass.
     let alias: AliasAnalysisResult = am.get::<AliasAnalysis>(func).clone();
     let mem: MemorySsaResult = am.get::<MemorySSA>(func).clone();
-    let idoms = am.get::<ImmediateDoms>(func).clone();
+    let tree = am.get::<ImmediateDoms>(func).clone();
     // Strict-CFG reachability (terminator-only). A forwarded `Copy(source)`
     // emitted into a block reachable only via exception edges, sourced from a
     // value defined in a strict-CFG block, would make the post-lowering
@@ -301,7 +301,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if let Some(MemAccess::Def {
                 block: store_block, ..
             }) = mem.access(reaching)
-                && value_reaches_use(*store_block, block, &idoms, &strict_reachable)
+                && value_reaches_use(*store_block, block, &tree, &strict_reachable)
             {
                 forwards.push(Forward {
                     block,
@@ -325,7 +325,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         // source for a Copy.
         let key = (reaching.0, load_root, load_offset);
         if let Some(&(leader_block, leader_result)) = load_leader.get(&key) {
-            if value_reaches_use(leader_block, block, &idoms, &strict_reachable)
+            if value_reaches_use(leader_block, block, &tree, &strict_reachable)
                 && leader_result != load_result
             {
                 forwards.push(Forward {
@@ -394,10 +394,10 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 fn value_reaches_use(
     def_block: BlockId,
     use_block: BlockId,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
+    tree: &DominatorTree,
     strict_reachable: &std::collections::HashSet<BlockId>,
 ) -> bool {
-    if !dominates(def_block, use_block, idoms) {
+    if !tree.dominates(def_block, use_block) {
         return false;
     }
     if def_block == use_block {

@@ -288,7 +288,6 @@ def test_a2_worker_applies_phase_timeout_per_module(tmp_path, monkeypatch) -> No
                 module_path, source
             ).worker_payload(),
             "type_hint_policy": "ignore",
-            "module_is_namespace": False,
             "module_execution_kind": "imported",
             "entry_module": None,
             "enable_phi": True,
@@ -393,10 +392,9 @@ def _make_execution_context(
         module_dep_closures={name: frozenset({name}) for name in names},
         module_graph_metadata=cli_module_graph._build_module_graph_metadata(
             module_graph,
-            generated_module_source_paths={},
             entry_module="__main__",
             entry_execution_kind="direct_main",
-            namespace_module_names=(),
+            namespace_portions_by_module={},
             stdlib_root=_stdlib_root_path(),
         ),
         module_chunking=False,

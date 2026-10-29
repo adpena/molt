@@ -2769,7 +2769,7 @@ mod tests {
     }
 
     #[test]
-    fn dominator_metadata_matches_idom_chain_reference() {
+    fn dominator_metadata_matches_path_reference() {
         let mut func = TirFunction::new(
             "dom_ref".into(),
             vec![TirType::Bool],
@@ -2833,17 +2833,41 @@ mod tests {
         let dom_tree = ProgramPointDominance::compute_executable(&func);
         let policy = dominators::CfgEdgePolicy::TerminatorOnly;
         let predecessors = dominators::build_pred_map_with(&func, policy);
-        let idom = dominators::compute_idoms_with(&func, &predecessors, policy);
+        let block_tree = dominators::compute_dominator_tree_with(&func, &predecessors, policy);
         let mut all_blocks = vec![entry];
         all_blocks.extend(blocks.iter().copied());
         all_blocks.push(unreachable);
+        // Independent oracle: `a` dominates `b` when `b` is reachable and no
+        // path from the entry reaches `b` once `a` is removed.
+        let reaches = |banned: Option<BlockId>, target: BlockId| {
+            let mut seen = HashSet::new();
+            let mut stack = vec![entry];
+            while let Some(block) = stack.pop() {
+                if Some(block) == banned || !seen.insert(block) {
+                    continue;
+                }
+                if block == target {
+                    return true;
+                }
+                stack.extend(func.blocks[&block].terminator.successors());
+            }
+            false
+        };
 
         for &a in &all_blocks {
             for &b in &all_blocks {
+                let expected = reaches(None, b) && !reaches(Some(a), b);
                 assert_eq!(
                     dom_tree.definition_available(a, None, b, 0),
-                    dominators::dominates(a, b, &idom),
-                    "dominance mismatch: {} -> {}",
+                    expected,
+                    "program-point dominance mismatch: {} -> {}",
+                    a,
+                    b
+                );
+                assert_eq!(
+                    block_tree.dominates(a, b),
+                    expected,
+                    "block dominance mismatch: {} -> {}",
                     a,
                     b
                 );

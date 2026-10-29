@@ -1400,12 +1400,12 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                     .position(|op| op.kind == "trace_enter_slot")
                     .expect("Local trace-enter count was validated above");
                 let cfg = CFG::build(&func.ops);
-                let execution_dominators = cfg.execution_op_dominators(&func.ops);
+                let execution = cfg.execution_points(&func.ops);
                 for (op_index, op) in func.ops.iter().enumerate() {
                     if op.uses_execution_frame()
                         && op.kind != "trace_enter_slot"
-                        && simple_ir_op_is_reachable(&execution_dominators, op_index)
-                        && !simple_ir_op_dominates(&execution_dominators, enter_index, op_index)
+                        && execution.operation_is_reachable(op_index)
+                        && !execution.operation_dominates(enter_index, op_index)
                     {
                         let handler_label = func.ops[..=op_index]
                             .iter()
@@ -1423,7 +1423,7 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                                     )
                                     })
                                     .map(|(index, _)| {
-                                        (index, execution_dominators.get(index).copied().flatten())
+                                        (index, execution.operation_immediate_dominator(index))
                                     })
                                     .collect::<Vec<_>>()
                         });
@@ -1431,7 +1431,7 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                             "function `{}` frame op#{op_index} `{}` is reachable before trace_enter_slot op#{enter_index}; target immediate dominator is {:?}, handler label is {:?}, transfer source dominators are {:?}",
                             func.name,
                             op.kind,
-                            execution_dominators.get(op_index).copied().flatten(),
+                            execution.operation_immediate_dominator(op_index),
                             handler_label,
                             transfer_sources,
                         ));
@@ -1448,8 +1448,8 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                         ));
                     }
                     if simpleir_kind_is_return_terminator(&op.kind)
-                        && simple_ir_op_is_reachable(&execution_dominators, op_index)
-                        && simple_ir_op_dominates(&execution_dominators, enter_index, op_index)
+                        && execution.operation_is_reachable(op_index)
+                        && execution.operation_dominates(enter_index, op_index)
                         && func
                             .ops
                             .get(op_index.wrapping_sub(1))
@@ -1546,28 +1546,6 @@ pub fn validate_program_transport_contract(ir: &SimpleIR) -> Result<(), String> 
     }
     validate_extern_call_abis(ir)?;
     validate_direct_call_custody(ir)
-}
-
-fn simple_ir_op_dominates(
-    dominators: &[Option<usize>],
-    dominator_op: usize,
-    target_op: usize,
-) -> bool {
-    if dominator_op == target_op {
-        return true;
-    }
-    let mut current = target_op;
-    loop {
-        match dominators.get(current).copied().flatten() {
-            Some(parent) if parent == dominator_op => return true,
-            Some(parent) if parent != current => current = parent,
-            _ => return false,
-        }
-    }
-}
-
-fn simple_ir_op_is_reachable(dominators: &[Option<usize>], op_index: usize) -> bool {
-    op_index == 0 || dominators.get(op_index).is_some_and(Option::is_some)
 }
 
 #[cfg(test)]

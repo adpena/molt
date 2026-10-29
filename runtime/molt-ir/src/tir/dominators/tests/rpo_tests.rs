@@ -8,7 +8,7 @@
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators::{
-    CfgEdgePolicy, build_pred_map, compute_idoms, executable_reverse_postorder,
+    CfgEdgePolicy, build_pred_map, compute_dominator_tree, executable_reverse_postorder,
     reverse_postorder_with,
 };
 use crate::tir::function::TirFunction;
@@ -307,10 +307,13 @@ fn rpo_deeply_chained_cfg_does_not_overflow_stack() {
     let rpo = executable_reverse_postorder(&func);
 
     assert_eq!(rpo.len(), N as usize);
-    let idoms = compute_idoms(&func, &build_pred_map(&func));
-    assert_eq!(idoms.len(), N as usize);
+    let tree = compute_dominator_tree(&func, &build_pred_map(&func));
+    assert_eq!(tree.len(), N as usize);
     for index in 1..N {
-        assert_eq!(idoms[&BlockId(index)], Some(BlockId(index - 1)));
+        assert_eq!(tree.idom(BlockId(index)), Some(BlockId(index - 1)));
+        // Every chain block dominates every later one, never an earlier one.
+        assert!(tree.dominates(BlockId(index - 1), BlockId(N - 1)));
+        assert!(!tree.dominates(BlockId(index), BlockId(index - 1)));
     }
     for (i, bid) in rpo.iter().enumerate() {
         assert_eq!(

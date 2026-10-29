@@ -413,10 +413,9 @@ def _prepare_frontend_lowering_config(
     native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     is_luau_transpile: bool,
     pgo_hot_function_names: set[str],
-    generated_module_source_paths: Mapping[str, str],
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
-    namespace_module_names: Collection[str],
+    namespace_portions_by_module: Mapping[str, tuple[str, ...]],
     module_source_catalog: _ModuleSourceCatalog,
     is_wasm: bool,
     frontend_parallel_details: dict[str, Any],
@@ -475,10 +474,9 @@ def _prepare_frontend_lowering_config(
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
         stdlib_root=stdlib_root,
-        generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
         entry_execution_kind=entry_execution_kind,
-        namespace_module_names=namespace_module_names,
+        namespace_portions_by_module=namespace_portions_by_module,
         module_source_catalog=module_source_catalog,
         module_deps=module_deps,
     )
@@ -695,12 +693,19 @@ def _dead_module_elimination_extra_roots(
     *,
     mode: str,
 ) -> frozenset[str]:
+    # Namespace rows have no source dependency edges. Constructing their specs
+    # needs the real import machinery even in the minimal WASM profile.
+    namespace_support = (
+        import_plan.runtime_support_modules
+        if import_plan.namespace_module_names
+        else frozenset()
+    )
     if mode == "pure-wasm":
         return frozenset(
             import_plan.explicit_imports
             | import_plan.declared_root_modules
             | import_plan.package_parent_modules
-            | import_plan.namespace_module_names
+            | namespace_support
         )
     return frozenset(
         import_plan.runtime_import_dispatch_roots
@@ -708,7 +713,6 @@ def _dead_module_elimination_extra_roots(
         | import_plan.runtime_support_modules
         | import_plan.stdlib_support_modules
         | import_plan.package_parent_modules
-        | import_plan.namespace_module_names
     )
 
 
@@ -1011,16 +1015,13 @@ def _prepare_frontend_stage_state(
                 import_plan.native_support_function_roots_by_module
             ),
             pgo_hot_function_names=pgo_hot_function_names,
-            generated_module_source_paths=dict(
-                import_plan.generated_module_source_paths
-            ),
             entry_module=entry_module,
             entry_execution_kind=(
                 import_plan.module_graph_metadata.module_execution_kind_by_module[
                     entry_module
                 ]
             ),
-            namespace_module_names=set(import_plan.namespace_module_names),
+            namespace_portions_by_module=import_plan.namespace_portions_by_module,
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
             is_luau_transpile=prepared_build_outputs.output_layout.is_luau_transpile,
@@ -1267,11 +1268,6 @@ def _prepare_frontend_pipeline(
         for name, path in import_plan.module_graph.items()
         if name in import_plan.compile_modules
     }
-    compile_generated_module_source_paths = {
-        name: path
-        for name, path in import_plan.generated_module_source_paths.items()
-        if name in import_plan.compile_modules
-    }
     prepare_execution_start = time.perf_counter()
     (
         frontend_layer_execution_context,
@@ -1312,7 +1308,6 @@ def _prepare_frontend_pipeline(
         frontend_module_costs=prepared_frontend_lowering_config.frontend_module_costs,
         stdlib_like_by_module=prepared_frontend_lowering_config.stdlib_like_by_module,
         known_classes=prepared_frontend_lowering_config.known_classes,
-        generated_module_source_paths=compile_generated_module_source_paths,
         frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
         record_frontend_timing=record_frontend_timing,
         fail=_fail,

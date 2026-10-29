@@ -108,7 +108,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
             },
         }
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
-    module_is_namespace = bool(payload["module_is_namespace"])
     module_execution_kind = cast(ModuleExecutionKind, payload["module_execution_kind"])
     module_source_role = cast(ModuleSourceRole, payload["module_source_role"])
     enable_phi = bool(payload["enable_phi"])
@@ -173,7 +172,6 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         type_hint_policy=type_hint_policy,
         source_path=logical_source_path,
         module_name=module_name,
-        module_is_namespace=module_is_namespace,
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
         enable_phi=enable_phi,
@@ -308,7 +306,6 @@ def _module_frontend_generator(
     *,
     module_name: str,
     logical_source_path: str,
-    module_is_namespace: bool,
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
     type_hint_policy: TypeHintPolicy,
@@ -327,7 +324,6 @@ def _module_frontend_generator(
         source_path=logical_source_path,
         type_facts=scoped_inputs.type_facts,
         module_name=module_name,
-        module_is_namespace=module_is_namespace,
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
         enable_phi=enable_phi,
@@ -354,6 +350,7 @@ def _resolve_tree_for_serial_frontend_module(
     module_path: Path,
     *,
     lowering_context: _SerialFrontendLoweringContext,
+    logical_source_path: str,
 ) -> ast.AST:
     source_lease = lowering_context.module_source_catalog.lease_for(
         module_name, module_path
@@ -377,9 +374,6 @@ def _resolve_tree_for_serial_frontend_module(
         raise _ModuleLowerError(f"Failed to read module {module_path}: {exc}") from exc
     except PythonSourceChangedError as exc:
         raise _ModuleLowerError(str(exc)) from exc
-    logical_source_path = lowering_context.generated_module_source_paths.get(
-        module_name, str(module_path)
-    )
     try:
         # Lowering rewrites AST nodes; discovery/analysis cache entries are
         # read-only. Match the parallel worker's independently owned parse.
@@ -424,7 +418,6 @@ def _lower_module_serial_with_context(
     scoped_inputs = execution_view.scoped_inputs
     logical_source_path = metadata_view.logical_source_path
     is_package = metadata_view.is_package
-    module_is_namespace = metadata_view.module_is_namespace
     module_execution_kind = metadata_view.module_execution_kind
     module_source_role = metadata_view.module_source_role
     scoped_known_classes = execution_view.scoped_known_classes
@@ -449,7 +442,6 @@ def _lower_module_serial_with_context(
             native_callable_exports=lowering_context.native_callable_exports,
             native_python_exports=lowering_context.native_python_exports,
             module_deps=lowering_context.module_deps,
-            module_is_namespace=module_is_namespace,
             module_chunking=lowering_context.module_chunking,
             module_chunk_max_ops=lowering_context.module_chunk_max_ops,
             optimization_profile=lowering_context.optimization_profile,
@@ -487,11 +479,11 @@ def _lower_module_serial_with_context(
         module_name,
         module_path,
         lowering_context=lowering_context,
+        logical_source_path=logical_source_path,
     )
     gen = _module_frontend_generator(
         module_name=module_name,
         logical_source_path=logical_source_path,
-        module_is_namespace=module_is_namespace,
         module_execution_kind=module_execution_kind,
         module_source_role=module_source_role,
         type_hint_policy=lowering_context.type_hint_policy,
@@ -706,7 +698,6 @@ def _prepare_frontend_parallel_batch(
         metadata_view = execution_view.metadata
         scoped_inputs = execution_view.scoped_inputs
         logical_source_path = metadata_view.logical_source_path
-        module_is_namespace = metadata_view.module_is_namespace
         module_execution_kind = metadata_view.module_execution_kind
         module_source_role = metadata_view.module_source_role
         is_package = metadata_view.is_package
@@ -731,7 +722,6 @@ def _prepare_frontend_parallel_batch(
                 native_callable_exports=native_callable_exports,
                 native_python_exports=native_python_exports,
                 module_deps=module_deps,
-                module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
                 module_chunk_max_ops=module_chunk_max_ops,
                 optimization_profile=optimization_profile,
@@ -772,7 +762,6 @@ def _prepare_frontend_parallel_batch(
             native_callable_exports=native_callable_exports,
             native_python_exports=native_python_exports,
             module_deps=module_deps,
-            module_is_namespace=module_is_namespace,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=optimization_profile,
@@ -803,7 +792,6 @@ def _prepare_frontend_parallel_batch(
                     logical_source_path=logical_source_path,
                     source_lease=source_lease,
                     type_hint_policy=type_hint_policy,
-                    module_is_namespace=module_is_namespace,
                     module_execution_kind=module_execution_kind,
                     module_source_role=module_source_role,
                     type_facts=type_facts,
