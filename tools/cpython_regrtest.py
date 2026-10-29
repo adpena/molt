@@ -32,6 +32,7 @@ bind_repository_imports(__file__)
 from packaging.version import InvalidVersion, Version  # noqa: E402
 
 from molt import host_capacity  # noqa: E402
+from molt._host_capabilities_generated import CAPABILITY_TIERS  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
 
@@ -94,6 +95,7 @@ class RegrtestConfig:
     uv_prepare: bool
     uv_add: list[str]
     molt_cmd: list[str]
+    molt_capability_tier: str
     molt_capabilities: str | None
     molt_shim_path: Path
     output_root: Path
@@ -300,9 +302,19 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         help="Command used by the regrtest shim to run a test file.",
     )
     parser.add_argument(
+        "--molt-capability-tier",
+        choices=tuple(CAPABILITY_TIERS),
+        default="full",
+        help=(
+            "MOLT_CAPABILITY_TIER for Molt test runs. CPython's tests assume "
+            "the full host access CPython has, so a denial would measure the "
+            "harness, not Python semantics."
+        ),
+    )
+    parser.add_argument(
         "--molt-capabilities",
-        default="fs.read,env.read",
-        help="Comma-separated MOLT_CAPABILITIES for Molt test runs.",
+        default=None,
+        help="Comma-separated MOLT_CAPABILITIES granted beyond the tier.",
     )
     parser.add_argument(
         "--molt-shim",
@@ -627,6 +639,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         uv_prepare=args.uv_prepare,
         uv_add=args.uv_add,
         molt_cmd=molt_cmd,
+        molt_capability_tier=args.molt_capability_tier,
         molt_capabilities=args.molt_capabilities,
         molt_shim_path=molt_shim,
         output_root=output_root,
@@ -1762,7 +1775,9 @@ def canonical_regrtest_env(
 
 
 def build_env(config: RegrtestConfig) -> ProcessEnvironment:
-    env = canonical_regrtest_env(config.repo_root)
+    env = canonical_regrtest_env(config.repo_root).updated(
+        {"MOLT_CAPABILITY_TIER": config.molt_capability_tier}
+    )
     if config.molt_capabilities is not None:
         env = env.updated({"MOLT_CAPABILITIES": config.molt_capabilities})
     return env

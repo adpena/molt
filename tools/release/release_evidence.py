@@ -32,7 +32,6 @@ from .release_model import (
     file_record,
     load_config,
     release_exit_archive_filename,
-    stable_release,
     phase_exit_attestation_filename,
 )
 
@@ -163,51 +162,43 @@ def verify_evidence(
     authenticate: bool = False,
 ) -> None:
     verify_release_exit_manifest(manifest, source_sha=source_sha, repo_root=repo_root)
-    if stable_release(version):
-        if phase_manifest is None:
-            raise ValueError(
-                f"release {version} requires a green H0 phase-exit manifest for {source_sha}"
+    if phase_manifest is None:
+        raise ValueError(
+            f"release {version} requires a green H0 phase-exit manifest for {source_sha}"
+        )
+    report = phase_exit_manifest.verify_phase_manifest(
+        phase_manifest,
+        release_commit=source_sha,
+        bundle_manifest=manifest,
+        root=repo_root,
+    )
+    if (
+        report.phase != "H0"
+        or report.commit != source_sha
+        or not report.green
+        or report.problems
+    ):
+        raise ValueError("H0 phase exit is not green: " + "; ".join(report.problems))
+    payload = read_exact(
+        phase_manifest, max_bytes=16 * 1024 * 1024, label="H0 phase manifest"
+    )
+    if payload["signed_attestation"]["path"] != phase_exit_attestation_filename(
+        source_sha
+    ):
+        raise ValueError("H0 attestation must use its source-named release asset")
+    if authenticate:
+        with OwnedTemporaryDirectory(
+            prefix=".phase-subject-", dir=phase_manifest.parent
+        ) as temporary:
+            subject = Path(temporary) / "subject.json"
+            subject.write_bytes(phase_exit_manifest.signing_subject_bytes(payload))
+            verify_provenance(
+                subject,
+                source_sha=source_sha,
+                workflow="release.yml",
+                bundle=phase_manifest.parent / payload["signed_attestation"]["path"],
             )
-        report = phase_exit_manifest.verify_phase_manifest(
-            phase_manifest,
-            release_commit=source_sha,
-            bundle_manifest=manifest,
-            root=repo_root,
-        )
-        if (
-            report.phase != "H0"
-            or report.commit != source_sha
-            or not report.green
-            or report.problems
-        ):
-            raise ValueError(
-                "H0 phase exit is not green: " + "; ".join(report.problems)
-            )
-        payload = read_exact(
-            phase_manifest, max_bytes=16 * 1024 * 1024, label="H0 phase manifest"
-        )
-        if payload["signed_attestation"]["path"] != phase_exit_attestation_filename(
-            source_sha
-        ):
-            raise ValueError("H0 attestation must use its source-named release asset")
-        if authenticate:
-            with OwnedTemporaryDirectory(
-                prefix=".phase-subject-", dir=phase_manifest.parent
-            ) as temporary:
-                subject = Path(temporary) / "subject.json"
-                subject.write_bytes(phase_exit_manifest.signing_subject_bytes(payload))
-                verify_provenance(
-                    subject,
-                    source_sha=source_sha,
-                    workflow="release.yml",
-                    bundle=phase_manifest.parent
-                    / payload["signed_attestation"]["path"],
-                )
-        verify_full_release_acceptance(
-            manifest, source_sha=source_sha, repo_root=repo_root
-        )
-    elif phase_manifest is not None:
-        raise ValueError("pre-stable releases must not claim an H0 phase exit")
+    verify_full_release_acceptance(manifest, source_sha=source_sha, repo_root=repo_root)
     if authenticate:
         verify_e3_provenance(manifest, source_sha=source_sha)
 
