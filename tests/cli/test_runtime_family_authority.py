@@ -3205,10 +3205,9 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         assert debug_plan is not None
         for token in debug_plan.command:
             if token.startswith("link-arg=@"):
-                assert (
-                    "--compress-relocations"
-                    not in Path(token.removeprefix("link-arg=@")).read_text()
-                )
+                assert "--compress-relocations" not in Path(
+                    token.removeprefix("link-arg=@")
+                ).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
