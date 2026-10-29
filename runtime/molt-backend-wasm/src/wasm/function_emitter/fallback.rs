@@ -81,7 +81,13 @@ pub(super) fn emit_fallback_function_body(
                 let plan = frame
                     .control_plan()
                     .expect("non-linear control plan missing");
-                emit_non_linear_control(&mut func, &mut op_emitter, plan, frame.dispatch_locals());
+                emit_non_linear_control(
+                    &mut func,
+                    &mut op_emitter,
+                    plan,
+                    frame.dispatch_locals(),
+                    frame.route_local(),
+                );
             }
             WasmFrameControlMode::Plain => {
                 plain::emit_plain_function_body(func_ir, &mut func, &mut op_emitter);

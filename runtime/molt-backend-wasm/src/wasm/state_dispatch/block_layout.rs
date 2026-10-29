@@ -43,22 +43,43 @@ pub(super) fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     (starts, block_for_op)
 }
 
-pub(super) fn build_dispatch_block_map(block_for_op: &[usize], targets: &[usize]) -> Vec<u8> {
-    let mut ordinals = vec![u32::MAX; block_for_op.iter().max().map_or(0, |block| block + 1)];
+/// The dispatch key of every operation: its block's ordinal among `targets`
+/// for a single-node layout, or its physical block index when the scope tree
+/// routes by radix digits. Non-target operations hold `u32::MAX`, which every
+/// root selector rejects.
+pub(super) fn build_dispatch_block_map(
+    block_for_op: &[usize],
+    targets: &[usize],
+    physical_keys: bool,
+) -> Vec<u8> {
+    let mut keys = vec![u32::MAX; block_for_op.iter().max().map_or(0, |block| block + 1)];
     for (ordinal, &block) in targets.iter().enumerate() {
-        ordinals[block] = ordinal as u32;
+        keys[block] = if physical_keys { block } else { ordinal } as u32;
     }
     let mut bytes = Vec::with_capacity(block_for_op.len() * 4);
     for &block_idx in block_for_op {
-        bytes.extend_from_slice(&ordinals[block_idx].to_le_bytes());
+        bytes.extend_from_slice(&keys[block_idx].to_le_bytes());
     }
     bytes
+}
+
+/// How the root scope selects its child after loading the dispatch key.
+pub(super) enum RootSelection<'a> {
+    /// Single-node layout: the key is the ordinal of a target block.
+    Ordinals { targets: &'a [usize] },
+    /// Scope tree: keep the physical block index for lower selectors and
+    /// select the root child from its top radix digit.
+    Routed {
+        route_local: u32,
+        digit_shift: u32,
+        children: usize,
+    },
 }
 
 pub(super) fn emit_dispatch_block_lookup(
     func: &mut Function,
     op_count: usize,
-    targets: &[usize],
+    selection: RootSelection<'_>,
     locals: WasmDispatchFrameLocals,
 ) {
     // An invalid operation or block index must trap, never become a loop
@@ -83,9 +104,47 @@ pub(super) fn emit_dispatch_block_lookup(
         offset: 0,
         memory_index: 0,
     }));
-    let targets: Vec<u32> = targets.iter().map(|&block| block as u32 + 1).collect();
+    let targets: Vec<u32> = match selection {
+        RootSelection::Ordinals { targets } => {
+            targets.iter().map(|&block| block as u32 + 1).collect()
+        }
+        RootSelection::Routed {
+            route_local,
+            digit_shift,
+            children,
+        } => {
+            // `u32::MAX` keeps a digit beyond every child: the default traps.
+            func.instruction(&Instruction::LocalTee(route_local));
+            func.instruction(&Instruction::I32Const(digit_shift as i32));
+            func.instruction(&Instruction::I32ShrU);
+            (1..=children as u32).collect()
+        }
+    };
     func.instruction(&Instruction::BrTable(targets.into(), 0));
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::Unreachable);
+}
+
+/// Select the child of a non-root scope node from one radix digit of the
+/// routed destination block. Routed transfers carry only planned in-range
+/// blocks; the default still traps rather than entering an arbitrary child.
+pub(super) fn emit_scope_node_selector(
+    func: &mut Function,
+    route_local: u32,
+    digit_shift: u32,
+    digit_mask: usize,
+    children: usize,
+) {
+    func.instruction(&Instruction::Block(BlockType::Empty));
+    func.instruction(&Instruction::LocalGet(route_local));
+    if digit_shift != 0 {
+        func.instruction(&Instruction::I32Const(digit_shift as i32));
+        func.instruction(&Instruction::I32ShrU);
+    }
+    func.instruction(&Instruction::I32Const(digit_mask as i32));
+    func.instruction(&Instruction::I32And);
+    let targets: Vec<u32> = (1..=children as u32).collect();
+    func.instruction(&Instruction::BrTable(targets.into(), 0));
     func.instruction(&Instruction::End);
+    func.instruction(&Instruction::Unreachable);
 }
