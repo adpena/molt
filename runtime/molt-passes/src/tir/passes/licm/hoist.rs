@@ -16,16 +16,15 @@ fn find_preheader(
     header_bid: BlockId,
     loop_blocks: &HashSet<BlockId>,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
+    tree: &dominators::DominatorTree,
 ) -> Option<BlockId> {
     let mut preds = predecessors
         .get(&header_bid)?
         .iter()
         .copied()
-        .filter(|bid| idoms.contains_key(bid) && !loop_blocks.contains(bid));
+        .filter(|bid| tree.contains(*bid) && !loop_blocks.contains(bid));
     let preheader = preds.next()?;
-    (preds.next().is_none() && dominators::dominates(preheader, header_bid, idoms))
-        .then_some(preheader)
+    (preds.next().is_none() && tree.dominates(preheader, header_bid)).then_some(preheader)
 }
 
 pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
@@ -64,7 +63,7 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
         return stats;
     }
     let predecessors = am.get::<PredMap>(func).clone();
-    let idoms = am.get::<ImmediateDoms>(func).clone();
+    let tree = am.get::<ImmediateDoms>(func).clone();
     let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // Value-range proof, shared with BCE/SROA via the analysis manager. Used to
@@ -136,7 +135,7 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
             None => continue,
         };
 
-        let preheader = match find_preheader(*header_bid, loop_blocks, &predecessors, &idoms) {
+        let preheader = match find_preheader(*header_bid, loop_blocks, &predecessors, &tree) {
             Some(p) => p,
             None => continue, // No unique preheader - can't hoist.
         };
@@ -184,7 +183,7 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
                             .all(|&operand| match value_def_block.get(&operand) {
                                 Some(def_bid) => {
                                     !loop_blocks.contains(def_bid)
-                                        && dominators::dominates(*def_bid, preheader, &idoms)
+                                        && tree.dominates(*def_bid, preheader)
                                 }
                                 None => false,
                             });

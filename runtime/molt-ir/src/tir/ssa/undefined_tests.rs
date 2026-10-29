@@ -328,12 +328,12 @@ fn transfer_family_keeps_point_specific_handler_values_and_join_arguments() {
             "{kind}: definitions follow the later transfer"
         );
         assert_eq!(
-            context.aug_dominators[handler],
+            context.aug_dominance.immediate_dominator(handler),
             Some(first),
             "{kind}: later definitions must not dominate the handler"
         );
         assert_eq!(
-            context.aug_dominators[join],
+            context.aug_dominance.immediate_dominator(join),
             Some(first),
             "{kind}: the join can be reached through the early handler"
         );

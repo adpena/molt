@@ -5,7 +5,7 @@
 /// Returning false excludes a missing or already-seen node. Unseen siblings
 /// remain unmarked until entry so cross-edges preserve depth-first order.
 /// One scratch successor buffer is reused; graph depth never uses call stack.
-pub(crate) fn reverse_postorder_by<Node: Copy>(
+pub fn reverse_postorder_by<Node: Copy>(
     roots: impl IntoIterator<Item = Node>,
     capacity: usize,
     mut visit: impl FnMut(Node, &mut Vec<Node>) -> bool,

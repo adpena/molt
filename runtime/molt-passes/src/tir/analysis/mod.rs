@@ -40,7 +40,7 @@
 //! | Analysis        | Underlying `dominators.rs` fn        | Consumers                        |
 //! |-----------------|--------------------------------------|----------------------------------|
 //! | [`PredMap`]      | `build_pred_map` (full CFG)         | gvn, licm, bce, refcount, …      |
-//! | [`ImmediateDoms`]| `compute_idoms` (full CFG)          | gvn, licm, bce, refcount         |
+//! | [`ImmediateDoms`]| `compute_dominator_tree` (full CFG) | gvn, licm, bce, refcount         |
 //! | [`DomChildren`]  | `build_dom_children`                | gvn                              |
 //! | [`ExecReachable`]| `executable_reachable_blocks`       | (full-CFG reachable set)         |
 //! | [`StrictReachable`]| `reachable_blocks_with(TerminatorOnly)` | gvn (cross-block replace) |
@@ -177,16 +177,18 @@ impl Analysis for PredMap {
     }
 }
 
-/// Immediate-dominator tree over the full CFG.
+/// Immediate-dominator tree over the full CFG, numbered once for O(1)
+/// dominance queries. Invalidating the CFG drops the tree and its numbering
+/// together.
 pub struct ImmediateDoms;
 impl Analysis for ImmediateDoms {
-    type Result = HashMap<BlockId, Option<BlockId>>;
+    type Result = dominators::DominatorTree;
     const ID: AnalysisId = AnalysisId::ImmediateDoms;
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = false;
     fn compute(func: &TirFunction) -> Self::Result {
         let pred_map = dominators::build_pred_map(func);
-        dominators::compute_idoms(func, &pred_map)
+        dominators::compute_dominator_tree(func, &pred_map)
     }
 }
 
@@ -199,8 +201,8 @@ impl Analysis for DomChildren {
     const OPS_SENSITIVE: bool = false;
     fn compute(func: &TirFunction) -> Self::Result {
         let pred_map = dominators::build_pred_map(func);
-        let idoms = dominators::compute_idoms(func, &pred_map);
-        dominators::build_dom_children(&idoms)
+        let tree = dominators::compute_dominator_tree(func, &pred_map);
+        dominators::build_dom_children(&tree)
     }
 }
 
@@ -239,7 +241,7 @@ impl Analysis for LoopForest {
     const OPS_SENSITIVE: bool = false;
     fn compute(func: &TirFunction) -> Self::Result {
         let pred_map = dominators::build_pred_map(func);
-        let idoms = dominators::compute_idoms(func, &pred_map);
+        let tree = dominators::compute_dominator_tree(func, &pred_map);
 
         // An unconditional break may leave a retained loop_end -> header edge
         // whose source is unreachable. It preserves source structure, but
@@ -247,10 +249,7 @@ impl Analysis for LoopForest {
         let mut header_set: HashSet<BlockId> = HashSet::new();
 
         for (&candidate, preds) in &pred_map {
-            if idoms.contains_key(&candidate)
-                && preds
-                    .iter()
-                    .any(|&pred| dominators::dominates(candidate, pred, &idoms))
+            if tree.contains(candidate) && preds.iter().any(|&pred| tree.dominates(candidate, pred))
             {
                 header_set.insert(candidate);
             }
@@ -263,7 +262,7 @@ impl Analysis for LoopForest {
         for &h in &headers {
             bodies.insert(
                 h,
-                dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
+                dominators::collect_loop_blocks(func, &pred_map, &tree, h),
             );
         }
         LoopForestResult { headers, bodies }
@@ -613,7 +612,7 @@ mod tests {
             let mut am = AnalysisManager::new();
             let cached = am.get::<ImmediateDoms>(&func).clone();
             let pred = dominators::build_pred_map(&func);
-            assert_eq!(cached, dominators::compute_idoms(&func, &pred));
+            assert_eq!(cached, dominators::compute_dominator_tree(&func, &pred));
         }
     }
 
@@ -623,8 +622,8 @@ mod tests {
             let mut am = AnalysisManager::new();
             let cached = am.get::<DomChildren>(&func).clone();
             let pred = dominators::build_pred_map(&func);
-            let idoms = dominators::compute_idoms(&func, &pred);
-            assert_eq!(cached, dominators::build_dom_children(&idoms));
+            let tree = dominators::compute_dominator_tree(&func, &pred);
+            assert_eq!(cached, dominators::build_dom_children(&tree));
         }
     }
 
