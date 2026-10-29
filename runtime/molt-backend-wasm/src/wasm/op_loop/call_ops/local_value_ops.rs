@@ -10,8 +10,11 @@ pub(super) fn emit_conversion_call_op(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    match op.kind.as_str() {
-        "box" | "unbox" | "cast" | "widen" => {
+    match op.kind {
+        molt_ir::OpKind::Box
+        | molt_ir::OpKind::Unbox
+        | molt_ir::OpKind::Cast
+        | molt_ir::OpKind::Widen => {
             emit_conversion_alias(call_ctx, func, op);
             CallOpEmission::Handled
         }

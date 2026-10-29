@@ -188,6 +188,7 @@ mod tests {
             let mut attrs = AttrDict::new();
             attrs.insert("value".into(), AttrValue::Int(7));
             func.blocks.get_mut(&ids[1]).unwrap().ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],

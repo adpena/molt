@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn dispatch_keeps_handler_checks_and_runtime_frames_for_every_eh_request() {
     const PROBE: &str = "path_local_dispatch";
-    let labelled = |kind: &str, target: i64| OpIR {
+    let labelled = |kind: molt_ir::OpKind, target: i64| OpIR {
         value: Some(target),
         ..wasm_test_op(kind, None, vec![])
     };
@@ -13,25 +13,25 @@ fn dispatch_keeps_handler_checks_and_runtime_frames_for_every_eh_request() {
             vec!["condition"],
             Some(vec!["bool"]),
             vec![
-                wasm_test_op("exception_push", None, vec![]),
-                labelled("try_start", 10),
-                labelled("check_exception", 10),
-                wasm_test_op("if", None, vec!["condition"]),
-                labelled("try_end", 10),
-                wasm_test_op("exception_pop", None, vec![]),
-                wasm_test_op("ret_void", None, vec![]),
-                wasm_test_op("end_if", None, vec![]),
-                labelled("try_end", 10),
-                wasm_test_op("exception_pop", None, vec![]),
-                wasm_test_op("ret_void", None, vec![]),
-                labelled("label", 10),
-                wasm_test_op("exception_clear", None, vec![]),
-                labelled("check_exception", 20),
-                wasm_test_op("exception_pop", None, vec![]),
-                wasm_test_op("ret_void", None, vec![]),
-                labelled("label", 20),
-                wasm_test_op("exception_pop", None, vec![]),
-                wasm_test_op("ret_void", None, vec![]),
+                wasm_test_op(molt_ir::OpKind::ExceptionPush, None, vec![]),
+                labelled(molt_ir::OpKind::TryStart, 10),
+                labelled(molt_ir::OpKind::CheckException, 10),
+                wasm_test_op(molt_ir::OpKind::If, None, vec!["condition"]),
+                labelled(molt_ir::OpKind::TryEnd, 10),
+                wasm_test_op(molt_ir::OpKind::ExceptionPop, None, vec![]),
+                wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+                wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]),
+                labelled(molt_ir::OpKind::TryEnd, 10),
+                wasm_test_op(molt_ir::OpKind::ExceptionPop, None, vec![]),
+                wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+                labelled(molt_ir::OpKind::Label, 10),
+                wasm_test_op(molt_ir::OpKind::ExceptionClear, None, vec![]),
+                labelled(molt_ir::OpKind::CheckException, 20),
+                wasm_test_op(molt_ir::OpKind::ExceptionPop, None, vec![]),
+                wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+                labelled(molt_ir::OpKind::Label, 20),
+                wasm_test_op(molt_ir::OpKind::ExceptionPop, None, vec![]),
+                wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
             ],
         );
         let ir = SimpleIR {
@@ -44,7 +44,7 @@ fn dispatch_keeps_handler_checks_and_runtime_frames_for_every_eh_request() {
                     "molt_main",
                     vec![],
                     None,
-                    vec![wasm_test_op("ret_void", None, vec![])],
+                    vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
                 ),
             ],
             profile: None,

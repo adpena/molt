@@ -16,6 +16,7 @@ use crate::tir::values::ValueId;
 
 fn op(opcode: OpCode) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],
@@ -25,11 +26,10 @@ fn op(opcode: OpCode) -> TirOp {
     }
 }
 
-fn original(kind: &str, results: Vec<ValueId>) -> TirOp {
+fn original(kind: molt_ir::OpKind, results: Vec<ValueId>) -> TirOp {
     let mut op = op(OpCode::Copy);
     op.results = results;
-    op.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    op.origin = Some(kind);
     op
 }
 
@@ -93,7 +93,7 @@ fn split_cleanup_function() -> TirFunction {
         TirBlock {
             id: clean,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -102,7 +102,7 @@ fn split_cleanup_function() -> TirFunction {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -114,7 +114,7 @@ fn split_cleanup_function() -> TirFunction {
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -156,8 +156,8 @@ fn ambiguous_depth_function() -> (TirFunction, ValueId) {
             id: handler,
             args: vec![],
             ops: vec![
-                original("exception_last_pending", vec![exc]),
-                original("exception_pop", vec![]),
+                original(molt_ir::OpKind::ExceptionLastPending, vec![exc]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -199,7 +199,7 @@ fn mixed_exception_exit_observer_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: exit_cleanup,
             args: vec![],
-            ops: vec![original("exception_last", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLast, vec![exc])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -207,7 +207,7 @@ fn mixed_exception_exit_observer_function() -> (TirFunction, ValueId) {
 }
 
 fn mixed_pending_exit_observer_without_pop_function(
-    source_kind: &str,
+    source_kind: molt_ir::OpKind,
     name: &str,
 ) -> (TirFunction, ValueId) {
     let mut func = TirFunction::new(
@@ -252,14 +252,14 @@ fn mixed_pending_exit_observer_without_pop_function(
 
 fn mixed_exception_pending_exit_observer_without_pop_function() -> (TirFunction, ValueId) {
     mixed_pending_exit_observer_without_pop_function(
-        "exception_last_pending",
+        molt_ir::OpKind::ExceptionLastPending,
         "mixed_exception_pending_exit_observer_without_pop",
     )
 }
 
 fn mixed_finally_pending_exit_observer_without_pop_function() -> (TirFunction, ValueId) {
     mixed_pending_exit_observer_without_pop_function(
-        "exception_finally_pending_observer",
+        molt_ir::OpKind::ExceptionFinallyPendingObserver,
         "mixed_finally_pending_exit_observer_without_pop",
     )
 }
@@ -315,7 +315,7 @@ fn same_owner_with_different_outer_prefix_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler_merge,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -327,7 +327,7 @@ fn same_owner_with_different_outer_prefix_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -355,7 +355,7 @@ fn exception_edge_unwinds_to_target_handler_function() -> (TirFunction, ValueId)
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -367,7 +367,7 @@ fn exception_edge_unwinds_to_target_handler_function() -> (TirFunction, ValueId)
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -397,7 +397,7 @@ fn forced_raise_check_exception_handler_branch_function() -> (TirFunction, Value
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -409,7 +409,7 @@ fn forced_raise_check_exception_handler_branch_function() -> (TirFunction, Value
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -439,7 +439,7 @@ fn explicit_raise_branch_to_labeled_handler_function() -> (TirFunction, ValueId,
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -451,7 +451,7 @@ fn explicit_raise_branch_to_labeled_handler_function() -> (TirFunction, ValueId,
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -478,7 +478,7 @@ fn inactive_check_exception_target_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -490,7 +490,7 @@ fn inactive_check_exception_target_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -529,7 +529,7 @@ fn body_close_to_normal_exit_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -541,7 +541,7 @@ fn body_close_to_normal_exit_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -570,7 +570,7 @@ fn split_exit_pops_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: pop_a,
@@ -586,7 +586,7 @@ fn split_exit_pops_function() -> (TirFunction, ValueId) {
             TirBlock {
                 id: block,
                 args: vec![],
-                ops: vec![original("exception_pop", vec![])],
+                ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
                 terminator: Terminator::Return { values: vec![] },
             },
         );
@@ -595,10 +595,12 @@ fn split_exit_pops_function() -> (TirFunction, ValueId) {
 }
 
 fn finally_cleanup_join_function() -> (TirFunction, ValueId, BlockId) {
-    finally_cleanup_join_function_with_source("exception_finally_pending_observer")
+    finally_cleanup_join_function_with_source(molt_ir::OpKind::ExceptionFinallyPendingObserver)
 }
 
-fn finally_cleanup_join_function_with_source(source_kind: &str) -> (TirFunction, ValueId, BlockId) {
+fn finally_cleanup_join_function_with_source(
+    source_kind: molt_ir::OpKind,
+) -> (TirFunction, ValueId, BlockId) {
     let mut func = TirFunction::new(
         "finally_cleanup_join".into(),
         vec![],
@@ -645,7 +647,7 @@ fn finally_cleanup_join_function_with_source(source_kind: &str) -> (TirFunction,
         TirBlock {
             id: pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -673,9 +675,9 @@ fn depth_zero_observer_after_pop_function() -> (TirFunction, ValueId) {
             id: handler,
             args: vec![],
             ops: vec![
-                original("exception_last_pending", vec![exc]),
-                original("exception_pop", vec![]),
-                original("exception_last", vec![late_observer]),
+                original(molt_ir::OpKind::ExceptionLastPending, vec![exc]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
+                original(molt_ir::OpKind::ExceptionLast, vec![late_observer]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -732,7 +734,7 @@ fn loop_reentry_after_try_end_and_exception_pop_function() -> (TirFunction, Valu
         TirBlock {
             id: cleanup,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Branch {
                 target: loop_block,
                 args: vec![],
@@ -744,7 +746,10 @@ fn loop_reentry_after_try_end_and_exception_pop_function() -> (TirFunction, Valu
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![try_end(50), original("exception_last_pending", vec![exc])],
+            ops: vec![
+                try_end(50),
+                original(molt_ir::OpKind::ExceptionLastPending, vec![exc]),
+            ],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -756,7 +761,7 @@ fn loop_reentry_after_try_end_and_exception_pop_function() -> (TirFunction, Valu
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -818,7 +823,7 @@ fn state_resume_inside_try_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: match_block,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -830,7 +835,7 @@ fn state_resume_inside_try_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -890,7 +895,10 @@ fn repoll_state_resume_inside_try_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![try_end(46), original("exception_last", vec![exc])],
+            ops: vec![
+                try_end(46),
+                original(molt_ir::OpKind::ExceptionLast, vec![exc]),
+            ],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -902,7 +910,7 @@ fn repoll_state_resume_inside_try_function() -> (TirFunction, ValueId) {
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original("exception_pop", vec![])],
+            ops: vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -968,7 +976,7 @@ fn exception_region_reports_match_without_reachable_pop() {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original("exception_last_pending", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -993,7 +1001,7 @@ fn exception_region_ignores_depth_zero_exception_observer() {
     );
     let exc = func.fresh_value();
     func.blocks.get_mut(&func.entry_block).unwrap().ops =
-        vec![original("exception_last", vec![exc])];
+        vec![original(molt_ir::OpKind::ExceptionLast, vec![exc])];
 
     let facts = compute_exception_region_facts(&func);
 
@@ -1022,7 +1030,7 @@ fn exception_region_ignores_owned_exception_last_exit_observer_without_pop() {
         TirBlock {
             id: cleanup,
             args: vec![],
-            ops: vec![original("exception_last", vec![exc])],
+            ops: vec![original(molt_ir::OpKind::ExceptionLast, vec![exc])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -1296,7 +1304,8 @@ fn exception_region_ignores_finally_pending_observer_cleanup_join() {
 
 #[test]
 fn exception_region_allows_exception_last_finally_cleanup_join() {
-    let (func, exc, pop) = finally_cleanup_join_function_with_source("exception_last");
+    let (func, exc, pop) =
+        finally_cleanup_join_function_with_source(molt_ir::OpKind::ExceptionLast);
 
     let facts = compute_exception_region_facts(&func);
 
@@ -1442,6 +1451,11 @@ fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
         molt_ir::FunctionReturnAbi::Void,
     );
     let initial = func.fresh_block();
+    let structured_markers = [OpCode::ScfFor, OpCode::ScfWhile].map(|opcode| {
+        let mut marker = op(opcode);
+        marker.dialect = Dialect::Scf;
+        marker
+    });
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
         cases: vec![(7, initial, vec![])],
         default: initial,
@@ -1452,7 +1466,10 @@ fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
         TirBlock {
             id: initial,
             args: vec![],
-            ops: vec![try_start(99), state_yield(7)],
+            ops: structured_markers
+                .into_iter()
+                .chain([try_start(99), state_yield(7)])
+                .collect(),
             terminator: Terminator::Branch {
                 target: func.entry_block,
                 args: vec![],
@@ -1635,8 +1652,8 @@ fn anonymous_try_exception_edge_enters_owner_and_releases_match_ref() {
             args: vec![],
             ops: vec![
                 op(OpCode::TryEnd),
-                original("exception_last_pending", vec![matched]),
-                original("exception_pop", vec![]),
+                original(molt_ir::OpKind::ExceptionLastPending, vec![matched]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -1754,10 +1771,10 @@ fn assert_nested_region_pop_order(inner_phase: ExceptionRegionPhase, suspended: 
             id: cleanup,
             args: vec![],
             ops: vec![
-                original("exception_last_pending", vec![observed]),
-                original("exception_pop", vec![]),
-                original("exception_active", vec![restored_outer]),
-                original("exception_pop", vec![]),
+                original(molt_ir::OpKind::ExceptionLastPending, vec![observed]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
+                original(molt_ir::OpKind::ExceptionActive, vec![restored_outer]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -1916,10 +1933,10 @@ fn nested_finally_join_uses_inner_custody_on_normal_and_exceptional_paths() {
             id: cleanup,
             args: vec![],
             ops: vec![
-                original("exception_last_pending", vec![observed]),
-                original("exception_pop", vec![]),
-                original("exception_current", vec![restored_outer]),
-                original("exception_pop", vec![]),
+                original(molt_ir::OpKind::ExceptionLastPending, vec![observed]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
+                original(molt_ir::OpKind::ExceptionCurrent, vec![restored_outer]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -1987,8 +2004,8 @@ fn exceptional_transfer_discards_younger_handler_and_normal_custody() {
             args: vec![],
             ops: vec![
                 try_end(100),
-                original("exception_last_pending", vec![observed]),
-                original("exception_pop", vec![]),
+                original(molt_ir::OpKind::ExceptionLastPending, vec![observed]),
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -2027,7 +2044,7 @@ fn try_end_after_nonlocal_pop_does_not_recreate_region_custody() {
     );
     func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
         try_start(10),
-        original("exception_pop", vec![]),
+        original(molt_ir::OpKind::ExceptionPop, vec![]),
         try_end(10),
     ];
     assert_eq!(
@@ -2169,7 +2186,7 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
         ),
         (
             header,
-            vec![original("call", vec![])],
+            vec![original(molt_ir::OpKind::Call, vec![])],
             Terminator::CondBranch {
                 cond: condition,
                 then_block: inner_entry,
@@ -2189,7 +2206,7 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
         (
             resume,
             vec![
-                original("call", vec![]),
+                original(molt_ir::OpKind::Call, vec![]),
                 const_int(pending, 313),
                 const_int(slot, 152),
                 state_transition(awaitable, slot, pending),
@@ -2203,7 +2220,10 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
         ),
         (
             inner_handler,
-            vec![try_end(310), original("exception_clear", vec![])],
+            vec![
+                try_end(310),
+                original(molt_ir::OpKind::ExceptionClear, vec![]),
+            ],
             Terminator::Branch {
                 target: inner_cleanup,
                 args: vec![],
@@ -2211,7 +2231,10 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
         ),
         (
             inner_cleanup,
-            vec![original("exception_pop", vec![]), original("call", vec![])],
+            vec![
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
+                original(molt_ir::OpKind::Call, vec![]),
+            ],
             Terminator::Branch {
                 target: header,
                 args: vec![],
@@ -2235,7 +2258,10 @@ fn nested_try_repoll_loop_keeps_saved_inner_handler_at_resume_calls() {
         ),
         (
             outer_cleanup,
-            vec![original("exception_pop", vec![]), original("call", vec![])],
+            vec![
+                original(molt_ir::OpKind::ExceptionPop, vec![]),
+                original(molt_ir::OpKind::Call, vec![]),
+            ],
             Terminator::Return { values: vec![] },
         ),
     ] {
@@ -2302,7 +2328,7 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
             ),
             (
                 observer,
-                vec![original("exception_last_pending", vec![exc])],
+                vec![original(molt_ir::OpKind::ExceptionLastPending, vec![exc])],
                 Terminator::Branch {
                     target: dispatch,
                     args: vec![],
@@ -2319,7 +2345,7 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
             ),
             (
                 live_pop,
-                vec![original("exception_pop", vec![])],
+                vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
                 Terminator::Return { values: vec![] },
             ),
         ] {
@@ -2345,7 +2371,7 @@ fn unwitnessed_resume_cases_do_not_enter_any_exception_custody_walker() {
                 ops.push(const_int(pending, saved_state));
                 ops.push(state_transition(awaitable, slot, pending));
             }
-            ops.push(original("exception_pop", vec![]));
+            ops.push(original(molt_ir::OpKind::ExceptionPop, vec![]));
             func.blocks.insert(
                 id,
                 TirBlock {
@@ -2462,7 +2488,10 @@ fn reachable_chained_saves_preserve_owned_and_depth_zero_custody() {
                     state_transition(awaitable, slot, pending),
                 ],
             ),
-            (second, vec![original("exception_pop", vec![])]),
+            (
+                second,
+                vec![original(molt_ir::OpKind::ExceptionPop, vec![])],
+            ),
         ] {
             func.blocks.insert(
                 id,
@@ -2510,12 +2539,13 @@ fn reachable_chained_saves_preserve_owned_and_depth_zero_custody() {
 
 #[test]
 fn reachable_unresolved_saves_fail_closed_for_every_generated_suspend_kind() {
-    use crate::tir::op_kinds_generated::{
-        ALL_OPCODES, opcode_canonical_kind_table, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
-    };
+    use crate::tir::op_kinds_generated::{ALL_OPCODES, opcode_canonical_kind_table};
 
     for &opcode in ALL_OPCODES {
-        if !simpleir_kind_is_suspend(opcode_canonical_kind_table(opcode)) {
+        let Some(kind) = opcode_canonical_kind_table(opcode) else {
+            continue;
+        };
+        if !kind.is_suspend() {
             continue;
         }
         for reachable in [false, true] {
@@ -2549,7 +2579,7 @@ fn reachable_unresolved_saves_fail_closed_for_every_generated_suspend_kind() {
             // No saved attribute for pure yield; a nonconstant pending operand
             // for repoll. A ready-state attribute must not hide the latter.
             let mut unresolved = op(opcode);
-            if simpleir_kind_is_repoll(opcode_canonical_kind_table(opcode)) {
+            if kind.is_repoll() {
                 let unknown = func.fresh_value();
                 unresolved.operands = vec![unknown, unknown, unknown];
                 unresolved.attrs.insert("value".into(), AttrValue::Int(7));
@@ -2559,7 +2589,7 @@ fn reachable_unresolved_saves_fail_closed_for_every_generated_suspend_kind() {
                 TirBlock {
                     id: resume,
                     args: vec![],
-                    ops: vec![unresolved, original("exception_pop", vec![])],
+                    ops: vec![unresolved, original(molt_ir::OpKind::ExceptionPop, vec![])],
                     terminator: Terminator::Return { values: vec![] },
                 },
             );
@@ -2677,7 +2707,7 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
         );
         let mut observer_count = 0;
         for (position, op) in iter_ops(&func) {
-            if original_kind(op) == Some("exception_last_pending") {
+            if original_kind(op) == Some(molt_ir::OpKind::ExceptionLastPending) {
                 observer_count += 1;
                 assert!(!facts.match_refs[&op.results[0]].releases.is_empty());
             }

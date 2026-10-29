@@ -53,7 +53,8 @@ pub(crate) fn visit_gpu_descriptor_body_symbols(
     mut visit: impl FnMut(&str),
 ) {
     if !function.ops.iter().any(|op| {
-        op.kind == "call" && op.s_value.as_deref() == Some("molt_gpu_kernel_descriptor_set")
+        op.kind == molt_ir::OpKind::Call
+            && op.s_value.as_deref() == Some("molt_gpu_kernel_descriptor_set")
     }) {
         return;
     }
@@ -61,12 +62,14 @@ pub(crate) fn visit_gpu_descriptor_body_symbols(
         .ops
         .iter()
         .filter_map(|op| {
-            (op.kind == "const_str").then_some(())?;
+            (op.kind == molt_ir::OpKind::ConstStr).then_some(())?;
             Some((op.out.as_deref()?, op.s_value.as_deref()?))
         })
         .collect();
     for op in &function.ops {
-        if op.kind != "call" || op.s_value.as_deref() != Some("molt_gpu_kernel_descriptor_set") {
+        if op.kind != molt_ir::OpKind::Call
+            || op.s_value.as_deref() != Some("molt_gpu_kernel_descriptor_set")
+        {
             continue;
         }
         let payload = op
@@ -122,7 +125,9 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
             .ops
             .iter()
             .filter_map(|op| {
-                if op.kind == "const_str" && definitions.get(op.out.as_deref()?) == Some(&1) {
+                if op.kind == molt_ir::OpKind::ConstStr
+                    && definitions.get(op.out.as_deref()?) == Some(&1)
+                {
                     Some((op.out.as_deref()?, op.s_value.as_deref()?))
                 } else {
                     None
@@ -130,8 +135,8 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
             })
             .collect();
         for op in &function.ops {
-            let is_module_publication = op.kind == "module_cache_set"
-                || (op.kind == "call"
+            let is_module_publication = op.kind == molt_ir::OpKind::ModuleCacheSet
+                || (op.kind == molt_ir::OpKind::Call
                     && op.s_value.as_deref().is_some_and(|name| {
                         matches!(name, "molt_module_cache_set" | "module_cache_set")
                             && !defined_functions.contains(name)
@@ -156,22 +161,24 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
                         .map(|spec| (spec.runtime_name.to_owned(), spec.arity)),
                 );
             }
-            if matches!(op.kind.as_str(), "const_str" | "builtin_func")
-                && let Some(name) = op
-                    .s_value
-                    .as_deref()
-                    // The runtime's explicit `_molt_` alias resolves the same
-                    // canonical provider; resolver tables contain primary names.
-                    .map(|name| name.strip_prefix('_').unwrap_or(name))
-                    .filter(|name| name.starts_with("molt_"))
+            if matches!(
+                op.kind,
+                molt_ir::OpKind::ConstStr | molt_ir::OpKind::BuiltinFunc
+            ) && let Some(name) = op
+                .s_value
+                .as_deref()
+                // The runtime's explicit `_molt_` alias resolves the same
+                // canonical provider; resolver tables contain primary names.
+                .map(|name| name.strip_prefix('_').unwrap_or(name))
+                .filter(|name| name.starts_with("molt_"))
             {
                 requirements.intrinsic_names.insert(name.to_owned());
             }
             if let Some(name) = &op.runtime_symbol {
                 requirements.intrinsic_names.insert(name.clone());
             }
-            let is_global_lookup = op.kind == "module_get_global"
-                || (op.kind == "call"
+            let is_global_lookup = op.kind == molt_ir::OpKind::ModuleGetGlobal
+                || (op.kind == molt_ir::OpKind::Call
                     && op.s_value.as_deref().is_some_and(|name| {
                         matches!(name, "molt_module_get_global" | "module_get_global")
                             && !defined_functions.contains(name)

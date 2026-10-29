@@ -8,6 +8,7 @@ use crate::tir::values::{TirValue, ValueId};
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

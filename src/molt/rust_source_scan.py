@@ -323,15 +323,18 @@ class RustMatchArm(NamedTuple):
     body_start: int
 
 
-def rust_match_arms(text: str, expression: str) -> list[RustMatchArm] | None:
+def rust_match_arms(
+    text: str, expression: str, *, depth: int | None = None
+) -> list[RustMatchArm] | None:
     """Closed match-arm projection with separate structure and trivia views.
 
     Literal bytes are masked for punctuation, but preserved when skipping
     trivia. Treating the punctuation mask's blanks as trivia would erase quoted
     patterns and literal RHS expressions. Unsupported/ambiguous structure fails
-    closed; this is not a general Rust expression parser.
+    closed; this is not a general Rust expression parser. An explicit depth
+    selects a dispatch when a nested match repeats the same expression.
     """
-    region = rust_block_region(text, "match " + expression)
+    region = rust_block_region(text, "match " + expression, depth=depth)
     if region is None:
         return None
     begin, end = region

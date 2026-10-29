@@ -10,6 +10,7 @@ use molt_passes::tir::values::ValueId;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -46,8 +47,7 @@ fn fixed_boxed_alloc(result: ValueId) -> TirOp {
 fn store(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
     let mut o = op(OpCode::StoreAttr, vec![obj, val], vec![]);
     o.attrs.insert("value".into(), AttrValue::Int(offset));
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
+    o.origin = Some(molt_ir::OpKind::Store);
     o
 }
 
@@ -56,8 +56,7 @@ fn store(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
 fn load(obj: ValueId, offset: i64, r: ValueId) -> TirOp {
     let mut o = op(OpCode::LoadAttr, vec![obj], vec![r]);
     o.attrs.insert("value".into(), AttrValue::Int(offset));
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("load".into()));
+    o.origin = Some(molt_ir::OpKind::Load);
     o
 }
 
@@ -74,8 +73,7 @@ fn run_fresh(func: &mut TirFunction) -> PassStats {
 /// Whether `operation` is an owned alias: a `Copy` whose result holds a
 /// reference of its own, which its lowering retains.
 fn is_owned_alias(operation: &TirOp) -> bool {
-    operation.opcode == OpCode::Copy
-        && operation.attrs.get("_original_kind") == Some(&AttrValue::Str("binding_alias".into()))
+    operation.opcode == OpCode::Copy && operation.origin == Some(molt_ir::OpKind::BindingAlias)
 }
 
 // ── 1. Simple same-block store-to-load forwarding ──────────────────────
@@ -895,10 +893,7 @@ fn guarded_field_get_is_not_a_typed_slot_load() {
         vec![ValueId(3)],
     );
     o.attrs.insert("value".into(), AttrValue::Int(8));
-    o.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("guarded_field_get".into()),
-    );
+    o.origin = Some(molt_ir::OpKind::GuardedFieldGet);
     assert_eq!(o.plain_typed_slot_load(), None);
 }
 
@@ -909,10 +904,7 @@ fn guarded_field_get_fallback_blocks_forwarding() {
     fn gget(obj: ValueId, ver: ValueId, offset: i64, r: ValueId) -> TirOp {
         let mut o = op(OpCode::LoadAttr, vec![obj, ver], vec![r]);
         o.attrs.insert("value".into(), AttrValue::Int(offset));
-        o.attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("guarded_field_get".into()),
-        );
+        o.origin = Some(molt_ir::OpKind::GuardedFieldGet);
         o.attrs.insert(
             "class_definition".into(),
             AttrValue::Str("class:m:Point".into()),

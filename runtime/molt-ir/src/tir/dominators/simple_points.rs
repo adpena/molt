@@ -56,7 +56,7 @@ impl SimpleExecutionDominance {
         }
         let labels = CFG::label_positions(ops);
         for (index, op) in ops.iter().enumerate() {
-            if is_simple_exception_observation_kind(&op.kind)
+            if is_simple_exception_observation_kind(op.kind)
                 && let Some(target) = op.value.and_then(|label| labels.get(&label)).copied()
             {
                 // The result is unavailable on an exceptional observation edge.
@@ -66,7 +66,7 @@ impl SimpleExecutionDominance {
         }
         for &(from, to, _) in &cfg.state_resume_edges {
             let source = (cfg.blocks[from].start_op..cfg.blocks[from].end_op)
-                .find(|&index| ops[index].kind == "state_switch")
+                .find(|&index| ops[index].kind == crate::OpKind::StateSwitch)
                 .expect("resume edge must leave its canonical state dispatch");
             successors[SimpleProgramPoint::Before(source).node()]
                 .push(SimpleProgramPoint::Before(cfg.blocks[to].start_op).node());
@@ -131,21 +131,25 @@ impl SimpleExecutionDominance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn op(kind: &str, value: Option<i64>) -> OpIR {
+    fn op(kind: crate::OpKind, value: Option<i64>) -> OpIR {
         OpIR {
             kind: kind.into(),
             value,
-            ..OpIR::default()
+            ..crate::OpIR::new(kind.into())
         }
     }
     #[test]
     fn registration_retains_structure_but_only_observation_exposes_exceptional_result_gap() {
-        for kind in ["try_start", "check_exception", "async_work_poll"] {
+        for kind in [
+            crate::OpKind::TryStart,
+            crate::OpKind::CheckException,
+            crate::OpKind::AsyncWorkPoll,
+        ] {
             let ops = vec![
                 op(kind, Some(7)),
-                op("jump", Some(7)),
-                op("label", Some(7)),
-                op("ret_void", None),
+                op(crate::OpKind::Jump, Some(7)),
+                op(crate::OpKind::Label, Some(7)),
+                op(crate::OpKind::RetVoid, None),
             ];
             let cfg = CFG::build(&ops);
             let points = cfg.execution_points(&ops);
@@ -158,7 +162,7 @@ mod tests {
                     SimpleDefinitionSite::Operation(0),
                     SimpleProgramPoint::Before(2)
                 ),
-                kind == "try_start",
+                kind == crate::OpKind::TryStart,
                 "{kind}"
             );
             assert!(!points.definition_available(
@@ -191,32 +195,32 @@ mod tests {
         let shapes = [
             // Loop with an early exit and a forward initializer.
             vec![
-                op("jump", Some(9)),
-                op("label", Some(7)),
-                op("ret_void", None),
-                op("label", Some(9)),
-                op("const", None),
-                op("jump", Some(7)),
+                op(crate::OpKind::Jump, Some(9)),
+                op(crate::OpKind::Label, Some(7)),
+                op(crate::OpKind::RetVoid, None),
+                op(crate::OpKind::Label, Some(9)),
+                op(crate::OpKind::Const, None),
+                op(crate::OpKind::Jump, Some(7)),
             ],
             // Observations that leave for a shared handler, and a dead tail.
             vec![
-                op("const", None),
-                op("check_exception", Some(5)),
-                op("const", None),
-                op("check_exception", Some(5)),
-                op("ret_void", None),
-                op("label", Some(5)),
-                op("ret_void", None),
-                op("const", None),
+                op(crate::OpKind::Const, None),
+                op(crate::OpKind::CheckException, Some(5)),
+                op(crate::OpKind::Const, None),
+                op(crate::OpKind::CheckException, Some(5)),
+                op(crate::OpKind::RetVoid, None),
+                op(crate::OpKind::Label, Some(5)),
+                op(crate::OpKind::RetVoid, None),
+                op(crate::OpKind::Const, None),
             ],
             // A registration and a self-entering loop.
             vec![
-                op("try_start", Some(3)),
-                op("label", Some(2)),
-                op("const", None),
-                op("jump", Some(2)),
-                op("label", Some(3)),
-                op("ret_void", None),
+                op(crate::OpKind::TryStart, Some(3)),
+                op(crate::OpKind::Label, Some(2)),
+                op(crate::OpKind::Const, None),
+                op(crate::OpKind::Jump, Some(2)),
+                op(crate::OpKind::Label, Some(3)),
+                op(crate::OpKind::RetVoid, None),
             ],
         ];
         for ops in shapes {
@@ -245,12 +249,12 @@ mod tests {
     #[test]
     fn invocation_and_forward_initializer_do_not_become_loop_carried_definitions() {
         let ops = vec![
-            op("jump", Some(9)),
-            op("label", Some(7)),
-            op("ret_void", None),
-            op("label", Some(9)),
-            op("const", None),
-            op("jump", Some(7)),
+            op(crate::OpKind::Jump, Some(9)),
+            op(crate::OpKind::Label, Some(7)),
+            op(crate::OpKind::RetVoid, None),
+            op(crate::OpKind::Label, Some(9)),
+            op(crate::OpKind::Const, None),
+            op(crate::OpKind::Jump, Some(7)),
         ];
         let points = CFG::build(&ops).execution_points(&ops);
         assert!(points.definition_available(
@@ -261,7 +265,11 @@ mod tests {
             SimpleDefinitionSite::Operation(4),
             SimpleProgramPoint::Before(0)
         ));
-        let ops = vec![op("label", Some(7)), op("const", None), op("jump", Some(7))];
+        let ops = vec![
+            op(crate::OpKind::Label, Some(7)),
+            op(crate::OpKind::Const, None),
+            op(crate::OpKind::Jump, Some(7)),
+        ];
         let points = CFG::build(&ops).execution_points(&ops);
         assert!(!points.definition_available(
             SimpleDefinitionSite::Operation(1),

@@ -1,11 +1,11 @@
 use super::super::*;
+use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-/// Single-source kind authority for [`handle_control_flow_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_control_flow_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["if", "else", "end_if"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::If, OpKind::Else, OpKind::EndIf);
 use super::OpFlow;
 use super::list_index_fast_path::ListIndexFastPathState;
 use super::var_get_boxed_overflow_safe_fn;
@@ -83,8 +83,8 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
         )
     };
 
-    match op.kind.as_str() {
-        "if" => {
+    match op.kind {
+        OpKind::If => {
             // Variable-backed shadows are phi-correct across branches —
             // use_var returns the merged value at any point.  No need to
             // clear or retain entries; the name→Variable mapping is static.
@@ -214,7 +214,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             };
             let has_phi_join = func_ops
                 .get(end_if_idx + 1)
-                .is_some_and(|next| next.kind == "phi");
+                .is_some_and(|next| next.kind == OpKind::Phi);
             let then_block = builder.create_block();
             let else_block = if has_explicit_else || has_phi_join {
                 Some(builder.create_block())
@@ -279,7 +279,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 let mut scan_idx = end_if_idx + 1;
                 while scan_idx < func_ops.len() {
                     let next = &func_ops[scan_idx];
-                    if next.kind != "phi" {
+                    if next.kind != OpKind::Phi {
                         break;
                     }
                     let args = next.args.as_ref().expect("phi args missing");
@@ -416,7 +416,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 merge_rebind_slots,
             });
         }
-        "else" => {
+        OpKind::Else => {
             // Variable-backed shadows are phi-correct; value-tier raw
             // snapshots must be cleared when switching branch blocks.
             let frame = if_stack.last_mut().expect("No if on stack");
@@ -429,7 +429,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 let mut scan_idx = end_if_idx + 1;
                 while scan_idx < func_ops.len() {
                     let next = &func_ops[scan_idx];
-                    if next.kind != "phi" {
+                    if next.kind != OpKind::Phi {
                         break;
                     }
                     let args = next.args.as_ref().expect("phi args missing");
@@ -601,7 +601,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
             }
             frame.has_else = true;
         }
-        "end_if" => {
+        OpKind::EndIf => {
             // Variable-backed shadows are phi-correct; value-tier raw
             // snapshots must not survive the branch merge.
             let mut frame = if_stack.pop().expect("No if on stack");
@@ -610,7 +610,7 @@ pub(in crate::native_backend::function_compiler) fn handle_control_flow_op(
                 let mut scan_idx = op_idx + 1;
                 while scan_idx < func_ops.len() {
                     let next = &func_ops[scan_idx];
-                    if next.kind != "phi" {
+                    if next.kind != OpKind::Phi {
                         break;
                     }
                     let args = next.args.as_ref().expect("phi args missing");

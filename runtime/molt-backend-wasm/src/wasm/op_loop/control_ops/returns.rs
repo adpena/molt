@@ -7,14 +7,14 @@ pub(super) fn emit_return_control_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind.as_str()) {
+    match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind) {
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => emit_ret(context, func, op),
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Void => {
             context.const_cache.emit_none(func);
             context.frame.emit_return(func, context.return_depth);
         }
         molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::NotReturn
-            if op.kind == "unreachable" =>
+            if op.kind == molt_ir::OpKind::Unreachable =>
         {
             func.instruction(&Instruction::Unreachable);
         }

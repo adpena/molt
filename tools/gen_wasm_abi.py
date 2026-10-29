@@ -38,13 +38,13 @@ from tools.generator_io import (  # noqa: E402
     rustfmt_version,
 )
 
+from tools.op_kinds.render_wire import variant as _wire_kind_variant  # noqa: E402
 from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
 from tools.wasm_abi_gen.manifest import (  # noqa: E402
     CONTAINER_RUNTIME_SELECTOR_FACTS,
     CONTAINER_RUNTIME_SELECTOR_OPS,
     NUMERIC_OP_LOOP_VARIANTS,
     RUNTIME_RETURN_CONTRACTS,
-    WASM_BULK_MEMORY_INSTRUCTIONS,
     WASM_VAL_TYPES,
     WasmAbiManifestError,
     _call_indirect_imports,
@@ -269,6 +269,11 @@ def _rust_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _rust_op_kind(kind: str) -> str:
+    """Reference the closed wire vocabulary using its canonical variant authority."""
+    return f"molt_ir::OpKind::{_wire_kind_variant(kind)}"
+
+
 def _rust_pascal_variant(value: str) -> str:
     return "".join(part.capitalize() for part in value.split("_"))
 
@@ -316,7 +321,6 @@ def _render_rs_mod() -> str:
     lines: list[str] = [_header("//")]
     lines.extend(
         [
-            "mod bulk_memory_ops;\n",
             "pub(crate) mod callable_table;\n",
             "mod call_indirect;\n",
             "mod container_runtime_selector;\n",
@@ -330,9 +334,6 @@ def _render_rs_mod() -> str:
             "mod runtime_callables;\n",
             "mod runtime_surface;\n",
             "mod static_types;\n\n",
-            "pub(crate) use bulk_memory_ops::{\n",
-            "    WasmBulkMemoryInstruction, WasmBulkMemoryOpSpec, wasm_bulk_memory_op,\n",
-            "};\n",
             "pub(crate) use call_indirect::CALL_INDIRECT_IMPORTS;\n",
             "pub(crate) use container_runtime_selector::{\n",
             "    WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,\n",
@@ -487,7 +488,7 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct WasmConstOpPolicySpec {\n",
-            "    pub(crate) kind: &'static str,\n",
+            "    pub(crate) kind: molt_ir::OpKind,\n",
             "    pub(crate) inline_seed: WasmConstInlineSeed,\n",
             "    pub(crate) materializer_import: Option<WasmRuntimeImport>,\n",
             "    pub(crate) literal_payload: Option<OwnedLiteralPayloadKind>,\n",
@@ -513,7 +514,7 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
         lines.extend(
             [
                 "    WasmConstOpPolicySpec {\n",
-                f'        kind: "{entry["kind"]}",\n',
+                f"        kind: {_rust_op_kind(entry['kind'])},\n",
                 f"        inline_seed: WasmConstInlineSeed::{inline_seed},\n",
                 "        materializer_import: "
                 + (
@@ -535,7 +536,7 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
             "];\n\n",
             "#[inline]\n",
             "pub(crate) fn wasm_const_op_policy(\n",
-            "    kind: &str,\n",
+            "    kind: molt_ir::OpKind,\n",
             ") -> Option<&'static WasmConstOpPolicySpec> {\n",
             "    WASM_CONST_OP_POLICIES\n",
             "        .iter()\n",
@@ -545,7 +546,7 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
             "pub(crate) fn wasm_const_op_policy_for_opcode(\n",
             "    opcode: OpCode,\n",
             ") -> Option<&'static WasmConstOpPolicySpec> {\n",
-            "    wasm_const_op_policy(opcode_canonical_kind_table(opcode))\n",
+            "    opcode_canonical_kind_table(opcode).and_then(wasm_const_op_policy)\n",
             "}\n\n",
             "impl WasmConstOpPolicySpec {\n",
             "    pub(crate) fn required_simple_ir_inline_seed_bits(\n",
@@ -789,52 +790,6 @@ def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -
     return "".join(lines)
 
 
-def _render_rs_bulk_memory_ops(data: dict) -> str:
-    entries = data.get("wasm_bulk_memory_op", [])
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmBulkMemoryInstruction {\n",
-        ]
-    )
-    for variant in sorted(set(WASM_BULK_MEMORY_INSTRUCTIONS.values())):
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmBulkMemoryOpSpec {\n",
-            "    pub(crate) instruction: WasmBulkMemoryInstruction,\n",
-            "    pub(crate) arg_count: usize,\n",
-            "}\n\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_bulk_memory_op(\n",
-            "    kind: &str,\n",
-            ") -> Option<WasmBulkMemoryOpSpec> {\n",
-            "    match kind {\n",
-        ]
-    )
-    for entry in entries:
-        instruction = WASM_BULK_MEMORY_INSTRUCTIONS[entry["instruction"]]
-        lines.extend(
-            [
-                f'        "{entry["kind"]}" => Some(WasmBulkMemoryOpSpec {{\n',
-                f"            instruction: WasmBulkMemoryInstruction::{instruction},\n",
-                f"            arg_count: {entry['arg_count']},\n",
-                "        }),\n",
-            ]
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n",
-        ]
-    )
-    return "".join(lines)
-
-
 def _render_op_loop_arg(arg: str) -> str:
     if arg.startswith("local:"):
         return f"OpLoopRuntimeArgSpec::Local({arg.removeprefix('local:')})"
@@ -914,14 +869,14 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             "    pub(crate) operand_count: usize,\n",
             "}\n\n",
             "#[inline]\n",
-            "pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> {\n",
+            "pub(crate) fn lir_fixed_runtime_call(kind: molt_ir::OpKind) -> Option<LirFixedRuntimeCall> {\n",
             "    match kind {\n",
         ]
     )
     for entry in preserved_entries:
         lines.extend(
             [
-                f'        "{entry["import_name"]}" => Some(LirFixedRuntimeCall {{\n',
+                f"        {_rust_op_kind(entry['import_name'])} => Some(LirFixedRuntimeCall {{\n",
                 f"            call: LirRuntimeCall::{entry['variant']},\n",
                 f"            operand_count: {entry['preserved_copy_operand_count']},\n",
                 "        }),\n",
@@ -930,7 +885,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
     for entry in op_loop_lir_entries:
         lines.extend(
             [
-                f'        "{entry["kind"]}" => Some(LirFixedRuntimeCall {{\n',
+                f"        {_rust_op_kind(entry['kind'])} => Some(LirFixedRuntimeCall {{\n",
                 f"            call: LirRuntimeCall::{entry['lir_variant']},\n",
                 f"            operand_count: {entry['lir_operand_count']},\n",
                 "        }),\n",
@@ -939,7 +894,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
     for entry in numeric_lir_entries:
         lines.extend(
             [
-                f'        "{entry["kind"]}" => Some(LirFixedRuntimeCall {{\n',
+                f"        {_rust_op_kind(entry['kind'])} => Some(LirFixedRuntimeCall {{\n",
                 f"            call: LirRuntimeCall::{entry['lir_variant']},\n",
                 f"            operand_count: {entry['lir_operand_count']},\n",
                 "        }),\n",
@@ -964,7 +919,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
             "}\n\n",
             "#[inline]\n",
             "pub(crate) fn op_loop_runtime_call(\n",
-            "    kind: &str,\n",
+            "    kind: molt_ir::OpKind,\n",
             "    marked: bool,\n",
             ") -> Option<OpLoopRuntimeCallSpec> {\n",
         ]
@@ -1014,7 +969,7 @@ def _render_rs_lir_runtime_calls(data: dict, import_variants: Mapping[str, str])
         for guard, import_name, required_imports in variants:
             lines.extend(
                 [
-                    f'        "{entry["kind"]}"{guard or ""} => Some(OpLoopRuntimeCallSpec {{\n',
+                    f"        {_rust_op_kind(entry['kind'])}{guard or ''} => Some(OpLoopRuntimeCallSpec {{\n",
                     f"            import: {_rust_runtime_import(import_variants, import_name)},\n",
                     "            args: &[\n",
                 ]
@@ -1117,19 +1072,19 @@ def render_native_exception_observer_abi_rs(data: dict) -> str:
             "/// The base import name is also accepted as a semantic alias. A marker only\n",
             "/// changes rows that declare `marked_import_name` in the WASM ABI manifest.\n",
             "pub(crate) fn pending_exception_observer_runtime_symbol(\n",
-            "    kind: &str,\n",
+            "    kind: molt_ir::OpKind,\n",
             "    marked: bool,\n",
             ") -> Option<&'static str> {\n",
             "    match kind {\n",
         ]
     )
     for runtime_symbol, names in marked_groups.items():
-        pattern = " | ".join(_rust_string(name) for name in names)
+        pattern = " | ".join(_rust_op_kind(name) for name in names)
         lines.append(
             f"        {pattern} if marked => Some({_rust_string(runtime_symbol)}),\n"
         )
     for runtime_symbol, names in base_groups.items():
-        pattern = " | ".join(_rust_string(name) for name in names)
+        pattern = " | ".join(_rust_op_kind(name) for name in names)
         lines.append(f"        {pattern} => Some({_rust_string(runtime_symbol)}),\n")
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return rustfmt_source("".join(lines), label="exception_observer_abi.rs")
@@ -1179,12 +1134,14 @@ def _render_rs_container_runtime_selector(
     lines.extend(
         [
             "#[inline]\n",
-            "pub(crate) fn wasm_container_runtime_op(kind: &str) -> Option<WasmContainerRuntimeOp> {\n",
+            "pub(crate) fn wasm_container_runtime_op(kind: molt_ir::OpKind) -> Option<WasmContainerRuntimeOp> {\n",
             "    match kind {\n",
         ]
     )
     for op, variant in op_variants.items():
-        lines.append(f'        "{op}" => Some(WasmContainerRuntimeOp::{variant}),\n')
+        lines.append(
+            f"        {_rust_op_kind(op)} => Some(WasmContainerRuntimeOp::{variant}),\n"
+        )
     lines.extend(
         [
             "        _ => None,\n",
@@ -1251,7 +1208,7 @@ def _render_rs_numeric_runtime_selector(
             "#[allow(dead_code)]\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct WasmNumericRuntimeSelectorSpec {\n",
-            "    pub(crate) kind: &'static str,\n",
+            "    pub(crate) kind: molt_ir::OpKind,\n",
             "    pub(crate) selection: WasmNumericRuntimeSelection,\n",
             "    pub(crate) deps: &'static [WasmRuntimeImport],\n",
             "}\n\n",
@@ -1268,7 +1225,7 @@ def _render_rs_numeric_runtime_selector(
         lines.extend(
             [
                 "    WasmNumericRuntimeSelectorSpec {\n",
-                f'        kind: "{entry["kind"]}",\n',
+                f"        kind: {_rust_op_kind(entry['kind'])},\n",
                 "        selection: WasmNumericRuntimeSelection {\n",
                 f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                 f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
@@ -1290,7 +1247,7 @@ def _render_rs_numeric_runtime_selector(
             "];\n\n",
             "#[inline]\n",
             "pub(crate) fn wasm_numeric_runtime_selection(\n",
-            "    kind: &str,\n",
+            "    kind: molt_ir::OpKind,\n",
             ") -> Option<WasmNumericRuntimeSelection> {\n",
             "    match kind {\n",
         ]
@@ -1303,7 +1260,7 @@ def _render_rs_numeric_runtime_selector(
         )
         lines.extend(
             [
-                f'        "{entry["kind"]}" => Some(WasmNumericRuntimeSelection {{\n',
+                f"        {_rust_op_kind(entry['kind'])} => Some(WasmNumericRuntimeSelection {{\n",
                 f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
                 f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
                 f"            lir_runtime_call: {lir_call},\n",
@@ -1377,23 +1334,23 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
     lines.append(
         "\n/// Explicitly admitted positional op calls; every target consumes this mapping.\n"
     )
-    lines.append("pub const RUNTIME_BOXED_OP_KINDS: &[&str] = &[\n")
+    lines.append("pub const RUNTIME_BOXED_OP_KINDS: &[molt_ir::OpKind] = &[\n")
     for entry in shared:
-        lines.append(f'    "{entry["kind"]}",\n')
+        lines.append(f"    {_rust_op_kind(entry['kind'])},\n")
     lines.extend(
         [
             "];\n\n",
-            "pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {\n",
+            "pub fn runtime_boxed_op_abi(kind: molt_ir::OpKind) -> Option<&'static RuntimeBoxedAbi> {\n",
             "    match kind {\n",
         ]
     )
     for entry in shared:
         index = index_by_symbol[entry["runtime_name"]]
         lines.append(
-            f'        "{entry["kind"]}" => Some(&RUNTIME_BOXED_ABIS[{index}]),\n'
+            f"        {_rust_op_kind(entry['kind'])} => Some(&RUNTIME_BOXED_ABIS[{index}]),\n"
         )
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
-    return "".join(lines)
+    return "".join(lines).replace("molt_ir::OpKind", "crate::OpKind")
 
 
 def _runtime_poll_imports(data: dict) -> list[tuple[int, str]]:
@@ -2260,7 +2217,6 @@ def render_rs_modules(data: dict) -> dict[str, str]:
     import_variants = _runtime_import_variants(data)
     modules = {
         "mod.rs": _render_rs_mod(),
-        "bulk_memory_ops.rs": _render_rs_bulk_memory_ops(data),
         "callable_table.rs": _render_rs_callable_table_layout(data),
         "call_indirect.rs": _render_rs_call_indirect(data),
         "container_runtime_selector.rs": _render_rs_container_runtime_selector(

@@ -118,7 +118,7 @@ use crate::tir::analysis::{AnalysisManager, ImmediateDoms, StrictReachable};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::DominatorTree;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::ops::{Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 /// A planned rewrite of the load at `(block, op_idx)` into `Copy(source)`,
@@ -201,8 +201,8 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     } else {
                         n_store += 1
                     }
-                    let k = match o.attrs.get("_original_kind") {
-                        Some(AttrValue::Str(s)) => s.clone(),
+                    let k = match o.origin {
+                        Some(s) => s.to_string(),
                         _ => "<none>".into(),
                     };
                     *kinds.entry(format!("{:?}:{k}", o.opcode)).or_default() += 1;
@@ -231,7 +231,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                         func.name,
                         bid.0,
                         o.opcode,
-                        o.attrs.get("_original_kind"),
+                        o.origin,
                         mem.slot_access.region_at(&alias, (bid, oi), o),
                     );
                 }
@@ -256,7 +256,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 load_op.opcode,
                 load_op.operands.len(),
                 load_op.attrs.get("value"),
-                load_op.attrs.get("_original_kind"),
+                load_op.origin,
                 load_op.plain_typed_slot_load(),
             );
         }
@@ -367,6 +367,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             continue;
         }
         let mut copy_op = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![fwd.source],

@@ -326,6 +326,7 @@ mod tests {
             id: then_id,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -346,6 +347,7 @@ mod tests {
             id: else_id,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

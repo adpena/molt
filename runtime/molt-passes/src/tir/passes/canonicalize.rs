@@ -178,6 +178,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     {
                         let old = op.clone();
                         let mut replacement = TirOp {
+                            origin: None,
                             dialect: Dialect::Molt,
                             opcode: OpCode::ConstBool,
                             operands: vec![],
@@ -402,6 +403,7 @@ fn replace_with_copy(op: &mut TirOp, source: ValueId, result: ValueId, owners: &
     owners.record(op);
     let old = op.clone();
     let mut replacement = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![source],
@@ -416,6 +418,7 @@ fn replace_with_copy(op: &mut TirOp, source: ValueId, result: ValueId, owners: &
 fn replace_with_const_int(op: &mut TirOp, value: i64, result: ValueId) {
     let old = op.clone();
     let mut replacement = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -434,6 +437,7 @@ fn replace_with_const_int(op: &mut TirOp, value: i64, result: ValueId) {
 fn replace_with_const_bool(op: &mut TirOp, value: bool, result: ValueId) {
     let old = op.clone();
     let mut replacement = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -464,6 +468,7 @@ mod tests {
 
     fn make_const_int(value: i64, result: ValueId) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -479,6 +484,7 @@ mod tests {
 
     fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![lhs, rhs],
@@ -490,6 +496,7 @@ mod tests {
 
     fn make_unop(opcode: OpCode, operand: ValueId, result: ValueId) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![operand],

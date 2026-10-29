@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     // ── CheckedAdd: hardware-exact signed-overflow add (overflow_peel) ──
@@ -183,7 +184,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_i64_divrem_zero_guarded(
         &mut self,
         op: &crate::tir::ops::TirOp,
-        name: &str,
+        name: OpKind,
         lhs_i: inkwell::values::IntValue<'ctx>,
         rhs_i: inkwell::values::IntValue<'ctx>,
     ) -> (BasicValueEnum<'ctx>, TirType) {
@@ -218,7 +219,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // ── Fast path: divisor proven non-zero here, raw machine divide. ──
         self.backend.builder.position_at_end(fast_bb);
         let (fast_val, out_ty): (BasicValueEnum<'ctx>, TirType) = match name {
-            "div" => {
+            OpKind::Div => {
                 // Python `/` on ints returns float (7 / 2 == 3.5).
                 let f64_ty = self.backend.context.f64_type();
                 let lhs_f = self
@@ -238,7 +239,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 (v.into(), TirType::F64)
             }
-            "floordiv" => {
+            OpKind::Floordiv => {
                 // Python `//`: floor toward -inf. q = sdiv; r = srem;
                 // if (r != 0 && (lhs ^ rhs) < 0) q -= 1.
                 let one = i64_ty.const_int(1, false);
@@ -282,7 +283,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 (adj, TirType::I64)
             }
-            "mod" => {
+            OpKind::Mod => {
                 // Python `%`: result has the sign of the divisor.
                 // r = srem; if (r != 0 && (r ^ rhs) < 0) r += rhs.
                 let r = self
@@ -335,9 +336,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // ── Slow path: divisor == 0 ⇒ boxed runtime raises ZeroDivisionError. ──
         self.backend.builder.position_at_end(slow_bb);
         let rt_name = match name {
-            "div" => "molt_div",
-            "floordiv" => "molt_floordiv",
-            "mod" => "molt_mod",
+            OpKind::Div => "molt_div",
+            OpKind::Floordiv => "molt_floordiv",
+            OpKind::Mod => "molt_mod",
             other => unreachable!("emit_i64_divrem_zero_guarded called with {other:?}"),
         };
         let boxed = self
@@ -382,7 +383,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn emit_f64_divrem_zero_guarded(
         &mut self,
         op: &crate::tir::ops::TirOp,
-        name: &str,
+        name: OpKind,
         lhs: inkwell::values::FloatValue<'ctx>,
         rhs: inkwell::values::FloatValue<'ctx>,
     ) -> (BasicValueEnum<'ctx>, TirType) {
@@ -414,13 +415,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap();
         self.backend.builder.position_at_end(fast);
         let fast_value: BasicValueEnum<'ctx> = match name {
-            "div" => self
+            OpKind::Div => self
                 .backend
                 .builder
                 .build_float_div(lhs, rhs, "fdiv")
                 .unwrap()
                 .into(),
-            "mod" => {
+            OpKind::Mod => {
                 let rem = self
                     .backend
                     .builder
@@ -485,7 +486,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap();
         let fast_pred = self.backend.builder.get_insert_block().unwrap();
         self.backend.builder.position_at_end(slow);
-        let runtime_name = if name == "div" {
+        let runtime_name = if name == OpKind::Div {
             "molt_div"
         } else {
             "molt_mod"
@@ -514,7 +515,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         (phi.as_basic_value(), TirType::F64)
     }
 
-    pub(super) fn emit_binary_arith(&mut self, op: &crate::tir::ops::TirOp, name: &str) {
+    pub(super) fn emit_binary_arith(&mut self, op: &crate::tir::ops::TirOp, name: OpKind) {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
@@ -555,7 +556,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // I64 + I64 -> I64 (direct machine instruction).
             // When `nsw` is set, use build_int_nsw_add to tell LLVM the
             // result is guaranteed not to overflow as a signed i64.
-            (TirType::I64, TirType::I64, "add") if int_inline_safe => {
+            (TirType::I64, TirType::I64, OpKind::Add) if int_inline_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -566,7 +567,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "sub") if int_inline_safe => {
+            (TirType::I64, TirType::I64, OpKind::Sub) if int_inline_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -577,7 +578,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "mul") if int_inline_safe => {
+            (TirType::I64, TirType::I64, OpKind::Mul) if int_inline_safe => {
                 let lhs_i = lhs.into_int_value();
                 let rhs_i = rhs.into_int_value();
                 let v = if nsw {
@@ -588,7 +589,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::I64, TirType::I64, "div" | "floordiv" | "mod") => {
+            (TirType::I64, TirType::I64, OpKind::Div | OpKind::Floordiv | OpKind::Mod) => {
                 // A raw machine divide by zero is poison (LLVM) — route through a
                 // divisor-zero guard so a zero divisor raises ZeroDivisionError
                 // via the boxed runtime instead of silently yielding garbage.
@@ -604,7 +605,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // When `fast_math = true` is set on the TIR op (injected by the
             // fast_math annotation pass), we apply LLVM's full fast-math flag
             // set to the emitted instruction via `InstructionValue::set_fast_math_flags`.
-            (TirType::F64, TirType::F64, "add") => {
+            (TirType::F64, TirType::F64, OpKind::Add) => {
                 let v = self
                     .backend
                     .builder
@@ -615,7 +616,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 (v.into(), TirType::F64)
             }
-            (TirType::F64, TirType::F64, "sub") => {
+            (TirType::F64, TirType::F64, OpKind::Sub) => {
                 let v = self
                     .backend
                     .builder
@@ -626,7 +627,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 (v.into(), TirType::F64)
             }
-            (TirType::F64, TirType::F64, "mul") => {
+            (TirType::F64, TirType::F64, OpKind::Mul) => {
                 let v = self
                     .backend
                     .builder
@@ -637,12 +638,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 (v.into(), TirType::F64)
             }
-            (TirType::F64, TirType::F64, "div" | "mod") => self.emit_f64_divrem_zero_guarded(
-                op,
-                name,
-                lhs.into_float_value(),
-                rhs.into_float_value(),
-            ),
+            (TirType::F64, TirType::F64, OpKind::Div | OpKind::Mod) => self
+                .emit_f64_divrem_zero_guarded(
+                    op,
+                    name,
+                    lhs.into_float_value(),
+                    rhs.into_float_value(),
+                ),
 
             // Everything else: call runtime (DynBox dispatch).
             //
@@ -650,7 +652,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // augmented assignment. An augassign op reaches here either as a
             // first-class InplaceAdd/InplaceSub/InplaceMul opcode OR as a
             // Copy-carried `inplace_floordiv`/`inplace_mod`/`inplace_pow`/... with
-            // its `_original_kind` preserved (the lower_preserved arms route those
+            // its `origin` preserved (the lower_preserved arms route those
             // here via emit_binary_arith with the binary `name`). In both cases
             // CPython requires `molt_inplace_<op>` — which tries `__i<op>__`
             // BEFORE the binary `__op__`/`__rop__` chain — not the binary
@@ -661,29 +663,39 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // no in-place dunder (so the result is byte-identical there).
             _ => {
                 let is_inplace = opcode_uses_boxed_runtime_inplace_dispatch_table(op.opcode)
-                    || op
-                        .attrs
-                        .get("_original_kind")
-                        .and_then(|v| match v {
-                            AttrValue::Str(s) => Some(s.as_str()),
-                            _ => None,
-                        })
-                        .is_some_and(|k| k.starts_with("inplace_"));
+                    || op.origin.is_some_and(|k| {
+                        matches!(
+                            k,
+                            OpKind::InplaceAdd
+                                | OpKind::InplaceBitAnd
+                                | OpKind::InplaceBitOr
+                                | OpKind::InplaceBitXor
+                                | OpKind::InplaceDiv
+                                | OpKind::InplaceFloordiv
+                                | OpKind::InplaceLshift
+                                | OpKind::InplaceMatmul
+                                | OpKind::InplaceMod
+                                | OpKind::InplaceMul
+                                | OpKind::InplacePow
+                                | OpKind::InplaceRshift
+                                | OpKind::InplaceSub
+                        )
+                    });
                 let rt_name = match (name, is_inplace) {
-                    ("add", false) => "molt_add",
-                    ("add", true) => "molt_inplace_add",
-                    ("sub", false) => "molt_sub",
-                    ("sub", true) => "molt_inplace_sub",
-                    ("mul", false) => "molt_mul",
-                    ("mul", true) => "molt_inplace_mul",
-                    ("div", false) => "molt_div",
-                    ("div", true) => "molt_inplace_div",
-                    ("floordiv", false) => "molt_floordiv",
-                    ("floordiv", true) => "molt_inplace_floordiv",
-                    ("mod", false) => "molt_mod",
-                    ("mod", true) => "molt_inplace_mod",
-                    ("pow", false) => "molt_pow",
-                    ("pow", true) => "molt_inplace_pow",
+                    (OpKind::Add, false) => "molt_add",
+                    (OpKind::Add, true) => "molt_inplace_add",
+                    (OpKind::Sub, false) => "molt_sub",
+                    (OpKind::Sub, true) => "molt_inplace_sub",
+                    (OpKind::Mul, false) => "molt_mul",
+                    (OpKind::Mul, true) => "molt_inplace_mul",
+                    (OpKind::Div, false) => "molt_div",
+                    (OpKind::Div, true) => "molt_inplace_div",
+                    (OpKind::Floordiv, false) => "molt_floordiv",
+                    (OpKind::Floordiv, true) => "molt_inplace_floordiv",
+                    (OpKind::Mod, false) => "molt_mod",
+                    (OpKind::Mod, true) => "molt_inplace_mod",
+                    (OpKind::Pow, false) => "molt_pow",
+                    (OpKind::Pow, true) => "molt_inplace_pow",
                     _ => unreachable!("unknown arith op: {}", name),
                 };
                 let v = self.emit_boxed_binary_fallback(rt_name, lhs_id, rhs_id);
@@ -697,7 +709,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Type-specialized comparison ──
 
-    pub(super) fn emit_comparison(&mut self, op: &crate::tir::ops::TirOp, name: &str) {
+    pub(super) fn emit_comparison(&mut self, op: &crate::tir::ops::TirOp, name: OpKind) {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
@@ -718,47 +730,57 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             (TirType::I64, TirType::I64) => {
                 use inkwell::IntPredicate;
                 let pred = match name {
-                    "eq" => IntPredicate::EQ,
-                    "ne" => IntPredicate::NE,
-                    "lt" => IntPredicate::SLT,
-                    "le" => IntPredicate::SLE,
-                    "gt" => IntPredicate::SGT,
-                    "ge" => IntPredicate::SGE,
+                    OpKind::Eq => IntPredicate::EQ,
+                    OpKind::Ne => IntPredicate::NE,
+                    OpKind::Lt => IntPredicate::SLT,
+                    OpKind::Le => IntPredicate::SLE,
+                    OpKind::Gt => IntPredicate::SGT,
+                    OpKind::Ge => IntPredicate::SGE,
                     _ => unreachable!(),
                 };
                 let v = self
                     .backend
                     .builder
-                    .build_int_compare(pred, lhs.into_int_value(), rhs.into_int_value(), name)
+                    .build_int_compare(
+                        pred,
+                        lhs.into_int_value(),
+                        rhs.into_int_value(),
+                        name.as_str(),
+                    )
                     .unwrap();
                 (v.into(), TirType::Bool)
             }
             (TirType::F64, TirType::F64) => {
                 use inkwell::FloatPredicate;
                 let pred = match name {
-                    "eq" => FloatPredicate::OEQ,
-                    "ne" => FloatPredicate::ONE,
-                    "lt" => FloatPredicate::OLT,
-                    "le" => FloatPredicate::OLE,
-                    "gt" => FloatPredicate::OGT,
-                    "ge" => FloatPredicate::OGE,
+                    OpKind::Eq => FloatPredicate::OEQ,
+                    OpKind::Ne => FloatPredicate::ONE,
+                    OpKind::Lt => FloatPredicate::OLT,
+                    OpKind::Le => FloatPredicate::OLE,
+                    OpKind::Gt => FloatPredicate::OGT,
+                    OpKind::Ge => FloatPredicate::OGE,
                     _ => unreachable!(),
                 };
                 let v = self
                     .backend
                     .builder
-                    .build_float_compare(pred, lhs.into_float_value(), rhs.into_float_value(), name)
+                    .build_float_compare(
+                        pred,
+                        lhs.into_float_value(),
+                        rhs.into_float_value(),
+                        name.as_str(),
+                    )
                     .unwrap();
                 (v.into(), TirType::Bool)
             }
             _ => {
                 let rt_name = match name {
-                    "eq" => "molt_eq",
-                    "ne" => "molt_ne",
-                    "lt" => "molt_lt",
-                    "le" => "molt_le",
-                    "gt" => "molt_gt",
-                    "ge" => "molt_ge",
+                    OpKind::Eq => "molt_eq",
+                    OpKind::Ne => "molt_ne",
+                    OpKind::Lt => "molt_lt",
+                    OpKind::Le => "molt_le",
+                    OpKind::Gt => "molt_gt",
+                    OpKind::Ge => "molt_ge",
                     _ => unreachable!(),
                 };
                 let v = self.emit_boxed_binary_fallback(rt_name, lhs_id, rhs_id);
@@ -1034,7 +1056,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Bitwise ops ──
 
-    pub(super) fn emit_bitwise(&mut self, op: &crate::tir::ops::TirOp, name: &str) {
+    pub(super) fn emit_bitwise(&mut self, op: &crate::tir::ops::TirOp, name: OpKind) {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
@@ -1069,34 +1091,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // shift).
         let shift_inline_safe = self.repr_facts.is_inline_safe_int(result_id);
         let raw_i64_lane_ok = match name {
-            "bit_and" | "bit_or" | "bit_xor" => true,
-            "lshift" | "rshift" => shift_inline_safe,
+            OpKind::BitAnd | OpKind::BitOr | OpKind::BitXor => true,
+            OpKind::Lshift | OpKind::Rshift => shift_inline_safe,
             _ => unreachable!("emit_bitwise got non-bitwise name: {name}"),
         };
         let (val, out_ty) = match (&lhs_ty, &rhs_ty) {
             (TirType::I64, TirType::I64) if raw_i64_lane_ok => {
                 let v = match name {
-                    "bit_and" => self
+                    OpKind::BitAnd => self
                         .backend
                         .builder
                         .build_and(lhs.into_int_value(), rhs.into_int_value(), "band")
                         .unwrap(),
-                    "bit_or" => self
+                    OpKind::BitOr => self
                         .backend
                         .builder
                         .build_or(lhs.into_int_value(), rhs.into_int_value(), "bor")
                         .unwrap(),
-                    "bit_xor" => self
+                    OpKind::BitXor => self
                         .backend
                         .builder
                         .build_xor(lhs.into_int_value(), rhs.into_int_value(), "bxor")
                         .unwrap(),
-                    "lshift" => self
+                    OpKind::Lshift => self
                         .backend
                         .builder
                         .build_left_shift(lhs.into_int_value(), rhs.into_int_value(), "shl")
                         .unwrap(),
-                    "rshift" => self
+                    OpKind::Rshift => self
                         .backend
                         .builder
                         .build_right_shift(lhs.into_int_value(), rhs.into_int_value(), true, "shr")
@@ -1113,14 +1135,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // path to `molt_inplace_<op>` so `__ilshift__`/`__ior__`/… is
                 // tried before the binary `__op__`/`__rop__` chain. The fast int
                 // lane above is unchanged (builtin int has no in-place dunder).
-                let is_inplace = op
-                    .attrs
-                    .get("_original_kind")
-                    .and_then(|v| match v {
-                        AttrValue::Str(s) => Some(s.as_str()),
-                        _ => None,
-                    })
-                    .is_some_and(|k| k.starts_with("inplace_"));
+                let is_inplace = op.origin.is_some_and(|k| {
+                    matches!(
+                        k,
+                        OpKind::InplaceAdd
+                            | OpKind::InplaceBitAnd
+                            | OpKind::InplaceBitOr
+                            | OpKind::InplaceBitXor
+                            | OpKind::InplaceDiv
+                            | OpKind::InplaceFloordiv
+                            | OpKind::InplaceLshift
+                            | OpKind::InplaceMatmul
+                            | OpKind::InplaceMod
+                            | OpKind::InplaceMul
+                            | OpKind::InplacePow
+                            | OpKind::InplaceRshift
+                            | OpKind::InplaceSub
+                    )
+                });
                 let rt_name = if is_inplace {
                     format!("molt_inplace_{}", name)
                 } else {
@@ -1145,7 +1177,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Unary ops ──
 
-    pub(super) fn emit_unary(&mut self, op: &crate::tir::ops::TirOp, name: &str) {
+    pub(super) fn emit_unary(&mut self, op: &crate::tir::ops::TirOp, name: OpKind) {
         let result_id = op.results[0];
         let operand_id = op.operands[0];
         let operand = self.resolve(operand_id);
@@ -1158,7 +1190,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let (val, out_ty) = match (&operand_ty, name) {
             // Negating i64::MIN requires a BigInt. The same result-range proof
             // as binary arithmetic must authorize the raw machine operation.
-            (TirType::I64, "neg") if self.repr_facts.is_inline_safe_int(result_id) => {
+            (TirType::I64, OpKind::Neg) if self.repr_facts.is_inline_safe_int(result_id) => {
                 let v = self
                     .backend
                     .builder
@@ -1166,7 +1198,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 (v.into(), TirType::I64)
             }
-            (TirType::F64, "neg") => {
+            (TirType::F64, OpKind::Neg) => {
                 let v = self
                     .backend
                     .builder
@@ -1176,8 +1208,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             // Unary plus is identity only for exact numeric carriers. Bool
             // must become int, and boxed values must dispatch __pos__.
-            (TirType::I64 | TirType::F64, "pos") => (operand, operand_ty.clone()),
-            (TirType::Bool, "not") => {
+            (TirType::I64 | TirType::F64, OpKind::Pos) => (operand, operand_ty.clone()),
+            (TirType::Bool, OpKind::Not) => {
                 let v = self
                     .backend
                     .builder
@@ -1185,7 +1217,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 (v.into(), TirType::Bool)
             }
-            (TirType::I64, "not") => {
+            (TirType::I64, OpKind::Not) => {
                 let v = self
                     .backend
                     .builder
@@ -1198,7 +1230,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 (v.into(), TirType::Bool)
             }
-            (TirType::I64, "invert") => {
+            (TirType::I64, OpKind::Invert) => {
                 let v = self
                     .backend
                     .builder
@@ -1208,10 +1240,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             _ => {
                 let rt_name = match name {
-                    "neg" => "molt_neg",
-                    "pos" => "molt_pos",
-                    "not" => "molt_not",
-                    "invert" => "molt_invert",
+                    OpKind::Neg => "molt_neg",
+                    OpKind::Pos => "molt_pos",
+                    OpKind::Not => "molt_not",
+                    OpKind::Invert => "molt_invert",
                     _ => unreachable!(),
                 };
                 // Runtime unary entries borrow boxed objects, not widened
@@ -1223,7 +1255,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     &[RuntimeArg::Operand(operand_id)],
                     false,
                     "unary",
-                    name,
+                    name.as_str(),
                 );
                 (v.into(), TirType::DynBox)
             }
@@ -1254,6 +1286,7 @@ mod numeric_family_tests {
             let result = func.fresh_value();
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],

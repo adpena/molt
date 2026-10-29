@@ -35,6 +35,7 @@ fn make_const_return_func(val: i64) -> TirFunction {
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -67,6 +68,7 @@ fn make_scalar_const_return_func(
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],
@@ -103,6 +105,7 @@ fn make_fixed_runtime_service_func(
     });
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
@@ -118,7 +121,7 @@ fn make_fixed_runtime_service_func(
 
 fn make_copy_original_kind_runtime_func(
     name: &str,
-    original_kind: &str,
+    original_kind: molt_ir::OpKind,
     operand_count: usize,
     has_result: bool,
 ) -> TirFunction {
@@ -139,18 +142,12 @@ fn make_copy_original_kind_runtime_func(
     });
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: Some(original_kind),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
         results: result_id.into_iter().collect(),
-        attrs: {
-            let mut m = AttrDict::new();
-            m.insert(
-                "_original_kind".into(),
-                AttrValue::Str(original_kind.into()),
-            );
-            m
-        },
+        attrs: AttrDict::new(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -171,6 +168,7 @@ fn make_add_two_params_func() -> TirFunction {
     let result_id = func.fresh_value(); // ValueId(2)
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -199,6 +197,7 @@ fn make_binary_two_consts_func(name: &str, opcode: OpCode, lhs: i64, rhs: i64) -
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(value));
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -208,6 +207,7 @@ fn make_binary_two_consts_func(name: &str, opcode: OpCode, lhs: i64, rhs: i64) -
         });
     }
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs_id, rhs_id],
@@ -241,6 +241,7 @@ fn make_checked_mul_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(value));
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -250,6 +251,7 @@ fn make_checked_mul_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
         });
     }
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckedMul,
         operands: vec![lhs_id, rhs_id],
@@ -278,6 +280,7 @@ fn make_lt_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(value));
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -287,6 +290,7 @@ fn make_lt_two_consts_func(lhs: i64, rhs: i64) -> TirFunction {
         });
     }
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Lt,
         operands: vec![lhs_id, rhs_id],

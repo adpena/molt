@@ -1,12 +1,12 @@
 use super::*;
 
-fn op(kind: &str, out: Option<&str>, s_value: Option<&str>, args: &[&str]) -> OpIR {
+fn op(kind: molt_ir::OpKind, out: Option<&str>, s_value: Option<&str>, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind: kind,
         out: out.map(str::to_string),
         s_value: s_value.map(str::to_string),
         args: (!args.is_empty()).then(|| args.iter().map(|arg| arg.to_string()).collect()),
-        ..Default::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -14,7 +14,7 @@ fn op(kind: &str, out: Option<&str>, s_value: Option<&str>, args: &[&str]) -> Op
 fn constant_sum_program(is_extern: bool) -> SimpleIR {
     let constant = |out: &str, value: i64| OpIR {
         value: Some(value),
-        ..op("const", Some(out), None, &[])
+        ..op(molt_ir::OpKind::Const, Some(out), None, &[])
     };
     let function = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -23,8 +23,8 @@ fn constant_sum_program(is_extern: bool) -> SimpleIR {
         ops: vec![
             constant("a", 2),
             constant("b", 3),
-            op("add", Some("r"), None, &["a", "b"]),
-            op("ret", None, None, &["r"]),
+            op(molt_ir::OpKind::Add, Some("r"), None, &["a", "b"]),
+            op(molt_ir::OpKind::Ret, None, None, &["r"]),
         ],
         param_types: None,
         source_file: None,
@@ -39,12 +39,8 @@ fn constant_sum_program(is_extern: bool) -> SimpleIR {
     }
 }
 
-fn kinds(ir: &SimpleIR) -> Vec<&str> {
-    ir.functions[0]
-        .ops
-        .iter()
-        .map(|op| op.kind.as_str())
-        .collect()
+fn kinds(ir: &SimpleIR) -> Vec<molt_ir::OpKind> {
+    ir.functions[0].ops.iter().map(|op| op.kind).collect()
 }
 
 fn applied(target: &TargetInfo) -> Vec<&'static str> {
@@ -107,7 +103,15 @@ fn every_pass_classifies_the_op_kinds_it_introduces() {
 fn pipeline_leaves_extern_functions_untouched() {
     let mut defined = constant_sum_program(false);
     run_simple_ir_pipeline(&mut defined, &TargetInfo::native_release_fast());
-    assert_eq!(kinds(&defined), ["const", "const", "const", "ret"]);
+    assert_eq!(
+        kinds(&defined),
+        [
+            molt_ir::OpKind::Const,
+            molt_ir::OpKind::Const,
+            molt_ir::OpKind::Const,
+            molt_ir::OpKind::Ret
+        ]
+    );
 
     let original = constant_sum_program(true);
     let mut ir = original.clone();

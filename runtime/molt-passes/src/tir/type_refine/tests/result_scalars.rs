@@ -1,12 +1,9 @@
 use super::*;
 
 fn scalar_home_store(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
-    let mut attrs = int_attr(0);
-    attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("frame_home_store".into()),
-    );
-    make_op(OpCode::Copy, operands, results, attrs)
+    let attrs = int_attr(0);
+
+    make_op(OpCode::Copy, operands, results, attrs).with_origin(molt_ir::OpKind::FrameHomeStore)
 }
 
 #[test]
@@ -36,8 +33,13 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
         assert_eq!(copy_value_source(&store), None);
         assert_eq!(no_heap_alias_source(&store), None);
         assert!(!opcode_effects_table(store.opcode).effect_free);
-        assert!(copy_kind_is_binding_view_table("frame_home_store"));
-        assert_eq!(kind_consumed_operand_table("frame_home_store", 1), Some(0));
+        assert!(copy_kind_is_binding_view_table(
+            molt_ir::OpKind::FrameHomeStore
+        ));
+        assert_eq!(
+            kind_consumed_operand_table(molt_ir::OpKind::FrameHomeStore, 1),
+            Some(0)
+        );
         let mut func = single_block_func(
             vec![
                 make_op(opcode, vec![], vec![ValueId(0)], attrs),
@@ -78,12 +80,10 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
 #[test]
 fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
     use crate::tir::passes::value_identity::{build_scalar_value_map, scalar_value_source};
-    let mut load_attrs = int_attr(0);
-    load_attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("frame_home_load".into()),
-    );
-    let load = make_op(OpCode::Copy, vec![], vec![ValueId(4)], load_attrs);
+    let load_attrs = int_attr(0);
+
+    let load = make_op(OpCode::Copy, vec![], vec![ValueId(4)], load_attrs)
+        .with_origin(molt_ir::OpKind::FrameHomeLoad);
     assert_eq!(scalar_value_source(&load), None);
     let mut func = single_block_func(
         vec![
@@ -336,7 +336,7 @@ fn intrinsic_result_slots_reject_malformed_result_shapes_and_unknown_indices() {
                 assert!(!proven.contains_key(&result));
             }
             assert_eq!(
-                infer_result_types_with_attrs(opcode, &[], None, count),
+                infer_result_types_with_attrs(opcode, None, &[], None, count),
                 vec![None; count]
             );
         }
@@ -344,6 +344,7 @@ fn intrinsic_result_slots_reject_malformed_result_shapes_and_unknown_indices() {
     assert_eq!(
         infer_result_types_with_attrs(
             OpCode::IterNextUnboxed,
+            None,
             &[TirType::Iterator(Box::new(TirType::Str))],
             None,
             2
@@ -1123,19 +1124,6 @@ fn inplace_add_typed_to_i64_for_int_operands() {
 /// alias (`copy_var`/bare `Copy`) MUST still propagate the operand type.
 #[test]
 fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
-    let int_from_obj_attr = {
-        let mut a = AttrDict::new();
-        a.insert(
-            "_original_kind".into(),
-            AttrValue::Str("int_from_obj".into()),
-        );
-        a
-    };
-    let copy_var_attr = {
-        let mut a = AttrDict::new();
-        a.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
-        a
-    };
     let ops = vec![
         // t = <float> (a const float stands in for the float parameter).
         make_op(
@@ -1149,8 +1137,9 @@ fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
             OpCode::Copy,
             vec![ValueId(0)],
             vec![ValueId(1)],
-            int_from_obj_attr,
-        ),
+            AttrDict::new(),
+        )
+        .with_origin(molt_ir::OpKind::IntFromObj),
         // total = 0; total += sec  →  the integer accumulator that mis-typed.
         make_op(OpCode::ConstInt, vec![], vec![ValueId(2)], int_attr(0)),
         make_op(
@@ -1164,8 +1153,9 @@ fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
             OpCode::Copy,
             vec![ValueId(0)],
             vec![ValueId(4)],
-            copy_var_attr,
-        ),
+            AttrDict::new(),
+        )
+        .with_origin(molt_ir::OpKind::CopyVar),
     ];
     let mut func = single_block_func(ops, 5);
     refine_types(&mut func);
@@ -1196,43 +1186,61 @@ fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
 fn raw_carrier_type_is_scoped_to_scalar_conversions() {
     use crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type;
     assert_eq!(
-        copy_kind_raw_carrier_type(Some("int_from_obj")),
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::IntFromObj)),
         Some(TirType::I64)
     );
     assert_eq!(
-        copy_kind_raw_carrier_type(Some("int_from_str_of_obj")),
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::IntFromStrOfObj)),
         Some(TirType::I64)
     );
     assert_eq!(
-        copy_kind_raw_carrier_type(Some("float_from_obj")),
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::FloatFromObj)),
         Some(TirType::F64)
     );
     assert_eq!(
-        copy_kind_raw_carrier_type(Some("contains")),
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::Contains)),
         Some(TirType::Bool)
     );
     // Heap-producing fresh values → None (operand-0 propagation / DynBox floor).
-    assert_eq!(copy_kind_raw_carrier_type(Some("str_from_obj")), None);
-    assert_eq!(copy_kind_raw_carrier_type(Some("list_new")), None);
-    assert_eq!(copy_kind_raw_carrier_type(Some("tuple_new")), None);
-    assert_eq!(copy_kind_raw_carrier_type(Some("enumerate")), None);
+    assert_eq!(
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::StrFromObj)),
+        None
+    );
+    assert_eq!(
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::ListNew)),
+        None
+    );
+    assert_eq!(
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::TupleNew)),
+        None
+    );
+    assert_eq!(
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::Enumerate)),
+        None
+    );
     // Transparent aliases / bare Copy / unknown → None.
-    assert_eq!(copy_kind_raw_carrier_type(Some("copy_var")), None);
-    assert_eq!(copy_kind_raw_carrier_type(Some("guard_tag")), None);
+    assert_eq!(
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::CopyVar)),
+        None
+    );
+    assert_eq!(
+        copy_kind_raw_carrier_type(Some(molt_ir::OpKind::GuardTag)),
+        None
+    );
     assert_eq!(copy_kind_raw_carrier_type(None), None);
 }
 
 #[test]
 fn exact_scalar_copies_use_shared_value_identity_not_annotation_hints() {
     for kind in [
-        "copy",
-        "copy_var",
-        "store_var",
-        "load_var",
-        "identity_alias",
+        molt_ir::OpKind::Copy,
+        molt_ir::OpKind::CopyVar,
+        molt_ir::OpKind::StoreVar,
+        molt_ir::OpKind::LoadVar,
+        molt_ir::OpKind::IdentityAlias,
     ] {
-        let mut attrs = AttrDict::new();
-        attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        let attrs = AttrDict::new();
+
         let func = single_block_func(
             vec![
                 make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(1)),
@@ -1241,13 +1249,15 @@ fn exact_scalar_copies_use_shared_value_identity_not_annotation_hints() {
                     vec![ValueId(0), ValueId(0)],
                     vec![ValueId(1)],
                     attrs.clone(),
-                ),
+                )
+                .with_origin(kind),
                 make_op(
                     OpCode::Copy,
                     vec![ValueId(0), ValueId(2)],
                     vec![ValueId(3)],
                     attrs,
-                ),
+                )
+                .with_origin(kind),
             ],
             4,
         );
@@ -1258,15 +1268,12 @@ fn exact_scalar_copies_use_shared_value_identity_not_annotation_hints() {
             "mixed source {kind} must not transfer exactness"
         );
     }
-    let mut attrs = AttrDict::new();
-    attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("opaque_callback".into()),
-    );
+    let attrs = AttrDict::new();
     let func = single_block_func(
         vec![
             make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(1)),
-            make_op(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)], attrs),
+            make_op(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)], attrs)
+                .with_origin(molt_ir::OpKind::FunctionClosureBits),
         ],
         2,
     );
@@ -1338,17 +1345,37 @@ fn dynamic_operand_selects_do_not_inherit_stale_bool_representations() {
 #[test]
 fn gpu_intrinsic_shapes_are_producer_facts_not_return_hints() {
     for (kind, symbol, expected) in [
-        ("gpu_thread_id", "molt_gpu_thread_id", TirType::I64),
-        ("gpu_block_id", "molt_gpu_block_id", TirType::I64),
-        ("gpu_block_dim", "molt_gpu_block_dim", TirType::I64),
-        ("gpu_grid_dim", "molt_gpu_grid_dim", TirType::I64),
-        ("gpu_barrier", "molt_gpu_barrier", TirType::None),
+        (
+            molt_ir::OpKind::GpuThreadId,
+            "molt_gpu_thread_id",
+            TirType::I64,
+        ),
+        (
+            molt_ir::OpKind::GpuBlockId,
+            "molt_gpu_block_id",
+            TirType::I64,
+        ),
+        (
+            molt_ir::OpKind::GpuBlockDim,
+            "molt_gpu_block_dim",
+            TirType::I64,
+        ),
+        (
+            molt_ir::OpKind::GpuGridDim,
+            "molt_gpu_grid_dim",
+            TirType::I64,
+        ),
+        (
+            molt_ir::OpKind::GpuBarrier,
+            "molt_gpu_barrier",
+            TirType::None,
+        ),
     ] {
         let mut attrs = AttrDict::new();
         attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
-        attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+
         let mut func = single_block_func(
-            vec![make_op(OpCode::Call, vec![], vec![ValueId(0)], attrs)],
+            vec![make_op(OpCode::Call, vec![], vec![ValueId(0)], attrs).with_origin(kind)],
             1,
         );
         // A contradictory hint cannot replace the fixed intrinsic's ABI fact.
@@ -1378,22 +1405,22 @@ fn ordinary_opaque_and_internal_calls_cannot_borrow_gpu_scalar_or_nonheap_facts(
     ] {
         for original_kind in [
             None,
-            Some("call"),
-            Some("call_internal"),
-            Some("call_func"),
-            Some("call_function"),
-            Some("call_indirect"),
-            Some("call_bind"),
-            Some("call_guarded"),
-            Some("invoke_ffi"),
+            Some(molt_ir::OpKind::Call),
+            Some(molt_ir::OpKind::CallInternal),
+            Some(molt_ir::OpKind::CallFunc),
+            Some(molt_ir::OpKind::CallFunction),
+            Some(molt_ir::OpKind::CallIndirect),
+            Some(molt_ir::OpKind::CallBind),
+            Some(molt_ir::OpKind::CallGuarded),
+            Some(molt_ir::OpKind::InvokeFfi),
         ] {
             let mut attrs = AttrDict::new();
             attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
-            if let Some(kind) = original_kind {
-                attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
-            }
             let mut func = single_block_func(
-                vec![make_op(OpCode::Call, vec![], vec![ValueId(0)], attrs)],
+                vec![TirOp {
+                    origin: original_kind,
+                    ..make_op(OpCode::Call, vec![], vec![ValueId(0)], attrs)
+                }],
                 1,
             );
             func.value_types.insert(ValueId(0), TirType::I64);
@@ -1485,6 +1512,7 @@ fn malformed_guard_shape_cannot_broadcast_an_attribute_hint() {
     for (operands, results) in [(0, 1), (2, 1), (1, 2)] {
         let facts = super::super::result_inference::infer_result_facts_with_attrs(
             OpCode::TypeGuard,
+            None,
             &vec![TirType::I64; operands],
             Some(&attrs),
             results,
@@ -1496,30 +1524,45 @@ fn malformed_guard_shape_cannot_broadcast_an_attribute_hint() {
 #[test]
 fn container_constructor_types_survive_retained_binding_snapshots() {
     for (kind, expected) in [
-        ("list_int_new", TirType::List(Box::new(TirType::DynBox))),
-        ("list_fill_new", TirType::List(Box::new(TirType::DynBox))),
-        ("list_from_range", TirType::List(Box::new(TirType::DynBox))),
-        ("list_copy", TirType::List(Box::new(TirType::DynBox))),
         (
-            "dict_new",
+            molt_ir::OpKind::ListIntNew,
+            TirType::List(Box::new(TirType::DynBox)),
+        ),
+        (
+            molt_ir::OpKind::ListFillNew,
+            TirType::List(Box::new(TirType::DynBox)),
+        ),
+        (
+            molt_ir::OpKind::ListFromRange,
+            TirType::List(Box::new(TirType::DynBox)),
+        ),
+        (
+            molt_ir::OpKind::ListCopy,
+            TirType::List(Box::new(TirType::DynBox)),
+        ),
+        (
+            molt_ir::OpKind::DictNew,
             TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox)),
         ),
         (
-            "dict_from_obj",
+            molt_ir::OpKind::DictFromObj,
             TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox)),
         ),
-        ("set_new", TirType::Set(Box::new(TirType::DynBox))),
-        ("frozenset_new", TirType::Set(Box::new(TirType::DynBox))),
-        ("tuple_new", TirType::Tuple(vec![])),
-        ("tuple_from_list", TirType::Tuple(vec![])),
+        (
+            molt_ir::OpKind::SetNew,
+            TirType::Set(Box::new(TirType::DynBox)),
+        ),
+        (
+            molt_ir::OpKind::FrozensetNew,
+            TirType::Set(Box::new(TirType::DynBox)),
+        ),
+        (molt_ir::OpKind::TupleNew, TirType::Tuple(vec![])),
+        (molt_ir::OpKind::TupleFromList, TirType::Tuple(vec![])),
     ] {
-        let mut constructor = AttrDict::new();
-        constructor.insert("_original_kind".into(), AttrValue::Str(kind.into()));
-        let mut capture = AttrDict::new();
-        capture.insert(
-            "_original_kind".into(),
-            AttrValue::Str("binding_alias".into()),
-        );
+        let constructor = AttrDict::new();
+
+        let capture = AttrDict::new();
+
         let mut func = single_block_func(
             vec![
                 make_op(
@@ -1533,8 +1576,10 @@ fn container_constructor_types_survive_retained_binding_snapshots() {
                     vec![ValueId(0)],
                     vec![ValueId(1)],
                     constructor,
-                ),
-                make_op(OpCode::Copy, vec![ValueId(1)], vec![ValueId(2)], capture),
+                )
+                .with_origin(kind),
+                make_op(OpCode::Copy, vec![ValueId(1)], vec![ValueId(2)], capture)
+                    .with_origin(molt_ir::OpKind::BindingAlias),
             ],
             3,
         );
@@ -1545,9 +1590,9 @@ fn container_constructor_types_survive_retained_binding_snapshots() {
         assert_eq!(types.get(&ValueId(2)), Some(&expected), "{kind}");
     }
     assert!(
-        crate::tir::op_semantics::container_constructor_result_type("list_index_range").is_none()
-    );
-    assert!(
-        crate::tir::op_semantics::container_constructor_result_type("unknown_list_new").is_none()
+        crate::tir::op_semantics::container_constructor_result_type(
+            molt_ir::OpKind::ListIndexRange
+        )
+        .is_none()
     );
 }

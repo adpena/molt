@@ -51,7 +51,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
     // Collect output names of all `missing` ops for fast lookup.
     let missing_outputs: HashSet<&str> = ops
         .iter()
-        .filter(|op| op.kind == "missing")
+        .filter(|op| op.kind == molt_ir::OpKind::Missing)
         .filter_map(|op| op.out.as_deref())
         .collect();
 
@@ -63,17 +63,22 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
     // to avoid rescanning the entire ops array for every match.
     let unbound_error_names: HashSet<&str> = ops
         .iter()
-        .filter(|op| op.kind == "const_str" && op.s_value.as_deref() == Some("UnboundLocalError"))
+        .filter(|op| {
+            op.kind == molt_ir::OpKind::ConstStr
+                && op.s_value.as_deref() == Some("UnboundLocalError")
+        })
         .filter_map(|op| op.out.as_deref())
         .collect();
     let is_unbound_exception_new = |op: &OpIR| -> bool {
         if matches!(
-            op.kind.as_str(),
-            "exception_new_builtin" | "exception_new_builtin_empty" | "exception_new_builtin_one"
+            op.kind,
+            molt_ir::OpKind::ExceptionNewBuiltin
+                | molt_ir::OpKind::ExceptionNewBuiltinEmpty
+                | molt_ir::OpKind::ExceptionNewBuiltinOne
         ) {
             return op.s_value.as_deref() == Some("UnboundLocalError");
         }
-        if op.kind != "exception_new" {
+        if op.kind != molt_ir::OpKind::ExceptionNew {
             return false;
         }
         op.args
@@ -86,7 +91,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
     while i + 9 < len {
         // Skip optional nop before the `is` op.
         let base = i;
-        if ops[i].kind == "nop" {
+        if ops[i].kind == molt_ir::OpKind::Nop {
             i += 1;
             if i + 9 >= len {
                 break;
@@ -94,7 +99,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         }
 
         // [0] is out=R args=[V, M]  — second arg must be a known missing sentinel
-        if ops[i].kind != "is" {
+        if ops[i].kind != molt_ir::OpKind::Is {
             i = base + 1;
             continue;
         }
@@ -120,7 +125,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         // ── Variant B: is → if → tuple_new → exception_new → raise → end_if ──
         // The frontend emits `if` directly (before TIR adds jump/label/br_if).
         let j1 = i + 1;
-        if j1 < len && ops[j1].kind == "if" {
+        if j1 < len && ops[j1].kind == molt_ir::OpKind::If {
             let if_args = ops[j1].args.as_ref();
             let if_matches = if_args.is_some_and(|a| !a.is_empty() && a[0] == is_out);
             if if_matches {
@@ -132,16 +137,18 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
                 let mut end_idx = 0usize;
                 let max_scan = (j1 + 8).min(len);
                 while k < max_scan {
-                    match ops[k].kind.as_str() {
-                        "tuple_new" if !found_tuple_new => found_tuple_new = true,
+                    match ops[k].kind {
+                        molt_ir::OpKind::TupleNew if !found_tuple_new => found_tuple_new = true,
                         _ if found_tuple_new
                             && !found_exc_new
                             && is_unbound_exception_new(&ops[k]) =>
                         {
                             found_exc_new = true;
                         }
-                        "raise" if found_exc_new && !found_raise => found_raise = true,
-                        "end_if" | "else" if found_raise => {
+                        molt_ir::OpKind::Raise if found_exc_new && !found_raise => {
+                            found_raise = true
+                        }
+                        molt_ir::OpKind::EndIf | molt_ir::OpKind::Else if found_raise => {
                             end_idx = k;
                             break;
                         }
@@ -168,21 +175,21 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         }
 
         // ── Variant A: is → jump → label → br_if → jump → label → tuple_new → exception_new → raise → label ──
-        if j1 >= len || ops[j1].kind != "jump" {
+        if j1 >= len || ops[j1].kind != molt_ir::OpKind::Jump {
             i = base + 1;
             continue;
         }
 
         // [2] label val=L1
         let j2 = j1 + 1;
-        if j2 >= len || ops[j2].kind != "label" {
+        if j2 >= len || ops[j2].kind != molt_ir::OpKind::Label {
             i = base + 1;
             continue;
         }
 
         // [3] br_if args=[R] val=L_raise
         let j3 = j2 + 1;
-        if j3 >= len || ops[j3].kind != "br_if" {
+        if j3 >= len || ops[j3].kind != molt_ir::OpKind::BrIf {
             i = base + 1;
             continue;
         }
@@ -200,21 +207,21 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
 
         // [4] jump val=L_ok
         let j4 = j3 + 1;
-        if j4 >= len || ops[j4].kind != "jump" {
+        if j4 >= len || ops[j4].kind != molt_ir::OpKind::Jump {
             i = base + 1;
             continue;
         }
 
         // [5] label val=L_raise
         let j5 = j4 + 1;
-        if j5 >= len || ops[j5].kind != "label" {
+        if j5 >= len || ops[j5].kind != molt_ir::OpKind::Label {
             i = base + 1;
             continue;
         }
 
         // [6] tuple_new (exception message)
         let j6 = j5 + 1;
-        if j6 >= len || ops[j6].kind != "tuple_new" {
+        if j6 >= len || ops[j6].kind != molt_ir::OpKind::TupleNew {
             i = base + 1;
             continue;
         }
@@ -228,14 +235,14 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
 
         // [8] raise
         let j8 = j7 + 1;
-        if j8 >= len || ops[j8].kind != "raise" {
+        if j8 >= len || ops[j8].kind != molt_ir::OpKind::Raise {
             i = base + 1;
             continue;
         }
 
         // [9] label val=L_ok  (continuation)
         let j9 = j8 + 1;
-        if j9 >= len || ops[j9].kind != "label" {
+        if j9 >= len || ops[j9].kind != molt_ir::OpKind::Label {
             i = base + 1;
             continue;
         }
@@ -270,7 +277,7 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
             })
             .collect();
         for (idx, op) in ops.iter().enumerate() {
-            if op.kind == "missing"
+            if op.kind == molt_ir::OpKind::Missing
                 && let Some(out) = op.out.as_deref()
                 && !surviving_args.contains(out)
             {
@@ -290,7 +297,11 @@ pub fn eliminate_unbound_local_checks(func_ir: &mut FunctionIR) {
         func_ir.ops = new_ops;
     }
     if backend_env::var(BackendEnv::MOLT_TRACE_UNBOUND_ELIM).is_ok() {
-        let surviving_missing = func_ir.ops.iter().filter(|op| op.kind == "missing").count();
+        let surviving_missing = func_ir
+            .ops
+            .iter()
+            .filter(|op| op.kind == molt_ir::OpKind::Missing)
+            .count();
         if surviving_missing > 0 {
             eprintln!(
                 "UNBOUND_ELIM: {} removed={} surviving_missing={}",

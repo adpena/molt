@@ -1,7 +1,7 @@
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::SimpleIR;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use molt_ir::tir::op_kinds_generated::simpleir_kind_references_defined_function;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Exact executable symbol references carried by a function. The declarative
@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn visit_function_reference_targets(function: &crate::FunctionIR, mut visit: impl FnMut(&str)) {
     super::app_callable_manifest::visit_gpu_descriptor_body_symbols(function, &mut visit);
     for op in &function.ops {
-        if simpleir_kind_references_defined_function(&op.kind)
+        if (op.kind).references_defined_function()
             && let Some(name) = op.s_value.as_ref()
         {
             visit(name);

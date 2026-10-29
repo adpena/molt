@@ -21,12 +21,12 @@ fn literal_operands_preserve_payloads_and_output_after_linker_data_shift() {
     // minimal positive/negative signed bigint encodings. No emitted address or
     // materializer result supplies the oracle.
     let cases = [
-        ("const_str", vec![]),
-        ("const_str", "a\0β雪".as_bytes().to_vec()),
-        ("const_bytes", vec![0, 255, 128, 1]),
-        ("const_bytes", vec![]),
-        ("const_bigint", vec![0, 0x80]),
-        ("const_bigint", vec![0xff, 0x7f]),
+        (molt_ir::OpKind::ConstStr, vec![]),
+        (molt_ir::OpKind::ConstStr, "a\0β雪".as_bytes().to_vec()),
+        (molt_ir::OpKind::ConstBytes, vec![0, 255, 128, 1]),
+        (molt_ir::OpKind::ConstBytes, vec![]),
+        (molt_ir::OpKind::ConstBigint, vec![0, 0x80]),
+        (molt_ir::OpKind::ConstBigint, vec![0xff, 0x7f]),
     ];
     let mut config = Vec::new();
     for reloc in [false, true] {
@@ -69,17 +69,16 @@ fn literal_operands_preserve_payloads_and_output_after_linker_data_shift() {
         let mut code = CodeSection::new();
         for (index, (kind, bytes)) in cases.iter().enumerate() {
             let op = OpIR {
-                kind: (*kind).into(),
                 out: Some("result".into()),
                 bytes: Some(bytes.clone()),
-                ..OpIR::default()
+                ..OpIR::new((*kind).into())
             };
             let policy = WasmConstOpPolicy::for_op(&op).unwrap();
             let mut function = Function::new([(1, ValType::I64)]);
             let import = match *kind {
-                "const_str" => 0,
-                "const_bytes" => 1,
-                "const_bigint" => 2,
+                molt_ir::OpKind::ConstStr => 0,
+                molt_ir::OpKind::ConstBytes => 1,
+                molt_ir::OpKind::ConstBigint => 2,
                 _ => unreachable!(),
             };
             policy.simple_ir_materialization_into(&op, 0).emit(

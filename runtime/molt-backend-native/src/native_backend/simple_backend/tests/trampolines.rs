@@ -2,6 +2,7 @@ use super::*;
 use crate::TrampolineSpec;
 use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
 use cranelift_module::Linkage;
+use molt_ir::OpKind;
 use molt_tir::trampolines::TrampolineTaskKind;
 
 #[derive(Clone, Copy, Debug)]
@@ -270,8 +271,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 name: chunk0,
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 }],
                 param_types: None,
                 source_file: None,
@@ -286,15 +286,13 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 params: vec![],
                 ops: vec![
                     OpIR {
-                        kind: "const".to_string(),
                         out: Some("chunk_ret".to_string()),
                         value: Some(7),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Const)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["chunk_ret".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Ret)
                     },
                 ],
                 param_types: None,
@@ -310,21 +308,18 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 params: vec![],
                 ops: vec![
                     OpIR {
-                        kind: "call_internal".to_string(),
                         s_value: Some("__molt_chunk_demo__molt_module_chunk_1_0".to_string()),
                         out: Some("__chunk_discard_0".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallInternal)
                     },
                     OpIR {
-                        kind: "call_internal".to_string(),
                         s_value: Some("__molt_chunk_demo__molt_module_chunk_1_1".to_string()),
                         out: Some("__chunk_ret".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallInternal)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["__chunk_ret".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Ret)
                     },
                 ],
                 param_types: None,
@@ -368,49 +363,40 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
 fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
     let mut ops = vec![
         OpIR {
-            kind: "trace_enter_slot".to_string(),
             s_value: Some("native_framed_large".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::TraceEnterSlot)
         },
         OpIR {
-            kind: "check_exception".to_string(),
             value: Some(1),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckException)
         },
     ];
     for line in 1..=6 {
         ops.push(OpIR {
-            kind: "line".to_string(),
             value: Some(line),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Line)
         });
         ops.push(OpIR {
-            kind: "const_none".to_string(),
             out: Some(format!("v{line}")),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstNone)
         });
     }
     ops.extend([
         OpIR {
-            kind: "trace_exit".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::TraceExit)
         },
         OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         },
         OpIR {
-            kind: "label".to_string(),
             value: Some(1),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Label)
         },
         OpIR {
-            kind: "trace_exit".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::TraceExit)
         },
         OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         },
     ]);
     let original = FunctionIR {

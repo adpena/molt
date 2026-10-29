@@ -420,7 +420,7 @@ fn strings_bytes(strings: &Vec<String>) -> usize {
 
 fn op_heap_bytes(op: &OpIR) -> usize {
     let OpIR {
-        kind,
+        kind: _,
         value: _,
         state_targets,
         f_value: _,
@@ -455,11 +455,9 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         bce_safe: _,
     } = op;
     let text = |value: &Option<String>| value.as_ref().map_or(0, String::capacity);
-    kind.capacity()
-        + state_targets.as_ref().map_or(0, |targets| {
-            targets.capacity() * std::mem::size_of::<(i64, i64)>()
-        })
-        + text(s_value)
+    state_targets.as_ref().map_or(0, |targets| {
+        targets.capacity() * std::mem::size_of::<(i64, i64)>()
+    }) + text(s_value)
         + bytes.as_ref().map_or(0, Vec::capacity)
         + text(var)
         + args.as_ref().map_or(0, strings_bytes)

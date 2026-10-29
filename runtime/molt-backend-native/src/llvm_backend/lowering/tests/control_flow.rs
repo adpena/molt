@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
@@ -17,6 +18,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
     let right = func.fresh_block();
     let previous_baseline = func.fresh_value();
     let marker = |opcode| TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],
@@ -24,18 +26,19 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
         attrs: AttrDict::from([("value".into(), AttrValue::Int(100))]),
         source_span: None,
     };
-    let runtime = |kind: &str, operands, results| TirOp {
+    let runtime = |kind: OpKind, operands, results| TirOp {
+        origin: Some(kind),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
         results,
-        attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+        attrs: AttrDict::from([]),
         source_span: None,
     };
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.extend([
-        runtime("exception_stack_enter", vec![], vec![previous_baseline]),
-        runtime("exception_push", vec![], vec![]),
+        runtime(OpKind::ExceptionStackEnter, vec![], vec![previous_baseline]),
+        runtime(OpKind::ExceptionPush, vec![], vec![]),
         marker(OpCode::TryStart),
     ]);
     entry.terminator = Terminator::CondBranch {
@@ -53,8 +56,8 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
                 args: vec![],
                 ops: vec![
                     marker(OpCode::TryEnd),
-                    runtime("exception_pop", vec![], vec![]),
-                    runtime("exception_stack_exit", vec![previous_baseline], vec![]),
+                    runtime(OpKind::ExceptionPop, vec![], vec![]),
+                    runtime(OpKind::ExceptionStackExit, vec![previous_baseline], vec![]),
                 ],
                 terminator: Terminator::Return { values: vec![] },
             },
@@ -125,10 +128,9 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             if let Some(kind) = task_kind {
                 attrs.insert("task_kind".into(), AttrValue::Str(kind.into()));
             }
-            if call_async {
-                attrs.insert("_original_kind".into(), AttrValue::Str("call_async".into()));
-            }
+            let origin = call_async.then_some(OpKind::CallAsync);
             entry.ops.push(TirOp {
+                origin,
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -141,6 +143,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 source_span: None,
             });
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ExceptionPending,
                 operands: vec![],
@@ -150,6 +153,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             });
             for arg in args {
                 entry.ops.push(TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::DecRef,
                     operands: vec![arg],
@@ -159,14 +163,12 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 });
             }
             entry.ops.push(TirOp {
+                origin: Some(OpKind::TraceExit),
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![],
                 results: vec![],
-                attrs: AttrDict::from([(
-                    "_original_kind".into(),
-                    AttrValue::Str("trace_exit".into()),
-                )]),
+                attrs: AttrDict::from([]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return {
@@ -305,15 +307,14 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             );
             let result = function.fresh_value();
             let entry = function.blocks.get_mut(&function.entry_block).unwrap();
-            let mut attrs = AttrDict::from([
+            let attrs = AttrDict::from([
                 ("s_value".into(), AttrValue::Str(symbol.into())),
                 ("value".into(), AttrValue::Int(16)),
                 ("task_kind".into(), AttrValue::Str("future".into())),
             ]);
-            if call_async {
-                attrs.insert("_original_kind".into(), AttrValue::Str("call_async".into()));
-            }
+            let origin = call_async.then_some(OpKind::CallAsync);
             entry.ops.push(TirOp {
+                origin,
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -392,6 +393,7 @@ fn lower_const_and_return() {
     let v0 = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -428,6 +430,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(owned));
     let mut exception_pop = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -435,12 +438,10 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
         attrs: AttrDict::new(),
         source_span: None,
     };
-    exception_pop.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("exception_pop".into()),
-    );
+    exception_pop.origin = Some(OpKind::ExceptionPop);
     entry.ops.push(exception_pop);
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DecRef,
         operands: vec![owned],
@@ -610,6 +611,7 @@ fn check_exception_edge_feeds_handler_phi() {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Import,
             operands: vec![],
@@ -618,6 +620,7 @@ fn check_exception_edge_feeds_handler_phi() {
             source_span: None,
         });
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![live_value],
@@ -691,6 +694,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
             let entry = function.blocks.get_mut(&function.entry_block).unwrap();
             if inside_try {
                 entry.ops.push(TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::TryStart,
                     operands: vec![],
@@ -700,6 +704,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
                 });
             }
             let mut check = TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],

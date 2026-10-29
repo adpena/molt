@@ -5,16 +5,14 @@ mod cbor_tests {
     #[test]
     fn cbor_round_trip_minimal_ir() {
         let c0 = OpIR {
-            kind: "const".to_string(),
             value: Some(42),
             out: Some("v0".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         };
 
         let ret = OpIR {
-            kind: "ret".to_string(),
             args: Some(vec!["v0".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         };
 
         let ir = SimpleIR {
@@ -48,10 +46,10 @@ mod cbor_tests {
         assert_eq!(f.name, "test_fn");
         assert_eq!(f.params, vec!["x"]);
         assert_eq!(f.ops.len(), 2);
-        assert_eq!(f.ops[0].kind, "const");
+        assert_eq!(f.ops[0].kind, molt_ir::OpKind::Const);
         assert_eq!(f.ops[0].value, Some(42));
         assert_eq!(f.ops[0].out.as_deref(), Some("v0"));
-        assert_eq!(f.ops[1].kind, "ret");
+        assert_eq!(f.ops[1].kind, molt_ir::OpKind::Ret);
         assert_eq!(f.ops[1].args.as_deref(), Some(&["v0".to_string()][..]));
         assert_eq!(f.param_types.as_deref(), Some(&["int".to_string()][..]));
         assert!(ir2.profile.is_none());
@@ -70,22 +68,19 @@ fn test_cbor_nan_infinity_round_trip() {
             params: vec![],
             ops: vec![
                 OpIR {
-                    kind: "const_float".to_string(),
                     f_value: Some(f64::NAN),
                     out: Some("v0".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstFloat)
                 },
                 OpIR {
-                    kind: "const_float".to_string(),
                     f_value: Some(f64::INFINITY),
                     out: Some("v1".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstFloat)
                 },
                 OpIR {
-                    kind: "const_float".to_string(),
                     f_value: Some(f64::NEG_INFINITY),
                     out: Some("v2".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstFloat)
                 },
             ],
             param_types: None,

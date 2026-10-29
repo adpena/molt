@@ -15,46 +15,39 @@ fn test_compile_checked_lowers_type_check_helpers() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("int_tag".to_string()),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "builtin_type".to_string(),
                     out: Some("int_cls".to_string()),
                     args: Some(vec!["int_tag".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuiltinType)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("bool_tag".to_string()),
                     value: Some(3),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "builtin_type".to_string(),
                     out: Some("bool_cls".to_string()),
                     args: Some(vec!["bool_tag".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuiltinType)
                 },
                 OpIR {
-                    kind: "const_bool".to_string(),
                     out: Some("flag".to_string()),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "isinstance".to_string(),
                     out: Some("is_int".to_string()),
                     args: Some(vec!["flag".to_string(), "int_cls".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Isinstance)
                 },
                 OpIR {
-                    kind: "issubclass".to_string(),
                     out: Some("bool_is_int".to_string()),
                     args: Some(vec!["bool_cls".to_string(), "int_cls".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Issubclass)
                 },
             ],
         }],
@@ -98,27 +91,23 @@ fn test_compile_checked_lowers_callable_builtin_through_invocation_authority() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "builtin_func".to_string(),
                     out: Some("callable_fn".to_string()),
                     s_value: Some("molt_callable_builtin".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                 },
                 OpIR {
-                    kind: "callargs_new".to_string(),
                     out: Some("callable_args".to_string()),
                     args: Some(vec!["candidate".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsNew)
                 },
                 OpIR {
-                    kind: "call_func".to_string(),
                     out: Some("is_callable".to_string()),
                     args: Some(vec!["callable_fn".to_string(), "callable_args".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallFunc)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["is_callable".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -157,178 +146,150 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
-                        kind: "func_new".to_string(),
                         out: Some("method_func".to_string()),
                         s_value: Some("descriptor_method".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "func_new".to_string(),
                         out: Some("class_func".to_string()),
                         s_value: Some("descriptor_class".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "func_new".to_string(),
                         out: Some("static_func".to_string()),
                         s_value: Some("descriptor_static".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "func_new".to_string(),
                         out: Some("get_func".to_string()),
                         s_value: Some("descriptor_get".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "func_new".to_string(),
                         out: Some("set_func".to_string()),
                         s_value: Some("descriptor_set".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "func_new".to_string(),
                         out: Some("del_func".to_string()),
                         s_value: Some("descriptor_del".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "object_new".to_string(),
                         out: Some("cls".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ObjectNew)
                     },
                     OpIR {
-                        kind: "object_new".to_string(),
                         out: Some("obj".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ObjectNew)
                     },
                     OpIR {
-                        kind: "classmethod_new".to_string(),
                         out: Some("cm_desc".to_string()),
                         args: Some(vec!["class_func".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ClassmethodNew)
                     },
                     OpIR {
-                        kind: "staticmethod_new".to_string(),
                         out: Some("sm_desc".to_string()),
                         args: Some(vec!["static_func".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::StaticmethodNew)
                     },
                     OpIR {
-                        kind: "property_new".to_string(),
                         out: Some("prop_desc".to_string()),
                         args: Some(vec![
                             "get_func".to_string(),
                             "set_func".to_string(),
                             "del_func".to_string(),
                         ]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::PropertyNew)
                     },
                     OpIR {
-                        kind: "set_attr_generic_obj".to_string(),
                         args: Some(vec!["cls".to_string(), "method_func".to_string()]),
                         s_value: Some("method".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "set_attr_generic_obj".to_string(),
                         args: Some(vec!["cls".to_string(), "cm_desc".to_string()]),
                         s_value: Some("cm".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "set_attr_generic_obj".to_string(),
                         args: Some(vec!["cls".to_string(), "sm_desc".to_string()]),
                         s_value: Some("sm".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "set_attr_generic_obj".to_string(),
                         args: Some(vec!["cls".to_string(), "prop_desc".to_string()]),
                         s_value: Some("value".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "get_attr_generic_obj".to_string(),
                         out: Some("cm_bound".to_string()),
                         args: Some(vec!["obj".to_string()]),
                         s_value: Some("cm".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::GetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "get_attr_generic_obj".to_string(),
                         out: Some("sm_func".to_string()),
                         args: Some(vec!["cls".to_string()]),
                         s_value: Some("sm".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::GetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "get_attr_generic_obj".to_string(),
                         out: Some("prop_value".to_string()),
                         args: Some(vec!["obj".to_string()]),
                         s_value: Some("value".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::GetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "const_str".to_string(),
                         out: Some("value_name".to_string()),
                         s_value: Some("value".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ConstStr)
                     },
                     OpIR {
-                        kind: "has_attr_name".to_string(),
                         out: Some("has_value".to_string()),
                         args: Some(vec!["obj".to_string(), "value_name".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::HasAttrName)
                     },
                     OpIR {
-                        kind: "const".to_string(),
                         out: Some("new_value".to_string()),
                         value: Some(7),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Const)
                     },
                     OpIR {
-                        kind: "set_attr_generic_obj".to_string(),
                         args: Some(vec!["obj".to_string(), "new_value".to_string()]),
                         s_value: Some("value".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
                     },
                     OpIR {
-                        kind: "del_attr_generic_obj".to_string(),
                         args: Some(vec!["obj".to_string()]),
                         s_value: Some("value".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::DelAttrGenericObj)
                     },
                     OpIR {
-                        kind: "call_method".to_string(),
                         out: Some("method_result".to_string()),
                         args: Some(vec!["obj".to_string()]),
                         s_value: Some("method".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallMethod)
                     },
                     OpIR {
-                        kind: "builtin_func".to_string(),
                         out: Some("getattr_builtin".to_string()),
                         s_value: Some("molt_getattr_builtin".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                     },
                     OpIR {
-                        kind: "builtin_func".to_string(),
                         out: Some("setattr_builtin".to_string()),
                         s_value: Some("molt_set_attr_name".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                     },
                     OpIR {
-                        kind: "builtin_func".to_string(),
                         out: Some("delattr_builtin".to_string()),
                         s_value: Some("molt_del_attr_name".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                     },
                     OpIR {
-                        kind: "builtin_func".to_string(),
                         out: Some("hasattr_builtin".to_string()),
                         s_value: Some("molt_has_attr_name".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                     },
                 ],
             },
@@ -342,10 +303,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -357,10 +315,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -372,10 +327,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -387,10 +339,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -402,10 +351,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -417,10 +363,7 @@ fn test_compile_checked_lowers_descriptor_attribute_authority() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
         ],
         profile: None,
@@ -493,9 +436,8 @@ fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "function_closure_bits".to_string(),
                 out: Some("v0".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::FunctionClosureBits)
             }],
         }],
         profile: None,
@@ -515,42 +457,9 @@ fn test_compile_checked_rejects_unavailable_lexical_cell_transport() {
 
 #[test]
 fn test_compile_checked_rejects_retired_bridge_marker() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "bridge_unavailable_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![
-                OpIR {
-                    kind: "const_str".to_string(),
-                    out: Some("message".to_string()),
-                    s_value: Some("dynamic bridge disabled".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "bridge_unavailable".to_string(),
-                    out: Some("v0".to_string()),
-                    args: Some(vec!["message".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let error = backend
-        .compile_checked(&ir)
-        .expect_err("retired bridge marker must fail before source emission");
-    assert!(
-        error.contains("unregistered op kind `bridge_unavailable`"),
-        "{error}"
-    );
+    let error = molt_ir::SimpleIR::from_json_str(r#"{"functions":[{"name":"retired","return_abi":"void","params":[],"ops":[{"kind":"bridge_unavailable"}]}]}"#)
+        .expect_err("a retired spelling must fail during wire decode");
+    assert!(error.contains("bridge_unavailable"), "{error}");
 }
 
 #[test]
@@ -567,9 +476,8 @@ fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "invoke_ffi".to_string(),
                 out: Some("v0".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::InvokeFfi)
             }],
         }],
         profile: None,
@@ -591,12 +499,11 @@ fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
 #[test]
 fn class_statement_identity_and_guarded_fields_lower_by_name() {
     let statement = "class:m:P";
-    let named = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
-        kind: kind.to_string(),
+    let named = |kind: molt_ir::OpKind, args: &[&str], out: Option<&str>| OpIR {
         args: Some(args.iter().map(|arg| (*arg).to_string()).collect()),
         out: out.map(str::to_string),
         class_definition: Some(statement.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     };
     let field = |mut op: OpIR| {
         op.s_value = Some("x".to_string());
@@ -620,10 +527,14 @@ fn class_statement_identity_and_guarded_fields_lower_by_name() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
-                named("class_set_definition", &["cls"], None),
-                field(named("guarded_field_set", &["obj", "version", "val"], None)),
+                named(molt_ir::OpKind::ClassSetDefinition, &["cls"], None),
                 field(named(
-                    "guarded_field_get",
+                    molt_ir::OpKind::GuardedFieldSet,
+                    &["obj", "version", "val"],
+                    None,
+                )),
+                field(named(
+                    molt_ir::OpKind::GuardedFieldGet,
                     &["obj", "version"],
                     Some("read"),
                 )),
@@ -659,10 +570,9 @@ fn luau_compile_rejects_unknown_ops_instead_of_failing_open() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "unknown_luau_op".to_string(),
                 out: Some("v0".to_string()),
                 args: Some(vec!["v1".to_string(), "v2".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::GpuBarrier)
             }],
         }],
         profile: None,
@@ -670,7 +580,7 @@ fn luau_compile_rejects_unknown_ops_instead_of_failing_open() {
     let error = LuauBackend::new()
         .compile_checked(&ir)
         .expect_err("compile_checked must reject unknown ops");
-    assert!(error.contains("unknown_luau_op"), "{error}");
+    assert!(error.contains("gpu_barrier"), "{error}");
 }
 
 #[test]
@@ -690,15 +600,11 @@ fn test_luau_repr_authority_typed_list_call_method_dispatch() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("append".to_string()),
                     args: Some(vec!["xs".to_string(), "v".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,

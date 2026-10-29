@@ -34,6 +34,7 @@ fn discarded_representation_bindings_share_tir_and_lir_shape_admission() {
         );
         let block = function.blocks.get_mut(&function.entry_block).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0)],
@@ -61,6 +62,7 @@ fn semantic_unbox_preserves_the_shared_boxed_carrier_plan() {
     function.value_types.insert(result, TirType::I64);
     let block = function.blocks.get_mut(&function.entry_block).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnboxVal,
         operands: vec![ValueId(0)],
@@ -103,6 +105,7 @@ fn ref64_result_requires_supported_allocation_provenance() {
             args: vec![],
             ops: vec![LirOp {
                 tir_op: TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -214,6 +217,7 @@ fn truthiness_marker_requires_the_real_bool_operation() {
             args: vec![value(0, TirType::DynBox, LirRepr::DynBox)],
             ops: vec![LirOp {
                 tir_op: TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![ValueId(0)],

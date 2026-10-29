@@ -1,10 +1,10 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_context_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_context_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["context_enter", "context_exit"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::ContextEnter, OpKind::ContextExit);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for the context-manager runtime ops `context_enter` and `context_exit`.
@@ -55,8 +55,8 @@ pub(in crate::native_backend::function_compiler) fn handle_context_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "context_enter" => {
+    match op.kind {
+        OpKind::ContextEnter => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let ctx = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -83,7 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_context_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "context_exit" => {
+        OpKind::ContextExit => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let ctx = var_get_boxed_overflow_safe(
                 &mut *module,

@@ -15,7 +15,9 @@ use libfuzzer_sys::fuzz_target;
 use molt_backend::ir_schema::validate_simple_ir_op_shapes;
 use molt_backend::passes::{SIMPLE_IR_FUNCTION_PASSES, apply_profile_order};
 use molt_backend::tir::target_info::TargetInfo;
-use molt_backend::{FunctionIR, OpIR, SimpleIR, eliminate_dead_functions, eliminate_dead_ops};
+use molt_backend::{
+    FunctionIR, OpIR, OpKind, SimpleIR, eliminate_dead_functions, eliminate_dead_ops,
+};
 
 /// Generate a structurally valid IR with ops that exercise the passes.
 #[derive(Debug)]
@@ -25,29 +27,29 @@ struct PassFuzzInput {
 
 /// Registered SimpleIR kinds that exercise the passes. A kind or shape that
 /// admission rejects fails the target on its first input, not silently.
-const PASS_OP_KINDS: &[&str] = &[
-    "const",
-    "const_bool",
-    "const_none",
-    "const_float",
-    "add",
-    "sub",
-    "mul",
-    "neg",
-    "lt",
-    "ret",
-    "call",
-    "nop",
-    "label",
-    "jump",
-    "br_if",
-    "alloc_class",
-    "store",
-    "load",
-    "inc_ref",
-    "dec_ref",
-    "loop_start",
-    "loop_end",
+const PASS_OP_KINDS: &[OpKind] = &[
+    OpKind::Const,
+    OpKind::ConstBool,
+    OpKind::ConstNone,
+    OpKind::ConstFloat,
+    OpKind::Add,
+    OpKind::Sub,
+    OpKind::Mul,
+    OpKind::Neg,
+    OpKind::Lt,
+    OpKind::Ret,
+    OpKind::Call,
+    OpKind::Nop,
+    OpKind::Label,
+    OpKind::Jump,
+    OpKind::BrIf,
+    OpKind::AllocClass,
+    OpKind::Store,
+    OpKind::Load,
+    OpKind::IncRef,
+    OpKind::DecRef,
+    OpKind::LoopStart,
+    OpKind::LoopEnd,
 ];
 
 impl<'a> Arbitrary<'a> for PassFuzzInput {
@@ -70,54 +72,48 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
 
             for _ in 0..num_ops {
                 let kind_idx = u.int_in_range(0..=PASS_OP_KINDS.len() - 1)?;
-                let kind = PASS_OP_KINDS[kind_idx].to_string();
+                let kind = PASS_OP_KINDS[kind_idx];
                 let out_name = format!("v{next_var}");
                 next_var += 1;
 
-                let op = match kind.as_str() {
-                    "const" => OpIR {
-                        kind,
+                let op = match kind {
+                    OpKind::Const => OpIR {
                         value: Some(u.int_in_range(-10000..=10000)?),
                         out: Some(out_name),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    "const_bool" => OpIR {
-                        kind,
+                    OpKind::ConstBool => OpIR {
                         value: Some(if u.arbitrary()? { 1 } else { 0 }),
                         out: Some(out_name),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    "const_none" => OpIR {
-                        kind,
+                    OpKind::ConstNone => OpIR {
                         out: Some(out_name),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    "const_float" => OpIR {
-                        kind,
+                    OpKind::ConstFloat => OpIR {
                         f_value: Some(u.arbitrary::<f64>().unwrap_or(0.0)),
                         out: Some(out_name),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    "add" | "sub" | "mul" | "lt" => {
+                    OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Lt => {
                         let a = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         let b = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
-                            kind,
                             args: Some(vec![a, b]),
                             out: Some(out_name),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }
                     }
-                    "neg" => {
+                    OpKind::Neg => {
                         let a = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
-                            kind,
                             args: Some(vec![a]),
                             out: Some(out_name),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }
                     }
-                    "call" => {
+                    OpKind::Call => {
                         let target_idx = u.int_in_range(0..=num_functions.max(1) - 1)?;
                         let target = if target_idx == 0 {
                             "molt_main".to_string()
@@ -125,87 +121,75 @@ impl<'a> Arbitrary<'a> for PassFuzzInput {
                             format!("func_{target_idx}")
                         };
                         OpIR {
-                            kind,
                             s_value: Some(target),
                             args: Some(vec![]),
                             out: Some(out_name),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }
                     }
-                    "alloc_class" => OpIR {
-                        kind,
+                    OpKind::AllocClass => OpIR {
                         s_value: Some("MyClass".to_string()),
                         out: Some(out_name),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    "store" => {
+                    OpKind::Store => {
                         let obj = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         let val = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
-                            kind,
                             args: Some(vec![obj, val]),
                             s_value: Some("field".to_string()),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }
                     }
-                    "load" => {
+                    OpKind::Load => {
                         let obj = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
-                            kind,
                             args: Some(vec![obj]),
                             s_value: Some("field".to_string()),
                             out: Some(out_name),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }
                     }
-                    "inc_ref" | "dec_ref" => {
+                    OpKind::IncRef | OpKind::DecRef => {
                         let var = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
-                            kind,
                             args: Some(vec![var]),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }
                     }
-                    "label" | "jump" => OpIR {
-                        kind,
+                    OpKind::Label | OpKind::Jump => OpIR {
                         value: Some(u.int_in_range(0..=10)?),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    "br_if" => {
+                    OpKind::BrIf => {
                         let cond = format!("v{}", u.int_in_range(0..=next_var.max(1) - 1)?);
                         OpIR {
-                            kind,
                             value: Some(u.int_in_range(0..=10)?),
                             args: Some(vec![cond]),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }
                     }
-                    "loop_start" | "loop_end" => OpIR {
-                        kind,
+                    OpKind::LoopStart | OpKind::LoopEnd => OpIR {
                         s_value: Some(format!("loop_{}", u.int_in_range(0..=3)?)),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    "ret" => OpIR {
-                        kind,
+                    OpKind::Ret => OpIR {
                         args: Some(vec![format!(
                             "v{}",
                             u.int_in_range(0..=next_var.max(1) - 1)?
                         )]),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
-                    _ => OpIR {
-                        kind,
-                        ..OpIR::default()
-                    },
+                    OpKind::Nop => OpIR::new(kind),
+                    _ => unreachable!("pass fuzz palette has no shape for {kind}"),
                 };
                 ops.push(op);
             }
 
             // Always end with a return.
             ops.push(OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["__ret".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             });
 
             functions.push(FunctionIR {

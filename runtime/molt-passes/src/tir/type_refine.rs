@@ -105,6 +105,7 @@ fn extract_type_map_with_exact(
                 .collect();
             let inferred_types = infer_result_types_with_attrs(
                 op.opcode,
+                op.origin,
                 &operand_types,
                 Some(&op.attrs),
                 op.results.len(),
@@ -260,7 +261,12 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                             crate::tir::op_semantics::op_instance_facts_for_op(op, &exact)
                                 .and_then(|facts| facts.result_type)
                                 .or_else(|| {
-                                    attr_result_type_override(op.opcode, &op.attrs, &op.operands)
+                                    attr_result_type_override(
+                                        op.opcode,
+                                        op.origin,
+                                        &op.attrs,
+                                        &op.operands,
+                                    )
                                 })
                         } else {
                             None
@@ -355,13 +361,19 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     .collect();
                 let inferred_facts = if results.len() == 1 {
                     vec![return_type_hint.clone().unwrap_or_else(|| {
-                        infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
+                        infer_result_facts_with_attrs(*opcode, None, &operand_facts, None, 1)
                             .into_iter()
                             .next()
                             .unwrap_or(TirType::Never)
                     })]
                 } else {
-                    infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
+                    infer_result_facts_with_attrs(
+                        *opcode,
+                        None,
+                        &operand_facts,
+                        None,
+                        results.len(),
+                    )
                 };
                 for (&result_id, inferred) in results.iter().zip(inferred_facts) {
                     join_assign_type_fact(&mut facts, result_id, inferred);
@@ -512,13 +524,13 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             // inference for everything else.
             let inferred_facts = if results.len() == 1 {
                 vec![return_type_hint.clone().unwrap_or_else(|| {
-                    infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
+                    infer_result_facts_with_attrs(*opcode, None, &operand_facts, None, 1)
                         .into_iter()
                         .next()
                         .unwrap_or(TirType::Never)
                 })]
             } else {
-                infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
+                infer_result_facts_with_attrs(*opcode, None, &operand_facts, None, results.len())
             };
 
             for (&result_id, inferred) in results.iter().zip(inferred_facts) {

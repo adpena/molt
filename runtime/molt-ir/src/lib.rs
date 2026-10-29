@@ -53,3 +53,5 @@ pub const PYTHON_STRING_SOURCE: &str = include_str!("python_string.rs");
 
 #[cfg(test)]
 mod python_string_tests;
+
+pub use crate::tir::op_kinds_generated::OpKind;

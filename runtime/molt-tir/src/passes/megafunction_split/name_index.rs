@@ -86,33 +86,33 @@ mod tests {
     fn sparse_queries_match_reverse_and_forward_dataflow_at_every_boundary() {
         let ops = vec![
             OpIR {
-                kind: "copy".into(),
+                kind: molt_ir::OpKind::Copy,
                 args: Some(vec!["input".into()]),
                 out: Some("x".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Copy)
             },
             OpIR {
-                kind: "copy".into(),
+                kind: molt_ir::OpKind::Copy,
                 args: Some(vec!["x".into()]),
                 out: Some("x".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Copy)
             },
             OpIR {
-                kind: "copy".into(),
+                kind: molt_ir::OpKind::Copy,
                 args: Some(vec!["external".into()]),
                 out: Some("x".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Copy)
             },
             OpIR {
-                kind: "add".into(),
+                kind: molt_ir::OpKind::Add,
                 args: Some(vec!["x".into(), "input".into()]),
                 out: Some("sum".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Add)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["sum".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ];
         let index = SplitNameIndex::new(&ops);
@@ -157,10 +157,10 @@ mod tests {
     fn storage_tracks_events_not_dense_live_set_snapshots() {
         let ops = (0..2048)
             .map(|index| OpIR {
-                kind: "copy".into(),
+                kind: molt_ir::OpKind::Copy,
                 args: Some(vec![format!("input_{index}")]),
                 out: Some(format!("result_{index}")),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Copy)
             })
             .collect::<Vec<_>>();
         let index = SplitNameIndex::new(&ops);

@@ -3,16 +3,20 @@ use super::*;
 
 #[test]
 fn exception_self_edges_transport_updated_values_at_the_transfer() {
-    for kind in ["check_exception", "async_work_poll", "try_start"] {
+    for kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+    ] {
         let ops = vec![
-            op_val_out("const", 10, "x"),
-            op_val("label", 7),
-            op_args_out("add", &["x", "x"], "x"),
+            op_val_out(crate::OpKind::Const, 10, "x"),
+            op_val(crate::OpKind::Label, 7),
+            op_args_out(crate::OpKind::Add, &["x", "x"], "x"),
             op_val(kind, 7),
             // This definition is on the normal continuation only. The
             // exception backedge must carry the Add result, never this value.
-            op_val_out("const", 99, "x"),
-            op_args("ret", &["x"]),
+            op_val_out(crate::OpKind::Const, 99, "x"),
+            op_args(crate::OpKind::Ret, &["x"]),
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
@@ -53,15 +57,20 @@ fn exception_self_edges_transport_updated_values_at_the_transfer() {
 
 #[test]
 fn exception_self_edge_to_entry_preserves_parameter_order_and_updated_values() {
-    for kind in ["check_exception", "async_work_poll", "try_start", "br_if"] {
+    for kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+        crate::OpKind::BrIf,
+    ] {
         let ops = vec![
-            op_val("label", 7),
-            op_args_out("sub", &["z", "a"], "z"),
+            op_val(crate::OpKind::Label, 7),
+            op_args_out(crate::OpKind::Sub, &["z", "a"], "z"),
             OpIR {
-                args: (kind == "br_if").then(|| vec!["a".into()]),
+                args: (kind == crate::OpKind::BrIf).then(|| vec!["a".into()]),
                 ..op_val(kind, 7)
             },
-            op_args("ret", &["z"]),
+            op_args(crate::OpKind::Ret, &["z"]),
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa_with_params(&cfg, &ops, &["z".into(), "a".into()]);
@@ -102,7 +111,7 @@ fn exception_self_edge_to_entry_preserves_parameter_order_and_updated_values() {
                 }
             })
             .collect();
-        if kind == "br_if" {
+        if kind == crate::OpKind::BrIf {
             assert!(
                 matches!(&body.terminator, Terminator::CondBranch { then_block, then_args, .. }
                 if *then_block == body.id && *then_args == expected),
@@ -118,12 +127,17 @@ fn exception_self_edge_to_entry_preserves_parameter_order_and_updated_values() {
 
 #[test]
 fn reentry_local_is_seeded_by_invocation_without_expanding_the_signature() {
-    for kind in ["check_exception", "async_work_poll", "try_start", "jump"] {
+    for kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+        crate::OpKind::Jump,
+    ] {
         let ops = vec![
-            op_val("label", 7),
-            op_args_out("add", &["x", "x"], "x"),
+            op_val(crate::OpKind::Label, 7),
+            op_args_out(crate::OpKind::Add, &["x", "x"], "x"),
             op_val(kind, 7),
-            op_args("ret", &["x"]),
+            op_args(crate::OpKind::Ret, &["x"]),
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
@@ -146,7 +160,7 @@ fn reentry_local_is_seeded_by_invocation_without_expanding_the_signature() {
         assert_eq!(body.args.len(), 1);
         let add = body.ops.iter().find(|op| op.opcode == OpCode::Add).unwrap();
         assert_eq!(add.operands, vec![body.args[0].id; 2], "{kind}");
-        if kind == "jump" {
+        if kind == crate::OpKind::Jump {
             assert!(
                 matches!(&body.terminator, Terminator::Branch { target, args }
                 if *target == body.id && *args == add.results),
@@ -179,21 +193,18 @@ fn checked_entry_does_not_materialize_unused_none() {
     let ops = vec![
         OpIR {
             s_value: Some("checked_entry".into()),
-            ..op("trace_enter_slot")
+            ..op(crate::OpKind::TraceEnterSlot)
         },
-        op_val("check_exception", 1),
-        op_val_out("const", 3, "result"),
-        op_args("ret", &["result"]),
-        op_val("label", 1),
-        op("ret_void"),
+        op_val(crate::OpKind::CheckException, 1),
+        op_val_out(crate::OpKind::Const, 3, "result"),
+        op_args(crate::OpKind::Ret, &["result"]),
+        op_val(crate::OpKind::Label, 1),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
     let entry = &output.blocks[cfg.entry];
-    assert_eq!(
-        entry.ops[0].attrs.get("_original_kind"),
-        Some(&AttrValue::Str("trace_enter_slot".into()))
-    );
+    assert_eq!(entry.ops[0].origin, Some(crate::OpKind::TraceEnterSlot));
     assert_eq!(entry.ops[1].opcode, OpCode::CheckException);
     assert!(
         output
@@ -210,24 +221,21 @@ fn checked_entry_keeps_later_missing_uses_in_the_success_continuation() {
     let ops = vec![
         OpIR {
             s_value: Some("checked_entry".into()),
-            ..op("trace_enter_slot")
+            ..op(crate::OpKind::TraceEnterSlot)
         },
-        op_val("check_exception", 1),
-        op_args_out("add", &["missing", "missing"], "sum"),
-        op_args("ret", &["sum"]),
-        op_val("label", 1),
-        op("ret_void"),
-        op_val("label", 2),
-        op_val_out("const", 4, "missing"),
-        op("ret_void"),
+        op_val(crate::OpKind::CheckException, 1),
+        op_args_out(crate::OpKind::Add, &["missing", "missing"], "sum"),
+        op_args(crate::OpKind::Ret, &["sum"]),
+        op_val(crate::OpKind::Label, 1),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::Label, 2),
+        op_val_out(crate::OpKind::Const, 4, "missing"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
     let entry = &output.blocks[cfg.entry];
-    assert_eq!(
-        entry.ops[0].attrs.get("_original_kind"),
-        Some(&AttrValue::Str("trace_enter_slot".into()))
-    );
+    assert_eq!(entry.ops[0].origin, Some(crate::OpKind::TraceEnterSlot));
     assert_eq!(entry.ops[1].opcode, OpCode::CheckException);
     assert!(entry.ops.iter().all(|op| op.opcode != OpCode::ConstNone));
     let continuation = output
@@ -250,18 +258,18 @@ fn later_exception_edge_materializes_its_missing_environment_locally() {
     let ops = vec![
         OpIR {
             s_value: Some("checked_entry".into()),
-            ..op("trace_enter_slot")
+            ..op(crate::OpKind::TraceEnterSlot)
         },
-        op_val("check_exception", 1),
-        op_val("check_exception", 3),
-        op("ret_void"),
-        op_val("label", 1),
-        op("ret_void"),
-        op_val("label", 3),
-        op_args("ret", &["missing"]),
-        op_val("label", 4),
-        op_val_out("const", 4, "missing"),
-        op("ret_void"),
+        op_val(crate::OpKind::CheckException, 1),
+        op_val(crate::OpKind::CheckException, 3),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::Label, 1),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::Label, 3),
+        op_args(crate::OpKind::Ret, &["missing"]),
+        op_val(crate::OpKind::Label, 4),
+        op_val_out(crate::OpKind::Const, 4, "missing"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -295,18 +303,22 @@ fn later_exception_edge_materializes_its_missing_environment_locally() {
 
 #[test]
 fn transfer_family_keeps_point_specific_handler_values_and_join_arguments() {
-    for kind in ["check_exception", "async_work_poll", "try_start"] {
+    for kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+    ] {
         let ops = vec![
-            op_val_out("const", 1, "x"),
+            op_val_out(crate::OpKind::Const, 1, "x"),
             op_val(kind, 100),
-            op_val_out("const", 2, "x"),
+            op_val_out(crate::OpKind::Const, 2, "x"),
             op_val(kind, 100),
-            op_val_out("const", 3, "x"),
-            op_val("jump", 200),
-            op_val("label", 100),
-            op_val("jump", 200),
-            op_val("label", 200),
-            op_args("ret", &["x"]),
+            op_val_out(crate::OpKind::Const, 3, "x"),
+            op_val(crate::OpKind::Jump, 200),
+            op_val(crate::OpKind::Label, 100),
+            op_val(crate::OpKind::Jump, 200),
+            op_val(crate::OpKind::Label, 200),
+            op_args(crate::OpKind::Ret, &["x"]),
         ];
         let cfg = CFG::build(&ops);
         let bid_at = |index| {
@@ -389,12 +401,12 @@ fn transfer_family_keeps_point_specific_handler_values_and_join_arguments() {
 #[test]
 fn missing_operands_and_return_share_only_their_local_definition() {
     let ops = vec![
-        op_val_out("const", 3, "seed"),
-        op_args_out("add", &["missing", "missing"], "sum"),
-        op_args("ret", &["missing"]),
-        op_val("label", 8),
-        op_val_out("const", 4, "missing"),
-        op("ret_void"),
+        op_val_out(crate::OpKind::Const, 3, "seed"),
+        op_args_out(crate::OpKind::Add, &["missing", "missing"], "sum"),
+        op_args(crate::OpKind::Ret, &["missing"]),
+        op_val(crate::OpKind::Label, 8),
+        op_val_out(crate::OpKind::Const, 4, "missing"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -410,10 +422,10 @@ fn missing_operands_and_return_share_only_their_local_definition() {
 #[test]
 fn disconnected_return_materializes_in_its_own_block() {
     let ops = vec![
-        op_val_out("const", 3, "missing"),
-        op("ret_void"),
-        op_val("label", 7),
-        op_args("ret", &["missing"]),
+        op_val_out(crate::OpKind::Const, 3, "missing"),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::Label, 7),
+        op_args(crate::OpKind::Ret, &["missing"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -441,18 +453,21 @@ fn disconnected_return_materializes_in_its_own_block() {
 fn complete_and_dead_phi_edges_do_not_materialize_none() {
     for used in [false, true] {
         let mut ops = vec![
-            op_val_out("const", 1, "condition"),
-            op_args("if", &["condition"]),
-            op_val_out("const", 3, "x"),
+            op_val_out(crate::OpKind::Const, 1, "condition"),
+            op_args(crate::OpKind::If, &["condition"]),
+            op_val_out(crate::OpKind::Const, 3, "x"),
         ];
         if used {
-            ops.extend([op("else"), op_val_out("const", 4, "x")]);
+            ops.extend([
+                op(crate::OpKind::Else),
+                op_val_out(crate::OpKind::Const, 4, "x"),
+            ]);
         }
-        ops.push(op("end_if"));
+        ops.push(op(crate::OpKind::EndIf));
         ops.push(if used {
-            op_args("ret", &["x"])
+            op_args(crate::OpKind::Ret, &["x"])
         } else {
-            op("ret_void")
+            op(crate::OpKind::RetVoid)
         });
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
@@ -532,28 +547,39 @@ fn undefined_materialization_covers_every_terminator_value_projection() {
 #[test]
 fn repeated_definition_and_alias_pushes_restore_the_dominating_value_for_siblings() {
     for repetitions in [1, 64] {
-        let mut ops = vec![op_val_out("const", 17, "x"), op_args("if", &["condition"])];
+        let mut ops = vec![
+            op_val_out(crate::OpKind::Const, 17, "x"),
+            op_args(crate::OpKind::If, &["condition"]),
+        ];
         let mut last_store = 0;
         for index in 0..repetitions {
-            ops.push(op_val_out("const", 100 + index, "fresh"));
+            ops.push(op_val_out(crate::OpKind::Const, 100 + index, "fresh"));
             last_store = ops.len();
             ops.push(OpIR {
                 var: Some("x".into()),
                 // Both a duplicate name and a distinct binding snapshot must
                 // pop exactly as often as the shared definition visitor pushes.
                 out: Some(if index % 2 == 0 { "x" } else { "snapshot" }.into()),
-                ..op_args("store_var", &["fresh"])
+                ..op_args(crate::OpKind::StoreVar, &["fresh"])
             });
         }
         let left_definition = ops.len();
-        ops.push(op_val_out("const", 53, "left_only"));
-        ops.push(op("else"));
+        ops.push(op_val_out(crate::OpKind::Const, 53, "left_only"));
+        ops.push(op(crate::OpKind::Else));
         let sibling_read = ops.len();
-        ops.push(op_args_out("identity_alias", &["x"], "observed"));
-        ops.push(op("end_if"));
+        ops.push(op_args_out(
+            crate::OpKind::IdentityAlias,
+            &["x"],
+            "observed",
+        ));
+        ops.push(op(crate::OpKind::EndIf));
         let join_read = ops.len();
-        ops.push(op_args_out("tuple_new", &["x", "left_only"], "pair"));
-        ops.push(op_args("ret", &["pair"]));
+        ops.push(op_args_out(
+            crate::OpKind::TupleNew,
+            &["x", "left_only"],
+            "pair",
+        ));
+        ops.push(op_args(crate::OpKind::Ret, &["pair"]));
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa_with_params(&cfg, &ops, &["condition".into()]);
         let at = |source| {
@@ -617,18 +643,22 @@ fn repeated_definition_and_alias_pushes_restore_the_dominating_value_for_sibling
 
 #[test]
 fn disconnected_exception_transfers_use_their_own_cfg_target_environment() {
-    for kind in ["check_exception", "async_work_poll", "try_start"] {
+    for kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+    ] {
         let ops = vec![
-            op("ret_void"),
-            op_val_out("const", 13, "x"),
+            op(crate::OpKind::RetVoid),
+            op_val_out(crate::OpKind::Const, 13, "x"),
             op_val(kind, 7),
-            op_val_out("const", 29, "y"),
+            op_val_out(crate::OpKind::Const, 29, "y"),
             op_val(kind, 8),
-            op("ret_void"),
-            op_val("label", 7),
-            op_args("ret", &["x"]),
-            op_val("state_label", 8),
-            op_args("ret", &["y"]),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 7),
+            op_args(crate::OpKind::Ret, &["x"]),
+            op_val(crate::OpKind::StateLabel, 8),
+            op_args(crate::OpKind::Ret, &["y"]),
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
@@ -672,14 +702,14 @@ fn disconnected_exception_transfers_use_their_own_cfg_target_environment() {
 #[test]
 fn low_level_ssa_uses_cfg_duplicate_label_resolution_for_handler_arguments() {
     let ops = vec![
-        op_val_out("const", 11, "x"),
-        op_val_out("const", 22, "y"),
-        op_val("check_exception", 7),
-        op("ret_void"),
-        op_val("label", 7),
-        op_args("ret", &["x"]),
-        op_val("state_label", 7),
-        op_args("ret", &["y"]),
+        op_val_out(crate::OpKind::Const, 11, "x"),
+        op_val_out(crate::OpKind::Const, 22, "y"),
+        op_val(crate::OpKind::CheckException, 7),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::Label, 7),
+        op_args(crate::OpKind::Ret, &["x"]),
+        op_val(crate::OpKind::StateLabel, 7),
+        op_args(crate::OpKind::Ret, &["y"]),
     ];
     // Normal control-flow admission rejects duplicate labels. This direct API
     // check prevents SSA from disagreeing with the CFG it was explicitly given.
@@ -711,21 +741,25 @@ fn low_level_ssa_uses_cfg_duplicate_label_resolution_for_handler_arguments() {
 
 #[test]
 fn dominating_handler_bindings_keep_the_final_value_before_the_transfer() {
-    for kind in ["check_exception", "async_work_poll", "try_start"] {
+    for kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+    ] {
         for redefine in [false, true] {
-            let mut ops = vec![op_val_out("const", 11, "x")];
+            let mut ops = vec![op_val_out(crate::OpKind::Const, 11, "x")];
             if redefine {
-                ops.push(op_val_out("const", 22, "x"));
+                ops.push(op_val_out(crate::OpKind::Const, 22, "x"));
             }
             ops.extend([
                 op_val(kind, 70),
-                op("ret_void"),
-                op_val("label", 70),
-                op_args("print", &["x"]),
+                op(crate::OpKind::RetVoid),
+                op_val(crate::OpKind::Label, 70),
+                op_args(crate::OpKind::Print, &["x"]),
                 op_val(kind, 80),
-                op("ret_void"),
-                op_val("label", 80),
-                op_args("ret", &["x"]),
+                op(crate::OpKind::RetVoid),
+                op_val(crate::OpKind::Label, 80),
+                op_args(crate::OpKind::Ret, &["x"]),
             ]);
             let cfg = CFG::build(&ops);
             let output = convert_to_ssa(&cfg, &ops);
@@ -748,7 +782,7 @@ fn dominating_handler_bindings_keep_the_final_value_before_the_transfer() {
                 .flat_map(|block| &block.ops)
                 .find(|op| {
                     op.source_op_index()
-                        .is_some_and(|index| ops[index].kind == "print")
+                        .is_some_and(|index| ops[index].kind == crate::OpKind::Print)
                 })
                 .unwrap();
             assert_eq!(print.operands, vec![expected]);
@@ -761,13 +795,17 @@ fn dominating_handler_bindings_keep_the_final_value_before_the_transfer() {
 
 #[test]
 fn definition_after_transfer_cannot_supply_the_earlier_handler() {
-    for kind in ["check_exception", "async_work_poll", "try_start"] {
+    for kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+    ] {
         let ops = vec![
             op_val(kind, 70),
-            op_val_out("const", 42, "later"),
-            op_args("ret", &["later"]),
-            op_val("label", 70),
-            op_args("ret", &["later"]),
+            op_val_out(crate::OpKind::Const, 42, "later"),
+            op_args(crate::OpKind::Ret, &["later"]),
+            op_val(crate::OpKind::Label, 70),
+            op_args(crate::OpKind::Ret, &["later"]),
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
@@ -790,13 +828,13 @@ fn resume_keeps_entry_parameter_direct_but_not_first_entry_only_definition() {
     let ops = vec![
         OpIR {
             state_targets: Some(vec![(1, 70)]),
-            ..op("state_switch")
+            ..op(crate::OpKind::StateSwitch)
         },
-        op_val_out("const", 42, "first_entry"),
-        op("ret_void"),
-        op_val("state_label", 70),
-        op_args("print", &["frame", "first_entry"]),
-        op_args("ret", &["frame"]),
+        op_val_out(crate::OpKind::Const, 42, "first_entry"),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::StateLabel, 70),
+        op_args(crate::OpKind::Print, &["frame", "first_entry"]),
+        op_args(crate::OpKind::Ret, &["frame"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa_with_params(&cfg, &ops, &["frame".into()]);
@@ -826,7 +864,7 @@ fn resume_keeps_entry_parameter_direct_but_not_first_entry_only_definition() {
         .iter()
         .find(|op| {
             op.source_op_index()
-                .is_some_and(|index| ops[index].kind == "print")
+                .is_some_and(|index| ops[index].kind == crate::OpKind::Print)
         })
         .unwrap();
     assert_eq!(print.operands, vec![frame, resume.args[0].id]);

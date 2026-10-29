@@ -224,6 +224,7 @@ mod tests {
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Sub,
             operands: vec![ValueId(0), ValueId(1)],

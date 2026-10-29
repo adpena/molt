@@ -19,39 +19,21 @@ pub(super) fn emit_generic_attribute_op(
     reloc_enabled: bool,
     op_idx: usize,
 ) -> bool {
-    match op.kind.as_str() {
-        "get_attr_generic_ptr" | "get_attr_generic_obj" => emit_get_attr_generic_object(
-            backend,
-            func,
-            op,
-            func_ir,
-            import_ids,
-            locals,
-            func_index,
-            reloc_enabled,
-            op_idx,
-        ),
-        "get_attr_special_obj" => emit_get_attr_special_obj(
-            backend,
-            func,
-            op,
-            import_ids,
-            locals,
-            func_index,
-            reloc_enabled,
-        ),
-        "set_attr_generic_ptr" | "set_attr_generic_obj" => emit_set_attr_generic_object(
-            backend,
-            func,
-            op,
-            func_ir,
-            import_ids,
-            locals,
-            func_index,
-            reloc_enabled,
-            op_idx,
-        ),
-        "del_attr_generic_ptr" | "del_attr_generic_obj" => emit_del_attr_generic_object(
+    match op.kind {
+        molt_ir::OpKind::GetAttrGenericPtr | molt_ir::OpKind::GetAttrGenericObj => {
+            emit_get_attr_generic_object(
+                backend,
+                func,
+                op,
+                func_ir,
+                import_ids,
+                locals,
+                func_index,
+                reloc_enabled,
+                op_idx,
+            )
+        }
+        molt_ir::OpKind::GetAttrSpecialObj => emit_get_attr_special_obj(
             backend,
             func,
             op,
@@ -60,6 +42,30 @@ pub(super) fn emit_generic_attribute_op(
             func_index,
             reloc_enabled,
         ),
+        molt_ir::OpKind::SetAttrGenericPtr | molt_ir::OpKind::SetAttrGenericObj => {
+            emit_set_attr_generic_object(
+                backend,
+                func,
+                op,
+                func_ir,
+                import_ids,
+                locals,
+                func_index,
+                reloc_enabled,
+                op_idx,
+            )
+        }
+        molt_ir::OpKind::DelAttrGenericPtr | molt_ir::OpKind::DelAttrGenericObj => {
+            emit_del_attr_generic_object(
+                backend,
+                func,
+                op,
+                import_ids,
+                locals,
+                func_index,
+                reloc_enabled,
+            )
+        }
         _ => return false,
     }
     true
@@ -79,7 +85,7 @@ fn emit_get_attr_generic_object(
     let args = op.args.as_ref().unwrap();
     let obj = locals[&args[0]];
     let attr = staged_attr_name(backend, op, reloc_enabled);
-    let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+    let source_op_idx = op.required_source_op_index(op_idx, op.kind);
     let site_bits = box_int(stable_ic_site_id(
         func_ir.name.as_str(),
         source_op_idx,
@@ -151,7 +157,7 @@ fn emit_set_attr_generic_object(
     let obj = local_or_panic(locals, &args[0], func_ir, op);
     let val = local_or_panic(locals, &args[1], func_ir, op);
     let attr = staged_attr_name(backend, op, reloc_enabled);
-    let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+    let source_op_idx = op.required_source_op_index(op_idx, op.kind);
     let site_bits = box_int(stable_ic_site_id(
         func_ir.name.as_str(),
         source_op_idx,

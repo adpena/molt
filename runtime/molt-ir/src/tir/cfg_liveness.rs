@@ -333,10 +333,10 @@ pub(crate) fn solve_name_liveness(
 mod tests {
     use super::*;
 
-    fn op(kind: &str) -> OpIR {
+    fn op(kind: crate::OpKind) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
-            ..OpIR::default()
+            kind: kind,
+            ..crate::OpIR::new(kind)
         }
     }
 
@@ -354,14 +354,14 @@ mod tests {
 
     #[test]
     fn branch_target_use_is_live_across_conditional_edge() {
-        let mut branch = op("br_if");
+        let mut branch = op(crate::OpKind::BrIf);
         branch.args = Some(vec!["cond".into()]);
         branch.value = Some(7);
-        let mut fallthrough_return = op("ret");
+        let mut fallthrough_return = op(crate::OpKind::Ret);
         fallthrough_return.args = Some(vec!["fallback".into()]);
-        let mut label = op("label");
+        let mut label = op(crate::OpKind::Label);
         label.value = Some(7);
-        let mut target_return = op("ret");
+        let mut target_return = op(crate::OpKind::Ret);
         target_return.args = Some(vec!["carried".into()]);
         let ops = vec![branch, fallthrough_return, label, target_return];
 
@@ -373,13 +373,13 @@ mod tests {
 
     #[test]
     fn exception_target_use_is_live_across_implicit_edge() {
-        let mut check = op("check_exception");
+        let mut check = op(crate::OpKind::CheckException);
         check.value = Some(9);
-        let mut normal_return = op("ret");
+        let mut normal_return = op(crate::OpKind::Ret);
         normal_return.args = Some(vec!["normal".into()]);
-        let mut handler = op("label");
+        let mut handler = op(crate::OpKind::Label);
         handler.value = Some(9);
-        let mut handler_return = op("ret");
+        let mut handler_return = op(crate::OpKind::Ret);
         handler_return.args = Some(vec!["exception_context".into()]);
         let ops = vec![check, normal_return, handler, handler_return];
 
@@ -391,16 +391,16 @@ mod tests {
 
     #[test]
     fn exception_fallthrough_carries_values_defined_inside_the_current_block() {
-        let mut define = op("const_str");
+        let mut define = op(crate::OpKind::ConstStr);
         define.out = Some("carried".into());
-        let mut check = op("check_exception");
+        let mut check = op(crate::OpKind::CheckException);
         check.value = Some(9);
-        let mut consume = op("print");
+        let mut consume = op(crate::OpKind::Print);
         consume.args = Some(vec!["carried".into()]);
-        let normal_return = op("ret_void");
-        let mut handler = op("label");
+        let normal_return = op(crate::OpKind::RetVoid);
+        let mut handler = op(crate::OpKind::Label);
         handler.value = Some(9);
-        let handler_return = op("ret_void");
+        let handler_return = op(crate::OpKind::RetVoid);
         let ops = vec![
             define,
             check,
@@ -422,12 +422,12 @@ mod tests {
 
     #[test]
     fn state_dispatch_use_is_live_across_resume_edge() {
-        let switch = op("state_switch");
-        let mut suspend = op("state_yield");
+        let switch = op(crate::OpKind::StateSwitch);
+        let mut suspend = op(crate::OpKind::StateYield);
         suspend.value = Some(3);
-        let mut resume = op("state_label");
+        let mut resume = op(crate::OpKind::StateLabel);
         resume.value = Some(3);
-        let mut resumed_return = op("ret");
+        let mut resumed_return = op(crate::OpKind::Ret);
         resumed_return.args = Some(vec!["frame_value".into()]);
         let ops = vec![switch, suspend, resume, resumed_return];
 
@@ -441,12 +441,12 @@ mod tests {
 
     #[test]
     fn loop_backedge_reaches_fixed_point() {
-        let mut label = op("label");
+        let mut label = op(crate::OpKind::Label);
         label.value = Some(1);
-        let mut update = op("copy");
+        let mut update = op(crate::OpKind::Copy);
         update.args = Some(vec!["carried".into()]);
         update.out = Some("next".into());
-        let mut jump = op("jump");
+        let mut jump = op(crate::OpKind::Jump);
         jump.value = Some(1);
         let ops = vec![label, update, jump];
 
@@ -457,9 +457,9 @@ mod tests {
 
     #[test]
     fn definition_kills_prior_value_within_block() {
-        let mut define = op("const_int");
+        let mut define = op(crate::OpKind::ConstInt);
         define.out = Some("value".into());
-        let mut ret = op("ret");
+        let mut ret = op(crate::OpKind::Ret);
         ret.args = Some(vec!["value".into()]);
         let ops = vec![define, ret];
         let plan = analyze_simple_cfg_liveness_facts(&ops);
@@ -470,15 +470,15 @@ mod tests {
 
     #[test]
     fn exception_transfer_back_to_its_own_block_keeps_reentry_reads_live() {
-        let mut handler = op("label");
+        let mut handler = op(crate::OpKind::Label);
         handler.value = Some(5);
-        let mut read = op("print");
+        let mut read = op(crate::OpKind::Print);
         read.args = Some(vec!["carried".into()]);
-        let mut define = op("const_int");
+        let mut define = op(crate::OpKind::ConstInt);
         define.out = Some("other".into());
-        let mut check = op("check_exception");
+        let mut check = op(crate::OpKind::CheckException);
         check.value = Some(5);
-        let ops = vec![handler, read, define, check, op("ret_void")];
+        let ops = vec![handler, read, define, check, op(crate::OpKind::RetVoid)];
 
         let plan = analyze_simple_cfg_liveness_facts(&ops);
 
@@ -590,22 +590,22 @@ mod tests {
 
     #[test]
     fn compact_facts_keep_first_appearance_identities_and_block_boundaries() {
-        let mut define = op("add");
+        let mut define = op(crate::OpKind::Add);
         define.args = Some(vec!["b".into(), "a".into()]);
         define.out = Some("c".into());
-        let mut check = op("check_exception");
+        let mut check = op(crate::OpKind::CheckException);
         check.value = Some(4);
-        let mut consume = op("print");
+        let mut consume = op(crate::OpKind::Print);
         consume.args = Some(vec!["c".into()]);
-        let mut handler = op("label");
+        let mut handler = op(crate::OpKind::Label);
         handler.value = Some(4);
-        let mut handler_read = op("print");
+        let mut handler_read = op(crate::OpKind::Print);
         handler_read.args = Some(vec!["a".into()]);
         let ops = vec![
             define,
             check,
             consume,
-            op("ret_void"),
+            op(crate::OpKind::RetVoid),
             handler,
             handler_read,
         ];
@@ -681,41 +681,41 @@ mod tests {
 
     fn generated_op(rng: &mut Lcg) -> OpIR {
         let label = 1 + rng.below(3) as i64;
-        let mut generated = OpIR::default();
+        let mut generated = OpIR::new(crate::OpKind::Nop);
         match rng.below(9) {
             0 | 1 => {
-                generated.kind = "add".into();
+                generated.kind = crate::OpKind::Add;
                 generated.args = Some(vec![pick(rng), pick(rng)]);
                 generated.out = Some(pick(rng));
             }
             2 => {
-                generated.kind = "store_var".into();
+                generated.kind = crate::OpKind::StoreVar;
                 generated.args = Some(vec![pick(rng)]);
                 generated.var = Some(pick(rng));
             }
             3 => {
-                generated.kind = "print".into();
+                generated.kind = crate::OpKind::Print;
                 generated.args = Some(vec![pick(rng)]);
             }
             4 => {
-                generated.kind = "jump".into();
+                generated.kind = crate::OpKind::Jump;
                 generated.value = Some(label);
             }
             5 => {
-                generated.kind = "br_if".into();
+                generated.kind = crate::OpKind::BrIf;
                 generated.args = Some(vec![pick(rng)]);
                 generated.value = Some(label);
             }
             6 => {
-                generated.kind = "check_exception".into();
+                generated.kind = crate::OpKind::CheckException;
                 generated.value = Some(label);
             }
             7 => {
-                generated.kind = "ret".into();
+                generated.kind = crate::OpKind::Ret;
                 generated.args = Some(vec![pick(rng)]);
             }
             _ => {
-                generated.kind = "const_int".into();
+                generated.kind = crate::OpKind::ConstInt;
                 generated.out = Some(pick(rng));
             }
         }
@@ -731,11 +731,11 @@ mod tests {
         let mut ops: Vec<OpIR> = (0..count).map(|_| generated_op(&mut rng)).collect();
         for label in 1..=3 {
             let at = rng.below(ops.len() as u64 + 1) as usize;
-            let mut target = op("label");
+            let mut target = op(crate::OpKind::Label);
             target.value = Some(label);
             ops.insert(at, target);
         }
-        ops.push(op("ret_void"));
+        ops.push(op(crate::OpKind::RetVoid));
         ops
     }
 

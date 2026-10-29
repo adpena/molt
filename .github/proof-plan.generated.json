@@ -125,6 +125,7 @@
     "runtime/molt-backend-luau/src/luau/compile_pipeline.rs",
     "runtime/molt-ir/src/tir/op_kinds.toml",
     "src/molt/rust_source_scan.py",
+    "tools/structural_audit_rust.py",
     "tests/tools/test_gen_luau_support_matrix.py",
     "tools/gen_luau_support_matrix.py",
     "tools/proof_queue_pkg/custody_cas.py",
@@ -9855,7 +9856,7 @@
       "local.stringprep-leaf.0": "cargo check --locked --manifest-path Cargo.toml -p molt-runtime-stringprep --lib",
       "local.stringprep-tables.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/test_gen_stringprep_tables.py",
       "local.structural-audit-records.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_structural_audit_records.py",
-      "local.structural-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_structural_audit.py",
+      "local.structural-audit.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_structural_audit.py tests/test_rust_source_scan.py tests/tools/test_gen_luau_support_matrix.py",
       "local.subprocess-guard-coverage.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.75 tests/tools/test_subprocess_guard_coverage.py",
       "local.suite-honesty.0": "python tools/check_differential_suite_layout.py",
       "local.suite-honesty.1": "python tools/check_suite_honesty.py",
@@ -11449,6 +11450,7 @@
         "gates": [],
         "globs": [
           "tools/structural_audit.py",
+          "tools/structural_audit_rust.py",
           "tools/structural_audit_rust_admission.py",
           "tools/structural_audit_rust_domains.py",
           "src/molt/rust_source_scan.py",
@@ -11458,7 +11460,9 @@
         ],
         "name": "structural-audit",
         "pytest": [
-          "tests/test_structural_audit.py"
+          "tests/test_structural_audit.py",
+          "tests/test_rust_source_scan.py",
+          "tests/tools/test_gen_luau_support_matrix.py"
         ],
         "toolchains": [
           "python"
@@ -11472,6 +11476,7 @@
         "gates": [],
         "globs": [
           "tools/structural_audit.py",
+          "tools/structural_audit_rust.py",
           "tools/structural_audit_rust_admission.py",
           "tools/structural_audit_rust_domains.py",
           "src/molt/rust_source_scan.py",
@@ -11496,6 +11501,7 @@
           "tools/generator_manifest.toml",
           "tools/generator_manifest_baseline.json",
           "tools/structural_audit.py",
+          "tools/structural_audit_rust.py",
           "tools/structural_audit_rust_admission.py",
           "tools/structural_audit_rust_domains.py",
           "src/molt/rust_source_scan.py",

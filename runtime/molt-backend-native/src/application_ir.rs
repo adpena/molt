@@ -4,6 +4,8 @@
 //! application and must run the same program, so both prepare it here.
 
 use crate::ir::{FunctionIR, ModuleRegistryIR, SimpleIR};
+#[cfg(test)]
+use molt_ir::OpKind;
 use molt_ir::code_slots::CodeSlotBindings;
 use molt_ir::ir_schema::FunctionOpShapeDiagnostic;
 use std::collections::BTreeSet;
@@ -65,23 +67,20 @@ mod tests {
         }
     }
 
-    fn op(kind: &str) -> OpIR {
-        OpIR {
-            kind: kind.to_string(),
-            ..OpIR::default()
-        }
+    fn op(kind: OpKind) -> OpIR {
+        OpIR { ..OpIR::new(kind) }
     }
 
     /// A program whose only unbound code slot sits in a function nothing
     /// reaches. Dead-function elimination would remove it, so an admission
     /// that ran after pruning would accept the program.
     fn program_with_an_unreached_unbound_slot() -> SimpleIR {
-        let mut slot = op("code_slot_set");
+        let mut slot = op(OpKind::CodeSlotSet);
         slot.s_value = Some("never_bound".to_string());
         SimpleIR {
             functions: vec![
-                function("molt_main", vec![op("ret_void")]),
-                function("unreached", vec![slot, op("ret_void")]),
+                function("molt_main", vec![op(OpKind::RetVoid)]),
+                function("unreached", vec![slot, op(OpKind::RetVoid)]),
             ],
             profile: None,
         }

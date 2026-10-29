@@ -10,8 +10,8 @@ pub(super) fn emit_code_metadata_call_op(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    match op.kind.as_str() {
-        "module_slot" => {
+    match op.kind {
+        molt_ir::OpKind::ModuleSlot => {
             let slot = call_ctx
                 .module_registry
                 .expect("admitted module registry")
@@ -27,24 +27,24 @@ pub(super) fn emit_code_metadata_call_op(
                 .expect("admitted module_slot result");
             func.instruction(&Instruction::LocalSet(out));
         }
-        "code_new" => emit_code_new(call_ctx, func, op),
-        "code_slot_set" => {
+        molt_ir::OpKind::CodeNew => emit_code_new(call_ctx, func, op),
+        molt_ir::OpKind::CodeSlotSet => {
             emit_value_then_two_locals_drop_call(call_ctx, func, op, WasmRuntimeImport::CodeSlotSet)
         }
-        "stateful_locals_register" => emit_table_two_local_drop_call(
+        molt_ir::OpKind::StatefulLocalsRegister => emit_table_two_local_drop_call(
             call_ctx,
             func,
             op,
-            "stateful_locals_register",
+            molt_ir::OpKind::StatefulLocalsRegister,
             WasmRuntimeImport::StatefulLocalsRegister,
         ),
-        "code_slots_init" => emit_value_drop_call(
+        molt_ir::OpKind::CodeSlotsInit => emit_value_drop_call(
             call_ctx,
             func,
             op.value.expect("admitted code_slots_init count"),
             WasmRuntimeImport::CodeSlotsInit,
         ),
-        "trace_enter_slot" => call_ctx.frame.emit_owned_frame_entry(
+        molt_ir::OpKind::TraceEnterSlot => call_ctx.frame.emit_owned_frame_entry(
             func,
             call_ctx
                 .code_slots
@@ -59,15 +59,17 @@ pub(super) fn emit_code_metadata_call_op(
         ),
         // Authored lifecycle marker; activation cleanup owns the actual exit,
         // including return edges introduced by this backend (yield/failure).
-        "trace_exit" => {}
+        molt_ir::OpKind::TraceExit => {}
         // A home store hands operand 0's reference to the frame's home; its
         // result is a view of the operand that owns nothing.
-        "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+        molt_ir::OpKind::FrameHomeStore
+        | molt_ir::OpKind::FrameHomeCell
+        | molt_ir::OpKind::FrameHomePrivateCell => {
             let args = op.args.as_ref().expect("admitted frame home operand");
             let value = call_ctx.locals[&args[0]];
-            let kind = match op.kind.as_str() {
-                "frame_home_cell" => molt_codegen_abi::FRAME_HOME_CELL,
-                "frame_home_private_cell" => molt_codegen_abi::FRAME_HOME_PRIVATE_CELL,
+            let kind = match op.kind {
+                molt_ir::OpKind::FrameHomeCell => molt_codegen_abi::FRAME_HOME_CELL,
+                molt_ir::OpKind::FrameHomePrivateCell => molt_codegen_abi::FRAME_HOME_PRIVATE_CELL,
                 _ => molt_codegen_abi::FRAME_HOME_PLAIN,
             };
             call_ctx.frame.emit_frame_home_store(
@@ -84,7 +86,7 @@ pub(super) fn emit_code_metadata_call_op(
             }
         }
         // A borrowed view of the slot's binding, valid until its next write.
-        "frame_home_load" => {
+        molt_ir::OpKind::FrameHomeLoad => {
             call_ctx.frame.emit_frame_home_load(
                 func,
                 op.value.expect("admitted frame home slot"),
@@ -97,7 +99,7 @@ pub(super) fn emit_code_metadata_call_op(
             };
         }
         // PEP 709's save of an enclosing binding: moved out, owned.
-        "frame_home_take" => {
+        molt_ir::OpKind::FrameHomeTake => {
             call_ctx
                 .frame
                 .emit_frame_home_address(func, op.value.expect("admitted frame home slot"));
@@ -115,7 +117,7 @@ pub(super) fn emit_code_metadata_call_op(
                 WasmRuntimeImport::FrameHomeTake,
             );
         }
-        "frame_home_clear" => {
+        molt_ir::OpKind::FrameHomeClear => {
             call_ctx.frame.emit_frame_home_clear(
                 func,
                 op.value.expect("admitted frame home slot"),
@@ -124,7 +126,7 @@ pub(super) fn emit_code_metadata_call_op(
             );
         }
         // `locals()`: the runtime's one authority over the executing frame.
-        "frame_locals" => {
+        molt_ir::OpKind::FrameLocals => {
             emit_call(
                 func,
                 call_ctx.reloc_enabled,
@@ -139,13 +141,13 @@ pub(super) fn emit_code_metadata_call_op(
                 WasmRuntimeImport::LocalsBuiltin,
             );
         }
-        "line" => emit_value_drop_call(
+        molt_ir::OpKind::Line => emit_value_drop_call(
             call_ctx,
             func,
             op.value.unwrap_or(0),
             WasmRuntimeImport::TraceSetLine,
         ),
-        "frame_locals_set" => {
+        molt_ir::OpKind::FrameLocalsSet => {
             emit_one_local_drop_call(call_ctx, func, op, WasmRuntimeImport::FrameLocalsSet)
         }
         _ => return CallOpEmission::NotHandled,
@@ -199,7 +201,7 @@ fn emit_table_two_local_drop_call(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
-    table_context: &str,
+    table_context: molt_ir::OpKind,
     import: WasmRuntimeImport,
 ) {
     let args = op.args.as_ref().unwrap();

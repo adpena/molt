@@ -4,7 +4,7 @@ use melior::{
 };
 use molt_backend::tir::{
     op_kinds_generated::opcode_canonical_kind_table,
-    ops::{AttrValue, Dialect as TirDialect, TirOp},
+    ops::{Dialect as TirDialect, OpCode, TirOp},
 };
 
 use super::{
@@ -27,9 +27,16 @@ pub(super) fn emit_opaque_molt_op<'c, 'a>(
         TirDialect::Par => "molt_par",
         TirDialect::Simd => "molt_simd",
     };
-    let op_name = match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => kind.as_str(),
-        _ => opcode_canonical_kind_table(op.opcode),
+    let op_name = match op.origin {
+        Some(kind) => kind.as_str(),
+        None => match op.opcode {
+            // Structured MLIR operations have dialect names, not wire kinds.
+            OpCode::ScfFor => "for",
+            OpCode::ScfWhile => "while",
+            opcode => opcode_canonical_kind_table(opcode)
+                .ok_or_else(|| format!("MLIR opaque opcode {opcode:?} has no wire kind"))?
+                .as_str(),
+        },
     };
     let full_name = format!("{dialect_name}.{op_name}");
 

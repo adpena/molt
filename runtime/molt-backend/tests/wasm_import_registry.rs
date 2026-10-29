@@ -15,10 +15,7 @@ fn empty_ir() -> SimpleIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -153,15 +150,13 @@ fn ir_with_code_new() -> SimpleIR {
             params: args.iter().map(|name| (*name).to_string()).collect(),
             ops: vec![
                 OpIR {
-                    kind: "code_new".to_string(),
                     args: Some(args.iter().map(|name| (*name).to_string()).collect()),
                     out: Some("code".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CodeNew)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["code".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             param_types: None,
@@ -185,16 +180,14 @@ fn ir_with_direct_runtime_call(target: &str, arity: usize) -> SimpleIR {
             params,
             ops: vec![
                 OpIR {
-                    kind: "call".to_string(),
                     s_value: Some(target.to_string()),
                     args: Some(args),
                     out: Some("out".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["out".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             param_types: None,

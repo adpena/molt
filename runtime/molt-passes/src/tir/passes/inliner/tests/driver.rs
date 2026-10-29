@@ -3,18 +3,16 @@ use super::*;
 #[test]
 fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
     for kind in [
-        "call_func",
-        "call_function",
-        "call_indirect",
-        "call_bind",
-        "call_guarded",
-        "invoke_ffi",
+        molt_ir::OpKind::CallFunc,
+        molt_ir::OpKind::CallFunction,
+        molt_ir::OpKind::CallIndirect,
+        molt_ir::OpKind::CallBind,
+        molt_ir::OpKind::CallGuarded,
+        molt_ir::OpKind::InvokeFfi,
     ] {
         for symbol in ["molt_gpu_thread_id", "constfn"] {
             let mut caller = caller_calling_const(symbol);
-            caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
-                .attrs
-                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
             assert!(
                 collect_call_sites(&caller, &[symbol.into()]).is_empty(),
                 "{kind}: {symbol}"
@@ -22,18 +20,20 @@ fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
         }
     }
     for (gpu_kind, symbol) in [
-        ("gpu_thread_id", "molt_gpu_thread_id"),
-        ("gpu_block_id", "molt_gpu_block_id"),
-        ("gpu_block_dim", "molt_gpu_block_dim"),
-        ("gpu_grid_dim", "molt_gpu_grid_dim"),
-        ("gpu_barrier", "molt_gpu_barrier"),
+        (molt_ir::OpKind::GpuThreadId, "molt_gpu_thread_id"),
+        (molt_ir::OpKind::GpuBlockId, "molt_gpu_block_id"),
+        (molt_ir::OpKind::GpuBlockDim, "molt_gpu_block_dim"),
+        (molt_ir::OpKind::GpuGridDim, "molt_gpu_grid_dim"),
+        (molt_ir::OpKind::GpuBarrier, "molt_gpu_barrier"),
     ] {
-        for original in [None, Some("call"), Some("call_internal")] {
+        for original in [
+            None,
+            Some(molt_ir::OpKind::Call),
+            Some(molt_ir::OpKind::CallInternal),
+        ] {
             let mut caller = caller_calling_const(symbol);
             if let Some(kind) = original {
-                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
-                    .attrs
-                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
             }
             let sites = collect_call_sites(&caller, &[symbol.into()]);
             assert_eq!(sites.len(), 1, "{symbol}: {original:?}");
@@ -44,8 +44,7 @@ fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
             .get_mut(&intrinsic.entry_block)
             .unwrap()
             .ops[0]
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str(gpu_kind.into()));
+            .origin = Some(gpu_kind);
         assert!(
             collect_call_sites(&intrinsic, &[symbol.into()]).is_empty(),
             "{gpu_kind}"
@@ -54,10 +53,7 @@ fn call_site_identity_rejects_opaque_gpu_spoofs_and_preserves_internal_calls() {
     let mut caller = caller_calling_const("constfn");
     let op = &mut caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0];
     op.opcode = OpCode::Copy;
-    op.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("call_internal".into()),
-    );
+    op.origin = Some(molt_ir::OpKind::CallInternal);
     assert!(collect_call_sites(&caller, &["constfn".into()]).is_empty());
 }
 
@@ -155,6 +151,7 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
         call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.clone()));
         let block = g.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![p, q],
@@ -320,6 +317,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
         let mut a = AttrDict::new();
         a.insert("s_value".into(), AttrValue::Str(name.to_string()));
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -332,6 +330,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
     block.ops.push(mk_call("constfn", x));
     block.ops.push(mk_call("constfn", y));
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![x, y],

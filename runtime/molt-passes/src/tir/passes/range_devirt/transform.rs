@@ -62,6 +62,7 @@ pub(super) fn apply_transform(
         let cond_val = c.done_val;
         func.value_types.insert(cond_val, TirType::Bool);
         let cmp_op = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: cmp_opcode,
             operands: vec![ind_var, c.stop_val],
@@ -109,6 +110,7 @@ pub(super) fn apply_transform(
             // variable never passes it.
             let nsw_safe = matches!(c.step_const, 1 | -1);
             let add_op = TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![ind_var, step_val],

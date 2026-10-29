@@ -8,60 +8,49 @@ fn lune_oracle_checked_singletons_preserve_repr_alias_identity_and_versioned_tru
             return_abi: molt_ir::FunctionReturnAbi::Void,
             ops: vec![
                 OpIR {
-                    kind: "const_not_implemented".into(),
                     out: Some("singleton".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNotImplemented)
                 },
                 OpIR {
-                    kind: "identity_alias".into(),
                     args: Some(vec!["singleton".into()]),
                     out: Some("identity".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IdentityAlias)
                 },
                 OpIR {
-                    kind: "binding_alias".into(),
                     args: Some(vec!["identity".into()]),
                     out: Some("binding".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BindingAlias)
                 },
                 OpIR {
-                    kind: "const_ellipsis".into(),
                     out: Some("ellipsis".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstEllipsis)
                 },
                 OpIR {
-                    kind: "repr_from_obj".into(),
                     args: Some(vec!["binding".into()]),
                     out: Some("representation".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ReprFromObj)
                 },
                 OpIR {
-                    kind: "str_from_obj".into(),
                     args: Some(vec!["singleton".into()]),
                     out: Some("text".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StrFromObj)
                 },
                 OpIR {
-                    kind: "call_internal".into(),
                     s_value: Some("molt_bool".into()),
                     args: Some(vec!["binding".into()]),
                     out: Some("truth".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallInternal)
                 },
                 OpIR {
-                    kind: "print".into(),
                     args: Some(vec![
                         "representation".into(),
                         "text".into(),
                         "ellipsis".into(),
                         "truth".into(),
                     ]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Print)
                 },
-                OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
             ..FunctionIR::default()
         }],
@@ -79,15 +68,11 @@ fn lune_oracle_checked_singletons_preserve_repr_alias_identity_and_versioned_tru
         params: version_params.clone(),
         ops: vec![
             OpIR {
-                kind: "call_internal".into(),
                 s_value: Some("molt_sys_set_version_info".into()),
                 args: Some(version_params),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
-            OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
-            },
+            OpIR::new(molt_ir::OpKind::RetVoid),
         ],
         ..FunctionIR::default()
     });
@@ -140,20 +125,15 @@ fn lune_oracle_checked_integer_alias_uses_the_same_bounded_literal_admission() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             ops: vec![
                 OpIR {
-                    kind: "load_const".into(),
                     value: Some(7),
                     out: Some("value".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::LoadConst)
                 },
                 OpIR {
-                    kind: "print".into(),
                     args: Some(vec!["value".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Print)
                 },
-                OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
             ..FunctionIR::default()
         }],

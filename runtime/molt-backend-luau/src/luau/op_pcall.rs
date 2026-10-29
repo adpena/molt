@@ -2,8 +2,8 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_pcall_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "pcall_wrap_begin" => {
+        match op.kind {
+            molt_ir::OpKind::PcallWrapBegin => {
                 let n = op.value.expect("operation capture requires an identity");
                 for output in op.args.as_deref().unwrap_or(&[]) {
                     let output = sanitize_ident(output);
@@ -29,7 +29,7 @@ impl LuauBackend {
                 self.emit_line(&format!("__ok_{n}, __err_{n} = pcall(function()"));
                 self.push_indent();
             }
-            "pcall_wrap_end" => {
+            molt_ir::OpKind::PcallWrapEnd => {
                 let n = op.value.expect("operation capture requires an identity");
                 self.pop_indent();
                 self.emit_line("end)");

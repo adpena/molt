@@ -35,13 +35,13 @@ static GLOBAL: CountingAllocator = CountingAllocator;
 fn value_body(extra_ops: usize) -> FunctionIR {
     let mut ops = Vec::with_capacity(extra_ops + 1);
     ops.extend((0..extra_ops).map(|_| OpIR {
-        kind: "nop".to_string(),
-        ..OpIR::default()
+        kind: molt_ir::OpKind::Nop,
+        ..OpIR::new(molt_ir::OpKind::Nop)
     }));
     ops.push(OpIR {
-        kind: "ret".to_string(),
+        kind: molt_ir::OpKind::Ret,
         args: Some(vec!["value".to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Ret)
     });
     FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,

@@ -13,31 +13,29 @@
 //! pre-extraction tree against the post-extraction tree.
 
 use super::*;
+use molt_ir::OpKind;
 use std::hash::{Hash, Hasher};
 
 fn const_int(out: &str, v: i64) -> OpIR {
     OpIR {
-        kind: "const".to_string(),
         out: Some(out.to_string()),
         value: Some(v),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Const)
     }
 }
 
 fn const_str(out: &str, s: &str) -> OpIR {
     OpIR {
-        kind: "const_str".to_string(),
         out: Some(out.to_string()),
         s_value: Some(s.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ConstStr)
     }
 }
 
 fn ret(name: &str) -> OpIR {
     OpIR {
-        kind: "ret".to_string(),
         args: Some(vec![name.to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Ret)
     }
 }
 
@@ -73,11 +71,10 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     vec![
                         const_int("a", 1),
                         OpIR {
-                            kind: "call".to_string(),
                             s_value: Some("callee_leaf".to_string()),
                             args: Some(vec!["a".to_string()]),
                             out: Some("r".to_string()),
-                            ..OpIR::default()
+                            ..OpIR::new(OpKind::Call)
                         },
                         ret("r"),
                     ],
@@ -104,11 +101,10 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     const_int("a", 5),
                     const_int("b", 6),
                     OpIR {
-                        kind: "call".to_string(),
                         s_value: Some("some_external_symbol".to_string()),
                         args: Some(vec!["a".to_string(), "b".to_string()]),
                         out: Some("r".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Call)
                     },
                     ret("r"),
                 ],
@@ -127,11 +123,10 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     vec![
                         const_int("a", 2),
                         OpIR {
-                            kind: "call_internal".to_string(),
                             s_value: Some("internal_target".to_string()),
                             args: Some(vec!["a".to_string()]),
                             out: Some("r".to_string()),
-                            ..OpIR::default()
+                            ..OpIR::new(OpKind::CallInternal)
                         },
                         ret("r"),
                     ],
@@ -156,19 +151,17 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     "caller_guarded",
                     vec![
                         OpIR {
-                            kind: "func_new".into(),
                             s_value: Some("guarded_target".into()),
                             out: Some("callee".into()),
                             value: Some(0),
-                            ..OpIR::default()
+                            ..OpIR::new(OpKind::FuncNew)
                         },
                         const_int("a", 7),
                         OpIR {
-                            kind: "call_guarded".to_string(),
                             s_value: Some("guarded_target".to_string()),
                             args: Some(vec!["callee".to_string(), "a".to_string()]),
                             out: Some("r".to_string()),
-                            ..OpIR::default()
+                            ..OpIR::new(OpKind::CallGuarded)
                         },
                         ret("r"),
                     ],
@@ -190,11 +183,10 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     const_int("a", 1),
                     const_int("b", 2),
                     OpIR {
-                        kind: "call_func".to_string(),
                         args: Some(vec!["f".to_string(), "a".to_string(), "b".to_string()]),
                         out: Some("r".to_string()),
                         value: Some(0),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallFunc)
                     },
                     ret("r"),
                 ],
@@ -216,7 +208,6 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     const_int("c", 3),
                     const_int("d", 4),
                     OpIR {
-                        kind: "call_func".to_string(),
                         args: Some(vec![
                             "f".to_string(),
                             "a".to_string(),
@@ -226,7 +217,7 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                         ]),
                         out: Some("r".to_string()),
                         value: Some(0),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallFunc)
                     },
                     ret("r"),
                 ],
@@ -244,15 +235,13 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                 vec![
                     const_str("f", "bound_target"),
                     OpIR {
-                        kind: "callargs_new".to_string(),
                         out: Some("cargs".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallargsNew)
                     },
                     OpIR {
-                        kind: "call_bind".to_string(),
                         args: Some(vec!["f".to_string(), "cargs".to_string()]),
                         out: Some("r".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallBind)
                     },
                     ret("r"),
                 ],
@@ -270,15 +259,13 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                 vec![
                     const_str("f", "indirect_target"),
                     OpIR {
-                        kind: "callargs_new".to_string(),
                         out: Some("cargs".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallargsNew)
                     },
                     OpIR {
-                        kind: "call_indirect".to_string(),
                         args: Some(vec!["f".to_string(), "cargs".to_string()]),
                         out: Some("r".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallIndirect)
                     },
                     ret("r"),
                 ],
@@ -290,11 +277,10 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
     // ----- `load_method` / `load_super_method` and the loaded call
     // (CPython's method-form LOAD_ATTR / LOAD_SUPER_ATTR, then CALL).
     let loaded_call = |args: Vec<&str>| OpIR {
-        kind: "call_loaded_method".to_string(),
         argument_custody: Some(vec![molt_ir::ParameterCustody::Transferred; args.len()]),
         args: Some(args.into_iter().map(str::to_string).collect()),
         out: Some("r".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::CallLoadedMethod)
     };
     progs.push((
         "load_method",
@@ -304,12 +290,11 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                 vec![
                     const_str("recv", "obj"),
                     OpIR {
-                        kind: "load_method".to_string(),
                         s_value: Some("do_thing".to_string()),
                         args: Some(vec!["recv".to_string()]),
                         var: Some("callable".to_string()),
                         out: Some("self_or_null".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::LoadMethod)
                     },
                     const_int("a", 11),
                     loaded_call(vec!["callable", "self_or_null", "a"]),
@@ -328,12 +313,11 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     const_str("cls", "C"),
                     const_str("selfv", "inst"),
                     OpIR {
-                        kind: "load_super_method".to_string(),
                         s_value: Some("do_thing".to_string()),
                         args: Some(vec!["cls".to_string(), "selfv".to_string()]),
                         var: Some("callable".to_string()),
                         out: Some("self_or_null".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::LoadSuperMethod)
                     },
                     const_int("a", 13),
                     loaded_call(vec!["callable", "self_or_null", "a"]),
@@ -354,10 +338,9 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     const_str("m", "bound"),
                     const_int("a", 15),
                     OpIR {
-                        kind: "call_method".to_string(),
                         args: Some(vec!["m".to_string(), "a".to_string()]),
                         out: Some("r".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallMethod)
                     },
                     ret("r"),
                 ],
@@ -376,11 +359,10 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                     const_str("m", "bound"),
                     const_int("a", 17),
                     OpIR {
-                        kind: "call_method".to_string(),
                         s_value: Some("BoundMethod:list:append".to_string()),
                         args: Some(vec!["m".to_string(), "a".to_string()]),
                         out: Some("r".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallMethod)
                     },
                     ret("r"),
                 ],
@@ -398,10 +380,9 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
                 vec![
                     const_int("depth", 0),
                     OpIR {
-                        kind: "getframe".to_string(),
                         args: Some(vec!["depth".to_string()]),
                         out: Some("r".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Getframe)
                     },
                     ret("r"),
                 ],

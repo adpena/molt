@@ -1,6 +1,7 @@
 use super::super::fc::list_index_fast_path::{ListIndexFastPathState, ListStorageField};
 use super::super::scalar_carriers::ConditionalListBoolShadow;
 use super::*;
+use molt_ir::OpKind;
 
 fn with_list_storage_state(
     check: impl FnOnce(
@@ -116,39 +117,33 @@ fn list_storage_observations_do_not_cross_sibling_blocks_or_merges() {
 fn list_storage_effect_fence_covers_alias_mutation_zero_arg_calls_and_deletion() {
     for op in [
         OpIR {
-            kind: "list_append".into(),
             args: Some(vec!["alias".into(), "item".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ListAppend)
         },
         OpIR {
-            kind: "call".into(),
             args: Some(vec![]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Call)
         },
         OpIR {
-            kind: "del_index".into(),
             args: Some(vec!["alias".into(), "idx".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::DelIndex)
         },
         OpIR {
-            kind: "store_index".into(),
             args: Some(vec!["alias".into(), "idx".into(), "item".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreIndex)
         },
         OpIR {
-            kind: "check_exception".into(),
             async_work_poll: true,
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckException)
         },
     ] {
         with_list_storage_state(|builder, state, _, _| {
             let plan = ScalarRepresentationPlan::default();
             let variable = cache_list_storage_field(builder, state, ListStorageField::Data, "lst");
             let alias = OpIR {
-                kind: "binding_alias".into(),
                 args: Some(vec!["lst".into()]),
                 out: Some("alias".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::BindingAlias)
             };
             state.begin_op(0, &alias, &plan);
             assert_eq!(
@@ -171,10 +166,9 @@ fn list_storage_definition_fence_uses_canonical_binding_roles() {
         let plan = ScalarRepresentationPlan::default();
         let variable = cache_list_storage_field(builder, state, ListStorageField::Data, "lst");
         let read = OpIR {
-            kind: "copy_var".into(),
             var: Some("lst".into()),
             out: Some("alias".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CopyVar)
         };
         state.begin_op(0, &read, &plan);
         assert_eq!(
@@ -183,10 +177,9 @@ fn list_storage_definition_fence_uses_canonical_binding_roles() {
             "var is a read here"
         );
         let rebind = OpIR {
-            kind: "binding_alias".into(),
             args: Some(vec!["other".into()]),
             out: Some("lst".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::BindingAlias)
         };
         state.begin_op(1, &rebind, &plan);
         assert!(state.get(ListStorageField::Data, "lst", builder).is_none());
@@ -258,24 +251,20 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
         param_types: Some(vec!["int".into(), "object".into()]),
         ops: vec![
             OpIR {
-                kind: "list_new".into(),
                 args: Some(vec!["value".into()]),
                 out: Some("lst".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ListNew)
             },
             OpIR {
-                kind: "loop_start".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopStart)
             },
             OpIR {
-                kind: "index".into(),
                 args: Some(vec!["lst".into(), "idx".into()]),
                 out: Some("element".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Index)
             },
             OpIR {
-                kind: "loop_end".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopEnd)
             },
         ],
         source_file: None,
@@ -369,9 +358,8 @@ fn list_bool_shadow_snapshots_layout_but_remains_block_local() {
         state.begin_op(
             1,
             &OpIR {
-                kind: "list_append".into(),
                 args: Some(vec!["lst".into(), "other".into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ListAppend)
             },
             &ScalarRepresentationPlan::default(),
         );
@@ -409,77 +397,65 @@ fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
     ] {
         let mut ops = vec![
             OpIR {
-                kind: "const".into(),
                 value: Some(0),
                 out: Some("zero".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "const".into(),
                 value: Some(1),
                 out: Some("one".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
         ];
         if !generic {
             ops.push(OpIR {
-                kind: "list_int_new".into(),
                 args: Some(vec!["one".into(), "zero".into()]),
                 out: Some("lst".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ListIntNew)
             });
         }
         ops.push(OpIR {
-            kind: "if".into(),
             args: Some(vec!["condition".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::If)
         });
         for branch in ["left", "right"] {
             if branch == "right" {
                 ops.push(OpIR {
-                    kind: "else".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Else)
                 });
             }
             ops.push(OpIR {
-                kind: "loop_start".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopStart)
             });
             let index = if indexed {
                 let index = format!("{branch}_idx");
                 ops.push(OpIR {
-                    kind: "loop_index_start".into(),
                     args: Some(vec!["zero".into()]),
                     out: Some(index.clone()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopIndexStart)
                 });
                 index
             } else {
                 "zero".into()
             };
             ops.push(OpIR {
-                kind: "index".into(),
                 args: Some(vec!["lst".into(), index]),
                 out: Some(format!("{branch}_element")),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Index)
             });
             ops.push(OpIR {
-                kind: "loop_break".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopBreak)
             });
             ops.push(OpIR {
-                kind: "loop_end".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopEnd)
             });
         }
         ops.push(OpIR {
-            kind: "end_if".into(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::EndIf)
         });
         ops.push(OpIR {
-            kind: "ret".into(),
             args: Some(vec!["zero".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Ret)
         });
         functions.push(FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -597,54 +573,46 @@ fn sum_reduction_detects_canonical_pattern() {
         list_int_new("my_list", "storage_count", "storage_fill"),
         // 0: loop_start
         OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopStart)
         },
         // 1: loop_index_start  (idx)
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("idx".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         // 2: index  list[idx]  -> elem
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["my_list".to_string(), "idx".to_string()]),
             out: Some("elem".to_string()),
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         // 3: add  [total, elem]  -> sum_result
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["total".to_string(), "elem".to_string()]),
             out: Some("sum_result".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         // 4: store_var  total = sum_result
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("total".to_string()),
             args: Some(vec!["sum_result".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         // 5: loop_index_next
         OpIR {
-            kind: "loop_index_next".to_string(),
             args: Some(vec!["idx".to_string()]),
             out: Some("idx".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexNext)
         },
         // 6: loop_continue
         OpIR {
-            kind: "loop_continue".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopContinue)
         },
         // 7: loop_end
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
 
@@ -679,42 +647,36 @@ fn sum_reduction_detects_reversed_add_operands() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "i".to_string()]),
             out: Some("e".to_string()),
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "inplace_add".to_string(),
             args: Some(vec!["e".to_string(), "acc".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::InplaceAdd)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_index_next".to_string(),
             args: Some(vec!["i".to_string()]),
             out: Some("i".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexNext)
         },
-        op_kind("loop_continue"),
+        op_kind(OpKind::LoopContinue),
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
 
@@ -735,35 +697,30 @@ fn sum_reduction_rejects_non_bce_safe() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "i".to_string()]),
             out: Some("e".to_string()),
             bce_safe: None, // NOT bce_safe
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["acc".to_string(), "e".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&ops);
@@ -780,42 +737,36 @@ fn sum_reduction_rejects_call_in_body() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "i".to_string()]),
             out: Some("e".to_string()),
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         // Side-effecting call in loop body â€” disqualifies
         OpIR {
-            kind: "call".to_string(),
             args: Some(vec!["e".to_string()]),
             out: Some("result".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Call)
         },
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["acc".to_string(), "result".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&ops);
@@ -832,44 +783,37 @@ fn sum_reduction_rejects_nested_loop() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "i".to_string()]),
             out: Some("e".to_string()),
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         // Nested loop
         OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopStart)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["acc".to_string(), "e".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&ops);
@@ -887,35 +831,30 @@ fn sum_reduction_rejects_wrong_index_var() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "other_var".to_string()]),
             out: Some("e".to_string()),
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["acc".to_string(), "e".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&ops);
@@ -930,36 +869,31 @@ fn sum_reduction_rejects_wrong_index_var() {
 fn sum_reduction_rejects_non_list_int() {
     let ops = vec![
         storage_const("zero", 0),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["zero".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "i".to_string()]),
             out: Some("e".to_string()),
             container_type: Some("list".to_string()), // generic list, not list_int
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["acc".to_string(), "e".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&ops);
@@ -976,41 +910,35 @@ fn sum_reduction_rejects_multiple_stores() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "i".to_string()]),
             out: Some("e".to_string()),
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["acc".to_string(), "e".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("other".to_string()),
             args: Some(vec!["e".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&ops);
@@ -1028,35 +956,30 @@ fn sum_reduction_rejects_add_elem_mismatch() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
-        op_kind("loop_start"),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
             args: Some(vec!["storage_fill".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "i".to_string()]),
             out: Some("e".to_string()),
             bce_safe: Some(true),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "add".to_string(),
             args: Some(vec!["acc".to_string(), "other_val".to_string()]),
             out: Some("new_acc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("acc".to_string()),
             args: Some(vec!["new_acc".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&ops);
@@ -1076,27 +999,23 @@ fn scan_loop_hoistable_lists_treats_store_index_as_mutation() {
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "idx".to_string()]),
             out: Some("cur".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "store_index".to_string(),
             args: Some(vec![
                 "lst".to_string(),
                 "idx".to_string(),
                 "val".to_string(),
             ]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreIndex)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let flat_plan = representation_plan_for_ops(&flat_ops);
@@ -1114,29 +1033,25 @@ fn scan_loop_hoistable_lists_treats_store_index_as_mutation() {
 
     let generic_ops = vec![
         OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "idx".to_string()]),
             out: Some("cur".to_string()),
             container_type: Some("list".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "store_index".to_string(),
             args: Some(vec![
                 "lst".to_string(),
                 "idx".to_string(),
                 "val".to_string(),
             ]),
             container_type: Some("list".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreIndex)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let generic_plan = representation_plan_for_typed_ops(
@@ -1167,25 +1082,21 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "idx".to_string()]),
             out: Some("cur".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "call".to_string(),
             s_value: Some("opaque_mutator".to_string()),
             args: Some(vec!["lst".to_string()]),
             out: Some("ignored".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Call)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&call_ops);
@@ -1203,29 +1114,24 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopStart)
         },
         OpIR {
-            kind: "index".to_string(),
             args: Some(vec!["lst".to_string(), "idx".to_string()]),
             out: Some("cur".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "copy_var".to_string(),
             args: Some(vec!["lst".to_string()]),
             out: Some("alias".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CopyVar)
         },
         OpIR {
-            kind: "list_append".to_string(),
             args: Some(vec!["alias".to_string(), "cur".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ListAppend)
         },
         OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ];
     let plan = representation_plan_for_ops(&alias_ops);
@@ -1256,19 +1162,17 @@ fn generic_list_raw_indexing_requires_exact_constructor_provenance() {
     // A constructor still authorizes the generic lane even when the stronger
     // flat-storage fact is unavailable.
     ops[2] = OpIR {
-        kind: "list_new".into(),
         args: Some(vec!["total".into()]),
         out: Some("lst".into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ListNew)
     };
     let plan = representation_plan_for_ops(&ops);
     assert!(generic_list_int_lane_eligible(&plan, &index, true));
     ops[2] = OpIR {
-        kind: "call".into(),
         args: Some(vec!["make_list".into()]),
         out: Some("lst".into()),
         type_hint: Some("list".into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Call)
     };
     let plan = representation_plan_for_ops(&ops);
     assert!(!generic_list_int_lane_eligible(&plan, &index, true));
@@ -1280,37 +1184,31 @@ fn generic_list_raw_indexing_requires_exact_constructor_provenance() {
 fn typed_list_hoist_fixture() -> Vec<OpIR> {
     vec![
         OpIR {
-            kind: "const".into(),
             value: Some(0),
             out: Some("idx".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Const)
         },
         OpIR {
-            kind: "const".into(),
             value: Some(1),
             out: Some("total".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Const)
         },
         list_int_new("lst", "total", "idx"),
         OpIR {
-            kind: "loop_start".into(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopStart)
         },
         OpIR {
-            kind: "index".into(),
             args: Some(vec!["lst".into(), "idx".into()]),
             out: Some("cur".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Index)
         },
         OpIR {
-            kind: "add".into(),
             args: Some(vec!["total".into(), "idx".into()]),
             out: Some("total_next".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Add)
         },
         OpIR {
-            kind: "loop_end".into(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopEnd)
         },
     ]
 }
@@ -1318,35 +1216,37 @@ fn typed_list_hoist_fixture() -> Vec<OpIR> {
 #[test]
 fn list_hoisting_fences_mutation_through_aliases_before_and_inside_the_loop() {
     let mut aliases = vec![];
-    for kind in ["copy_var", "load_var"] {
+    for kind in [OpKind::CopyVar, OpKind::LoadVar] {
         for args in [None, Some(vec![]), Some(vec!["lst".to_string()])] {
             aliases.push(OpIR {
-                kind: kind.into(),
                 args,
                 var: Some("lst".into()),
                 out: Some("alias".into()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
         }
     }
     for kind in [
-        "copy",
-        "identity_alias",
-        "binding_alias",
-        "borrow",
-        "box",
-        "unbox",
-        "and",
-        "or",
+        OpKind::Copy,
+        OpKind::IdentityAlias,
+        OpKind::BindingAlias,
+        OpKind::Borrow,
+        OpKind::Box,
+        OpKind::Unbox,
+        OpKind::And,
+        OpKind::Or,
     ] {
         aliases.push(OpIR {
-            kind: kind.into(),
             args: Some(vec![
                 "lst".into();
-                if matches!(kind, "and" | "or") { 2 } else { 1 }
+                if matches!(kind, OpKind::And | OpKind::Or) {
+                    2
+                } else {
+                    1
+                }
             ]),
             out: Some("alias".into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         });
     }
     for alias in aliases {
@@ -1357,26 +1257,22 @@ fn list_hoisting_fences_mutation_through_aliases_before_and_inside_the_loop() {
             }
             let start = ops.len();
             ops.push(OpIR {
-                kind: "loop_start".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopStart)
             });
             ops.push(OpIR {
-                kind: "index".into(),
                 args: Some(vec!["lst".into(), "idx".into()]),
                 out: Some("cur".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Index)
             });
             if !before_loop {
                 ops.push(alias.clone());
             }
             ops.push(OpIR {
-                kind: "list_append".into(),
                 args: Some(vec!["alias".into(), "cur".into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ListAppend)
             });
             ops.push(OpIR {
-                kind: "loop_end".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopEnd)
             });
             let plan = representation_plan_for_ops(&ops);
             let pre = collect_pre_loop_defined_names(&ops, start);
@@ -1391,16 +1287,15 @@ fn list_hoisting_fences_mutation_through_aliases_before_and_inside_the_loop() {
 
 #[test]
 fn list_hoisting_does_not_turn_copy_metadata_into_a_buffer_definition() {
-    for kind in ["copy_var", "load_var"] {
+    for kind in [OpKind::CopyVar, OpKind::LoadVar] {
         let mut ops = typed_list_hoist_fixture();
         ops.insert(
             4,
             OpIR {
-                kind: kind.into(),
                 var: Some("lst".into()),
                 args: Some(vec!["idx".into()]),
                 out: Some("alias".into()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
         );
         let plan = representation_plan_for_ops(&ops);
@@ -1414,46 +1309,41 @@ fn list_hoisting_does_not_turn_copy_metadata_into_a_buffer_definition() {
 fn list_hoisting_fences_nested_effects_and_pairs_indexed_preludes() {
     let fixture = typed_list_hoist_fixture();
     for (kind, args) in [
-        ("call", vec![]),
-        ("load_method", vec!["receiver"]),
-        ("call_loaded_method", vec!["callable", "self_or_null"]),
-        ("call_indirect", vec!["callee", "callargs"]),
-        ("call_bind", vec!["callee", "callargs"]),
-        ("invoke_ffi", vec![]),
-        ("list_reverse", vec!["lst"]),
-        ("list_pop", vec!["lst"]),
-        ("del_index", vec!["lst", "idx"]),
-        ("index_set", vec!["lst", "idx", "total"]),
+        (OpKind::Call, vec![]),
+        (OpKind::LoadMethod, vec!["receiver"]),
+        (OpKind::CallLoadedMethod, vec!["callable", "self_or_null"]),
+        (OpKind::CallIndirect, vec!["callee", "callargs"]),
+        (OpKind::CallBind, vec!["callee", "callargs"]),
+        (OpKind::InvokeFfi, vec![]),
+        (OpKind::ListReverse, vec!["lst"]),
+        (OpKind::ListPop, vec!["lst"]),
+        (OpKind::DelIndex, vec!["lst", "idx"]),
+        (OpKind::IndexSet, vec!["lst", "idx", "total"]),
     ] {
         for nested in [false, true] {
             let mut ops = fixture[..4].to_vec();
             if nested {
                 ops.push(OpIR {
-                    kind: "loop_start".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopStart)
                 });
                 ops.push(OpIR {
-                    kind: "const".into(),
                     value: Some(0),
                     out: Some("inner_zero".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Const)
                 });
                 ops.push(OpIR {
-                    kind: "loop_index_start".into(),
                     args: Some(vec!["inner_zero".into()]),
                     out: Some("inner_idx".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopIndexStart)
                 });
             }
             ops.push(OpIR {
-                kind: kind.into(),
                 args: Some(args.iter().map(|name| name.to_string()).collect()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
             if nested {
                 ops.push(OpIR {
-                    kind: "loop_end".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopEnd)
                 });
             }
             ops.extend_from_slice(&fixture[4..]);
@@ -1471,36 +1361,30 @@ fn list_hoisting_fences_nested_effects_and_pairs_indexed_preludes() {
     // after the matching outer end may swallow that boundary.
     let mut ops = fixture[..4].to_vec();
     ops.push(OpIR {
-        kind: "loop_index_start".into(),
         args: Some(vec!["idx".into()]),
         out: Some("outer_idx".into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::LoopIndexStart)
     });
     ops.push(OpIR {
-        kind: "loop_start".into(),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::LoopStart)
     });
     ops.push(OpIR {
-        kind: "const".into(),
         value: Some(0),
         out: Some("inner_zero".into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Const)
     });
     ops.push(OpIR {
-        kind: "loop_index_start".into(),
         args: Some(vec!["inner_zero".into()]),
         out: Some("inner_idx".into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::LoopIndexStart)
     });
     ops.push(OpIR {
-        kind: "loop_end".into(),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::LoopEnd)
     });
     ops.extend_from_slice(&fixture[4..]);
     ops.push(OpIR {
-        kind: "list_append".into(),
         args: Some(vec!["lst".into(), "total".into()]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ListAppend)
     });
     let plan = representation_plan_for_ops(&ops);
     let pre = collect_pre_loop_defined_names(&ops, 3);
@@ -1518,14 +1402,13 @@ fn list_hoisting_requires_stable_names_and_callback_free_indexing() {
         ops.insert(
             6,
             OpIR {
-                kind: "store_var".into(),
                 var: Some(destination.into()),
                 args: Some(vec![if destination == "lst" {
                     "lst".into()
                 } else {
                     "total".into()
                 }]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
         );
         let plan = representation_plan_for_ops(&ops);
@@ -1555,8 +1438,7 @@ fn list_hoisting_requires_real_preheader_and_definition_dominance() {
     continued.insert(
         6,
         OpIR {
-            kind: "loop_continue".into(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopContinue)
         },
     );
     let plan = representation_plan_for_ops(&continued);
@@ -1570,31 +1452,27 @@ fn list_hoisting_requires_real_preheader_and_definition_dominance() {
 
     let mut bypass = fixture[..3].to_vec();
     bypass.push(OpIR {
-        kind: "br_if".into(),
         args: Some(vec!["idx".into()]),
         value: Some(90),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::BrIf)
     });
     bypass.push(fixture[3].clone());
     bypass.push(OpIR {
-        kind: "label".into(),
         value: Some(90),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Label)
     });
     bypass.extend_from_slice(&fixture[4..]);
 
     let mut partial_definition = fixture[..2].to_vec();
     partial_definition.push(OpIR {
-        kind: "br_if".into(),
         args: Some(vec!["idx".into()]),
         value: Some(91),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::BrIf)
     });
     partial_definition.push(fixture[2].clone());
     partial_definition.push(OpIR {
-        kind: "label".into(),
         value: Some(91),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Label)
     });
     partial_definition.extend_from_slice(&fixture[3..]);
     for (ops, start) in [(bypass, 4), (partial_definition, 5)] {
@@ -1612,37 +1490,32 @@ fn list_hoisting_requires_real_preheader_and_definition_dominance() {
 fn pre_loop_definitions_follow_result_and_binding_roles() {
     let ops = vec![
         OpIR {
-            kind: "copy_var".into(),
             var: Some("metadata".into()),
             args: Some(vec!["read_only".into()]),
             out: Some("copy".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CopyVar)
         },
         OpIR {
-            kind: "unpack_sequence".into(),
             value: Some(2),
             args: Some(vec!["read_only".into(), "first".into(), "second".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::UnpackSequence)
         },
         OpIR {
-            kind: "checked_add".into(),
             var: Some("sum".into()),
             out: Some("overflow".into()),
             args: Some(vec!["read_only".into(); 2]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckedAdd)
         },
         OpIR {
-            kind: "dec_ref".into(),
             out: Some("out_metadata".into()),
             args: Some(vec!["read_only".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::DecRef)
         },
         OpIR {
-            kind: "store_var".into(),
             var: Some("slot".into()),
             out: Some("snapshot".into()),
             args: Some(vec!["read_only".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
     ];
     assert_eq!(

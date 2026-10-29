@@ -98,7 +98,7 @@ impl NonLinearControlPlan {
             .iter()
             .map(|op| {
                 matches!(
-                    simpleir_verifier_region_role(&op.kind),
+                    simpleir_verifier_region_role(op.kind),
                     Some((_, SimpleIrVerifierRegionRole::End))
                 )
             })

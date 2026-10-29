@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn ensure_function_symbol(
@@ -515,13 +516,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_call(&mut self, op: &TirOp) {
         let i64_ty = self.backend.context.i64_type();
-        let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        });
+        let original_kind = op.origin;
 
-        if matches!(original_kind, Some("call_func") | Some("call_function"))
-            && !op.operands.is_empty()
+        if matches!(
+            original_kind,
+            Some(OpKind::CallFunc) | Some(OpKind::CallFunction)
+        ) && !op.operands.is_empty()
         {
             // An ordinary source call adopted its callable and arguments.
             let result = if op.argument_custody().is_some() {
@@ -545,21 +545,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 AttrValue::Str(s) if !s.is_empty() => Some(s.clone()),
                 _ => None,
             });
-        let direct_operands: &[ValueId] = if matches!(original_kind, Some("call_guarded")) {
+        let direct_operands: &[ValueId] = if matches!(original_kind, Some(OpKind::CallGuarded)) {
             op.operands.get(1..).unwrap_or(&[])
         } else {
             &op.operands
         };
-        let guarded_callable = if matches!(original_kind, Some("call_guarded")) {
+        let guarded_callable = if matches!(original_kind, Some(OpKind::CallGuarded)) {
             op.operands.first().copied()
         } else {
             None
         };
 
-        if matches!(original_kind, Some("call_bind") | Some("call_indirect"))
-            && op.operands.len() >= 2
+        if matches!(
+            original_kind,
+            Some(OpKind::CallBind) | Some(OpKind::CallIndirect)
+        ) && op.operands.len() >= 2
         {
-            let (lane, runtime_name) = if matches!(original_kind, Some("call_indirect")) {
+            let (lane, runtime_name) = if matches!(original_kind, Some(OpKind::CallIndirect)) {
                 ("call_indirect", "molt_call_indirect_ic")
             } else {
                 ("call_bind", "molt_call_bind_ic")
@@ -583,7 +585,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
 
-        if matches!(original_kind, Some("call_guarded"))
+        if matches!(original_kind, Some(OpKind::CallGuarded))
             && let Some(callable_id) = guarded_callable
         {
             // A guarded call adopts as an instruction, whatever it resolves
@@ -638,7 +640,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // may use a classified runtime ABI; neither a symbol prefix nor
                 // operand count invents a signature.
                 let runtime_role = match original_kind {
-                    Some(kind) => kind == "call",
+                    Some(kind) => kind == OpKind::Call,
                     None => {
                         crate::tir::call_targets::direct_call_symbol_for_op(op)
                             == Some(target_name.as_str())
@@ -952,7 +954,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         };
 
-        if matches!(call.wire_kind, "print" | "builtin_print") {
+        if matches!(call.wire_kind, OpKind::Print | OpKind::BuiltinPrint) {
             // PRINT is a dedicated frontend op. By the time it reaches
             // backend IR, multi-argument CPython semantics have already
             // been normalized into a single joined display string plus
@@ -975,10 +977,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.values.insert(result_id, none.into());
                 self.value_types.insert(result_id, TirType::DynBox);
             }
-        } else if call.wire_kind == "range_new" {
+        } else if call.wire_kind == OpKind::RangeNew {
             // `range(...)` is a dedicated frontend op (`RANGE_NEW`), not a
             // generic builtin lookup. The SSA lifter folds it into
-            // `OpCode::CallBuiltin` with `_original_kind = "range_new"`
+            // `OpCode::CallBuiltin` with `origin = "range_new"`
             // (ssa.rs), but `range` is NOT registered as a runtime
             // intrinsic and `molt_call_builtin` would fall through to the
             // builtins module-cache path — failing at any call site reached

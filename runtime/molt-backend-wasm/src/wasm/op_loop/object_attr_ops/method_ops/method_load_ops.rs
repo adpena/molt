@@ -30,9 +30,9 @@ pub(super) fn emit_method_load_op(
     op_idx: usize,
     scratch_base: u32,
 ) -> bool {
-    let (import, operand_count) = match op.kind.as_str() {
-        "load_method" => (WasmRuntimeImport::LoadMethod, 1),
-        "load_super_method" => (WasmRuntimeImport::LoadSuperMethod, 2),
+    let (import, operand_count) = match op.kind {
+        molt_ir::OpKind::LoadMethod => (WasmRuntimeImport::LoadMethod, 1),
+        molt_ir::OpKind::LoadSuperMethod => (WasmRuntimeImport::LoadSuperMethod, 2),
         _ => return false,
     };
     let args = op
@@ -46,7 +46,7 @@ pub(super) fn emit_method_load_op(
         .unwrap_or_else(|| panic!("{} has no attribute name", op.kind));
     let bytes = name.as_bytes();
     let data = backend.add_data_segment(reloc_enabled, bytes);
-    let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+    let source_op_idx = op.required_source_op_index(op_idx, op.kind);
     let site_bits = box_int(stable_ic_site_id(
         func_ir.name.as_str(),
         source_op_idx,

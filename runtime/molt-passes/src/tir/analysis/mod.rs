@@ -502,6 +502,7 @@ mod tests {
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![cond_input],
@@ -566,6 +567,7 @@ mod tests {
                 id: header,
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![cond_input],
@@ -760,6 +762,7 @@ mod tests {
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

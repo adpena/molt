@@ -8,8 +8,7 @@ use crate::json_boundary::{
 use crate::tir::cfg::CFG;
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements,
-    simpleir_call_target_role, simpleir_kind_has_function_reference_s_value,
-    simpleir_kind_is_return_terminator, simpleir_runtime_requirements_table,
+    simpleir_call_target_role, simpleir_runtime_requirements_table,
     simpleir_runtime_symbol_requirements_table,
 };
 use crate::tir::simple_def_use::{
@@ -210,7 +209,7 @@ pub fn validate_module_slots(
     }
     for function in functions {
         for (op_index, op) in function.ops.iter().enumerate() {
-            if op.kind == "module_slot"
+            if op.kind == crate::OpKind::ModuleSlot
                 && op.s_value.as_deref().is_none_or(|name| {
                     registry.is_none_or(|registry| registry.resolve_module_slot(name).is_err())
                 })
@@ -220,7 +219,7 @@ pub fn validate_module_slots(
                     op_index,
                     shape: ir_schema::OpShapeDiagnostic {
                         family: "module_registry",
-                        kind: op.kind.clone(),
+                        kind: op.kind.to_string(),
                         violation: ir_schema::OpShapeViolation::UnboundModuleSlot,
                     },
                 });
@@ -492,10 +491,11 @@ fn bool_is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpIR {
-    pub kind: String,
+    #[serde(deserialize_with = "deserialize_wire_kind")]
+    pub kind: crate::OpKind,
     pub value: Option<i64>,
     /// Exact saved-state -> control-label projection of TIR StateDispatch.
     /// Only state_switch carries it. Empty Some is an explicit empty map;
@@ -597,6 +597,71 @@ pub struct OpIR {
     /// and emit a straight-line element access.
     pub bce_safe: Option<bool>,
 }
+/// Parse only at transport admission, preserving actionable retirement hints.
+fn deserialize_wire_kind<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<crate::OpKind, D::Error> {
+    struct KindVisitor;
+    impl<'de> serde::de::Visitor<'de> for KindVisitor {
+        type Value = crate::OpKind;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a registered SimpleIR operation kind")
+        }
+        fn visit_str<E: serde::de::Error>(self, input: &str) -> Result<Self::Value, E> {
+            input.parse().map_err(|error: String| {
+                let hint = match input {
+                    "store_init" => "; retired compiler operation `store_init`; emit `store`; initialization requires typed-slot ownership facts",
+                    "guarded_field_init" => "; retired compiler operation `guarded_field_init`; emit `guarded_field_set`; initialization cannot be asserted by wire spelling",
+                    "object_new_bound_stack" => "; retired compiler operation `object_new_bound_stack`; frame placement requires an owner-lifetime proof",
+                    "list_repeat_range" => "; retired compiler operation `list_repeat_range`; use canonical list construction",
+                    _ => "",
+                };
+                E::custom(format!("unknown variant {input:?}: {error}{hint}"))
+            })
+        }
+    }
+    decoder.deserialize_str(KindVisitor)
+}
+
+impl OpIR {
+    pub fn new(kind: crate::OpKind) -> Self {
+        Self {
+            kind: kind,
+            value: Default::default(),
+            state_targets: Default::default(),
+            f_value: Default::default(),
+            s_value: Default::default(),
+            bytes: Default::default(),
+            var: Default::default(),
+            args: Default::default(),
+            out: Default::default(),
+            stack_eligible: Default::default(),
+            arena_eligible: Default::default(),
+            defines_del: Default::default(),
+            bound_local: Default::default(),
+            task_kind: Default::default(),
+            task_closure_size: Default::default(),
+            container_type: Default::default(),
+            native_callable_export: Default::default(),
+            native_callable_binding: Default::default(),
+            native_callable_symbol: Default::default(),
+            native_callable_abi: Default::default(),
+            builtin_name: Default::default(),
+            runtime_symbol: Default::default(),
+            class_definition: Default::default(),
+            runtime_requirement_bits: Default::default(),
+            passes_execution_context: Default::default(),
+            async_work_poll: Default::default(),
+            argument_custody: Default::default(),
+            type_hint: Default::default(),
+            source_op_idx: Default::default(),
+            col_offset: Default::default(),
+            end_col_offset: Default::default(),
+            source_line: Default::default(),
+            bce_safe: Default::default(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
 pub struct ExternFunctionSignature {
@@ -685,9 +750,12 @@ impl FunctionIR {
 /// declaration does not turn the supplied Python arguments into a raw ABI call.
 #[inline]
 pub fn extern_direct_call_target(op: &OpIR) -> Option<&str> {
-    matches!(op.kind.as_str(), "call" | "call_internal" | "call_guarded")
-        .then(|| op.s_value.as_deref())
-        .flatten()
+    matches!(
+        op.kind,
+        crate::OpKind::Call | crate::OpKind::CallInternal | crate::OpKind::CallGuarded
+    )
+    .then(|| op.s_value.as_deref())
+    .flatten()
 }
 
 pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
@@ -733,7 +801,7 @@ pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
             }
 
             let explicit_arg_count = op.args.as_ref().map_or(0, Vec::len);
-            if op.kind == "call_guarded" {
+            if op.kind == crate::OpKind::CallGuarded {
                 if explicit_arg_count == 0 {
                     return Err(format!(
                         "extern call ABI mismatch: guarded caller `{}` has no callable operand for declaration `{target}`",
@@ -803,7 +871,7 @@ fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
     for caller in ir.functions.iter().filter(|function| !function.is_extern) {
         for (op_index, op) in caller.ops.iter().enumerate() {
             if !matches!(
-                simpleir_call_target_role(&op.kind),
+                simpleir_call_target_role(op.kind),
                 Some(
                     SimpleIrCallTargetRole::InternalRequired
                         | SimpleIrCallTargetRole::ExternalOrRuntime
@@ -870,7 +938,11 @@ fn validate_source_call_forms(func: &FunctionIR) -> Result<(), String> {
     };
     if !func.is_extern {
         let mut forms: BTreeMap<&str, Option<crate::CallArgumentForm>> = BTreeMap::new();
-        for op in func.ops.iter().filter(|op| op.kind == "callargs_new") {
+        for op in func
+            .ops
+            .iter()
+            .filter(|op| op.kind == crate::OpKind::CallargsNew)
+        {
             let Some(builder) = op.out.as_deref() else {
                 continue;
             };
@@ -889,11 +961,11 @@ fn validate_source_call_forms(func: &FunctionIR) -> Result<(), String> {
         for (op_index, op) in func.ops.iter().enumerate() {
             let (Some(custody), Some(callable)) = (
                 op.argument_custody.as_deref(),
-                kind_source_call_callable_operand(&op.kind),
+                kind_source_call_callable_operand(op.kind),
             ) else {
                 continue;
             };
-            let Some(builder) = kind_consumed_operand_table(&op.kind, custody.len()) else {
+            let Some(builder) = kind_consumed_operand_table(op.kind, custody.len()) else {
                 continue;
             };
             let Some(&Some(form)) = op
@@ -951,7 +1023,7 @@ impl OpIR {
     /// provenance. Direct runtime calls execute their symbol immediately;
     /// merely obtaining a callable must not require an already-active frame.
     fn execution_runtime_requirements(&self) -> Option<SimpleIrRuntimeRequirements> {
-        let mut requirements = simpleir_runtime_requirements_table(self.kind.as_str())?;
+        let mut requirements = simpleir_runtime_requirements_table(self.kind)?;
         if self.async_work_poll {
             requirements =
                 requirements.union(SimpleIrRuntimeRequirements::PENDING_CALL_EVAL_BREAKER);
@@ -960,7 +1032,7 @@ impl OpIR {
             requirements = requirements.union(SimpleIrRuntimeRequirements::EXECUTION_FRAME);
         }
         if matches!(
-            simpleir_call_target_role(&self.kind),
+            simpleir_call_target_role(self.kind),
             Some(
                 SimpleIrCallTargetRole::ExternalOrRuntime
                     | SimpleIrCallTargetRole::InternalRequired
@@ -997,7 +1069,7 @@ impl OpIR {
         {
             requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
         }
-        if (self.kind == "builtin_func" || simpleir_kind_has_function_reference_s_value(&self.kind))
+        if (self.kind == crate::OpKind::BuiltinFunc || self.kind.has_function_reference_s_value())
             && let Some(symbol) = self.s_value.as_deref()
         {
             requirements = requirements.union(simpleir_runtime_symbol_requirements_table(symbol));
@@ -1026,7 +1098,7 @@ impl OpIR {
     /// Return the transported source identity required by inline-cache sites.
     /// Backends share this validation so native and WASM cannot drift on
     /// fallback or malformed-index behavior.
-    pub fn required_source_op_index(&self, current_index: usize, kind: &str) -> usize {
+    pub fn required_source_op_index(&self, current_index: usize, kind: crate::OpKind) -> usize {
         assert!(
             self.source_op_idx.is_some(),
             "{kind} at stream op {current_index} requires transported source_op_idx"
@@ -1112,15 +1184,18 @@ impl SimpleIR {
             match func.name.as_str() {
                 "molt_main" => {
                     func.ops.retain(|op| {
-                        !(op.kind == "call" && op.s_value.as_deref() == Some("molt_runtime_init"))
+                        !(op.kind == crate::OpKind::Call
+                            && op.s_value.as_deref() == Some("molt_runtime_init"))
                     });
                 }
                 "molt_init___main__" => {
                     for op in &mut func.ops {
-                        if op.kind == "call" && op.s_value.as_deref() == Some("molt_init_sys") {
+                        if op.kind == crate::OpKind::Call
+                            && op.s_value.as_deref() == Some("molt_init_sys")
+                        {
                             *op = OpIR {
-                                kind: "nop".to_string(),
-                                ..OpIR::default()
+                                kind: crate::OpKind::Nop,
+                                ..crate::OpIR::new(crate::OpKind::Nop)
                             };
                         }
                     }
@@ -1147,7 +1222,7 @@ impl SimpleIR {
             };
             for op in &func.ops {
                 // Follow direct call targets.
-                if op.kind == "call" {
+                if op.kind == crate::OpKind::Call {
                     let Some(target) = op.s_value.as_deref() else {
                         continue;
                     };
@@ -1167,8 +1242,11 @@ impl SimpleIR {
                 // this, source emitters prune user functions that are only
                 // referenced through func_new (not direct calls).
                 if matches!(
-                    op.kind.as_str(),
-                    "func_new" | "func_new_closure" | "code_new" | "call_internal"
+                    op.kind,
+                    crate::OpKind::FuncNew
+                        | crate::OpKind::FuncNewClosure
+                        | crate::OpKind::CodeNew
+                        | crate::OpKind::CallInternal
                 ) {
                     let Some(target) = op.s_value.as_deref() else {
                         continue;
@@ -1262,8 +1340,7 @@ impl OpIR {
     /// boundary, either through the established CheckException wire alias or
     /// through the role-preserving observer marker.
     pub fn is_async_work_poll(&self) -> bool {
-        self.async_work_poll
-            || crate::tir::op_kinds_generated::simpleir_kind_is_async_work_poll(&self.kind)
+        self.async_work_poll || self.kind.is_async_work_poll()
     }
 
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
@@ -1281,7 +1358,8 @@ fn allows_undefined_value(op: &OpIR, name: &str, field: SimpleIrReadField) -> bo
     if !name.starts_with('v') {
         return false;
     }
-    field == SimpleIrReadField::Arg(0) && matches!(op.kind.as_str(), "dict_set" | "index")
+    field == SimpleIrReadField::Arg(0)
+        && matches!(op.kind, crate::OpKind::DictSet | crate::OpKind::Index)
 }
 
 pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
@@ -1316,14 +1394,6 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn validate_op_kinds(function_name: &str, ops: &[OpIR]) -> Result<(), String> {
-    for (op_index, op) in ops.iter().enumerate() {
-        ir_schema::validate_registered_op_kind(&op.kind)
-            .map_err(|error| format!("function `{function_name}` op#{op_index}: {error}"))?;
-    }
-    Ok(())
-}
-
 /// Whole-program transport admission: each function's own contract, then the
 /// facts that cross function boundaries.
 fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
@@ -1353,7 +1423,7 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
     } else {
         if !func.return_abi.returns_value()
             && func.ops.iter().any(|op| {
-                crate::tir::op_kinds_generated::simpleir_return_shape(&op.kind)
+                crate::tir::op_kinds_generated::simpleir_return_shape(op.kind)
                     == crate::tir::op_kinds_generated::SimpleIrReturnShape::Value
             })
         {
@@ -1369,7 +1439,7 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
             .collect::<Vec<_>>();
         let trace_enters = frame_ops
             .iter()
-            .filter(|op| op.kind == "trace_enter_slot")
+            .filter(|op| op.kind == crate::OpKind::TraceEnterSlot)
             .count();
         match func.execution_context {
             ExecutionContextPolicy::Local if trace_enters != 1 => {
@@ -1397,20 +1467,20 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                 let enter_index = func
                     .ops
                     .iter()
-                    .position(|op| op.kind == "trace_enter_slot")
+                    .position(|op| op.kind == crate::OpKind::TraceEnterSlot)
                     .expect("Local trace-enter count was validated above");
                 let cfg = CFG::build(&func.ops);
                 let execution = cfg.execution_points(&func.ops);
                 for (op_index, op) in func.ops.iter().enumerate() {
                     if op.uses_execution_frame()
-                        && op.kind != "trace_enter_slot"
+                        && op.kind != crate::OpKind::TraceEnterSlot
                         && execution.operation_is_reachable(op_index)
                         && !execution.operation_dominates(enter_index, op_index)
                     {
                         let handler_label = func.ops[..=op_index]
                             .iter()
                             .rev()
-                            .find(|candidate| candidate.kind == "label")
+                            .find(|candidate| candidate.kind == crate::OpKind::Label)
                             .and_then(|candidate| candidate.value);
                         let transfer_sources = handler_label.map_or_else(Vec::new, |label| {
                             func.ops
@@ -1419,7 +1489,7 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                                     .filter(|(_, candidate)| {
                                         candidate.value == Some(label)
                                     && crate::tir::dominators::is_simple_exception_transfer_kind(
-                                        candidate.kind.as_str(),
+                                        candidate.kind,
                                     )
                                     })
                                     .map(|(index, _)| {
@@ -1436,24 +1506,24 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                             transfer_sources,
                         ));
                     }
-                    if op.kind == "trace_exit"
+                    if op.kind == crate::OpKind::TraceExit
                         && func
                             .ops
                             .get(op_index + 1)
-                            .is_none_or(|next| !simpleir_kind_is_return_terminator(&next.kind))
+                            .is_none_or(|next| !next.kind.is_return_terminator())
                     {
                         return Err(format!(
                             "function `{}` has stray trace_exit at op#{op_index}; lifecycle exits must occur exactly once immediately before normal return terminators",
                             func.name
                         ));
                     }
-                    if simpleir_kind_is_return_terminator(&op.kind)
+                    if op.kind.is_return_terminator()
                         && execution.operation_is_reachable(op_index)
                         && execution.operation_dominates(enter_index, op_index)
                         && func
                             .ops
                             .get(op_index.wrapping_sub(1))
-                            .is_none_or(|previous| previous.kind != "trace_exit")
+                            .is_none_or(|previous| previous.kind != crate::OpKind::TraceExit)
                     {
                         return Err(format!(
                             "function `{}` normal return op#{op_index} `{}` requires exactly one immediately preceding trace_exit",
@@ -1463,10 +1533,12 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                 }
             }
             ExecutionContextPolicy::Inherited => {
-                if let Some(lifecycle) = frame_ops
-                    .iter()
-                    .find(|op| matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit"))
-                {
+                if let Some(lifecycle) = frame_ops.iter().find(|op| {
+                    matches!(
+                        op.kind,
+                        crate::OpKind::TraceEnterSlot | crate::OpKind::TraceExit
+                    )
+                }) {
                     return Err(format!(
                         "function `{}` with inherited execution context cannot own lifecycle op `{}`",
                         func.name, lifecycle.kind
@@ -1497,7 +1569,7 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
             if op.s_value.is_none() {
                 return Err("execution-context call metadata requires a direct target".into());
             }
-            if op.kind != "call_internal" {
+            if op.kind != crate::OpKind::CallInternal {
                 return Err(format!(
                     "execution-context call metadata requires call_internal, found `{}`",
                     op.kind
@@ -1535,7 +1607,7 @@ pub fn validate_program_transport_contract(ir: &SimpleIR) -> Result<(), String> 
                 "inherited execution-context function `{target}` requires direct threaded call metadata"
             ));
         }
-        if simpleir_kind_has_function_reference_s_value(op.kind.as_str())
+        if op.kind.has_function_reference_s_value()
             && let Some(target) = op.s_value.as_deref()
             && inherited.contains(target)
         {
@@ -1550,11 +1622,7 @@ pub fn validate_program_transport_contract(ir: &SimpleIR) -> Result<(), String> 
 
 #[cfg(test)]
 mod json_parse_tests {
-    use super::{
-        BackendIrDocument, FunctionIR, OpIR, SimpleIR, validate_op_kinds, validate_simple_ir,
-        write_function_ir_contract,
-    };
-    use crate::tir::cfg::CFG;
+    use super::{BackendIrDocument, FunctionIR, OpIR, SimpleIR, write_function_ir_contract};
 
     #[test]
     fn return_abi_is_required_and_survives_empty_bodies_and_extern_projection() {
@@ -1564,13 +1632,13 @@ mod json_parse_tests {
         let missing_msgpack = rmp_serde::to_vec_named(&missing).unwrap();
         assert!(rmp_serde::from_slice::<FunctionIR>(&missing_msgpack).is_err());
 
-        for kind in ["ret_void", "unreachable"] {
+        for kind in [crate::OpKind::RetVoid, crate::OpKind::Unreachable] {
             let function = FunctionIR {
                 name: "value_without_payload".into(),
                 return_abi: super::FunctionReturnAbi::Value,
                 ops: vec![OpIR {
                     kind: kind.into(),
-                    ..OpIR::default()
+                    ..crate::OpIR::new(kind.into())
                 }],
                 ..FunctionIR::default()
             };
@@ -1600,9 +1668,9 @@ mod json_parse_tests {
             return_abi: super::FunctionReturnAbi::Void,
             params: vec!["value".into()],
             ops: vec![OpIR {
-                kind: "ret".into(),
+                kind: crate::OpKind::Ret,
                 args: Some(vec!["value".into()]),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::Ret)
             }],
             ..FunctionIR::default()
         };
@@ -1628,11 +1696,11 @@ mod json_parse_tests {
             name: "float_contract".to_string(),
             params: vec!["x".to_string()],
             ops: vec![OpIR {
-                kind: "const_float".to_string(),
+                kind: crate::OpKind::ConstFloat,
                 f_value: Some(value),
                 bytes: Some(vec![0, 1, 127, 128, 255]),
                 out: Some("value".to_string()),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::ConstFloat)
             }],
             param_types: Some(vec!["float".to_string()]),
             source_file: Some("float_contract.py".to_string()),
@@ -1981,77 +2049,48 @@ mod json_parse_tests {
                     BackendIrDocument::from_ndjson_reader(ndjson.as_bytes()).unwrap_err(),
                 ];
                 for error in errors {
-                    assert!(error.contains("unregistered op kind"), "{error}");
-                    assert!(error.contains(&format!("`{kind}`")), "{error}");
-                    assert!(error.contains("unreachable_function"), "{error}");
-                    assert!(error.contains("op#1"), "{error}");
+                    assert!(error.contains("unknown variant"), "{error}");
+                    assert!(error.contains(kind), "{error}");
                 }
             }
         }
     }
 
     #[test]
-    fn programmatic_ir_and_ssa_reject_unregistered_op_kinds() {
-        let ops = vec![OpIR {
-            kind: "future_unregistered_op".into(),
-            ..OpIR::default()
-        }];
-        let ir = SimpleIR {
-            functions: vec![FunctionIR {
-                name: "programmatic_function".into(),
-                ops: ops.clone(),
-                ..FunctionIR::default()
-            }],
-            profile: None,
-        };
-        let error = validate_simple_ir(&ir).unwrap_err();
-        assert!(error.contains("future_unregistered_op"), "{error}");
-        assert!(error.contains("programmatic_function"), "{error}");
-        let cfg = CFG::build(&ops);
-        let error = std::panic::catch_unwind(|| {
-            crate::tir::ssa::convert_to_ssa_with_name_and_params(
-                "programmatic_function",
-                &cfg,
-                &ops,
-                &[],
+    fn closed_wire_kind_domain_rejects_unknown_spelling() {
+        let error =
+            serde_json::from_str::<OpIR>(r#"{"kind":"future_unregistered_op"}"#).unwrap_err();
+        assert!(error.to_string().contains("future_unregistered_op"));
+        assert_eq!(std::mem::size_of::<crate::OpKind>(), 2);
+        for kind in crate::OpKind::ALL {
+            assert_eq!(
+                serde_json::from_str::<crate::OpKind>(&serde_json::to_string(kind).unwrap())
+                    .unwrap(),
+                *kind
             );
-        })
-        .expect_err("SSA must reject unregistered kinds");
-        let diagnostic = error.downcast_ref::<String>().expect("string diagnostic");
-        assert!(
-            diagnostic.contains("future_unregistered_op"),
-            "{diagnostic}"
-        );
-        assert!(diagnostic.contains("programmatic_function"), "{diagnostic}");
-    }
-
-    #[test]
-    fn registered_preserved_and_structural_kinds_remain_admitted() {
-        for kind in [
-            "missing",
-            "nop",
-            "label",
-            "cast",
-            "widen",
-            "store_fast",
-            "string_split_field_to_int",
-            "floor_div",
-        ] {
-            validate_op_kinds(
-                "registered_function",
-                &[OpIR {
-                    kind: kind.into(),
-                    ..OpIR::default()
-                }],
-            )
-            .unwrap_or_else(|error| panic!("{error}"));
+            let binary = rmp_serde::to_vec(kind).unwrap();
+            assert_eq!(
+                rmp_serde::from_slice::<String>(&binary).unwrap(),
+                kind.as_str()
+            );
+            assert_eq!(
+                rmp_serde::from_slice::<crate::OpKind>(&binary).unwrap(),
+                *kind
+            );
+        }
+        for index in [0u16, 2, 535] {
+            // Enum declaration order is not a wire identity, even in formats
+            // whose generic serde enum visitor accepts numeric variant indices.
+            let binary = rmp_serde::to_vec(&index).unwrap();
+            assert!(rmp_serde::from_slice::<crate::OpKind>(&binary).is_err());
+            assert!(serde_json::from_str::<crate::OpKind>(&index.to_string()).is_err());
         }
     }
 
     #[test]
     fn op_ir_serde_json_roundtrip_uses_canonical_field_parser() {
         let op = OpIR {
-            kind: "transport_probe".to_string(),
+            kind: crate::OpKind::Nop,
             value: Some(7),
             f_value: Some(1.25),
             s_value: Some("symbol".to_string()),
@@ -2101,18 +2140,26 @@ mod json_parse_tests {
     #[test]
     fn op_ir_rejects_unknown_fields_in_json_and_binary_documents() {
         for (kind, field, value) in [
-            ("get_attr_generic_ptr", "ic_index", serde_json::json!(7)),
             (
-                "module_cache_get",
+                crate::OpKind::GetAttrGenericPtr,
+                "ic_index",
+                serde_json::json!(7),
+            ),
+            (
+                crate::OpKind::ModuleCacheGet,
                 "effect_proof",
                 serde_json::json!("static_module_class_binding"),
             ),
             (
-                "get_attr_generic_ptr",
+                crate::OpKind::GetAttrGenericPtr,
                 "metadata",
                 serde_json::json!({"ic_index": 7}),
             ),
-            ("get_attr_generic_ptr", "ic_indxe", serde_json::json!(7)),
+            (
+                crate::OpKind::GetAttrGenericPtr,
+                "ic_indxe",
+                serde_json::json!(7),
+            ),
         ] {
             let mut op = serde_json::json!({"kind": kind});
             op[field] = value;
@@ -2175,7 +2222,10 @@ mod json_parse_tests {
             );
             let error = SimpleIR::from_json_str(&source)
                 .expect_err("retired field initialization spelling must fail closed");
-            assert!(error.contains(&format!("retired compiler operation `{kind}`")));
+            assert!(
+                error.contains("unknown variant") && error.contains(kind),
+                "{error}"
+            );
             assert!(error.contains(&format!("emit `{replacement}`")));
         }
     }
@@ -2189,7 +2239,10 @@ mod json_parse_tests {
         let observer = &ir.functions[0].ops[0];
         assert!(observer.async_work_poll);
         assert!(observer.is_async_work_poll());
-        assert_eq!(observer.kind, "exception_finally_pending_observer");
+        assert_eq!(
+            observer.kind,
+            crate::OpKind::ExceptionFinallyPendingObserver
+        );
 
         let error = SimpleIR::from_json_str(
             r#"{"functions":[{"return_abi": "void", "name":"f","params":[],"ops":[{"kind":"const_none","async_work_poll":true,"out":"value"},{"kind":"ret_void"}]}]}"#,
@@ -2260,23 +2313,23 @@ mod json_parse_tests {
             params: Vec::new(),
             ops: vec![
                 OpIR {
-                    kind: "trace_enter_slot".to_string(),
+                    kind: crate::OpKind::TraceEnterSlot,
                     s_value: Some("molt_init_app".into()),
-                    ..OpIR::default()
+                    ..crate::OpIR::new(crate::OpKind::TraceEnterSlot)
                 },
                 OpIR {
-                    kind: "call_internal".to_string(),
+                    kind: crate::OpKind::CallInternal,
                     s_value: Some(inherited_declaration.name.clone()),
                     passes_execution_context: true,
-                    ..OpIR::default()
+                    ..crate::OpIR::new(crate::OpKind::CallInternal)
                 },
                 OpIR {
-                    kind: "trace_exit".to_string(),
-                    ..OpIR::default()
+                    kind: crate::OpKind::TraceExit,
+                    ..crate::OpIR::new(crate::OpKind::TraceExit)
                 },
                 OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    kind: crate::OpKind::RetVoid,
+                    ..crate::OpIR::new(crate::OpKind::RetVoid)
                 },
             ],
             param_types: None,
@@ -2312,19 +2365,19 @@ mod json_parse_tests {
             params: vec!["arg".to_string()],
             ops: vec![
                 OpIR {
-                    kind: "const_none".to_string(),
+                    kind: crate::OpKind::ConstNone,
                     out: Some("scratch".to_string()),
-                    ..OpIR::default()
+                    ..crate::OpIR::new(crate::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "missing".to_string(),
+                    kind: crate::OpKind::Missing,
                     out: Some("value".to_string()),
-                    ..OpIR::default()
+                    ..crate::OpIR::new(crate::OpKind::Missing)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
+                    kind: crate::OpKind::Ret,
                     args: Some(vec!["value".to_string()]),
-                    ..OpIR::default()
+                    ..crate::OpIR::new(crate::OpKind::Ret)
                 },
             ],
             param_types: Some(vec!["i64".to_string()]),
@@ -2369,9 +2422,9 @@ mod json_parse_tests {
         noncanonical_declaration.ops.insert(
             0,
             OpIR {
-                kind: "trace_enter_slot".to_string(),
+                kind: crate::OpKind::TraceEnterSlot,
                 s_value: Some(external_local.name.clone()),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::TraceEnterSlot)
             },
         );
         let encoded = serde_json::to_vec(&SimpleIR {
@@ -2397,8 +2450,8 @@ mod json_parse_tests {
                     return_abi: crate::FunctionReturnAbi::Void,
                     name: external_local.name.clone(),
                     ops: vec![OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
+                        kind: crate::OpKind::RetVoid,
+                        ..crate::OpIR::new(crate::OpKind::RetVoid)
                     }],
                     ..FunctionIR::default()
                 },
@@ -2420,7 +2473,11 @@ mod json_parse_tests {
         assert!(error.to_string().contains("exactly one trace_enter_slot"));
     }
 
-    fn extern_call_contract_ir(kind: &str, has_closure: bool, supplied: usize) -> SimpleIR {
+    fn extern_call_contract_ir(
+        kind: crate::OpKind,
+        has_closure: bool,
+        supplied: usize,
+    ) -> SimpleIR {
         let mut params: Vec<String> = (0..3).map(|index| format!("param{index}")).collect();
         if has_closure {
             params.insert(0, crate::MOLT_CLOSURE_PARAM_NAME.to_string());
@@ -2430,16 +2487,16 @@ mod json_parse_tests {
             name: "defaulted_function".to_string(),
             params,
             ops: vec![OpIR {
-                kind: "ret".to_string(),
+                kind: crate::OpKind::Ret,
                 args: Some(vec!["param0".to_string()]),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::Ret)
             }],
             ..FunctionIR::default()
         }
         .extern_declaration()
         .expect("canonical external signature");
         let mut args: Vec<String> = (0..supplied).map(|index| format!("arg{index}")).collect();
-        if kind == "call_guarded" {
+        if kind == crate::OpKind::CallGuarded {
             args.insert(0, "callable".to_string());
         }
         SimpleIR {
@@ -2450,16 +2507,16 @@ mod json_parse_tests {
                     params: args.clone(),
                     ops: vec![
                         OpIR {
-                            kind: kind.to_string(),
+                            kind: kind,
                             args: Some(args),
                             s_value: Some(declaration.name.clone()),
                             out: Some("result".to_string()),
-                            ..OpIR::default()
+                            ..crate::OpIR::new(kind)
                         },
                         OpIR {
-                            kind: "ret".to_string(),
+                            kind: crate::OpKind::Ret,
                             args: Some(vec!["result".to_string()]),
-                            ..OpIR::default()
+                            ..crate::OpIR::new(crate::OpKind::Ret)
                         },
                     ],
                     ..FunctionIR::default()
@@ -2474,7 +2531,7 @@ mod json_parse_tests {
     fn guarded_extern_calls_preserve_supplied_python_arguments_across_transport() {
         for has_closure in [false, true] {
             for supplied in [0, 1, 2, 3, 4, 5] {
-                let ir = extern_call_contract_ir("call_guarded", has_closure, supplied);
+                let ir = extern_call_contract_ir(crate::OpKind::CallGuarded, has_closure, supplied);
                 let call = &ir.functions[0].ops[0];
                 assert_eq!(
                     super::extern_direct_call_target(call),
@@ -2498,7 +2555,7 @@ mod json_parse_tests {
 
     #[test]
     fn raw_extern_calls_still_require_exact_abi_including_closure() {
-        for kind in ["call", "call_internal"] {
+        for kind in [crate::OpKind::Call, crate::OpKind::CallInternal] {
             for has_closure in [false, true] {
                 for supplied in [0, 1, 2, 3, 4, 5] {
                     let ir = extern_call_contract_ir(kind, has_closure, supplied);
@@ -2520,7 +2577,7 @@ mod json_parse_tests {
     #[test]
     fn guarded_extern_calls_still_require_a_callable_operand() {
         for args in [None, Some(Vec::new())] {
-            let mut ir = extern_call_contract_ir("call_guarded", false, 0);
+            let mut ir = extern_call_contract_ir(crate::OpKind::CallGuarded, false, 0);
             ir.functions[0].ops[0].args = args;
             let error = super::validate_extern_call_abis(&ir)
                 .expect_err("a guarded target hint cannot substitute for a live callable");
@@ -2530,7 +2587,7 @@ mod json_parse_tests {
 
     #[test]
     fn guarded_extern_binding_does_not_relax_execution_context_contracts() {
-        let mut ir = extern_call_contract_ir("call_guarded", false, 1);
+        let mut ir = extern_call_contract_ir(crate::OpKind::CallGuarded, false, 1);
         ir.functions[1].execution_context = super::ExecutionContextPolicy::Inherited;
         let error = super::validate_extern_call_abis(&ir)
             .expect_err("a guarded call cannot bind an inherited execution context");
@@ -2818,19 +2875,19 @@ mod json_parse_tests {
         use crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS;
         let symbol = "molt_frame_context_set";
         let mut carriers: Vec<_> = [
-            "call",
-            "call_internal",
-            "call_guarded",
-            "call_builtin",
-            "func_new",
-            "func_new_closure",
-            "builtin_func",
+            crate::OpKind::Call,
+            crate::OpKind::CallInternal,
+            crate::OpKind::CallGuarded,
+            crate::OpKind::CallBuiltin,
+            crate::OpKind::FuncNew,
+            crate::OpKind::FuncNewClosure,
+            crate::OpKind::BuiltinFunc,
         ]
         .into_iter()
         .map(|kind| OpIR {
             kind: kind.into(),
             s_value: Some(symbol.into()),
-            ..Default::default()
+            ..crate::OpIR::new(kind.into())
         })
         .collect();
         carriers.extend(
@@ -2839,19 +2896,19 @@ mod json_parse_tests {
                 .map(|kind| OpIR {
                     kind: (*kind).into(),
                     runtime_symbol: Some(symbol.into()),
-                    ..Default::default()
+                    ..crate::OpIR::new((*kind).into())
                 }),
         );
         carriers.push(OpIR {
-            kind: "builtin_func".into(),
+            kind: crate::OpKind::BuiltinFunc,
             builtin_name: Some(symbol.into()),
-            ..Default::default()
+            ..crate::OpIR::new(crate::OpKind::BuiltinFunc)
         });
         carriers.push(OpIR {
-            kind: "invoke_ffi".into(),
+            kind: crate::OpKind::InvokeFfi,
             native_callable_binding: Some("direct_symbol".into()),
             native_callable_symbol: Some(symbol.into()),
-            ..Default::default()
+            ..crate::OpIR::new(crate::OpKind::InvokeFfi)
         });
         for op in carriers {
             let error = super::ir_schema::validate_required_fields(&op)
@@ -2862,10 +2919,10 @@ mod json_parse_tests {
             );
         }
         super::ir_schema::validate_required_fields(&OpIR {
-            kind: "const_str".into(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some(symbol.into()),
             out: Some("literal".into()),
-            ..Default::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         })
         .expect("ordinary string data does not execute a backend service");
     }
@@ -2926,7 +2983,7 @@ mod json_parse_tests {
             );
         };
         for symbol in ["molt_super_from_frame"] {
-            for &kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
+            for kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
                 assert_acquisition(parse(serde_json::json!({
                     "kind": kind, "runtime_symbol": symbol, "out": "callable"
                 })));
@@ -2939,24 +2996,18 @@ mod json_parse_tests {
                 "args": ["name"], "out": "callable"
             })));
         }
-        for &kind in SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
+        for kind in SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
             assert_acquisition(parse(serde_json::json!({
                 "kind": kind,
                 "runtime_requirement_bits": SimpleIrRuntimeRequirements::EXECUTION_FRAME.bits(),
                 "out": "callable"
             })));
         }
-        for op in [
-            OpIR {
-                kind: "unclassified".into(),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "module_get_attr".into(),
-                runtime_requirement_bits: u32::MAX,
-                ..OpIR::default()
-            },
-        ] {
+        for op in [OpIR {
+            kind: crate::OpKind::ModuleGetAttr,
+            runtime_requirement_bits: u32::MAX,
+            ..crate::OpIR::new(crate::OpKind::ModuleGetAttr)
+        }] {
             assert!(
                 op.runtime_requirements().is_none(),
                 "admission must fail closed"
@@ -3019,7 +3070,7 @@ mod json_parse_tests {
         use super::{SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements};
 
         let all_bits = SimpleIrRuntimeRequirements::ALL.bits();
-        for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
+        for kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS {
             let source = format!(
                 r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_requirement_bits":{all_bits},"out":"value"}}]}}]}}"#,
             );
@@ -3073,7 +3124,7 @@ mod json_parse_tests {
 
     #[test]
     fn simple_ir_runtime_symbols_are_typed_and_op_scoped() {
-        for &kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
+        for kind in crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
             let source = format!(
                 r#"{{"functions":[{{"return_abi": "void", "name":"f","params":[],"ops":[{{"kind":"{kind}","runtime_symbol":"molt_getframe","out":"value"}}]}}]}}"#,
             );
@@ -3613,8 +3664,8 @@ mod json_parse_tests {
                 name: "__molt_chunk_v1_ordinary_name".into(),
                 codegen_partition: partitioned,
                 ops: vec![OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: crate::OpKind::RetVoid,
+                    ..crate::OpIR::new(crate::OpKind::RetVoid)
                 }],
                 ..FunctionIR::default()
             };
@@ -3671,8 +3722,8 @@ mod json_parse_tests {
             params: vec!["first".into(), "second".into()],
             parameter_custody: vec![Borrowed, Transferred],
             ops: vec![OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: crate::OpKind::RetVoid,
+                ..crate::OpIR::new(crate::OpKind::RetVoid)
             }],
             ..FunctionIR::default()
         };
@@ -3730,8 +3781,8 @@ mod json_parse_tests {
                 params: params.iter().map(|param| param.to_string()).collect(),
                 parameter_custody: custody,
                 ops: vec![OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: crate::OpKind::RetVoid,
+                    ..crate::OpIR::new(crate::OpKind::RetVoid)
                 }],
                 ..FunctionIR::default()
             }],
@@ -3757,7 +3808,7 @@ mod json_parse_tests {
         super::validate_simple_ir(&entry(&[closure, "a"], vec![Borrowed, Transferred]))
             .expect("a Python binding beside the closure transport may transfer");
 
-        let call = |kind: &str, custody: Vec<super::ParameterCustody>| SimpleIR {
+        let call = |kind: crate::OpKind, custody: Vec<super::ParameterCustody>| SimpleIR {
             functions: vec![FunctionIR {
                 return_abi: crate::FunctionReturnAbi::Void,
                 name: "caller".into(),
@@ -3768,50 +3819,58 @@ mod json_parse_tests {
                         args: Some(vec!["callable".into(), "value".into()]),
                         argument_custody: Some(custody),
                         out: Some("result".into()),
-                        ..OpIR::default()
+                        ..crate::OpIR::new(kind.into())
                     },
                     OpIR {
-                        kind: "ret_void".into(),
-                        ..OpIR::default()
+                        kind: crate::OpKind::RetVoid,
+                        ..crate::OpIR::new(crate::OpKind::RetVoid)
                     },
                 ],
                 ..FunctionIR::default()
             }],
             profile: None,
         };
-        for kind in ["call_func", "call_guarded", "call_method"] {
+        for kind in [
+            crate::OpKind::CallFunc,
+            crate::OpKind::CallGuarded,
+            crate::OpKind::CallMethod,
+        ] {
             super::validate_simple_ir(&call(kind, vec![Transferred, Transferred]))
                 .expect("an ordinary source call adopts its callable and its argument");
         }
         for (kind, custody, expected) in [
             (
-                "call_func",
+                crate::OpKind::CallFunc,
                 vec![Borrowed, Transferred],
                 "operand 0 custody Borrowed disagrees with its source call, which adopts it",
             ),
             (
-                "call_method",
+                crate::OpKind::CallMethod,
                 vec![Transferred, Borrowed],
                 "operand 1 custody Borrowed disagrees with its source call, which adopts it",
             ),
             (
-                "call_loaded_method",
+                crate::OpKind::CallLoadedMethod,
                 vec![Transferred, Borrowed],
                 "operand 1 custody Borrowed disagrees with its source call, which adopts it",
             ),
             (
-                "call_func",
+                crate::OpKind::CallFunc,
                 vec![Transferred],
                 "names 1 entries for 2 positions",
             ),
-            ("call_func", vec![Borrowed, Borrowed], "transfers nothing"),
             (
-                "invoke_ffi",
+                crate::OpKind::CallFunc,
+                vec![Borrowed, Borrowed],
+                "transfers nothing",
+            ),
+            (
+                crate::OpKind::InvokeFfi,
                 vec![Borrowed, Transferred],
                 "cannot carry argument_custody",
             ),
             (
-                "call_function",
+                crate::OpKind::CallFunction,
                 vec![Borrowed, Transferred],
                 "cannot carry argument_custody",
             ),
@@ -3834,21 +3893,21 @@ mod json_parse_tests {
                 params: vec!["callable".into()],
                 ops: vec![
                     OpIR {
-                        kind: "callargs_new".into(),
+                        kind: crate::OpKind::CallargsNew,
                         s_value: form.map(str::to_string),
                         out: Some("builder".into()),
-                        ..OpIR::default()
+                        ..crate::OpIR::new(crate::OpKind::CallargsNew)
                     },
                     OpIR {
-                        kind: "call_bind".into(),
+                        kind: crate::OpKind::CallBind,
                         args: Some(vec!["callable".into(), "builder".into()]),
                         argument_custody: Some(custody),
                         out: Some("result".into()),
-                        ..OpIR::default()
+                        ..crate::OpIR::new(crate::OpKind::CallBind)
                     },
                     OpIR {
-                        kind: "ret_void".into(),
-                        ..OpIR::default()
+                        kind: crate::OpKind::RetVoid,
+                        ..crate::OpIR::new(crate::OpKind::RetVoid)
                     },
                 ],
                 ..FunctionIR::default()
@@ -3884,7 +3943,7 @@ mod json_parse_tests {
     #[test]
     fn direct_call_custody_equals_the_declared_parameter_custody() {
         use super::ParameterCustody::{Borrowed, Transferred};
-        for kind in ["call", "call_internal"] {
+        for kind in [crate::OpKind::Call, crate::OpKind::CallInternal] {
             let mut ir = extern_call_contract_ir(kind, true, 3);
             // The declaration takes over its second Python parameter. The
             // leading closure parameter is supplied by the callee itself.
@@ -3911,7 +3970,7 @@ mod json_parse_tests {
                 "{kind}: {error}"
             );
         }
-        let mut guarded = extern_call_contract_ir("call_guarded", false, 2);
+        let mut guarded = extern_call_contract_ir(crate::OpKind::CallGuarded, false, 2);
         guarded.functions[1].parameter_custody = vec![Transferred, Borrowed, Borrowed];
         guarded.functions[0].ops[0].argument_custody =
             Some(vec![Transferred, Transferred, Transferred]);
@@ -3925,16 +3984,16 @@ mod json_parse_tests {
                 params: vec!["value".into()],
                 ops: vec![
                     OpIR {
-                        kind: "call".into(),
+                        kind: crate::OpKind::Call,
                         s_value: Some("molt_typing_get_origin".into()),
                         args: Some(vec!["value".into()]),
                         argument_custody: Some(vec![Transferred]),
                         out: Some("result".into()),
-                        ..OpIR::default()
+                        ..crate::OpIR::new(crate::OpKind::Call)
                     },
                     OpIR {
-                        kind: "ret_void".into(),
-                        ..OpIR::default()
+                        kind: crate::OpKind::RetVoid,
+                        ..crate::OpIR::new(crate::OpKind::RetVoid)
                     },
                 ],
                 ..FunctionIR::default()

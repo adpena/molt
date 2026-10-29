@@ -1,8 +1,10 @@
 use super::super::*;
 use super::list_index_fast_path::store_index_fallback_import_name;
+#[cfg(test)]
+use molt_ir::OpKind;
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &["store_index"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::StoreIndex);
 
 /// Cranelift codegen for subscript write (`store_index`). Container, key and
 /// value are borrowed through one operand transaction: a repeated source is

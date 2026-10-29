@@ -11,10 +11,14 @@ pub(super) fn emit_list_tuple_op(
     op: &OpIR,
     ctx: &AggregateRuntimeContext<'_>,
 ) -> bool {
-    match op.kind.as_str() {
-        "build_list" | "list_new" => list_ops::emit_list_op(func, op, ctx),
-        "tuple_new" | "tuple_index" => tuple_ops::emit_tuple_op(func, op, ctx),
-        "unpack_sequence" => unpack_ops::emit_unpack_sequence(func, op, ctx),
+    match op.kind {
+        molt_ir::OpKind::BuildList | molt_ir::OpKind::ListNew => {
+            list_ops::emit_list_op(func, op, ctx)
+        }
+        molt_ir::OpKind::TupleNew | molt_ir::OpKind::TupleIndex => {
+            tuple_ops::emit_tuple_op(func, op, ctx)
+        }
+        molt_ir::OpKind::UnpackSequence => unpack_ops::emit_unpack_sequence(func, op, ctx),
         _ => return false,
     }
     true

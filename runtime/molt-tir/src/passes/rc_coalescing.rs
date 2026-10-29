@@ -17,7 +17,7 @@ pub fn build_const_int_map(function: &FunctionIR) -> BTreeMap<String, i64> {
     let mut map = BTreeMap::new();
     let mut defined: HashSet<&str> = function.params.iter().map(String::as_str).collect();
     for op in &function.ops {
-        let constant = (kind_to_opcode_table(&op.kind) == Some(OpCode::ConstInt))
+        let constant = (kind_to_opcode_table(op.kind) == Some(OpCode::ConstInt))
             .then_some(op.value)
             .flatten();
         visit_simple_ir_defined_names(op, |name| {
@@ -42,36 +42,36 @@ pub fn compute_rc_coalesce_skips(
     ops: &[OpIR],
     last_use: &BTreeMap<String, usize>,
 ) -> (HashSet<usize>, HashSet<String>) {
-    const CONTROL_FLOW: &[&str] = &[
-        "if",
-        "else",
-        "end_if",
-        "jump",
-        "br_if",
-        "label",
-        "check_exception",
-        "state_transition",
-        "state_yield",
-        "state_switch",
-        "state_label",
-        "exception_push",
-        "exception_pop",
-        "ret",
-        "ret_void",
-        "loop_start",
-        "loop_index_start",
-        "loop_end",
-        "loop_break_if_true",
-        "loop_break_if_false",
+    const CONTROL_FLOW: &[molt_ir::OpKind] = &[
+        molt_ir::OpKind::If,
+        molt_ir::OpKind::Else,
+        molt_ir::OpKind::EndIf,
+        molt_ir::OpKind::Jump,
+        molt_ir::OpKind::BrIf,
+        molt_ir::OpKind::Label,
+        molt_ir::OpKind::CheckException,
+        molt_ir::OpKind::StateTransition,
+        molt_ir::OpKind::StateYield,
+        molt_ir::OpKind::StateSwitch,
+        molt_ir::OpKind::StateLabel,
+        molt_ir::OpKind::ExceptionPush,
+        molt_ir::OpKind::ExceptionPop,
+        molt_ir::OpKind::Ret,
+        molt_ir::OpKind::RetVoid,
+        molt_ir::OpKind::LoopStart,
+        molt_ir::OpKind::LoopIndexStart,
+        molt_ir::OpKind::LoopEnd,
+        molt_ir::OpKind::LoopBreakIfTrue,
+        molt_ir::OpKind::LoopBreakIfFalse,
         // Value-less conditional break gated on the runtime exception flag.  It
         // is a real control-flow boundary (the loop may exit here on a pending
         // exception), so inc_ref/dec_ref coalescing MUST NOT scan across it —
         // otherwise a dec_ref placed after the break could be skipped on the
         // exception-exit path, leaking the referenced object.
-        "loop_break_if_exception",
-        "loop_continue",
+        molt_ir::OpKind::LoopBreakIfException,
+        molt_ir::OpKind::LoopContinue,
     ];
-    let cf_set: HashSet<&str> = CONTROL_FLOW.iter().copied().collect();
+    let cf_set: HashSet<molt_ir::OpKind> = CONTROL_FLOW.iter().copied().collect();
     let mut skip_ops: HashSet<usize> = HashSet::new();
     let mut skip_dec_ref: HashSet<String> = HashSet::new();
 
@@ -80,8 +80,8 @@ pub fn compute_rc_coalesce_skips(
             continue;
         }
         let a = &ops[i];
-        let a_is_inc = matches!(a.kind.as_str(), "inc_ref" | "borrow");
-        let a_is_dec = matches!(a.kind.as_str(), "dec_ref" | "release");
+        let a_is_inc = matches!(a.kind, molt_ir::OpKind::IncRef | molt_ir::OpKind::Borrow);
+        let a_is_dec = matches!(a.kind, molt_ir::OpKind::DecRef | molt_ir::OpKind::Release);
         if !a_is_inc && !a_is_dec {
             continue;
         }
@@ -91,15 +91,17 @@ pub fn compute_rc_coalesce_skips(
         };
         for j in (i + 1)..ops.len() {
             let b = &ops[j];
-            if cf_set.contains(b.kind.as_str()) {
+            if cf_set.contains(&b.kind) {
                 break;
             }
-            let b_kind = b.kind.as_str();
+            let b_kind = b.kind;
             let b_arg = b.args.as_ref().and_then(|v| v.first());
             let is_match = if a_is_inc {
-                matches!(b_kind, "dec_ref" | "release") && b_arg.map(String::as_str) == Some(&a_arg)
+                matches!(b_kind, molt_ir::OpKind::DecRef | molt_ir::OpKind::Release)
+                    && b_arg.map(String::as_str) == Some(&a_arg)
             } else {
-                matches!(b_kind, "inc_ref" | "borrow") && b_arg.map(String::as_str) == Some(&a_arg)
+                matches!(b_kind, molt_ir::OpKind::IncRef | molt_ir::OpKind::Borrow)
+                    && b_arg.map(String::as_str) == Some(&a_arg)
             };
             if is_match && !skip_ops.contains(&j) {
                 skip_ops.insert(i);
@@ -123,7 +125,7 @@ pub fn compute_rc_coalesce_skips(
         if skip_ops.contains(&idx) {
             continue;
         }
-        if !matches!(op.kind.as_str(), "inc_ref" | "borrow") {
+        if !matches!(op.kind, molt_ir::OpKind::IncRef | molt_ir::OpKind::Borrow) {
             continue;
         }
         let out_name = match op.out.as_deref() {
@@ -205,7 +207,7 @@ pub fn rc_coalescing(func_ir: &mut FunctionIR) {
         // Skip dec_ref/release ops whose variable was flagged by the
         // dead-inc_ref analysis (the inc_ref was removed, so the dec_ref
         // must be removed too).
-        if matches!(op.kind.as_str(), "dec_ref" | "release")
+        if matches!(op.kind, molt_ir::OpKind::DecRef | molt_ir::OpKind::Release)
             && let Some(arg) = op.args.as_ref().and_then(|a| a.first())
             && skip_dec_ref.contains(arg.as_str())
         {

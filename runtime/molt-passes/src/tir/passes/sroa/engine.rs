@@ -165,9 +165,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 roots.sort_unstable();
                 diag.push(format!(
                     "  roots {:?} BLOCKED by {:?} (kind={:?})",
-                    roots,
-                    op.opcode,
-                    op.attrs.get("_original_kind"),
+                    roots, op.opcode, op.origin,
                 ));
             }
             for r in touched {

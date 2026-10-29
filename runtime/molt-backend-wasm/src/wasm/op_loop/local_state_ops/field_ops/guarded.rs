@@ -17,9 +17,9 @@ pub(super) fn emit_guarded_field_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    match op.kind.as_str() {
-        "guarded_field_get" => emit_guarded_get(context, func, op),
-        "guarded_field_set" => emit_guarded_write(context, func, op),
+    match op.kind {
+        molt_ir::OpKind::GuardedFieldGet => emit_guarded_get(context, func, op),
+        molt_ir::OpKind::GuardedFieldSet => emit_guarded_write(context, func, op),
         _ => return false,
     }
     true

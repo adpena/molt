@@ -34,7 +34,10 @@ pub fn eliminate_dead_imports(ir: &mut SimpleIR) {
 
         func.ops.retain(|op| {
             // Only target import ops.
-            if !matches!(op.kind.as_str(), "import_name" | "import_from") {
+            if !matches!(
+                op.kind,
+                molt_ir::OpKind::ImportName | molt_ir::OpKind::ImportFrom
+            ) {
                 return true;
             }
 

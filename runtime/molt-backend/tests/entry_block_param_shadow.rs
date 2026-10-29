@@ -1,11 +1,8 @@
 use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 use object::{Object, ObjectSymbol};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 /// Compile a standalone codegen object for inspection.
@@ -73,15 +70,15 @@ fn symbol_matches(symbol_name: Option<&str>, func_name: &str) -> bool {
 
 #[test]
 fn entry_block_params_compile_with_int_shadow_targets() {
-    let mut const_one = op("const");
+    let mut const_one = op(molt_ir::OpKind::Const);
     const_one.value = Some(1);
     const_one.out = Some("tmp".to_string());
 
-    let mut store_slot = op("store_var");
+    let mut store_slot = op(molt_ir::OpKind::StoreVar);
     store_slot.var = Some("loop_slot".to_string());
     store_slot.args = Some(vec!["tmp".to_string()]);
 
-    let mut ret_arg = op("ret");
+    let mut ret_arg = op(molt_ir::OpKind::Ret);
     ret_arg.args = Some(vec!["arg".to_string()]);
 
     let ir = SimpleIR {
@@ -107,30 +104,30 @@ fn entry_block_params_compile_with_int_shadow_targets() {
 
 #[test]
 fn structured_if_phi_merges_compile() {
-    let mut cond = op("const_bool");
+    let mut cond = op(molt_ir::OpKind::ConstBool);
     cond.value = Some(1);
     cond.out = Some("cond".to_string());
 
-    let mut if_op = op("if");
+    let mut if_op = op(molt_ir::OpKind::If);
     if_op.args = Some(vec!["cond".to_string()]);
 
-    let mut then_val = op("const");
+    let mut then_val = op(molt_ir::OpKind::Const);
     then_val.value = Some(1);
     then_val.out = Some("then_val".to_string());
 
-    let else_op = op("else");
+    let else_op = op(molt_ir::OpKind::Else);
 
-    let mut else_val = op("const");
+    let mut else_val = op(molt_ir::OpKind::Const);
     else_val.value = Some(2);
     else_val.out = Some("else_val".to_string());
 
-    let end_if = op("end_if");
+    let end_if = op(molt_ir::OpKind::EndIf);
 
-    let mut phi = op("phi");
+    let mut phi = op(molt_ir::OpKind::Phi);
     phi.out = Some("joined".to_string());
     phi.args = Some(vec!["then_val".to_string(), "else_val".to_string()]);
 
-    let mut ret_joined = op("ret");
+    let mut ret_joined = op(molt_ir::OpKind::Ret);
     ret_joined.args = Some(vec!["joined".to_string()]);
 
     let ir = SimpleIR {
@@ -158,47 +155,47 @@ fn structured_if_phi_merges_compile() {
 
 #[test]
 fn nested_structured_if_phi_merges_compile() {
-    let mut outer_cond = op("const_bool");
+    let mut outer_cond = op(molt_ir::OpKind::ConstBool);
     outer_cond.value = Some(1);
     outer_cond.out = Some("outer_cond".to_string());
 
-    let mut inner_cond = op("const_bool");
+    let mut inner_cond = op(molt_ir::OpKind::ConstBool);
     inner_cond.value = Some(1);
     inner_cond.out = Some("inner_cond".to_string());
 
-    let mut base = op("const");
+    let mut base = op(molt_ir::OpKind::Const);
     base.value = Some(0);
     base.out = Some("base".to_string());
 
-    let mut outer_if = op("if");
+    let mut outer_if = op(molt_ir::OpKind::If);
     outer_if.args = Some(vec!["outer_cond".to_string()]);
 
-    let mut inner_if = op("if");
+    let mut inner_if = op(molt_ir::OpKind::If);
     inner_if.args = Some(vec!["inner_cond".to_string()]);
 
-    let mut inner_then = op("const");
+    let mut inner_then = op(molt_ir::OpKind::Const);
     inner_then.value = Some(1);
     inner_then.out = Some("inner_then".to_string());
 
-    let inner_else = op("else");
+    let inner_else = op(molt_ir::OpKind::Else);
 
-    let mut inner_else_val = op("const");
+    let mut inner_else_val = op(molt_ir::OpKind::Const);
     inner_else_val.value = Some(2);
     inner_else_val.out = Some("inner_else".to_string());
 
-    let inner_end_if = op("end_if");
+    let inner_end_if = op(molt_ir::OpKind::EndIf);
 
-    let mut inner_phi = op("phi");
+    let mut inner_phi = op(molt_ir::OpKind::Phi);
     inner_phi.out = Some("outer_then".to_string());
     inner_phi.args = Some(vec!["inner_then".to_string(), "inner_else".to_string()]);
 
-    let outer_end_if = op("end_if");
+    let outer_end_if = op(molt_ir::OpKind::EndIf);
 
-    let mut outer_phi = op("phi");
+    let mut outer_phi = op(molt_ir::OpKind::Phi);
     outer_phi.out = Some("joined".to_string());
     outer_phi.args = Some(vec!["outer_then".to_string(), "base".to_string()]);
 
-    let mut ret_joined = op("ret");
+    let mut ret_joined = op(molt_ir::OpKind::Ret);
     ret_joined.args = Some(vec!["joined".to_string()]);
 
     let ir = SimpleIR {

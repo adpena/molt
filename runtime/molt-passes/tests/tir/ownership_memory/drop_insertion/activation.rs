@@ -51,7 +51,10 @@ fn activation_dispatch_transport_preserves_alias_states_and_rejects_bad_targets(
         default_args: vec![],
     };
     let ops = molt_passes::tir::lower_to_simple::lower_to_simple_ir(&func);
-    let switch = ops.iter().find(|op| op.kind == "state_switch").unwrap();
+    let switch = ops
+        .iter()
+        .find(|op| op.kind == molt_ir::OpKind::StateSwitch)
+        .unwrap();
     assert_eq!(switch.state_targets, Some(vec![(9, 71), (4001, 71)]));
     let encoded = serde_json::to_string(switch).unwrap();
     assert_eq!(serde_json::from_str::<OpIR>(&encoded).unwrap(), *switch);
@@ -59,18 +62,26 @@ fn activation_dispatch_transport_preserves_alias_states_and_rejects_bad_targets(
     assert_eq!(cfg.state_resume_edges.len(), 2);
     assert_eq!(cfg.state_resume_edges[0].1, cfg.state_resume_edges[1].1);
     for (kind, targets, expected) in [
-        ("state_switch", vec![(9, 999)], "requires one control label"),
         (
-            "state_switch",
+            molt_ir::OpKind::StateSwitch,
+            vec![(9, 999)],
+            "requires one control label",
+        ),
+        (
+            molt_ir::OpKind::StateSwitch,
             vec![(9, 71), (9, 71)],
             "duplicate saved state",
         ),
-        ("line", vec![], "state_targets requires state_switch"),
+        (
+            molt_ir::OpKind::Line,
+            vec![],
+            "state_targets requires state_switch",
+        ),
     ] {
         let mut malformed = ops.clone();
         let switch = malformed
             .iter_mut()
-            .find(|op| op.kind == "state_switch")
+            .find(|op| op.kind == molt_ir::OpKind::StateSwitch)
             .unwrap();
         switch.kind = kind.into();
         switch.state_targets = Some(targets);
@@ -136,7 +147,7 @@ fn activation_yield_transfers_pair_and_releases_element_owner_before_suspending(
     let label = targets.iter().find(|(state, _)| *state == 9).unwrap().1;
     let resume_index = simple
         .iter()
-        .position(|op| op.kind == "state_label" && op.value == Some(label))
+        .position(|op| op.kind == molt_ir::OpKind::StateLabel && op.value == Some(label))
         .expect("resume remains a declared target after yield becomes Return");
     let cfg = molt_passes::tir::cfg::CFG::build(&simple);
     assert!(

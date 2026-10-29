@@ -58,10 +58,7 @@ fn emitted_format_float_block() -> String {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,

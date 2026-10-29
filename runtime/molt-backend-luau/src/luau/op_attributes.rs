@@ -3,14 +3,14 @@ use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results
 
 impl LuauBackend {
     pub(super) fn emit_attribute_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
+        match op.kind {
             // ================================================================
             // Attribute access
             // ================================================================
-            "get_attr"
-            | "get_attr_generic_obj"
-            | "get_attr_generic_ptr"
-            | "get_attr_special_obj" => {
+            molt_ir::OpKind::GetAttr
+            | molt_ir::OpKind::GetAttrGenericObj
+            | molt_ir::OpKind::GetAttrGenericPtr
+            | molt_ir::OpKind::GetAttrSpecialObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let raw_attr = op.s_value.as_deref().unwrap_or("unknown");
@@ -51,7 +51,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "load_method" => {
+            molt_ir::OpKind::LoadMethod => {
                 // CPython's method-form LOAD_ATTR, lowered as its generic form:
                 // the attribute (a bound method for a class function) and no
                 // `self`, so the call that follows is an ordinary call.
@@ -62,11 +62,10 @@ impl LuauBackend {
                     SimpleIrResultField::Arg(_) => {}
                 });
                 let attribute = OpIR {
-                    kind: "get_attr_generic_obj".to_string(),
                     args: op.args.clone(),
                     s_value: op.s_value.clone(),
                     out: pair[0].map(str::to_string),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetAttrGenericObj)
                 };
                 self.emit_attribute_op(&attribute);
                 if let Some(self_or_null) = pair[1] {
@@ -74,13 +73,13 @@ impl LuauBackend {
                     self.emit_line(&format!("local {self_or_null} = nil"));
                 }
             }
-            "load_super_method" => {
+            molt_ir::OpKind::LoadSuperMethod => {
                 self.emit_unsupported_op_with_reason(
                     op,
                     "zero-argument super() needs the CPython super object protocol",
                 );
             }
-            "get_attr_name" => {
+            molt_ir::OpKind::GetAttrName => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -91,7 +90,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "get_attr_name_default" => {
+            molt_ir::OpKind::GetAttrNameDefault => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -113,7 +112,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "has_attr_name" => {
+            molt_ir::OpKind::HasAttrName => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -128,7 +127,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = false"));
                 }
             }
-            "set_attr_name" => {
+            molt_ir::OpKind::SetAttrName => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let obj = sanitize_ident(&args[0]);
@@ -137,7 +136,9 @@ impl LuauBackend {
                     self.emit_line(&format!("if type({obj}) == \"function\" then molt_function_attr_set({obj}, {attr_name}, {value}) else molt_set_attr({obj}, {attr_name}, {value}) end"));
                 }
             }
-            "set_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {
+            molt_ir::OpKind::SetAttr
+            | molt_ir::OpKind::SetAttrGenericObj
+            | molt_ir::OpKind::SetAttrGenericPtr => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let attr = op.s_value.as_deref().unwrap_or("unknown");
                 let escaped = escape_luau_string(attr);
@@ -147,7 +148,7 @@ impl LuauBackend {
                     self.emit_line(&format!("if type({obj}) == \"function\" then molt_function_attr_set({obj}, \"{escaped}\", {value}) else molt_set_attr({obj}, \"{escaped}\", {value}) end"));
                 }
             }
-            "del_attr_name" => {
+            molt_ir::OpKind::DelAttrName => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
@@ -155,7 +156,7 @@ impl LuauBackend {
                     self.emit_line(&format!("if type({obj}) == \"function\" then molt_function_attr_del({obj}, {attr_name}) else molt_del_attr({obj}, {attr_name}) end"));
                 }
             }
-            "del_attr_generic_obj" | "del_attr_generic_ptr" => {
+            molt_ir::OpKind::DelAttrGenericObj | molt_ir::OpKind::DelAttrGenericPtr => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let attr = op.s_value.as_deref().unwrap_or("unknown");
                 let attr = escape_luau_string(attr);

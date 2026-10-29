@@ -7,6 +7,7 @@ use crate::tir::values::{TirValue, ValueId};
 
 fn const_int_op(result: ValueId, value: i64) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -22,6 +23,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
 
 fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![lhs, rhs],
@@ -33,6 +35,7 @@ fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
 
 fn cmp_op(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -276,10 +279,7 @@ fn unrolling_scalar_binding_views_keeps_every_publication_effect() {
     let view = func.fresh_value();
     let mut store = cmp_op(OpCode::Copy, next, next, view);
     store.operands.truncate(1);
-    store.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("frame_home_store".into()),
-    );
+    store.origin = Some(molt_ir::OpKind::FrameHomeStore);
     store.attrs.insert("value".into(), AttrValue::Int(0));
     func.blocks.get_mut(&body).unwrap().ops.push(store);
     if let Terminator::Branch { args, .. } = &mut func.blocks.get_mut(&body).unwrap().terminator {
@@ -290,10 +290,7 @@ fn unrolling_scalar_binding_views_keeps_every_publication_effect() {
     let exit_value = func.fresh_value();
     let mut guard_store = cmp_op(OpCode::Copy, iv, iv, guard_view);
     guard_store.operands.truncate(1);
-    guard_store.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("frame_home_store".into()),
-    );
+    guard_store.origin = Some(molt_ir::OpKind::FrameHomeStore);
     guard_store.attrs.insert("value".into(), AttrValue::Int(1));
     let header_block = func.blocks.get_mut(&header).unwrap();
     header_block.ops[0].operands[0] = guard_view;
@@ -315,9 +312,7 @@ fn unrolling_scalar_binding_views_keeps_every_publication_effect() {
         .blocks
         .values()
         .flat_map(|block| &block.ops)
-        .filter(|op| {
-            op.attrs.get("_original_kind") == Some(&AttrValue::Str("frame_home_store".into()))
-        })
+        .filter(|op| op.origin == Some(molt_ir::OpKind::FrameHomeStore))
         .collect();
     assert_eq!(
         stores.len(),
@@ -539,6 +534,7 @@ fn unrolls_with_check_exception_observation_in_body() {
     func.blocks.get_mut(&body).unwrap().ops.insert(
         0,
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -581,6 +577,7 @@ fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation()
                 .unwrap()
                 .ops
                 .push(TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -619,6 +616,7 @@ fn does_not_unroll_with_try_handler_in_body() {
     func.blocks.get_mut(&body).unwrap().ops.insert(
         0,
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -829,6 +827,7 @@ fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -910,6 +909,7 @@ fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> 
         },
     );
     source.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ExceptionPending,
         operands: vec![],
@@ -1449,6 +1449,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -1481,6 +1482,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::InplaceAdd,
                     operands: vec![acc, iv_view],
@@ -1494,13 +1496,14 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                 },
                 // store-to-slot: Copy(value, slot) -> () (no result, 2 operands)
                 TirOp {
+                    origin: Some(molt_ir::OpKind::Store),
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![acc_next, slot],
                     results: vec![],
                     attrs: {
-                        let mut m = AttrDict::new();
-                        m.insert("_original_kind".into(), AttrValue::Str("store".into()));
+                        let m = AttrDict::new();
+
                         m
                     },
                     source_span: None,
@@ -1570,13 +1573,13 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
     for op in &simple {
         assert!(
             !matches!(
-                op.kind.as_str(),
-                "loop_start"
-                    | "loop_end"
-                    | "loop_continue"
-                    | "loop_break"
-                    | "loop_break_if_true"
-                    | "loop_break_if_false"
+                op.kind,
+                molt_ir::OpKind::LoopStart
+                    | molt_ir::OpKind::LoopEnd
+                    | molt_ir::OpKind::LoopContinue
+                    | molt_ir::OpKind::LoopBreak
+                    | molt_ir::OpKind::LoopBreakIfTrue
+                    | molt_ir::OpKind::LoopBreakIfFalse
             ),
             "stray loop marker {} after full unroll",
             op.kind

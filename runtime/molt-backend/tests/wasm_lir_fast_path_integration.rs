@@ -74,15 +74,17 @@ fn wasm_backend_exports_value_and_authored_void_under_boxed_user_abi() {
                 return_abi,
                 ops: vec![
                     OpIR {
-                        kind: "const".into(),
                         value: Some(42),
                         out: Some("result".into()),
-                        ..Default::default()
+                        ..OpIR::new(molt_ir::OpKind::Const)
                     },
                     OpIR {
-                        kind: if returns_value { "ret" } else { "ret_void" }.into(),
                         args: returns_value.then(|| vec!["result".into()]),
-                        ..Default::default()
+                        ..OpIR::new(if returns_value {
+                            molt_ir::OpKind::Ret
+                        } else {
+                            molt_ir::OpKind::RetVoid
+                        })
                     },
                 ],
                 ..Default::default()

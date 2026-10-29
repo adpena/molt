@@ -99,9 +99,8 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "call".to_string(),
                     s_value: Some("demo__module".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 }],
                 param_types: None,
                 source_file: None,
@@ -116,14 +115,10 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 params: vec![],
                 ops: vec![
                     OpIR {
-                        kind: "call_internal".to_string(),
                         s_value: Some("molt_init_sys".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 param_types: None,
                 source_file: None,
@@ -136,10 +131,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_bootstrap".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -151,10 +143,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -166,10 +155,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,

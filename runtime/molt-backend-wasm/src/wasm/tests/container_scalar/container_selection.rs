@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn container_import_selection_ignores_transport_hints() {
-    let mut index = wasm_test_op("index", Some("item"), vec!["xs", "i"]);
+    let mut index = wasm_test_op(molt_ir::OpKind::Index, Some("item"), vec!["xs", "i"]);
     index.container_type = Some("list".to_string());
     index.type_hint = Some("list".to_string());
     let func = wasm_test_function(
@@ -14,16 +14,16 @@ fn container_import_selection_ignores_transport_hints() {
     let plan = wasm_representation_plan(&func);
 
     assert_eq!(
-        selected_container_runtime_import(&plan, 0, "index", &index),
+        selected_container_runtime_import(&plan, 0, molt_ir::OpKind::Index, &index),
         None
     );
 }
 
 #[test]
 fn container_import_selection_uses_typed_container_facts() {
-    let index = wasm_test_op("index", Some("item"), vec!["xs", "i"]);
-    let set = wasm_test_op("store_index", None, vec!["xs", "i", "v"]);
-    let len = wasm_test_op("len", Some("n"), vec!["xs"]);
+    let index = wasm_test_op(molt_ir::OpKind::Index, Some("item"), vec!["xs", "i"]);
+    let set = wasm_test_op(molt_ir::OpKind::StoreIndex, None, vec!["xs", "i", "v"]);
+    let len = wasm_test_op(molt_ir::OpKind::Len, Some("n"), vec!["xs"]);
     let func = wasm_test_function(
         "typed_container",
         vec!["xs", "i", "v"],
@@ -33,25 +33,25 @@ fn container_import_selection_uses_typed_container_facts() {
     let plan = wasm_representation_plan(&func);
 
     assert_eq!(
-        selected_container_runtime_import(&plan, 0, "index", &index),
+        selected_container_runtime_import(&plan, 0, molt_ir::OpKind::Index, &index),
         None,
         "semantic list[int] is not a physical flat-list storage proof"
     );
     assert_eq!(
-        selected_container_runtime_import(&plan, 1, "store_index", &set),
+        selected_container_runtime_import(&plan, 1, molt_ir::OpKind::StoreIndex, &set),
         None,
         "semantic list[int] is not a physical flat-list storage proof"
     );
     assert_eq!(
-        selected_container_runtime_import(&plan, 2, "len", &len),
+        selected_container_runtime_import(&plan, 2, molt_ir::OpKind::Len, &len),
         Some(WasmRuntimeImport::LenList)
     );
 }
 
 #[test]
 fn container_import_selection_uses_manifest_typed_query_matrix() {
-    let contains = wasm_test_op("contains", Some("hit"), vec!["xs", "needle"]);
-    let len = wasm_test_op("len", Some("n"), vec!["xs"]);
+    let contains = wasm_test_op(molt_ir::OpKind::Contains, Some("hit"), vec!["xs", "needle"]);
+    let len = wasm_test_op(molt_ir::OpKind::Len, Some("n"), vec!["xs"]);
     let cases = [
         (
             "typed_dict_queries",
@@ -95,12 +95,12 @@ fn container_import_selection_uses_manifest_typed_query_matrix() {
         let plan = wasm_representation_plan(&func);
 
         assert_eq!(
-            selected_container_runtime_import(&plan, 0, "contains", &contains),
+            selected_container_runtime_import(&plan, 0, molt_ir::OpKind::Contains, &contains),
             contains_import,
             "{name} contains selection drifted"
         );
         assert_eq!(
-            selected_container_runtime_import(&plan, 1, "len", &len),
+            selected_container_runtime_import(&plan, 1, molt_ir::OpKind::Len, &len),
             len_import,
             "{name} len selection drifted"
         );
@@ -109,8 +109,12 @@ fn container_import_selection_uses_manifest_typed_query_matrix() {
 
 #[test]
 fn container_import_selection_uses_manifest_index_store_matrix() {
-    let index = wasm_test_op("index", Some("item"), vec!["xs", "key"]);
-    let store = wasm_test_op("store_index", None, vec!["xs", "key", "value"]);
+    let index = wasm_test_op(molt_ir::OpKind::Index, Some("item"), vec!["xs", "key"]);
+    let store = wasm_test_op(
+        molt_ir::OpKind::StoreIndex,
+        None,
+        vec!["xs", "key", "value"],
+    );
     let cases = [
         (
             "typed_dict_index_store",
@@ -139,12 +143,12 @@ fn container_import_selection_uses_manifest_index_store_matrix() {
         let plan = wasm_representation_plan(&func);
 
         assert_eq!(
-            selected_container_runtime_import(&plan, 0, "index", &index),
+            selected_container_runtime_import(&plan, 0, molt_ir::OpKind::Index, &index),
             index_import,
             "{name} index selection drifted"
         );
         assert_eq!(
-            selected_container_runtime_import(&plan, 1, "store_index", &store),
+            selected_container_runtime_import(&plan, 1, molt_ir::OpKind::StoreIndex, &store),
             store_import,
             "{name} store_index selection drifted"
         );
@@ -156,14 +160,14 @@ fn container_import_selection_uses_flat_list_storage_proof() {
     let constants: Vec<_> = [("n", 4), ("i", 0), ("v", 7)]
         .into_iter()
         .map(|(name, value)| {
-            let mut op = wasm_test_op("const", Some(name), vec![]);
+            let mut op = wasm_test_op(molt_ir::OpKind::Const, Some(name), vec![]);
             op.value = Some(value);
             op
         })
         .collect();
-    let make = wasm_test_op("list_int_new", Some("xs"), vec!["n", "v"]);
-    let index = wasm_test_op("index", Some("item"), vec!["xs", "i"]);
-    let set = wasm_test_op("store_index", None, vec!["xs", "i", "v"]);
+    let make = wasm_test_op(molt_ir::OpKind::ListIntNew, Some("xs"), vec!["n", "v"]);
+    let index = wasm_test_op(molt_ir::OpKind::Index, Some("item"), vec!["xs", "i"]);
+    let set = wasm_test_op(molt_ir::OpKind::StoreIndex, None, vec!["xs", "i", "v"]);
     let func = wasm_test_function(
         "flat_list_storage",
         vec![],
@@ -176,23 +180,23 @@ fn container_import_selection_uses_flat_list_storage_proof() {
     let plan = wasm_representation_plan(&func);
 
     assert_eq!(
-        selected_container_runtime_import(&plan, 4, "index", &index),
+        selected_container_runtime_import(&plan, 4, molt_ir::OpKind::Index, &index),
         Some(WasmRuntimeImport::ListIntGetitem)
     );
     assert_eq!(
-        selected_container_runtime_import(&plan, 5, "store_index", &set),
+        selected_container_runtime_import(&plan, 5, molt_ir::OpKind::StoreIndex, &set),
         Some(WasmRuntimeImport::ListIntSetitem)
     );
 }
 
 #[test]
 fn container_import_selection_does_not_trust_annotated_index_protocols() {
-    for access in ["index", "store_index"] {
-        let mut count = wasm_test_op("const", Some("n"), vec![]);
+    for access in [molt_ir::OpKind::Index, molt_ir::OpKind::StoreIndex] {
+        let mut count = wasm_test_op(molt_ir::OpKind::Const, Some("n"), vec![]);
         count.value = Some(4);
-        let mut fill = wasm_test_op("const", Some("v"), vec![]);
+        let mut fill = wasm_test_op(molt_ir::OpKind::Const, Some("v"), vec![]);
         fill.value = Some(7);
-        let args = if access == "index" {
+        let args = if access == molt_ir::OpKind::Index {
             vec!["xs", "i"]
         } else {
             vec!["xs", "i", "v"]
@@ -205,7 +209,7 @@ fn container_import_selection_does_not_trust_annotated_index_protocols() {
             vec![
                 count,
                 fill,
-                wasm_test_op("list_int_new", Some("xs"), vec!["n", "v"]),
+                wasm_test_op(molt_ir::OpKind::ListIntNew, Some("xs"), vec!["n", "v"]),
                 op.clone(),
             ],
         );

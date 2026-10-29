@@ -221,12 +221,11 @@ mod tests {
     use crate::wasm::local_analysis::ValueOccupancy;
     use crate::wasm::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
 
-    fn op(kind: &str, out: Option<&str>, args: &[&str]) -> OpIR {
+    fn op(kind: molt_ir::OpKind, out: Option<&str>, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
             out: out.map(str::to_string),
             args: Some(args.iter().map(|value| (*value).to_string()).collect()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
@@ -256,9 +255,9 @@ mod tests {
         locals.insert(WasmFrameLocals::NONE_NAME.to_string(), 3);
 
         let liveness = linear_region(&[
-            op("call", Some("result"), &[]),
+            op(molt_ir::OpKind::Call, Some("result"), &[]),
             op(
-                "tuple_new",
+                molt_ir::OpKind::TupleNew,
                 Some("later"),
                 &["__molt_tmp0", "payload_ptr", "__multi_ret_0", "none"],
             ),
@@ -288,8 +287,12 @@ mod tests {
         );
 
         let liveness = linear_region(&[
-            op("call", Some("result"), &[]),
-            op("tuple_new", Some("later"), &["value", "__molt_tmp0"]),
+            op(molt_ir::OpKind::Call, Some("result"), &[]),
+            op(
+                molt_ir::OpKind::TupleNew,
+                Some("later"),
+                &["value", "__molt_tmp0"],
+            ),
         ]);
         assert_eq!(
             collect_live_object_locals_for_call(&locals, &liveness, 0, None,),
@@ -302,8 +305,8 @@ mod tests {
         let mut locals = WasmFrameLocals::new();
         locals.insert_dead_sink_alias("dead_result".to_string(), 0);
         let liveness = linear_region(&[
-            op("call", Some("result"), &[]),
-            op("print", None, &["dead_result"]),
+            op(molt_ir::OpKind::Call, Some("result"), &[]),
+            op(molt_ir::OpKind::Print, None, &["dead_result"]),
         ]);
         assert!(collect_live_object_locals_for_call(&locals, &liveness, 0, None,).is_empty());
         assert_eq!(
@@ -321,13 +324,17 @@ mod tests {
         locals.insert("future".to_string(), 0);
         locals.insert("redefined".to_string(), 1);
 
-        let mut redefine = op("store_var", None, &["incoming"]);
+        let mut redefine = op(molt_ir::OpKind::StoreVar, None, &["incoming"]);
         redefine.var = Some("redefined".to_string());
         let liveness = linear_region(&[
-            op("call", Some("result"), &[]),
-            op("const", Some("future"), &[]),
+            op(molt_ir::OpKind::Call, Some("result"), &[]),
+            op(molt_ir::OpKind::Const, Some("future"), &[]),
             redefine,
-            op("tuple_new", Some("later"), &["future", "redefined"]),
+            op(
+                molt_ir::OpKind::TupleNew,
+                Some("later"),
+                &["future", "redefined"],
+            ),
         ]);
 
         assert!(collect_live_object_locals_for_call(&locals, &liveness, 0, None).is_empty());
@@ -335,21 +342,21 @@ mod tests {
 
     #[test]
     fn call_retention_requires_exact_occupancy_across_the_call() {
-        let mut bind = op("store_var", None, &["value"]);
+        let mut bind = op(molt_ir::OpKind::StoreVar, None, &["value"]);
         bind.var = Some("held".to_string());
-        let mut call = op("call", Some("raw"), &["value"]);
+        let mut call = op(molt_ir::OpKind::Call, Some("raw"), &["value"]);
         call.s_value = Some("molt_int_as_i64".to_string());
         let ops = vec![
             bind,
-            op("if", None, &["cond"]),
+            op(molt_ir::OpKind::If, None, &["cond"]),
             // The then-path releases `held` before the call; its next read in
             // linear order belongs to the else-path, unreachable from here.
-            op("dec_ref", None, &["held"]),
+            op(molt_ir::OpKind::DecRef, None, &["held"]),
             call,
-            op("ret", None, &["raw"]),
-            op("else", None, &[]),
-            op("ret", None, &["held"]),
-            op("end_if", None, &[]),
+            op(molt_ir::OpKind::Ret, None, &["raw"]),
+            op(molt_ir::OpKind::Else, None, &[]),
+            op(molt_ir::OpKind::Ret, None, &["held"]),
+            op(molt_ir::OpKind::EndIf, None, &[]),
         ];
         let occupancy = exact_occupancy("sibling_release", &["cond", "value"], &ops);
         let mut locals = WasmFrameLocals::new();
@@ -363,11 +370,11 @@ mod tests {
         assert!(collect_live_object_locals_for_call(&locals, &exact, 3, None).is_empty());
 
         // A value that survives the call is still retained.
-        let mut keep = op("store_var", None, &["value"]);
+        let mut keep = op(molt_ir::OpKind::StoreVar, None, &["value"]);
         keep.var = Some("kept".to_string());
-        let mut call = op("call", Some("raw"), &["value"]);
+        let mut call = op(molt_ir::OpKind::Call, Some("raw"), &["value"]);
         call.s_value = Some("molt_int_as_i64".to_string());
-        let ops = vec![keep, call, op("ret", None, &["kept"])];
+        let ops = vec![keep, call, op(molt_ir::OpKind::Ret, None, &["kept"])];
         let occupancy = exact_occupancy("live_across", &["value"], &ops);
         let mut locals = WasmFrameLocals::new();
         locals.insert("kept".to_string(), 0);

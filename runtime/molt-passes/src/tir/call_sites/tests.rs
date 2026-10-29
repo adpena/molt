@@ -9,6 +9,7 @@ use crate::tir::values::ValueId;
 
 fn op(opcode: OpCode, args: &[ValueId], results: &[ValueId]) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: args.to_vec(),
@@ -179,22 +180,16 @@ fn fixed_slot_proofs_exclude_guarded_and_releasing_accesses() {
     append(&mut func, alloc);
     let neutral = integer(&mut func, 7);
     let mut store = op(OpCode::StoreAttr, &[object, neutral], &[]);
-    store
-        .attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
+    store.origin = Some(molt_ir::OpKind::Store);
     store.attrs.insert("value".into(), AttrValue::Int(0));
     let first = append(&mut func, store.clone());
     let result = func.fresh_value();
     let mut load = op(OpCode::LoadAttr, &[object], &[result]);
-    load.attrs
-        .insert("_original_kind".into(), AttrValue::Str("load".into()));
+    load.origin = Some(molt_ir::OpKind::Load);
     load.attrs.insert("value".into(), AttrValue::Int(0));
     let plain = append(&mut func, load.clone());
     load.results = vec![func.fresh_value()];
-    load.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("guarded_load".into()),
-    );
+    load.origin = Some(molt_ir::OpKind::GuardedLoad);
     let guarded = append(&mut func, load);
     let after_callback = append(&mut func, store);
     let sites = FunctionCallSites::for_function(&func);
@@ -207,19 +202,17 @@ fn fixed_slot_proofs_exclude_guarded_and_releasing_accesses() {
 #[test]
 fn polls_and_unknown_preserved_ops_fail_closed_but_inert_primitives_do_not() {
     for (kind, callback) in [
-        ("future_runtime_operation", true),
-        ("builtin_func", true),
-        ("trace_enter_slot", true),
-        ("trace_exit", true),
-        ("line", false),
-        ("print_newline", false),
-        ("call_async", false),
+        (molt_ir::OpKind::BuiltinFunc, true),
+        (molt_ir::OpKind::TraceEnterSlot, true),
+        (molt_ir::OpKind::TraceExit, true),
+        (molt_ir::OpKind::Line, false),
+        (molt_ir::OpKind::PrintNewline, false),
+        (molt_ir::OpKind::CallAsync, false),
     ] {
         let mut func = function();
         let result = func.fresh_value();
         let mut copy = op(OpCode::Copy, &[], &[result]);
-        copy.attrs
-            .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        copy.origin = Some(kind);
         copy.attrs
             .insert("s_value".into(), AttrValue::Str(func.name.clone()));
         let position = append(&mut func, copy);
@@ -249,16 +242,14 @@ fn polls_and_unknown_preserved_ops_fail_closed_but_inert_primitives_do_not() {
 #[test]
 fn preserved_direct_calls_keep_targets_and_unknown_copy_cannot_borrow_them() {
     for (kind, direct) in [
-        ("call", true),
-        ("call_internal", true),
-        ("call_func", false),
-        ("unknown", false),
+        (molt_ir::OpKind::Call, true),
+        (molt_ir::OpKind::CallInternal, true),
+        (molt_ir::OpKind::CallFunc, false),
     ] {
         let mut func = function();
         let result = func.fresh_value();
         let mut copy = op(OpCode::Copy, &[], &[result]);
-        copy.attrs
-            .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        copy.origin = Some(kind);
         copy.attrs
             .insert("s_value".into(), AttrValue::Str("callee".into()));
         let position = append(&mut func, copy);
@@ -315,7 +306,7 @@ fn conditional_terminators_share_the_exact_truthiness_oracle() {
 
 #[test]
 fn trace_lifecycle_revokes_slot_history_and_leaf_admission() {
-    for kind in ["trace_enter_slot", "trace_exit"] {
+    for kind in [molt_ir::OpKind::TraceEnterSlot, molt_ir::OpKind::TraceExit] {
         let mut func = function();
         let object = func.fresh_value();
         let mut alloc = op(OpCode::Alloc, &[], &[object]);
@@ -323,16 +314,12 @@ fn trace_lifecycle_revokes_slot_history_and_leaf_admission() {
         append(&mut func, alloc);
         let neutral = integer(&mut func, 7);
         let mut store = op(OpCode::StoreAttr, &[object, neutral], &[]);
-        store
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        store.origin = Some(molt_ir::OpKind::Store);
         store.attrs.insert("value".into(), AttrValue::Int(0));
         let before = append(&mut func, store.clone());
         let mut trace = op(OpCode::Copy, &[], &[]);
-        trace
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str(kind.into()));
-        if kind == "trace_enter_slot" {
+        trace.origin = Some(kind);
+        if kind == molt_ir::OpKind::TraceEnterSlot {
             trace
                 .attrs
                 .insert("s_value".into(), AttrValue::Str(func.name.clone()));
@@ -380,10 +367,7 @@ fn fixed_gpu_primitive_is_a_site_without_a_python_callback() {
         "s_value".into(),
         AttrValue::Str("molt_gpu_thread_id".into()),
     );
-    gpu.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("gpu_thread_id".into()),
-    );
+    gpu.origin = Some(molt_ir::OpKind::GpuThreadId);
     let position = append(&mut func, gpu);
     let sites = FunctionCallSites::for_function(&func);
     assert_eq!(

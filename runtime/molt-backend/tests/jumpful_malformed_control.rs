@@ -3,34 +3,31 @@
 use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 #[test]
 fn jumpful_else_without_end_if_does_not_panic() {
     let mut ops: Vec<OpIR> = Vec::new();
 
-    let mut cond = op("const_bool");
+    let mut cond = op(molt_ir::OpKind::ConstBool);
     cond.value = Some(1);
     cond.out = Some("v0".to_string());
     ops.push(cond);
 
-    let mut if_op = op("if");
+    let mut if_op = op(molt_ir::OpKind::If);
     if_op.args = Some(vec!["v0".to_string()]);
     ops.push(if_op);
 
-    let mut one = op("const");
+    let mut one = op(molt_ir::OpKind::Const);
     one.value = Some(1);
     one.out = Some("v1".to_string());
     ops.push(one);
 
     // Intentionally malformed control metadata: ELSE with no END_IF.
-    ops.push(op("else"));
-    ops.push(op("ret_void"));
+    ops.push(op(molt_ir::OpKind::Else));
+    ops.push(op(molt_ir::OpKind::RetVoid));
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {

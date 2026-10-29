@@ -7,18 +7,9 @@ object-value operands and an owned object-value or void result. Integer machine
 carriers never prove this contract. Fixed and residual dedicated declarations
 are independently checked against native Rust export shapes.
 
-This audit derives the generic preserved runtime surface from the frontend wire
-vocabulary and the generated TIR mapper:
-
-* the serialization handler cluster emits JSON wire `kind` strings.
-* `op_kinds_generated.rs::kind_to_opcode_table` maps first-class TIR kinds.
-* emitted-but-unmapped kinds become preserved `Copy{_original_kind}` values.
-* if a `runtime/molt-runtime*/src/**/*.rs` leaf exports `molt_<kind>`, LLVM's generic
-  fallback can see it through the runtime-callable availability set.
-
-Only kinds not claimed by dedicated preserved handlers or vector reductions
-reach the generic path. Their semantics come from the same normalized manifest
-projection used to generate LLVM's table, never a second symbol allowlist.
+Runtime import eligibility is generated from normalized boxed-call contracts.
+OpKind exhaustiveness and typed selectors replace source-spelling inference;
+this audit verifies every declared contract against actual runtime exports.
 """
 
 from __future__ import annotations
@@ -42,8 +33,6 @@ bind_repository_imports(__file__)
 
 ROOT = Path(__file__).resolve().parents[1]
 
-
-from tools.op_kinds.paths import OUT_RS as OP_KINDS_GENERATED_RS  # noqa: E402
 
 RUNTIME_IMPORT_ABI_FACTS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/runtime_imports/abi_facts.rs"
@@ -104,16 +93,6 @@ class AbiFact:
 
 
 @dataclass(frozen=True, order=True)
-class AbiIssue:
-    symbol: str
-    arity: int
-    kind: str
-    rust_return: str
-    expected: str
-    actual: str
-
-
-@dataclass(frozen=True, order=True)
 class DuplicateAbiFact:
     symbol: str
     arity: int
@@ -135,22 +114,16 @@ class ClassifiedFactIssue:
 
 @dataclass(frozen=True)
 class AuditResult:
-    missing: tuple[AbiIssue, ...]
-    mismatched: tuple[AbiIssue, ...]
     duplicate_facts: tuple[DuplicateAbiFact, ...]
     classified_fact_issues: tuple[ClassifiedFactIssue, ...]
     boxed_fact_issues: tuple[ClassifiedFactIssue, ...]
-    unresolved_frontend: tuple[str, ...]
 
     @property
     def ok(self) -> bool:
         return not (
-            self.missing
-            or self.mismatched
-            or self.duplicate_facts
+            self.duplicate_facts
             or self.classified_fact_issues
             or self.boxed_fact_issues
-            or self.unresolved_frontend
         )
 
 
@@ -194,18 +167,6 @@ def boxed_runtime_export_issues() -> tuple[ClassifiedFactIssue, ...]:
         for export in candidates:
             issues.extend(validate_classified_facts({fact.symbol: export}, {key: fact}))
     return tuple(sorted(issues))
-
-
-def mapped_tir_kinds(path: Path = OP_KINDS_GENERATED_RS) -> set[str]:
-    source = path.read_text(encoding="utf-8")
-    match = re.search(
-        r"fn\s+kind_to_opcode_table\s*\([^)]*\).*?match\s+kind\s*\{(.*?)_ => None",
-        source,
-        re.DOTALL,
-    )
-    if not match:
-        raise RuntimeError(f"could not locate kind_to_opcode_table in {path}")
-    return set(re.findall(r'"([A-Za-z0-9_]+)"', match.group(1)))
 
 
 def _split_top_level_commas(params: str) -> list[str]:
@@ -546,18 +507,10 @@ def validate_classified_facts(
 
 
 def run_audit(root: Path = ROOT) -> AuditResult:
-    # Import lazily: the op-kind audit consumes our semantic reader but owns the
-    # source extractors for frontend emissions and dedicated handler routing.
-    from tools import audit_op_kinds
-
-    op_kinds = root / OP_KINDS_GENERATED_RS.relative_to(ROOT)
     conservative_imports = root / RUNTIME_IMPORT_ABI_FACTS_RS.relative_to(ROOT)
     fixed_imports = root / RUNTIME_IMPORT_FIXED_RS.relative_to(ROOT)
     runtime_import_abi = root / RUNTIME_IMPORT_ABI_RS.relative_to(ROOT)
     runtime_roots = runtime_src_roots(root)
-    frontend = audit_op_kinds.extract_frontend_kinds(root=root)
-    dedicated = audit_op_kinds.extract_llvm_preserved_op_kinds(root=root)
-    preserved_kinds = frontend.all - mapped_tir_kinds(op_kinds) - dedicated
     exports = runtime_exports(runtime_roots)
     aliases = runtime_type_aliases(runtime_roots)
     facts, duplicates = runtime_import_abi_facts(
@@ -595,52 +548,10 @@ def run_audit(root: Path = ROOT) -> AuditResult:
                 )
             )
 
-    missing: list[AbiIssue] = []
-    mismatched: list[AbiIssue] = []
-    for kind in sorted(preserved_kinds):
-        symbol = f"molt_{kind}"
-        export = exports.get(symbol)
-        if export is None:
-            continue
-        actual = boxed.get((symbol, export.arity))
-        if actual is None:
-            missing.append(
-                AbiIssue(
-                    symbol,
-                    export.arity,
-                    kind,
-                    export.rust_return,
-                    "<positional-boxed-contract>",
-                    "<missing>",
-                )
-            )
-            continue
-        expected = rust_return_to_abi(export.rust_return, aliases)
-        params = tuple(
-            rust_param_to_abi(param, aliases) for param in export.rust_params
-        )
-        if actual.return_abi != expected or actual.param_abis != params:
-            mismatched.append(
-                AbiIssue(
-                    symbol,
-                    export.arity,
-                    kind,
-                    export.rust_return,
-                    str((params, expected)),
-                    str((actual.param_abis, actual.return_abi)),
-                )
-            )
-
     return AuditResult(
-        missing=tuple(sorted(missing)),
-        mismatched=tuple(sorted(mismatched)),
         duplicate_facts=tuple(sorted(duplicates)),
         classified_fact_issues=tuple(sorted(classified_fact_issues)),
         boxed_fact_issues=boxed_runtime_export_issues(),
-        unresolved_frontend=tuple(
-            f"{path}:{line}:{expression}"
-            for path, line, expression in frontend.unresolved
-        ),
     )
 
 
@@ -648,21 +559,8 @@ def _jsonable(result: AuditResult) -> dict[str, object]:
     return asdict(result) | {"ok": result.ok}
 
 
-def _format_issue(issue: AbiIssue) -> str:
-    return (
-        f"{issue.symbol}/{issue.arity} kind={issue.kind} rust_return={issue.rust_return} "
-        f"expected={issue.expected} actual={issue.actual}"
-    )
-
-
 def format_report(result: AuditResult) -> str:
     lines = [f"LLVM runtime ABI audit: {'ok' if result.ok else 'FAILED'}"]
-    if result.missing:
-        lines.append("missing ABI facts:")
-        lines.extend(f"  - {_format_issue(issue)}" for issue in result.missing)
-    if result.mismatched:
-        lines.append("mismatched ABI facts:")
-        lines.extend(f"  - {_format_issue(issue)}" for issue in result.mismatched)
     if result.duplicate_facts:
         lines.append("duplicate ABI facts:")
         lines.extend(
@@ -685,9 +583,6 @@ def format_report(result: AuditResult) -> str:
             f"expected={issue.expected} actual={issue.actual}"
             for issue in result.boxed_fact_issues
         )
-    if result.unresolved_frontend:
-        lines.append("unresolved frontend kind emissions:")
-        lines.extend(f"  - {site}" for site in result.unresolved_frontend)
     return "\n".join(lines)
 
 

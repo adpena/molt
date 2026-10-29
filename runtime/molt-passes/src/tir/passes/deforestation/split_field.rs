@@ -14,11 +14,8 @@ use crate::tir::op_kinds_generated::opcode_canonical_kind_table;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-fn kind(op: &TirOp) -> &str {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => kind,
-        _ => opcode_canonical_kind_table(op.opcode),
-    }
+fn kind(op: &TirOp) -> Option<molt_ir::OpKind> {
+    op.origin.or_else(|| opcode_canonical_kind_table(op.opcode))
 }
 
 /// Explicit callable identity is not a string-primitive observation. A lowered
@@ -37,10 +34,9 @@ fn has_target_override(op: &TirOp) -> bool {
     .any(|key| op.attrs.contains_key(*key))
 }
 
-fn replace_kind(op: &mut TirOp, name: &str, operands: Vec<ValueId>) {
+fn replace_kind(op: &mut TirOp, name: molt_ir::OpKind, operands: Vec<ValueId>) {
     op.opcode = crate::tir::op_kinds_generated::kind_to_opcode_table(name).unwrap_or(OpCode::Copy);
-    op.attrs
-        .insert("_original_kind".into(), AttrValue::Str(name.into()));
+    op.origin = Some(name);
     op.operands = operands;
     op.set_argument_custody(&vec![
         crate::ir::ParameterCustody::Borrowed;
@@ -59,10 +55,12 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
         ..Default::default()
     };
     if backend_env::var(BackendEnv::MOLT_DISABLE_SPLIT_FIELD_DEFOREST).is_ok()
-        || !func
-            .blocks
-            .values()
-            .any(|block| block.ops.iter().any(|op| kind(op) == "string_split_field"))
+        || !func.blocks.values().any(|block| {
+            block
+                .ops
+                .iter()
+                .any(|op| kind(op) == Some(molt_ir::OpKind::StringSplitField))
+        })
     {
         return stats;
     }
@@ -91,7 +89,7 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
     for &bid in &blocks {
         let block = &func.blocks[&bid];
         for (index, op) in block.ops.iter().enumerate() {
-            if kind(op) != "string_split_field"
+            if kind(op) != Some(molt_ir::OpKind::StringSplitField)
                 || op.operands.len() != 3
                 || op.results.len() != 1
                 || op.is_async_work_poll()
@@ -131,17 +129,17 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
                     break;
                 }
                 let valid = match kind(user) {
-                    "len" => position == 0 && user.operands.len() == 1,
-                    "ord_at" => position == 0 && user.operands.len() == 2,
-                    "eq" if user.operands.len() == 2 => definitions
+                    Some(molt_ir::OpKind::Len) => position == 0 && user.operands.len() == 1,
+                    Some(molt_ir::OpKind::OrdAt) => position == 0 && user.operands.len() == 2,
+                    Some(molt_ir::OpKind::Eq) if user.operands.len() == 2 => definitions
                         .get(&user.operands[1 - position])
                         .is_some_and(|&(b, i)| {
                             let producer = &func.blocks[&b].ops[i];
-                            kind(producer) == "const_str"
+                            kind(producer) == Some(molt_ir::OpKind::ConstStr)
                                 && producer.has_valid_shape()
                                 && dominance.definition_available(b, Some(i), use_bid, at)
                         }),
-                    "guard_tag" | "guard_type"
+                    Some(molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType)
                         if position == 0 && user.operands.len() == 2 && user.results.is_empty() =>
                     {
                         definitions.get(&user.operands[1]).is_some_and(|&(b, i)| {
@@ -178,20 +176,20 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
         for (use_bid, at, _) in reads {
             let user = &mut func.blocks.get_mut(&use_bid).unwrap().ops[at];
             match kind(user) {
-                "len" => replace_kind(
+                Some(molt_ir::OpKind::Len) => replace_kind(
                     user,
-                    "string_split_field_len_from_bounds",
+                    molt_ir::OpKind::StringSplitFieldLenFromBounds,
                     vec![hay, start, end, ascii],
                 ),
-                "ord_at" => {
+                Some(molt_ir::OpKind::OrdAt) => {
                     let character = user.operands[1];
                     replace_kind(
                         user,
-                        "string_split_field_ord_at_bounds",
+                        molt_ir::OpKind::StringSplitFieldOrdAtBounds,
                         vec![hay, start, end, ascii, character],
                     );
                 }
-                "eq" => {
+                Some(molt_ir::OpKind::Eq) => {
                     let constant = *user
                         .operands
                         .iter()
@@ -199,11 +197,11 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
                         .unwrap();
                     replace_kind(
                         user,
-                        "string_split_field_eq",
+                        molt_ir::OpKind::StringSplitFieldEq,
                         vec![hay, sep, field_index, constant],
                     );
                 }
-                "guard_tag" | "guard_type" => {
+                Some(molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType) => {
                     removed.insert((use_bid, at));
                 }
                 _ => unreachable!("split-field use changed during rewrite"),
@@ -211,9 +209,9 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
         }
         let mut properties = Vec::new();
         for (name, result) in [
-            ("string_split_field_start", start),
-            ("string_split_field_end", end),
-            ("string_split_field_is_ascii", ascii),
+            (molt_ir::OpKind::StringSplitFieldStart, start),
+            (molt_ir::OpKind::StringSplitFieldEnd, end),
+            (molt_ir::OpKind::StringSplitFieldIsAscii, ascii),
         ] {
             let mut property = producer.clone();
             replace_kind(&mut property, name, vec![hay, sep, field_index]);

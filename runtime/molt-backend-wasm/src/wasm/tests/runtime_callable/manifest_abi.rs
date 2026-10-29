@@ -21,14 +21,17 @@ fn raw_borrowed_intrinsics_keep_transport_without_callable_publication() {
 
 #[test]
 fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
-    let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    let mut import_transaction = wasm_test_op(molt_ir::OpKind::BuiltinFunc, Some("fn"), vec![]);
     import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());
     import_transaction.value = Some(5);
     let func = wasm_test_function(
         "import_transaction_callable",
         vec![],
         None,
-        vec![import_transaction, wasm_test_op("ret_void", None, vec![])],
+        vec![
+            import_transaction,
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        ],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -59,14 +62,17 @@ fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
 
 #[test]
 fn none_returning_runtime_callable_uses_boxed_result_type() {
-    let mut socket_drop = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    let mut socket_drop = wasm_test_op(molt_ir::OpKind::BuiltinFunc, Some("fn"), vec![]);
     socket_drop.s_value = Some("molt_socket_drop".to_string());
     socket_drop.value = Some(1);
     let func = wasm_test_function(
         "socket_drop_callable",
         vec![],
         None,
-        vec![socket_drop, wasm_test_op("ret_void", None, vec![])],
+        vec![
+            socket_drop,
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        ],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -97,14 +103,17 @@ fn none_returning_runtime_callable_uses_boxed_result_type() {
 
 #[test]
 fn intrinsic_runtime_callables_are_manifest_backed() {
-    let mut load_intrinsic = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    let mut load_intrinsic = wasm_test_op(molt_ir::OpKind::BuiltinFunc, Some("fn"), vec![]);
     load_intrinsic.s_value = Some("molt_load_intrinsic_runtime".to_string());
     load_intrinsic.value = Some(2);
     let func = wasm_test_function(
         "load_intrinsic_callable",
         vec![],
         None,
-        vec![load_intrinsic, wasm_test_op("ret_void", None, vec![])],
+        vec![
+            load_intrinsic,
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        ],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -131,21 +140,33 @@ fn intrinsic_runtime_callables_are_manifest_backed() {
 
 #[test]
 fn gpu_context_runtime_ops_are_manifest_backed() {
-    let mut ret = wasm_test_op("ret", None, vec!["context_sum"]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["context_sum"]);
     ret.args = Some(vec!["context_sum".to_string()]);
     let func = wasm_test_function(
         "gpu_context_runtime_ops",
         vec![],
         None,
         vec![
-            wasm_test_op("gpu_thread_id", Some("tid"), vec![]),
-            wasm_test_op("gpu_block_id", Some("bid"), vec![]),
-            wasm_test_op("gpu_block_dim", Some("bdim"), vec![]),
-            wasm_test_op("gpu_grid_dim", Some("gdim"), vec![]),
-            wasm_test_op("gpu_barrier", Some("barrier"), vec![]),
-            wasm_test_op("add", Some("thread_block"), vec!["tid", "bid"]),
-            wasm_test_op("add", Some("block_geometry"), vec!["thread_block", "bdim"]),
-            wasm_test_op("add", Some("context_sum"), vec!["block_geometry", "gdim"]),
+            wasm_test_op(molt_ir::OpKind::GpuThreadId, Some("tid"), vec![]),
+            wasm_test_op(molt_ir::OpKind::GpuBlockId, Some("bid"), vec![]),
+            wasm_test_op(molt_ir::OpKind::GpuBlockDim, Some("bdim"), vec![]),
+            wasm_test_op(molt_ir::OpKind::GpuGridDim, Some("gdim"), vec![]),
+            wasm_test_op(molt_ir::OpKind::GpuBarrier, Some("barrier"), vec![]),
+            wasm_test_op(
+                molt_ir::OpKind::Add,
+                Some("thread_block"),
+                vec!["tid", "bid"],
+            ),
+            wasm_test_op(
+                molt_ir::OpKind::Add,
+                Some("block_geometry"),
+                vec!["thread_block", "bdim"],
+            ),
+            wasm_test_op(
+                molt_ir::OpKind::Add,
+                Some("context_sum"),
+                vec!["block_geometry", "gdim"],
+            ),
             ret,
         ],
     );

@@ -22,23 +22,23 @@ fn executable_roles_preserve_observers_and_loop_latches_without_try_metadata() {
     // The shared verifier fixture places the observer's normal successor at an
     // IF join, where PHI ordering annotates that edge as BranchTrue. Execution
     // still observes pending state once and then takes Normal or Exception.
-    let labelled = |kind: &str| OpIR {
+    let labelled = |kind: crate::OpKind| OpIR {
         value: Some(100),
         ..op(kind)
     };
-    for observer in ["check_exception", "async_work_poll"] {
+    for observer in [crate::OpKind::CheckException, crate::OpKind::AsyncWorkPoll] {
         let ops = vec![
-            labelled("try_start"),
-            op("loop_start"),
+            labelled(crate::OpKind::TryStart),
+            op(crate::OpKind::LoopStart),
             OpIR {
                 args: Some(vec!["condition".into()]),
-                ..op("if")
+                ..op(crate::OpKind::If)
             },
             labelled(observer),
-            op("end_if"),
-            op("loop_end"),
-            labelled("label"),
-            op("ret_void"),
+            op(crate::OpKind::EndIf),
+            op(crate::OpKind::LoopEnd),
+            labelled(crate::OpKind::Label),
+            op(crate::OpKind::RetVoid),
         ];
         let flow = simple_ir_executable_flow(&ops);
         assert_eq!(flow.edges.len(), 8);
@@ -60,11 +60,15 @@ fn executable_roles_preserve_observers_and_loop_latches_without_try_metadata() {
 
 #[test]
 fn implicit_exits_survive_clipping_real_conditional_and_exception_successors() {
-    for observer in ["br_if", "check_exception", "async_work_poll"] {
+    for observer in [
+        crate::OpKind::BrIf,
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+    ] {
         let ops = vec![
             OpIR {
                 value: Some(5),
-                ..op("label")
+                ..op(crate::OpKind::Label)
             },
             OpIR {
                 value: Some(5),
@@ -73,7 +77,7 @@ fn implicit_exits_survive_clipping_real_conditional_and_exception_successors() {
             },
         ];
         let flow = simple_ir_executable_flow(&ops);
-        let taken = if observer == "br_if" {
+        let taken = if observer == crate::OpKind::BrIf {
             EdgeRole::BranchTrue
         } else {
             EdgeRole::Exception
@@ -84,9 +88,9 @@ fn implicit_exits_survive_clipping_real_conditional_and_exception_successors() {
     }
 
     let flow = simple_ir_executable_flow(&[
-        op("loop_start"),
-        op("loop_break_if_exception"),
-        op("loop_end"),
+        op(crate::OpKind::LoopStart),
+        op(crate::OpKind::LoopBreakIfException),
+        op(crate::OpKind::LoopEnd),
     ]);
     assert_edges(&flow, 1, &[(2, EdgeRole::BranchFalse)]);
     assert_edges(&flow, 2, &[(0, EdgeRole::LoopLatch)]);
@@ -115,23 +119,23 @@ fn explicit_resume_maps_override_source_inference_including_an_empty_map() {
         let ops = vec![
             OpIR {
                 state_targets: targets,
-                ..op("state_switch")
+                ..op(crate::OpKind::StateSwitch)
             },
-            op("ret_void"),
+            op(crate::OpKind::RetVoid),
             OpIR {
                 value: Some(7),
-                ..op("state_label")
+                ..op(crate::OpKind::StateLabel)
             },
             OpIR {
                 value: Some(7),
                 args: Some(vec!["value".into()]),
-                ..op("state_yield")
+                ..op(crate::OpKind::StateYield)
             },
             OpIR {
                 value: Some(200),
-                ..op("label")
+                ..op(crate::OpKind::Label)
             },
-            op("ret_void"),
+            op(crate::OpKind::RetVoid),
         ];
         let flow = simple_ir_executable_flow(&ops);
         assert_edges(&flow, 0, &expected);
@@ -145,16 +149,16 @@ fn saved_states_without_dispatch_do_not_invent_resume_edges() {
     let ops = vec![
         OpIR {
             value: Some(7),
-            ..op("state_label")
+            ..op(crate::OpKind::StateLabel)
         },
         OpIR {
             value: Some(7),
-            ..op("state_set")
+            ..op(crate::OpKind::StateSet)
         },
         OpIR {
             value: Some(7),
             args: Some(vec!["value".into()]),
-            ..op("state_yield")
+            ..op(crate::OpKind::StateYield)
         },
     ];
     let flow = simple_ir_executable_flow(&ops);
@@ -167,10 +171,10 @@ fn saved_states_without_dispatch_do_not_invent_resume_edges() {
 #[test]
 fn entry_reachability_excludes_unreachable_latches_and_keeps_real_self_loops() {
     let loop_with_continue = simple_ir_executable_flow(&[
-        op("loop_start"),
-        op("loop_continue"),
-        op("loop_end"),
-        op("ret_void"),
+        op(crate::OpKind::LoopStart),
+        op(crate::OpKind::LoopContinue),
+        op(crate::OpKind::LoopEnd),
+        op(crate::OpKind::RetVoid),
     ]);
     assert_edges(&loop_with_continue, 2, &[(0, EdgeRole::LoopLatch)]);
     assert_eq!(
@@ -184,13 +188,13 @@ fn entry_reachability_excludes_unreachable_latches_and_keeps_real_self_loops() {
     let self_loop = simple_ir_executable_flow(&[
         OpIR {
             value: Some(11),
-            ..op("label")
+            ..op(crate::OpKind::Label)
         },
         OpIR {
             value: Some(11),
-            ..op("jump")
+            ..op(crate::OpKind::Jump)
         },
-        op("nop"),
+        op(crate::OpKind::Nop),
     ]);
     assert_eq!(self_loop.implicit_exits, BTreeSet::from([2]));
     assert_eq!(self_loop.executable_reachable(), vec![true, true, false]);
@@ -207,21 +211,22 @@ fn empty_return_and_falloff_have_distinct_exit_boundaries() {
     assert!(empty.edges.is_empty());
     assert!(empty.implicit_exits.is_empty());
 
-    let returned = simple_ir_executable_flow(&[op("ret_void")]);
+    let returned = simple_ir_executable_flow(&[op(crate::OpKind::RetVoid)]);
     assert_edges(&returned, 0, &[]);
     assert!(returned.implicit_exits.is_empty());
 
-    let unreachable_tail = simple_ir_executable_flow(&[op("ret_void"), op("nop")]);
+    let unreachable_tail =
+        simple_ir_executable_flow(&[op(crate::OpKind::RetVoid), op(crate::OpKind::Nop)]);
     assert_edges(&unreachable_tail, 0, &[]);
     assert_eq!(unreachable_tail.implicit_exits, BTreeSet::from([1]));
 
-    let falloff = simple_ir_executable_flow(&[op("nop")]);
+    let falloff = simple_ir_executable_flow(&[op(crate::OpKind::Nop)]);
     assert_edges(&falloff, 0, &[]);
     assert_eq!(falloff.implicit_exits, BTreeSet::from([0]));
 
     let dispatch = simple_ir_executable_flow(&[OpIR {
         state_targets: Some(vec![]),
-        ..op("state_switch")
+        ..op(crate::OpKind::StateSwitch)
     }]);
     assert_edges(&dispatch, 0, &[]);
     assert_eq!(dispatch.implicit_exits, BTreeSet::from([0]));

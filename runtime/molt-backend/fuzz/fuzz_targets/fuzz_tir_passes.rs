@@ -153,6 +153,7 @@ fn build_function(data: &mut &[u8]) -> Option<TirFunction> {
             populate_fuzz_attrs(shape.attr_payload, data, &mut attrs);
 
             ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,

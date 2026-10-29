@@ -1,5 +1,6 @@
 use super::native_object_symbols;
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR, stable_ic_site_id};
+use molt_ir::OpKind;
 use std::collections::BTreeSet;
 
 const BOXED_ATTR_SYMBOL: &str = "molt_get_attr_object";
@@ -8,7 +9,7 @@ const RETIRED_RAW_PTR_SYMBOL: &str = "molt_get_attr_ptr";
 const RETIRED_OFFSET_PROBE_SYMBOL: &str = "molt_ic_probe_fast";
 const RETIRED_OFFSET_SLOW_SYMBOL: &str = "molt_getattr_ic_slow";
 
-fn attr_program(kind: &str) -> SimpleIR {
+fn attr_program(kind: OpKind) -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -16,17 +17,15 @@ fn attr_program(kind: &str) -> SimpleIR {
             params: vec!["receiver".to_string()],
             ops: vec![
                 OpIR {
-                    kind: kind.to_string(),
                     args: Some(vec!["receiver".to_string()]),
                     out: Some("result".to_string()),
                     s_value: Some("attribute".to_string()),
                     source_op_idx: Some(17),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             param_types: None,
@@ -42,12 +41,12 @@ fn attr_program(kind: &str) -> SimpleIR {
 
 #[test]
 fn native_attribute_lanes_keep_one_owned_boxed_result_protocol() {
-    let direct = SimpleBackend::new().compile(attr_program("get_attr"));
+    let direct = SimpleBackend::new().compile(attr_program(OpKind::GetAttr));
     let direct_imports = native_object_symbols(&direct.bytes).undefined;
     assert!(direct_imports.contains(BOXED_ATTR_SYMBOL));
     assert!(!direct_imports.contains(BOXED_ATTR_IC_SYMBOL));
 
-    for kind in ["get_attr_generic_ptr", "get_attr_generic_obj"] {
+    for kind in [OpKind::GetAttrGenericPtr, OpKind::GetAttrGenericObj] {
         let output = SimpleBackend::new().compile(attr_program(kind));
         let imports = native_object_symbols(&output.bytes).undefined;
         assert!(

@@ -4,7 +4,6 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm::task_runtime::WasmTaskRuntimeLayout;
 use crate::wasm_plan::wasm_scalar_integer_fast_path_for_op;
-use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_stateful_dispatch;
 use wasm_encoder::ValType;
 
 #[derive(Default)]
@@ -22,11 +21,13 @@ impl FrameRuntimeRequirements {
         if wasm_scalar_integer_fast_path_for_op(scalar_plan, op) {
             self.fast_int_count += 1;
         }
-        match op.kind.as_str() {
-            "store" | "load" | "guarded_load" | "guarded_field_get" | "guarded_field_set" => {
-                self.needs_field_fast = true
-            }
-            "invoke_ffi"
+        match op.kind {
+            molt_ir::OpKind::Store
+            | molt_ir::OpKind::Load
+            | molt_ir::OpKind::GuardedLoad
+            | molt_ir::OpKind::GuardedFieldGet
+            | molt_ir::OpKind::GuardedFieldSet => self.needs_field_fast = true,
+            molt_ir::OpKind::InvokeFfi
                 if op
                     .native_callable_abi
                     .as_deref()
@@ -35,16 +36,16 @@ impl FrameRuntimeRequirements {
             {
                 self.needs_native_forward_f32 = true;
             }
-            kind if simpleir_kind_is_wasm_stateful_dispatch(kind) => self.stateful = true,
-            "jump" | "label" => self.saw_jump_or_label = true,
-            "alloc_task" => {
+            kind if kind.is_wasm_stateful_dispatch() => self.stateful = true,
+            molt_ir::OpKind::Jump | molt_ir::OpKind::Label => self.saw_jump_or_label = true,
+            molt_ir::OpKind::AllocTask => {
                 let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
                 let layout = WasmTaskRuntimeLayout::for_alloc_task_kind(op.task_kind.as_deref());
                 if layout.needs_alloc_resolve(has_args) {
                     self.needs_alloc_resolve = true;
                 }
             }
-            "call_async" => {
+            molt_ir::OpKind::CallAsync => {
                 let has_args = op.args.as_ref().is_some_and(|a| !a.is_empty());
                 if WasmTaskRuntimeLayout::for_call_async().needs_alloc_resolve(has_args) {
                     self.needs_alloc_resolve = true;

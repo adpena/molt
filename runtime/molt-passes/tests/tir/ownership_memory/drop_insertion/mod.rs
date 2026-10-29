@@ -18,6 +18,7 @@ use molt_passes::tir::op_kinds_generated::{
 
 pub(super) fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -31,6 +32,7 @@ pub(super) fn const_str(result: ValueId) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("s_value".into(), AttrValue::Str("x".into()));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -44,6 +46,7 @@ pub(super) fn finalizer_object(result: ValueId) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("defines_del".into(), AttrValue::Bool(true));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ObjectNewBound,
         operands: vec![],
@@ -66,7 +69,7 @@ pub(super) fn named_call(target: &str, operands: Vec<ValueId>, results: Vec<Valu
 /// Source-call custody is instruction data; method spellings retain their
 /// generated opcode instead of pretending every source call is a plain Call.
 pub(super) fn source_call(
-    kind: &str,
+    kind: molt_ir::OpKind,
     target: Option<&str>,
     operands: Vec<ValueId>,
     results: Vec<ValueId>,
@@ -101,8 +104,7 @@ pub(super) fn source_call(
             )
         }
     };
-    call.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    call.origin = Some(kind);
     call.set_argument_custody(custody);
     call
 }
@@ -120,7 +122,7 @@ pub(super) fn borrow(operands: Vec<ValueId>) -> TirOp {
 pub(super) fn transfer(operands: Vec<ValueId>) -> TirOp {
     let custody = vec![ParameterCustody::Transferred; operands.len()];
     source_call(
-        "call",
+        molt_ir::OpKind::Call,
         Some("fixture_adopt_operands"),
         operands,
         vec![],
@@ -130,8 +132,7 @@ pub(super) fn transfer(operands: Vec<ValueId>) -> TirOp {
 
 pub(super) fn call_bind(callable: ValueId, builder: ValueId, results: Vec<ValueId>) -> TirOp {
     let mut call = op(OpCode::Call, vec![callable, builder], results);
-    call.attrs
-        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    call.origin = Some(molt_ir::OpKind::CallBind);
     call
 }
 
@@ -164,26 +165,25 @@ pub(super) fn count_increfs(func: &TirFunction) -> usize {
         .count()
 }
 
-pub(super) fn original_copy(kind: &str, results: Vec<ValueId>) -> TirOp {
+pub(super) fn original_copy(kind: molt_ir::OpKind, results: Vec<ValueId>) -> TirOp {
     let mut copy = op(OpCode::Copy, vec![], results);
-    copy.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    copy.origin = Some(kind);
     copy
 }
 
 pub(super) fn original_copy_with_operands(
-    kind: &str,
+    kind: molt_ir::OpKind,
     operands: Vec<ValueId>,
     results: Vec<ValueId>,
 ) -> TirOp {
     let mut copy = op(OpCode::Copy, operands, results);
-    copy.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    copy.origin = Some(kind);
     copy
 }
 
 pub(super) fn original_store_var(var: &str, operand: ValueId, result: ValueId) -> TirOp {
-    let mut copy = original_copy_with_operands("store_var", vec![operand], vec![result]);
+    let mut copy =
+        original_copy_with_operands(molt_ir::OpKind::StoreVar, vec![operand], vec![result]);
     copy.attrs.insert("_var".into(), AttrValue::Str(var.into()));
     copy
 }
@@ -196,13 +196,12 @@ pub(super) fn try_start(label: i64) -> TirOp {
 
 /// A real zero-operand observable primitive. `WarnStderr` requires an input.
 pub(super) fn marker() -> TirOp {
-    original_copy("print_newline", vec![])
+    original_copy(molt_ir::OpKind::PrintNewline, vec![])
 }
 
 pub(super) fn is_observation(op: &TirOp) -> bool {
     op.opcode == OpCode::WarnStderr
-        || (op.opcode == OpCode::Copy
-            && op.attrs.get("_original_kind") == Some(&AttrValue::Str("print_newline".into())))
+        || (op.opcode == OpCode::Copy && op.origin == Some(molt_ir::OpKind::PrintNewline))
 }
 
 /// One ownership event along an executed path.
@@ -333,17 +332,17 @@ fn home_access(op: &TirOp) -> Option<HomeAccess> {
     if op.opcode != OpCode::Copy {
         return None;
     }
-    let Some(AttrValue::Str(kind)) = op.attrs.get("_original_kind") else {
+    let Some(kind) = op.origin else {
         return None;
     };
-    match kind.as_str() {
-        "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
-            Some(HomeAccess::Store)
-        }
-        "frame_home_load" => Some(HomeAccess::Load),
-        "frame_home_take" => Some(HomeAccess::Take),
-        "frame_home_clear" => Some(HomeAccess::Clear),
-        "trace_exit" => Some(HomeAccess::Exit),
+    match kind {
+        molt_ir::OpKind::FrameHomeStore
+        | molt_ir::OpKind::FrameHomeCell
+        | molt_ir::OpKind::FrameHomePrivateCell => Some(HomeAccess::Store),
+        molt_ir::OpKind::FrameHomeLoad => Some(HomeAccess::Load),
+        molt_ir::OpKind::FrameHomeTake => Some(HomeAccess::Take),
+        molt_ir::OpKind::FrameHomeClear => Some(HomeAccess::Clear),
+        molt_ir::OpKind::TraceExit => Some(HomeAccess::Exit),
         _ => None,
     }
 }
@@ -455,8 +454,8 @@ pub(super) fn execute(
                     // An owned alias names the same object with a reference
                     // of its own, which its lowering retains.
                     let owned_alias = matches!(
-                        op.attrs.get("_original_kind"),
-                        Some(AttrValue::Str(kind)) if copy_kind_mints_owned_alias_ref_table(kind)
+                        op.origin,
+                        Some(kind) if copy_kind_mints_owned_alias_ref_table(kind)
                     );
                     if owned_alias && let Binding::Object(object) = source {
                         path.counts[object] += 1;
@@ -465,9 +464,7 @@ pub(super) fn execute(
                         path.bindings.insert(result, source);
                     }
                 }
-                OpCode::TypeGuard
-                    if op.operands.len() == 1 && !op.attrs.contains_key("_original_kind") =>
-                {
+                OpCode::TypeGuard if op.operands.len() == 1 && !op.origin.is_some() => {
                     let source = path.read(op.operands[0])?;
                     for &result in &op.results {
                         path.bindings.insert(result, source);
@@ -562,8 +559,8 @@ pub(super) fn execute(
 /// releases each one before the op completes; a raw carrier holds none. Every
 /// operand the op borrows must survive those releases.
 fn adopt(path: &mut RcPath, events: &mut Vec<Event>, op: &TirOp) -> Result<(), String> {
-    let consumed = match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => kind_consumed_operand_table(kind, op.operands.len()),
+    let consumed = match op.origin {
+        Some(kind) => kind_consumed_operand_table(kind, op.operands.len()),
         _ => None,
     };
     let adopted: Vec<bool> = (0..op.operands.len())

@@ -49,8 +49,8 @@ pub(super) fn emit_dynamic_call_op(
     let call_liveness = call_ctx.call_liveness;
     let call_live_idx = call_ctx.call_live_idx;
     let op_idx = call_ctx.op_idx;
-    match op.kind.as_str() {
-        "call_guarded" => {
+    match op.kind {
+        molt_ir::OpKind::CallGuarded => {
             let target_name = op.s_value.as_ref().unwrap();
             let args_names = op.args.as_ref().unwrap();
             let adopts = call_adopts_arguments(op);
@@ -62,8 +62,10 @@ pub(super) fn emit_dynamic_call_op(
                 && call_site_abi.positional_arity(target_name) == Some(arity);
             if direct_shape {
                 let has_closure = call_site_abi.is_closure_function(target_name);
-                let func_idx = call_site_abi.function_index(target_name, "call_guarded");
-                let table_target = call_site_abi.table_target(target_name, "call_guarded");
+                let func_idx =
+                    call_site_abi.function_index(target_name, molt_ir::OpKind::CallGuarded);
+                let table_target =
+                    call_site_abi.table_target(target_name, molt_ir::OpKind::CallGuarded);
                 func.instruction(&Instruction::LocalGet(callee_bits));
                 func.instruction(&Instruction::I64Const(arity as i64));
                 // Bit 0: closure first; bit 1: the entry's custody must match
@@ -211,7 +213,7 @@ pub(super) fn emit_dynamic_call_op(
             }
             finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
         }
-        "call_func" => {
+        molt_ir::OpKind::CallFunc => {
             let args_names = op.args.as_ref().unwrap();
             let adopts = call_adopts_arguments(op);
             let live_object_locals = collect_live_object_locals_for_call(
@@ -275,7 +277,7 @@ pub(super) fn emit_dynamic_call_op(
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, dispatch);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
-        "call_loaded_method" => {
+        molt_ir::OpKind::CallLoadedMethod => {
             // CPython's CALL after a method load: [callable, self_or_null,
             // args...]. The instruction adopts every operand; the runtime
             // enters the selected function with `self` prepended, or calls the
@@ -319,7 +321,7 @@ pub(super) fn emit_dynamic_call_op(
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
-        "invoke_ffi" => {
+        molt_ir::OpKind::InvokeFfi => {
             if let Some(export_name) = op.native_callable_export.as_deref() {
                 if op.native_callable_binding.as_deref() == Some("module_attr") {
                     let abi = op.native_callable_abi.as_deref().unwrap_or("<missing>");
@@ -509,7 +511,7 @@ pub(super) fn emit_dynamic_call_op(
             );
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
-        "call_bind" | "call_indirect" => {
+        molt_ir::OpKind::CallBind | molt_ir::OpKind::CallIndirect => {
             let args_names = op.args.as_ref().unwrap();
             let func_bits = locals[&args_names[0]];
             let builder_ptr = locals[&args_names[1]];
@@ -520,7 +522,7 @@ pub(super) fn emit_dynamic_call_op(
                 op.out.as_ref(),
             );
             retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-            let call_site_label = if op.kind == "call_indirect" {
+            let call_site_label = if op.kind == molt_ir::OpKind::CallIndirect {
                 "call_indirect"
             } else {
                 "call_bind"
@@ -533,7 +535,7 @@ pub(super) fn emit_dynamic_call_op(
             // runtime dispatch is the same. An expanded call keeps its callable.
             let import = if operand_adopted(op, 0) {
                 WasmRuntimeImport::CallBindIcOwned
-            } else if op.kind == "call_indirect" {
+            } else if op.kind == molt_ir::OpKind::CallIndirect {
                 WasmRuntimeImport::CallIndirectIc
             } else {
                 WasmRuntimeImport::CallBindIc
@@ -542,7 +544,7 @@ pub(super) fn emit_dynamic_call_op(
             store_runtime_result(func, op, locals, import_ids, reloc_enabled, import);
             release_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
         }
-        "call_method" => {
+        molt_ir::OpKind::CallMethod => {
             let args_names = op.args.as_ref().unwrap();
             let method_bits = locals[&args_names[0]];
             let live_object_locals = collect_live_object_locals_for_call(

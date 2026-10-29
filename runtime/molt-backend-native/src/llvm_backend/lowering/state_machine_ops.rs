@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 use molt_tir::trampolines::TaskConstructorLayout;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -242,7 +243,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let &[poll] = op.operands.as_slice() else {
             panic!("is_pending in '{}' expects one poll result", self.func.name);
         };
-        let word = self.activation_object_word(poll, "is_pending");
+        let word = self.activation_object_word(poll, OpKind::IsPending);
         let pending = self
             .backend
             .context
@@ -265,7 +266,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let &[future] = op.operands.as_slice() else {
             panic!("task_wait in '{}' expects one future", self.func.name);
         };
-        let future_bits = self.activation_object_word(future, "task_wait");
+        let future_bits = self.activation_object_word(future, OpKind::TaskWait);
         self.emit_sleep_register(future_bits);
     }
 
@@ -274,7 +275,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn activation_object_word(
         &self,
         operand: ValueId,
-        kind: &str,
+        kind: OpKind,
     ) -> inkwell::values::IntValue<'ctx> {
         let ty = self
             .value_types

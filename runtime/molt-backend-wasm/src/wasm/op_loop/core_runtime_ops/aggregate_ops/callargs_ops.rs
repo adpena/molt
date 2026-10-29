@@ -13,8 +13,8 @@ pub(super) fn emit_callargs_op(
     let locals = ctx.locals;
     let reloc_enabled = ctx.reloc_enabled;
 
-    match op.kind.as_str() {
-        "callargs_push_method_receiver" => {
+    match op.kind {
+        molt_ir::OpKind::CallargsPushMethodReceiver => {
             let [builder, receiver] = op.args.as_deref().unwrap_or(&[]) else {
                 panic!("validated method receiver prefix takes builder and receiver");
             };
@@ -36,7 +36,7 @@ pub(super) fn emit_callargs_op(
             emit_call(func, reloc_enabled, import_ids[release]);
             func.instruction(&Instruction::End);
         }
-        "callargs_new" => {
+        molt_ir::OpKind::CallargsNew => {
             // The source call form picks the builder: a CALL_FUNCTION_EX call
             // site's arguments are its own tuple and mapping.
             let constructor = match op

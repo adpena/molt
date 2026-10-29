@@ -7,15 +7,12 @@
 use molt_backend::{FunctionIR, OpIR, SimpleIR, WasmBackend, WasmCompileOptions};
 use wasmparser::{DataKind, Parser, Payload};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 fn use_value(name: &str) -> OpIR {
-    let mut op = op("print");
+    let mut op = op(molt_ir::OpKind::Print);
     op.args = Some(vec![name.to_string()]);
     op
 }
@@ -78,7 +75,7 @@ fn empty_module_has_data_segments() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -100,7 +97,7 @@ fn empty_module_has_data_segments() {
 
 #[test]
 fn const_str_creates_data_segment_with_string_bytes() {
-    let mut c = op("const_str");
+    let mut c = op(molt_ir::OpKind::ConstStr);
     c.s_value = Some("hello".to_string());
     c.out = Some("v0".to_string());
 
@@ -109,7 +106,7 @@ fn const_str_creates_data_segment_with_string_bytes() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c, use_value("v0"), op("ret_void")],
+            ops: vec![c, use_value("v0"), op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -130,11 +127,11 @@ fn const_str_creates_data_segment_with_string_bytes() {
 
 #[test]
 fn multiple_const_strs_create_separate_segments() {
-    let mut c1 = op("const_str");
+    let mut c1 = op(molt_ir::OpKind::ConstStr);
     c1.s_value = Some("alpha".to_string());
     c1.out = Some("v0".to_string());
 
-    let mut c2 = op("const_str");
+    let mut c2 = op(molt_ir::OpKind::ConstStr);
     c2.s_value = Some("beta".to_string());
     c2.out = Some("v1".to_string());
 
@@ -143,7 +140,13 @@ fn multiple_const_strs_create_separate_segments() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c1, c2, use_value("v0"), use_value("v1"), op("ret_void")],
+            ops: vec![
+                c1,
+                c2,
+                use_value("v0"),
+                use_value("v1"),
+                op(molt_ir::OpKind::RetVoid),
+            ],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -163,11 +166,11 @@ fn multiple_const_strs_create_separate_segments() {
 
 #[test]
 fn duplicate_const_strs_are_deduplicated() {
-    let mut c1 = op("const_str");
+    let mut c1 = op(molt_ir::OpKind::ConstStr);
     c1.s_value = Some("dedup_test".to_string());
     c1.out = Some("v0".to_string());
 
-    let mut c2 = op("const_str");
+    let mut c2 = op(molt_ir::OpKind::ConstStr);
     c2.s_value = Some("dedup_test".to_string());
     c2.out = Some("v1".to_string());
 
@@ -176,7 +179,13 @@ fn duplicate_const_strs_are_deduplicated() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c1, c2, use_value("v0"), use_value("v1"), op("ret_void")],
+            ops: vec![
+                c1,
+                c2,
+                use_value("v0"),
+                use_value("v1"),
+                op(molt_ir::OpKind::RetVoid),
+            ],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -204,15 +213,15 @@ fn duplicate_const_strs_are_deduplicated() {
 
 #[test]
 fn data_segments_are_8_byte_aligned() {
-    let mut c1 = op("const_str");
+    let mut c1 = op(molt_ir::OpKind::ConstStr);
     c1.s_value = Some("short".to_string()); // 5 bytes
     c1.out = Some("v0".to_string());
 
-    let mut c2 = op("const_str");
+    let mut c2 = op(molt_ir::OpKind::ConstStr);
     c2.s_value = Some("longer_string_here".to_string()); // 18 bytes
     c2.out = Some("v1".to_string());
 
-    let mut c3 = op("const_str");
+    let mut c3 = op(molt_ir::OpKind::ConstStr);
     c3.s_value = Some("x".to_string()); // 1 byte
     c3.out = Some("v2".to_string());
 
@@ -221,7 +230,7 @@ fn data_segments_are_8_byte_aligned() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c1, c2, c3, op("ret_void")],
+            ops: vec![c1, c2, c3, op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -252,7 +261,7 @@ fn data_segment_starts_align_current_payload_from_unaligned_base() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
-                ops: vec![op("ret_void")],
+                ops: vec![op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -285,11 +294,11 @@ fn data_segment_starts_align_current_payload_from_unaligned_base() {
 
 #[test]
 fn data_segments_do_not_overlap() {
-    let mut c1 = op("const_str");
+    let mut c1 = op(molt_ir::OpKind::ConstStr);
     c1.s_value = Some("first_string".to_string());
     c1.out = Some("v0".to_string());
 
-    let mut c2 = op("const_str");
+    let mut c2 = op(molt_ir::OpKind::ConstStr);
     c2.s_value = Some("second_string_longer".to_string());
     c2.out = Some("v1".to_string());
 
@@ -298,7 +307,7 @@ fn data_segments_do_not_overlap() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c1, c2, op("ret_void")],
+            ops: vec![c1, c2, op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -332,7 +341,7 @@ fn data_segments_do_not_overlap() {
 fn scratch_buffer_for_const_str_exists() {
     // The const_str scratch slot is an 8-byte mutable data segment
     // used as the `out` parameter for string_from_bytes calls.
-    let mut c = op("const_str");
+    let mut c = op(molt_ir::OpKind::ConstStr);
     c.s_value = Some("test".to_string());
     c.out = Some("v0".to_string());
 
@@ -341,7 +350,7 @@ fn scratch_buffer_for_const_str_exists() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c, use_value("v0"), op("ret_void")],
+            ops: vec![c, use_value("v0"), op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -369,7 +378,7 @@ fn scratch_buffer_for_const_str_exists() {
 
 #[test]
 fn empty_string_constant_does_not_allocate_payload_segment() {
-    let mut c = op("const_str");
+    let mut c = op(molt_ir::OpKind::ConstStr);
     c.s_value = Some(String::new());
     c.out = Some("v0".to_string());
 
@@ -378,7 +387,7 @@ fn empty_string_constant_does_not_allocate_payload_segment() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![c, op("ret_void")],
+            ops: vec![c, op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,

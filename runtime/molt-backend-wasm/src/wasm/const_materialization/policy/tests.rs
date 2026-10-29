@@ -7,22 +7,19 @@ use crate::wasm_values::{box_bool, box_int, box_none};
 use molt_codegen_abi::box_float_bits as box_float;
 use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 #[test]
 fn const_policy_classifies_inline_seed_bits() {
-    let mut int_op = op("const");
+    let mut int_op = op(molt_ir::OpKind::Const);
     int_op.value = Some(7);
-    let mut bool_op = op("const_bool");
+    let mut bool_op = op(molt_ir::OpKind::ConstBool);
     bool_op.value = Some(1);
-    let mut float_op = op("const_float");
+    let mut float_op = op(molt_ir::OpKind::ConstFloat);
     float_op.f_value = Some(1.5);
-    let none_op = op("const_none");
+    let none_op = op(molt_ir::OpKind::ConstNone);
 
     assert_eq!(
         WasmConstOpPolicy::for_op(&int_op).map(|policy| policy.inline_seed()),
@@ -64,7 +61,7 @@ fn const_policy_classifies_inline_seed_bits() {
 
 #[test]
 fn const_policy_routes_full_i64_outside_inline_payload_to_runtime_anchor() {
-    let mut op = op("const");
+    let mut op = op(molt_ir::OpKind::Const);
     op.value = Some(i64::MAX);
     let policy = WasmConstOpPolicy::for_op(&op).expect("const policy");
 
@@ -81,19 +78,19 @@ fn const_policy_routes_full_i64_outside_inline_payload_to_runtime_anchor() {
 fn const_policy_classifies_runtime_seed_and_literal_payload() {
     for (kind, payload, import, lir_policy) in [
         (
-            "const_str",
+            molt_ir::OpKind::ConstStr,
             OwnedLiteralPayloadKind::String,
             WasmRuntimeImport::StringFromBytes,
             WasmConstLirFastPolicy::Materialize,
         ),
         (
-            "const_bigint",
+            molt_ir::OpKind::ConstBigint,
             OwnedLiteralPayloadKind::BigintBytes,
             WasmRuntimeImport::BigintFromBytes,
             WasmConstLirFastPolicy::Materialize,
         ),
         (
-            "const_bytes",
+            molt_ir::OpKind::ConstBytes,
             OwnedLiteralPayloadKind::Bytes,
             WasmRuntimeImport::BytesFromBytes,
             WasmConstLirFastPolicy::Materialize,
@@ -109,7 +106,10 @@ fn const_policy_classifies_runtime_seed_and_literal_payload() {
         );
     }
 
-    for kind in ["const_not_implemented", "const_ellipsis"] {
+    for kind in [
+        molt_ir::OpKind::ConstNotImplemented,
+        molt_ir::OpKind::ConstEllipsis,
+    ] {
         let policy = WasmConstOpPolicy::for_kind(kind).expect("runtime singleton policy");
         assert_eq!(policy.literal_payload(), None);
         assert!(policy.materializer_import().is_some());
@@ -126,14 +126,14 @@ fn const_policy_classifies_runtime_seed_and_literal_payload() {
 
 #[test]
 fn const_policy_rejects_non_const_ops() {
-    assert_eq!(WasmConstOpPolicy::for_kind("add"), None);
-    assert_eq!(WasmConstOpPolicy::for_kind("parse_int"), None);
+    assert_eq!(WasmConstOpPolicy::for_kind(molt_ir::OpKind::Add), None);
+    assert!("parse_int".parse::<molt_ir::OpKind>().is_err());
 }
 
 #[test]
 #[should_panic(expected = "WASM const policy const requires int scalar payload")]
 fn const_policy_fails_closed_on_missing_scalar_payload() {
-    let const_op = op("const");
+    let const_op = op(molt_ir::OpKind::Const);
     let policy = WasmConstOpPolicy::for_op(&const_op).expect("const policy");
 
     let _ = policy.inline_seed_bits(&const_op);

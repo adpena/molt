@@ -5,8 +5,8 @@ impl LuauBackend {
         // Labelled transfers use the same logical flow as SimpleIR validation.
         // Structured-only functions retain direct idiomatic Luau emission.
         let dispatch = func.ops.iter().any(|op| {
-            molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_reference(&op.kind)
-                && !matches!(op.kind.as_str(), "try_start" | "try_end")
+            op.kind.is_verifier_label_reference()
+                && !matches!(op.kind, molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd)
         });
         let ops = if dispatch {
             let mut ops = func.ops.clone();
@@ -17,7 +17,9 @@ impl LuauBackend {
         };
         let ops = if dispatch {
             ops.into_iter()
-                .filter(|op| !matches!(op.kind.as_str(), "try_start" | "try_end"))
+                .filter(|op| {
+                    !matches!(op.kind, molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd)
+                })
                 .collect()
         } else {
             lower_exception_captures(&ops)
@@ -89,7 +91,9 @@ impl LuauBackend {
         // Reset per-function state.
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
-        let owns_frame_context = ops.iter().any(|op| op.kind == "trace_enter_slot");
+        let owns_frame_context = ops
+            .iter()
+            .any(|op| op.kind == molt_ir::OpKind::TraceEnterSlot);
         self.has_local_frame_context = inherits_frame_context || owns_frame_context;
         if owns_frame_context {
             if !inherits_frame_context {
@@ -112,7 +116,7 @@ impl LuauBackend {
         // Pre-declare loop index variables so they persist across iterations.
         let mut loop_idx_vars = Vec::new();
         for op in &ops {
-            if op.kind == "loop_index_start"
+            if op.kind == molt_ir::OpKind::LoopIndexStart
                 && let Some(ref out_name) = op.out
             {
                 loop_idx_vars.push(sanitize_ident(out_name));
@@ -130,7 +134,8 @@ impl LuauBackend {
         {
             let mut closure_slots: Vec<String> = Vec::new();
             for op in &ops {
-                if (op.kind == "closure_store" || op.kind == "closure_load")
+                if (op.kind == molt_ir::OpKind::ClosureStore
+                    || op.kind == molt_ir::OpKind::ClosureLoad)
                     && let Some(ref args) = op.args
                     && let Some(slot) = args.first()
                 {
@@ -152,13 +157,13 @@ impl LuauBackend {
             .iter()
             .filter(|op| {
                 matches!(
-                    op.kind.as_str(),
-                    "frame_home_store"
-                        | "frame_home_cell"
-                        | "frame_home_private_cell"
-                        | "frame_home_load"
-                        | "frame_home_take"
-                        | "frame_home_clear"
+                    op.kind,
+                    molt_ir::OpKind::FrameHomeStore
+                        | molt_ir::OpKind::FrameHomeCell
+                        | molt_ir::OpKind::FrameHomePrivateCell
+                        | molt_ir::OpKind::FrameHomeLoad
+                        | molt_ir::OpKind::FrameHomeTake
+                        | molt_ir::OpKind::FrameHomeClear
                 )
             })
             .filter_map(|op| op.value)
@@ -173,15 +178,15 @@ impl LuauBackend {
         // its first call.
         if ops
             .iter()
-            .any(|op| op.kind == "frame_locals" && op.value == Some(1))
+            .any(|op| op.kind == molt_ir::OpKind::FrameLocals && op.value == Some(1))
         {
             self.emit_line("local __molt_locals_dict: {[any]: any}? = nil");
         }
 
         // Pre-scan: collect variables defined by const/const_int with non-negative values.
         for op in &ops {
-            match op.kind.as_str() {
-                "const" | "const_int" => {
+            match op.kind {
+                molt_ir::OpKind::Const | molt_ir::OpKind::ConstInt => {
                     if let (Some(out_name), Some(v)) = (&op.out, op.value)
                         && v >= 0
                     {
@@ -208,11 +213,11 @@ impl LuauBackend {
             // output vars plus branch values.
             let mut i = 0;
             while i < ops.len() {
-                if ops[i].kind == "end_if" {
+                if ops[i].kind == molt_ir::OpKind::EndIf {
                     // Scan forward for consecutive phi ops.
                     let end_if_idx = i;
                     let mut j = i + 1;
-                    while j < ops.len() && ops[j].kind == "phi" {
+                    while j < ops.len() && ops[j].kind == molt_ir::OpKind::Phi {
                         if let Some(ref out_name) = ops[j].out {
                             let phi_var = sanitize_ident(out_name);
                             let args: Vec<String> = ops[j]
@@ -245,23 +250,26 @@ impl LuauBackend {
                 func.params.iter().map(|p| sanitize_ident(p)).collect();
 
             for op in &ops {
-                match op.kind.as_str() {
-                    "if" | "loop_start" | "for_range" | "for_iter" => {
+                match op.kind {
+                    molt_ir::OpKind::If
+                    | molt_ir::OpKind::LoopStart
+                    | molt_ir::OpKind::ForRange
+                    | molt_ir::OpKind::ForIter => {
                         depth += 1;
                         block_id += 1;
                     }
-                    "else" => {
+                    molt_ir::OpKind::Else => {
                         // else starts a new block at the same depth
                         block_id += 1;
                     }
-                    "end_if" | "loop_end" | "end_for" => {
+                    molt_ir::OpKind::EndIf | molt_ir::OpKind::LoopEnd | molt_ir::OpKind::EndFor => {
                         depth -= 1;
                         block_id += 1;
                     }
                     _ => {}
                 }
                 // Record first declaration site of each canonical definition.
-                if !op.kind.starts_with("nop") {
+                if !matches!(op.kind, molt_ir::OpKind::Nop) {
                     molt_tir::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
                         let var = sanitize_ident(name);
                         decl_scope.entry(var).or_insert((depth, block_id));
@@ -288,7 +296,7 @@ impl LuauBackend {
         // TIR store_var/load_var represent named storage slots that must remain
         // visible across structured control-flow edges in the emitted function.
         for op in ops.iter().filter(|_| flow.is_none()) {
-            if op.kind == "store_var"
+            if op.kind == molt_ir::OpKind::StoreVar
                 && let Some(binding) = molt_tir::tir::simple_def_use::simple_ir_binding(op)
                 && !binding.destination.is_empty()
                 && binding.destination != "none"
@@ -338,16 +346,16 @@ impl LuauBackend {
             // Walk ops to find if/else/end_if triples.
             let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
             for (idx, op) in ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "if" => {
+                match op.kind {
+                    molt_ir::OpKind::If => {
                         if_stack.push((idx, None));
                     }
-                    "else" => {
+                    molt_ir::OpKind::Else => {
                         if let Some(last) = if_stack.last_mut() {
                             last.1 = Some(idx);
                         }
                     }
-                    "end_if" => {
+                    molt_ir::OpKind::EndIf => {
                         if let Some((if_idx, else_idx)) = if_stack.pop()
                             && let Some(phis) = phi_assignments.get(&idx)
                         {
@@ -418,7 +426,7 @@ impl LuauBackend {
                 }
                 // Synthesize else branch for if-without-else + phi (and pattern).
                 // This assigns the condition variable when the if body was skipped.
-                if ops[i].kind == "end_if"
+                if ops[i].kind == molt_ir::OpKind::EndIf
                     && let Some(synth) = phi_synthesize_else.get(&i)
                 {
                     self.pop_indent();
@@ -429,9 +437,9 @@ impl LuauBackend {
                     }
                 }
 
-                if ops[i].kind == "loop_start"
+                if ops[i].kind == molt_ir::OpKind::LoopStart
                     && i + 1 < ops.len()
-                    && ops[i + 1].kind == "loop_index_start"
+                    && ops[i + 1].kind == molt_ir::OpKind::LoopIndexStart
                 {
                     let idx_op = &ops[i + 1];
                     if let Some(ref out_name) = idx_op.out {

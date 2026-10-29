@@ -1,27 +1,22 @@
 use molt_backend::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
-fn op_val_out(kind: &str, value: i64, out: &str) -> OpIR {
+fn op_val_out(kind: molt_ir::OpKind, value: i64, out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         value: Some(value),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
-fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
+fn op_args_out(kind: molt_ir::OpKind, args: &[&str], out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -34,11 +29,11 @@ fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
 fn loop_start_after_unreachable_code() {
     let ops: Vec<OpIR> = vec![
         // Return immediately — everything after is dead code.
-        op("ret_void"),
+        op(molt_ir::OpKind::RetVoid),
         // Dead loop — must not panic.
-        op("loop_start"),
-        op("loop_end"),
-        op("ret_void"),
+        op(molt_ir::OpKind::LoopStart),
+        op(molt_ir::OpKind::LoopEnd),
+        op(molt_ir::OpKind::RetVoid),
     ];
 
     let ir = SimpleIR {
@@ -73,14 +68,14 @@ fn loop_start_after_unreachable_code() {
 #[test]
 fn loop_index_start_after_unreachable_code() {
     let ops: Vec<OpIR> = vec![
-        op_val_out("const", 0, "v0"),
+        op_val_out(molt_ir::OpKind::Const, 0, "v0"),
         // Return immediately — everything after is dead code.
-        op("ret_void"),
+        op(molt_ir::OpKind::RetVoid),
         // Dead indexed loop — must not panic.
-        op("loop_start"),
-        op_args_out("loop_index_start", &["v0"], "v1"),
-        op("loop_end"),
-        op("ret_void"),
+        op(molt_ir::OpKind::LoopStart),
+        op_args_out(molt_ir::OpKind::LoopIndexStart, &["v0"], "v1"),
+        op(molt_ir::OpKind::LoopEnd),
+        op(molt_ir::OpKind::RetVoid),
     ];
 
     let ir = SimpleIR {
@@ -119,19 +114,19 @@ fn loop_index_start_after_unreachable_code() {
 #[test]
 fn loop_start_in_reachable_code_still_works() {
     let ops: Vec<OpIR> = vec![
-        op_val_out("const", 0, "v0"),
-        op_val_out("const", 3, "v1"),
-        op_val_out("const", 1, "v2"),
-        op("loop_start"),
-        op_args_out("loop_index_start", &["v0"], "v3"),
-        op_args_out("lt", &["v3", "v1"], "v4"),
-        op_args_out("loop_break_if_false", &["v4"], "none"),
+        op_val_out(molt_ir::OpKind::Const, 0, "v0"),
+        op_val_out(molt_ir::OpKind::Const, 3, "v1"),
+        op_val_out(molt_ir::OpKind::Const, 1, "v2"),
+        op(molt_ir::OpKind::LoopStart),
+        op_args_out(molt_ir::OpKind::LoopIndexStart, &["v0"], "v3"),
+        op_args_out(molt_ir::OpKind::Lt, &["v3", "v1"], "v4"),
+        op_args_out(molt_ir::OpKind::LoopBreakIfFalse, &["v4"], "none"),
         // Increment and continue.
-        op_args_out("add", &["v3", "v2"], "v5"),
-        op_args_out("loop_index_next", &["v5"], "v5"),
-        op("loop_continue"),
-        op("loop_end"),
-        op("ret_void"),
+        op_args_out(molt_ir::OpKind::Add, &["v3", "v2"], "v5"),
+        op_args_out(molt_ir::OpKind::LoopIndexNext, &["v5"], "v5"),
+        op(molt_ir::OpKind::LoopContinue),
+        op(molt_ir::OpKind::LoopEnd),
+        op(molt_ir::OpKind::RetVoid),
     ];
 
     let ir = SimpleIR {

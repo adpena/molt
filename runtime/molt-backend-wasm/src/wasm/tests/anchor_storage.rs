@@ -14,7 +14,7 @@ fn invocation_anchors_preserve_frames_reentry_and_foreign_unwind() {
         for eh in [false, true] {
             let mut ops = vec![OpIR {
                 s_value: Some("molt_main".into()),
-                ..wasm_test_op("trace_enter_slot", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::TraceEnterSlot, None, vec![])
             }];
             if identity {
                 for (payload, out) in [
@@ -25,21 +25,21 @@ fn invocation_anchors_preserve_frames_reentry_and_foreign_unwind() {
                 ] {
                     ops.push(OpIR {
                         s_value: Some(payload.into()),
-                        ..wasm_test_op("const_str", Some(out), vec![])
+                        ..wasm_test_op(molt_ir::OpKind::ConstStr, Some(out), vec![])
                     });
                 }
-                ops.push(wasm_test_op("trace_exit", None, vec![]));
-                ops.push(wasm_test_op("ret", None, vec!["returned"]));
+                ops.push(wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]));
+                ops.push(wasm_test_op(molt_ir::OpKind::Ret, None, vec!["returned"]));
             } else {
                 for index in 0..count {
                     ops.push(OpIR {
                         s_value: Some(format!("private-anchor-{index}")),
-                        ..wasm_test_op("const_str", Some("unused"), vec![])
+                        ..wasm_test_op(molt_ir::OpKind::ConstStr, Some("unused"), vec![])
                     });
                 }
                 ops.extend([
-                    wasm_test_op("trace_exit", None, vec![]),
-                    wasm_test_op("ret_void", None, vec![]),
+                    wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+                    wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
                 ]);
             }
             let mut function = wasm_test_function("molt_main", vec![], None, ops);

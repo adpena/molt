@@ -4346,8 +4346,6 @@ WASM_IMPORT_RUNTIME_FEATURES: dict[str, str] = {
 }
 
 WASM_BULK_MEMORY_OPS: tuple[tuple[str, str, int], ...] = (
-    ("memory_copy", "memory_copy", 3),
-    ("memory_fill", "memory_fill", 3),
 )
 
 WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (

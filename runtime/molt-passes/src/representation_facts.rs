@@ -897,7 +897,7 @@ fn native_projectable_float_result(
             Some(Repr::FloatUnboxed)
         }
         ReprProjectableFloatResultRule::CopySourceFloat
-            if op_original_kind(op) == Some("float_from_obj")
+            if op_original_kind(op) == Some(molt_ir::OpKind::FloatFromObj)
                 || crate::tir::passes::value_identity::scalar_value_source(op).is_some_and(
                     |source| {
                         carrier_by_value
@@ -913,11 +913,8 @@ fn native_projectable_float_result(
     }
 }
 
-fn op_original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
+fn op_original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
+    op.origin
 }
 
 fn block_arg_incomings_for(tir_func: &TirFunction) -> HashMap<(BlockId, usize), Vec<ValueId>> {

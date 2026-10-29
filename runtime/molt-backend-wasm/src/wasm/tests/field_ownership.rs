@@ -1,9 +1,15 @@
 use super::support::*;
 use molt_codegen_abi::{HEADER_FLAG_HAS_PTRS, HEADER_FLAGS_OFFSET};
 
-fn compile_field_op(kind: &str) -> Vec<u8> {
-    let guarded = kind.starts_with("guarded_");
-    let read = matches!(kind, "load" | "guarded_field_get");
+fn compile_field_op(kind: molt_ir::OpKind) -> Vec<u8> {
+    let guarded = matches!(
+        kind,
+        molt_ir::OpKind::GuardedFieldGet | molt_ir::OpKind::GuardedFieldSet
+    );
+    let read = matches!(
+        kind,
+        molt_ir::OpKind::Load | molt_ir::OpKind::GuardedFieldGet
+    );
     // HF-220: a guarded op's class statement is a compile-time slot.
     let mut params = if guarded {
         vec!["object", "version"]
@@ -22,9 +28,9 @@ fn compile_field_op(kind: &str) -> Vec<u8> {
         code_slots.insert("class:m:Owner".to_string(), 0);
     }
     let ret = if read {
-        wasm_test_op("ret", None, vec!["result"])
+        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"])
     } else {
-        wasm_test_op("ret_void", None, vec![])
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])
     };
     wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         SimpleIR {
@@ -44,10 +50,14 @@ fn compile_field_op(kind: &str) -> Vec<u8> {
 #[test]
 fn all_inline_field_paths_admit_receiver_and_backing_before_payload_access() {
     for (kind, runtime_name, read) in [
-        ("store", "object_field_set", false),
-        ("guarded_field_set", "object_field_set_ptr", false),
-        ("load", "object_field_get", true),
-        ("guarded_field_get", "guarded_field_get", true),
+        (molt_ir::OpKind::Store, "object_field_set", false),
+        (
+            molt_ir::OpKind::GuardedFieldSet,
+            "object_field_set_ptr",
+            false,
+        ),
+        (molt_ir::OpKind::Load, "object_field_get", true),
+        (molt_ir::OpKind::GuardedFieldGet, "guarded_field_get", true),
     ] {
         let wasm = compile_field_op(kind);
         wasmparser::Validator::new().validate_all(&wasm).unwrap();
@@ -86,7 +96,10 @@ fn all_inline_field_paths_admit_receiver_and_backing_before_payload_access() {
             depth > 0,
             "{kind}: receiver must dominate the header; {ops:?}"
         );
-        if kind.starts_with("guarded_") {
+        if matches!(
+            kind,
+            molt_ir::OpKind::GuardedFieldGet | molt_ir::OpKind::GuardedFieldSet
+        ) {
             let guard = format!("Call {{ function_index: {} }}", imports["guard_layout"]);
             let guard_pos = ops[..header].iter().position(|op| op == &guard).unwrap();
             let resolve = format!("Call {{ function_index: {} }}", imports["handle_resolve"]);

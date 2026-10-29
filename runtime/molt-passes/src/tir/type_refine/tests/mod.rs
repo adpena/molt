@@ -46,6 +46,7 @@ fn make_op(
     attrs: AttrDict,
 ) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

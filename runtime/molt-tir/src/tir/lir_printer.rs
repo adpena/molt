@@ -97,17 +97,19 @@ fn print_lir_op(op: &LirOp) -> String {
         .map(|v| format!("{v}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let attrs_str = if op.tir_op.attrs.is_empty() {
+    let attrs_str = if op.tir_op.attrs.is_empty() && op.tir_op.origin.is_none() {
         String::new()
     } else {
         let mut pairs: Vec<_> = op.tir_op.attrs.iter().collect();
         pairs.sort_by_key(|(k, _)| k.as_str());
-        let inner = pairs
+        let mut rendered = pairs
             .iter()
             .map(|(k, v)| format!("{}: {}", k, print_attr_value(v)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(" {{{}}}", inner)
+            .collect::<Vec<_>>();
+        if let Some(origin) = op.tir_op.origin {
+            rendered.push(format!("origin: {origin}"));
+        }
+        format!(" {{{}}}", rendered.join(", "))
     };
 
     if operands_str.is_empty() {

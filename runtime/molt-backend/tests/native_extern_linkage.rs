@@ -4,11 +4,8 @@ use object::{Object, ObjectSection, ObjectSymbol};
 #[path = "support/generated_object_abi.rs"]
 mod generated_object_abi;
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 fn provider_function(name: &str, params: &[&str], returns_value: bool) -> FunctionIR {
@@ -17,13 +14,13 @@ fn provider_function(name: &str, params: &[&str], returns_value: bool) -> Functi
         name: name.to_string(),
         params: params.iter().map(|param| (*param).to_string()).collect(),
         ops: if returns_value {
-            let mut missing = op("missing");
+            let mut missing = op(molt_ir::OpKind::Missing);
             missing.out = Some("value".to_string());
-            let mut ret = op("ret");
+            let mut ret = op(molt_ir::OpKind::Ret);
             ret.args = Some(vec!["value".to_string()]);
             vec![missing, ret]
         } else {
-            vec![op("ret_void")]
+            vec![op(molt_ir::OpKind::RetVoid)]
         },
         param_types: None,
         source_file: None,
@@ -45,16 +42,16 @@ fn mixed_void_and_value_extern_ir() -> SimpleIR {
 }
 
 fn mixed_void_and_value_extern_fixture() -> (SimpleIR, molt_backend::NativeBackendModuleContext) {
-    let mut call_void = op("call");
+    let mut call_void = op(molt_ir::OpKind::Call);
     call_void.s_value = Some("stdlib_void_helper".to_string());
     call_void.args = Some(Vec::new());
 
-    let mut call_value = op("call");
+    let mut call_value = op(molt_ir::OpKind::Call);
     call_value.s_value = Some("stdlib_value_helper".to_string());
     call_value.out = Some("result".to_string());
     call_value.args = Some(Vec::new());
 
-    let mut ret_result = op("ret");
+    let mut ret_result = op(molt_ir::OpKind::Ret);
     ret_result.args = Some(vec!["result".to_string()]);
 
     let main = FunctionIR {
@@ -147,7 +144,7 @@ fn extern_call_mismatch_fixture(
     caller_args: &[&str],
     caller_expects_result: bool,
 ) -> (SimpleIR, molt_backend::NativeBackendModuleContext) {
-    let mut call = op("call");
+    let mut call = op(molt_ir::OpKind::Call);
     call.s_value = Some("extern_helper".to_string());
     call.args = Some(caller_args.iter().map(|arg| (*arg).to_string()).collect());
     call.out = caller_expects_result.then(|| "result".to_string());
@@ -155,7 +152,7 @@ fn extern_call_mismatch_fixture(
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_main".to_string(),
         params: caller_args.iter().map(|arg| (*arg).to_string()).collect(),
-        ops: vec![call, op("ret_void")],
+        ops: vec![call, op(molt_ir::OpKind::RetVoid)],
         param_types: None,
         source_file: None,
         is_extern: false,
@@ -192,7 +189,7 @@ fn native_object_retains_exact_generated_object_abi_import() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: Vec::new(),
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -285,29 +282,25 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
                     name: "molt_main".into(),
                     ops: vec![
                         OpIR {
-                            kind: "const_str".into(),
                             out: Some("literal".into()),
                             s_value: Some("cross-format literal".into()),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::ConstStr)
                         },
                         OpIR {
-                            kind: "func_new".into(),
                             out: Some("callable".into()),
                             s_value: Some("cross_format_callable".into()),
                             value: Some(0),
                             args: Some(vec![]),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::FuncNew)
                         },
                         OpIR {
-                            kind: "tuple_new".into(),
                             out: Some("result".into()),
                             args: Some(vec!["literal".into(), "callable".into()]),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::TupleNew)
                         },
                         OpIR {
-                            kind: "ret".into(),
                             args: Some(vec!["result".into()]),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::Ret)
                         },
                     ],
                     ..FunctionIR::default()
@@ -317,15 +310,13 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
                     name: "cross_format_callable".into(),
                     ops: vec![
                         OpIR {
-                            kind: "const".into(),
                             out: Some("answer".into()),
                             value: Some(42),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::Const)
                         },
                         OpIR {
-                            kind: "ret".into(),
                             args: Some(vec!["answer".into()]),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::Ret)
                         },
                     ],
                     ..FunctionIR::default()
@@ -433,7 +424,7 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
 
 #[test]
 fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
-    let mut init_sys = op("call");
+    let mut init_sys = op(molt_ir::OpKind::Call);
     init_sys.s_value = Some("molt_init_sys".to_string());
 
     let ir = SimpleIR {
@@ -442,7 +433,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: Vec::new(),
-                ops: vec![init_sys, op("ret_void")],
+                ops: vec![init_sys, op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,

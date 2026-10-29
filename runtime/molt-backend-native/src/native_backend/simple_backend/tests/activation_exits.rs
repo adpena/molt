@@ -4,7 +4,7 @@
 //! that TIR placed.
 
 use super::*;
-use crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR;
+use molt_ir::OpKind;
 
 const SELF: usize = 0;
 const FUTURE: usize = 1;
@@ -14,13 +14,12 @@ const RESUME_LABEL: i64 = 42;
 const WAIT_LABEL: i64 = 8;
 const RUNNING_STATE: i64 = 9;
 
-fn simple_op(kind: &str, args: Option<&[&str]>, out: Option<&str>, value: Option<i64>) -> OpIR {
+fn simple_op(kind: OpKind, args: Option<&[&str]>, out: Option<&str>, value: Option<i64>) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         args: args.map(|args| args.iter().map(|arg| arg.to_string()).collect()),
         out: out.map(str::to_string),
         value,
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -29,13 +28,13 @@ fn simple_op(kind: &str, args: Option<&[&str]>, out: Option<&str>, value: Option
 /// also the first activation's entry, as `lower_to_simple` projects it.
 fn poll_function(name: &str, body: Vec<OpIR>) -> FunctionIR {
     let mut ops = vec![
-        simple_op(DROP_INSERTED_ATTR, None, None, None),
+        simple_op(OpKind::DropInserted, None, None, None),
         OpIR {
             state_targets: Some(vec![(RESUME_STATE, RESUME_LABEL)]),
-            ..simple_op("state_switch", None, None, None)
+            ..simple_op(OpKind::StateSwitch, None, None, None)
         },
-        simple_op("jump", None, None, Some(RESUME_LABEL)),
-        simple_op("state_label", None, None, Some(RESUME_LABEL)),
+        simple_op(OpKind::Jump, None, None, Some(RESUME_LABEL)),
+        simple_op(OpKind::StateLabel, None, None, Some(RESUME_LABEL)),
     ];
     ops.extend(body);
     FunctionIR {
@@ -60,14 +59,14 @@ fn normalized_wait() -> FunctionIR {
     poll_function(
         "activation_exits",
         vec![
-            simple_op("state_set", Some(&[]), None, Some(RESUME_STATE)),
-            simple_op("is_pending", Some(&["polled"]), Some("waiting"), None),
-            simple_op("br_if", Some(&["waiting"]), None, Some(WAIT_LABEL)),
-            simple_op("state_set", Some(&[]), None, Some(RUNNING_STATE)),
-            simple_op("ret", Some(&["polled"]), None, None),
-            simple_op("label", None, None, Some(WAIT_LABEL)),
-            simple_op("task_wait", Some(&["future"]), None, None),
-            simple_op("ret", Some(&["polled"]), None, None),
+            simple_op(OpKind::StateSet, Some(&[]), None, Some(RESUME_STATE)),
+            simple_op(OpKind::IsPending, Some(&["polled"]), Some("waiting"), None),
+            simple_op(OpKind::BrIf, Some(&["waiting"]), None, Some(WAIT_LABEL)),
+            simple_op(OpKind::StateSet, Some(&[]), None, Some(RUNNING_STATE)),
+            simple_op(OpKind::Ret, Some(&["polled"]), None, None),
+            simple_op(OpKind::Label, None, None, Some(WAIT_LABEL)),
+            simple_op(OpKind::TaskWait, Some(&["future"]), None, None),
+            simple_op(OpKind::Ret, Some(&["polled"]), None, None),
         ],
     )
 }
@@ -248,9 +247,14 @@ fn drop_inserted_codegen_rejects_a_hidden_suspension() {
     let function = poll_function(
         "hidden_suspension",
         vec![
-            simple_op("state_yield", Some(&["polled"]), None, Some(RESUME_STATE)),
-            simple_op("state_label", None, None, Some(WAIT_LABEL)),
-            simple_op("ret", Some(&["polled"]), None, None),
+            simple_op(
+                OpKind::StateYield,
+                Some(&["polled"]),
+                None,
+                Some(RESUME_STATE),
+            ),
+            simple_op(OpKind::StateLabel, None, None, Some(WAIT_LABEL)),
+            simple_op(OpKind::Ret, Some(&["polled"]), None, None),
         ],
     );
     molt_ir::ir_schema::validate_state_dispatch(&function.ops)
@@ -263,12 +267,12 @@ fn runtime_poll_uses_canonical_abi_without_a_second_python_recursion_boundary() 
     let mut function = normalized_wait();
     function.name = "runtime_poll_boundary".into();
     function.ops = vec![
-        simple_op(DROP_INSERTED_ATTR, None, None, None),
+        simple_op(OpKind::DropInserted, None, None, None),
         OpIR {
             s_value: Some("molt_future_poll".into()),
-            ..simple_op("call", Some(&["future"]), Some("value"), None)
+            ..simple_op(OpKind::Call, Some(&["future"]), Some("value"), None)
         },
-        simple_op("ret", Some(&["value"]), None, None),
+        simple_op(OpKind::Ret, Some(&["value"]), None, None),
     ];
     let compiled = compile_function_to_clif_with_imports(vec![function], "runtime_poll_boundary");
     let poll = compiled.import_ids["molt_future_poll"];

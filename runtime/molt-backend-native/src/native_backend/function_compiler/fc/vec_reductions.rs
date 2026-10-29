@@ -1,14 +1,19 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// The fused-loop reduction kinds — the SINGLE authority for this family,
-/// routed to `NativeOpFamily::Arith` (whose [`super::arith::handle_arith_op`]
-/// delegates here). Each calls its `molt_<kind>` runtime kernel with
-/// `(it, acc, target)` and defines the kernel's owned
-/// `(result, last, count, more)` tuple for one bounded chunk of the loop; the
-/// kernel alone decides how many items it consumes (`object/ops_vec.rs`).
+// The fused-loop reduction kinds — the SINGLE authority for this family,
+// routed to `NativeOpFamily::Arith` (whose [`super::arith::handle_arith_op`]
+// delegates here). Each calls its `molt_<kind>` runtime kernel with
+// `(it, acc, target)` and defines the kernel's owned
+// `(result, last, count, more)` tuple for one bounded chunk of the loop; the
+// kernel alone decides how many items it consumes (`object/ops_vec.rs`).
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["vec_sum", "vec_prod", "vec_min", "vec_max"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::VecSum,
+    OpKind::VecProd,
+    OpKind::VecMin,
+    OpKind::VecMax,
+);
 
 /// Every fused-loop reduction kernel takes `(it, acc, target)`.
 #[cfg(feature = "native-backend")]
@@ -31,11 +36,11 @@ pub(in crate::native_backend::function_compiler) fn handle_vec_reduction(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
-    let symbol = match op.kind.as_str() {
-        "vec_sum" => "molt_vec_sum",
-        "vec_prod" => "molt_vec_prod",
-        "vec_min" => "molt_vec_min",
-        "vec_max" => "molt_vec_max",
+    let symbol = match op.kind {
+        OpKind::VecSum => "molt_vec_sum",
+        OpKind::VecProd => "molt_vec_prod",
+        OpKind::VecMin => "molt_vec_min",
+        OpKind::VecMax => "molt_vec_max",
         _ => unreachable!("handler invoked with non-matching op.kind"),
     };
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
