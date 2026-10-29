@@ -1,29 +1,30 @@
 use super::super::*;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
+use molt_ir::OpKind;
 
-/// Division, modulo, power, and numeric rounding codegen authority.
-///
-/// These ops share the quotient/remainder runtime-symbol split, raw-primary
-/// int lanes, float division zero checks, and pow/round/trunc boxed fallbacks.
-/// Keeping them in their own handler gives rustc a smaller codegen unit while
-/// keeping one handled-kind authority for the full quotient/power cluster.
+// Division, modulo, power, and numeric rounding codegen authority.
+//
+// These ops share the quotient/remainder runtime-symbol split, raw-primary
+// int lanes, float division zero checks, and pow/round/trunc boxed fallbacks.
+// Keeping them in their own handler gives rustc a smaller codegen unit while
+// keeping one handled-kind authority for the full quotient/power cluster.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "div",
-    "inplace_div",
-    "floordiv",
-    "inplace_floordiv",
-    "mod",
-    "inplace_mod",
-    "floor_div",
-    "binop_floor_div",
-    "pow",
-    "inplace_pow",
-    "pow_mod",
-    "round",
-    "trunc",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Div,
+    OpKind::InplaceDiv,
+    OpKind::Floordiv,
+    OpKind::InplaceFloordiv,
+    OpKind::Mod,
+    OpKind::InplaceMod,
+    OpKind::FloorDiv,
+    OpKind::BinopFloorDiv,
+    OpKind::Pow,
+    OpKind::InplacePow,
+    OpKind::PowMod,
+    OpKind::Round,
+    OpKind::Trunc,
+);
 
 /// Debug-only trap guard for a raw-i64 signed floordiv/mod fast path.
 ///
@@ -126,13 +127,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
         )
     };
 
-    match op.kind.as_str() {
-        "div" | "inplace_div" => {
+    match op.kind {
+        OpKind::Div | OpKind::InplaceDiv => {
             // `/` and `/=`.  Int/float fast lanes are identical (builtin
             // numerics have no __itruediv__); only the boxed fallback
             // symbol changes — molt_inplace_div tries __itruediv__ before
             // the binary __truediv__/__rtruediv__ chain.
-            let boxed_sym = if op.kind == "inplace_div" {
+            let boxed_sym = if op.kind == OpKind::InplaceDiv {
                 "molt_inplace_div"
             } else {
                 "molt_div"
@@ -468,13 +469,13 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
             }
         }
-        "floordiv" | "inplace_floordiv" => {
+        OpKind::Floordiv | OpKind::InplaceFloordiv => {
             // `//` and `//=`.  The raw-i64 / float fast lanes are byte-
             // identical (builtin int/float have no __ifloordiv__); only
             // the boxed fallback symbol changes — molt_inplace_floordiv
             // tries __ifloordiv__ before the binary __floordiv__/
             // __rfloordiv__ chain.
-            let boxed_sym = if op.kind == "inplace_floordiv" {
+            let boxed_sym = if op.kind == OpKind::InplaceFloordiv {
                 "molt_inplace_floordiv"
             } else {
                 "molt_floordiv"
@@ -751,12 +752,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
             }
         }
-        "mod" | "inplace_mod" => {
+        OpKind::Mod | OpKind::InplaceMod => {
             // `%` and `%=`.  Int/float fast lanes byte-identical (builtin
             // numerics have no __imod__); boxed fallback symbol changes —
             // molt_inplace_mod tries __imod__ before the binary
             // __mod__/__rmod__ chain.
-            let boxed_sym = if op.kind == "inplace_mod" {
+            let boxed_sym = if op.kind == OpKind::InplaceMod {
                 "molt_inplace_mod"
             } else {
                 "molt_mod"
@@ -1017,7 +1018,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
             }
         }
-        "floor_div" | "binop_floor_div" => {
+        OpKind::FloorDiv | OpKind::BinopFloorDiv => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -1128,12 +1129,12 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
             }
         }
-        "pow" | "inplace_pow" => {
+        OpKind::Pow | OpKind::InplacePow => {
             // `**` and `**=`.  Int/float fast lanes byte-identical
             // (builtin numerics have no __ipow__); boxed fallback symbol
             // changes — molt_inplace_pow tries __ipow__ before the binary
             // __pow__/__rpow__ chain.
-            let boxed_sym = if op.kind == "inplace_pow" {
+            let boxed_sym = if op.kind == OpKind::InplacePow {
                 "molt_inplace_pow"
             } else {
                 "molt_pow"
@@ -1394,7 +1395,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
             }
         }
-        "pow_mod" => {
+        OpKind::PowMod => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -1453,7 +1454,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
             }
         }
-        "round" => {
+        OpKind::Round => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -1514,7 +1515,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
                 );
             }
         }
-        "trunc" => {
+        OpKind::Trunc => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,

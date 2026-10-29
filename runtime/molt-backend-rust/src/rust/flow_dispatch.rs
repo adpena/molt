@@ -5,11 +5,6 @@ use super::emit_helpers::rust_value;
 use super::lowering::op_definition_vars;
 use crate::OpIR;
 use molt_ir::simple_verify::{EdgeRole, SimpleIrLogicalFlow};
-use molt_ir::tir::op_kinds_generated::{
-    simpleir_kind_is_exception_check, simpleir_kind_is_return_terminator,
-    simpleir_kind_is_structural, simpleir_kind_is_suspend, simpleir_kind_is_verifier_phi,
-    simpleir_kind_is_wasm_stateful_dispatch,
-};
 use std::collections::BTreeSet;
 
 impl RustBackend {
@@ -64,30 +59,30 @@ impl RustBackend {
             self.hoisted_vars.extend(local_values);
 
             for op in &ops[start..=end] {
-                if simpleir_kind_is_suspend(&op.kind)
-                    || simpleir_kind_is_wasm_stateful_dispatch(&op.kind)
-                    || simpleir_kind_is_exception_check(&op.kind)
-                    || op.kind == "loop_break_if_exception"
+                if op.kind.is_suspend()
+                    || op.kind.is_wasm_stateful_dispatch()
+                    || op.kind.is_exception_check()
+                    || op.kind == molt_ir::OpKind::LoopBreakIfException
                 {
                     self.emit_unsupported_op(
                         op,
                         "labelled-flow emission requires admitted synchronous, non-exception edges",
                     );
-                } else if simpleir_kind_is_verifier_phi(&op.kind) {
+                } else if op.kind.is_verifier_phi() {
                     self.emit_unsupported_op(
                         op,
                         "canonical SSA lowering left an unresolved predecessor value",
                     );
-                } else if simpleir_kind_is_return_terminator(&op.kind)
-                    || !simpleir_kind_is_structural(&op.kind)
-                    || op.kind == "nop"
+                } else if op.kind.is_return_terminator()
+                    || !op.kind.is_structural()
+                    || op.kind == molt_ir::OpKind::Nop
                 {
                     self.emit_op(op);
                 }
             }
 
             let tail = &ops[end];
-            if !simpleir_kind_is_return_terminator(&tail.kind) {
+            if !tail.kind.is_return_terminator() {
                 let edges = &flow.edges[end];
                 if edges
                     .iter()

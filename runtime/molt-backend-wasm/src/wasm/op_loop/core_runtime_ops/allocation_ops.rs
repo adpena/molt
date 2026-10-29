@@ -12,16 +12,16 @@ pub(super) fn emit_allocation_runtime_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "stack_alloc" => panic!(
+    match op.kind {
+        molt_ir::OpKind::StackAlloc => panic!(
             "{}",
             crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED
         ),
-        "alloc" | "alloc_class" => {}
+        molt_ir::OpKind::Alloc | molt_ir::OpKind::AllocClass => {}
         _ => return false,
     }
 
-    if op.kind == "alloc_class" {
+    if op.kind == molt_ir::OpKind::AllocClass {
         func.instruction(&Instruction::I64Const(op.value.unwrap()));
         let class_name = op
             .args

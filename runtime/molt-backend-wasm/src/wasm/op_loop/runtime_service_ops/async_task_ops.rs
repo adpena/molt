@@ -19,8 +19,8 @@ pub(super) fn emit_async_task_runtime_op(
     let locals = context.locals;
     let reloc_enabled = context.reloc_enabled;
 
-    match op.kind.as_str() {
-        "alloc_task" => {
+    match op.kind {
+        molt_ir::OpKind::AllocTask => {
             let total = op.value.unwrap_or(0);
             let layout = WasmTaskRuntimeLayout::for_alloc_task_kind(op.task_kind.as_deref());
             molt_tir::trampolines::TaskConstructorLayout::for_alloc_kind(op.task_kind.as_deref())
@@ -31,7 +31,7 @@ pub(super) fn emit_async_task_runtime_op(
                     crate::wasm_abi::GEN_CONTROL_SIZE,
                 );
             let target_name = op.s_value.as_ref().expect("alloc_task target missing");
-            let table_target = call_site_abi.table_target(target_name, "alloc_task");
+            let table_target = call_site_abi.table_target(target_name, molt_ir::OpKind::AllocTask);
             layout.emit_task_new(
                 func,
                 import_ids,

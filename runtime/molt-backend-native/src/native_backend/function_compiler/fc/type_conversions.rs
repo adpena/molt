@@ -1,22 +1,23 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_type_conversion`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_type_conversion`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "bytes_from_obj",
-    "bytes_from_str",
-    "bytearray_from_obj",
-    "bytearray_from_str",
-    "float_from_obj",
-    "int_from_obj",
-    "int_from_str_of_obj",
-    "operator_index",
-    "complex_from_obj",
-    "str_from_obj",
-    "repr_from_obj",
-    "ascii_from_obj",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::BytesFromObj,
+    OpKind::BytesFromStr,
+    OpKind::BytearrayFromObj,
+    OpKind::BytearrayFromStr,
+    OpKind::FloatFromObj,
+    OpKind::IntFromObj,
+    OpKind::IntFromStrOfObj,
+    OpKind::OperatorIndex,
+    OpKind::ComplexFromObj,
+    OpKind::StrFromObj,
+    OpKind::ReprFromObj,
+    OpKind::AsciiFromObj,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for scalar/sequence type-conversion constructors: `bytes`/`bytearray`/`float`/`int`/`complex`/`str`/`repr`/`ascii` from objects or strings.
@@ -70,8 +71,8 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "bytes_from_obj" => {
+    match op.kind {
+        OpKind::BytesFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -98,7 +99,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytes_from_str" => {
+        OpKind::BytesFromStr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -149,7 +150,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytearray_from_obj" => {
+        OpKind::BytearrayFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -176,7 +177,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytearray_from_str" => {
+        OpKind::BytearrayFromStr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -227,7 +228,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "float_from_obj" => {
+        OpKind::FloatFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -265,7 +266,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 }
             }
         }
-        "int_from_obj" => {
+        OpKind::IntFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -314,7 +315,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "int_from_str_of_obj" => {
+        OpKind::IntFromStrOfObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -363,7 +364,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "complex_from_obj" => {
+        OpKind::ComplexFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -412,7 +413,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "operator_index" => {
+        OpKind::OperatorIndex => {
             // range()'s bound conversion: `operator.index(x)`, an owned exact int.
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             emit_operand_transaction_call(
@@ -431,7 +432,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 block_tracked_ptr,
             );
         }
-        "str_from_obj" => {
+        OpKind::StrFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -458,7 +459,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "repr_from_obj" => {
+        OpKind::ReprFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -485,7 +486,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_conversion(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "ascii_from_obj" => {
+        OpKind::AsciiFromObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src = var_get_boxed_overflow_safe(
                 &mut *module,

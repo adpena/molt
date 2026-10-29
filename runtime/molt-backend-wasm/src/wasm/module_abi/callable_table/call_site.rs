@@ -56,7 +56,7 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
     pub(in crate::wasm) fn table_target(
         &self,
         target_name: &str,
-        call_kind: &str,
+        call_kind: molt_ir::OpKind,
     ) -> WasmCallableTableTarget {
         let slot = *self
             .func_table_slots
@@ -66,7 +66,11 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             .target_for_slot(slot, WasmCallableTableRole::DirectCallable)
     }
 
-    pub(in crate::wasm) fn function_index(&self, target_name: &str, call_kind: &str) -> u32 {
+    pub(in crate::wasm) fn function_index(
+        &self,
+        target_name: &str,
+        call_kind: molt_ir::OpKind,
+    ) -> u32 {
         *self
             .func_indices
             .get(target_name)
@@ -86,7 +90,7 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
     pub(in crate::wasm) fn trampoline_target(
         &self,
         target_name: &str,
-        call_kind: &str,
+        call_kind: molt_ir::OpKind,
     ) -> WasmCallableTableTarget {
         let slot = *self
             .trampoline_slots
@@ -114,7 +118,7 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
     pub(in crate::wasm) fn callable_table_pair(
         &self,
         target_name: &str,
-        call_kind: &str,
+        call_kind: molt_ir::OpKind,
     ) -> WasmCallableTablePair {
         WasmCallableTablePair {
             function: self.table_target(target_name, call_kind),
@@ -188,10 +192,10 @@ mod tests {
             molt_codegen_abi::ENTRY_CUSTODY_ADOPTS
         );
 
-        let table_pair = abi.callable_table_pair("callee", "test_call");
+        let table_pair = abi.callable_table_pair("callee", molt_ir::OpKind::Call);
         assert_eq!(table_pair.function.current_table_index, 107);
         assert_eq!(table_pair.trampoline.current_table_index, 109);
-        assert_eq!(abi.function_index("callee", "test_call"), 42);
+        assert_eq!(abi.function_index("callee", molt_ir::OpKind::Call), 42);
         assert!(abi.function_abi_returns_value("callee"));
         assert!(abi.is_closure_function("callee"));
         assert_eq!(abi.positional_arity("callee"), Some(2));
@@ -224,7 +228,7 @@ mod tests {
         let escaped = BTreeSet::new();
         let entry_custody = BTreeMap::new();
         let abi = plan.call_site_abi(&escaped, 0, &entry_custody);
-        let pair = abi.callable_table_pair("callee", "fixed-mask-test");
+        let pair = abi.callable_table_pair("callee", molt_ir::OpKind::Call);
 
         assert!(matches!(
             pair.function.address,

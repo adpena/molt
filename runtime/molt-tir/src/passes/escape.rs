@@ -1,5 +1,5 @@
 use crate::FunctionIR;
-use crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator;
+
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,54 +29,47 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
     }
 
     // Allocation op kinds eligible for stack promotion.
-    let alloc_kinds = ["tuple_new", "list_new", "dict_new"];
+    let alloc_kinds = [
+        molt_ir::OpKind::TupleNew,
+        molt_ir::OpKind::ListNew,
+        molt_ir::OpKind::DictNew,
+    ];
 
     // Op kinds where any argument reference is a "safe" (non-escaping) use.
     // The object is consumed locally — read-only or iteration.
-    let safe_use_kinds: BTreeSet<&str> = [
-        "index",        // subscript / destructure
-        "len",          // len() intrinsic
-        "type",         // type() intrinsic
-        "is",           // identity check
-        "is_not",       // identity check
-        "bool_test",    // truthiness test
-        "iter",         // create an iterator (reads the container)
-        "contains",     // `in` operator
-        "not_contains", // `not in` operator
-        "unpack",       // tuple unpacking (reads elements)
-        "unpack_ex",    // star unpacking
-        "compare",      // comparison
-        "copy",         // local alias — tracked transitively below
+    let safe_use_kinds: BTreeSet<molt_ir::OpKind> = [
+        molt_ir::OpKind::Index,
+        molt_ir::OpKind::Len,
+        molt_ir::OpKind::Is,
+        molt_ir::OpKind::IsNot,
+        molt_ir::OpKind::Iter,
+        molt_ir::OpKind::Contains,
+        molt_ir::OpKind::Compare,
+        molt_ir::OpKind::Copy,
     ]
     .iter()
     .copied()
     .collect();
 
     // Op kinds that definitely cause escape for any argument.
-    let escaping_ops: BTreeSet<&str> = [
-        "call",
-        "call_internal",
-        "call_method",
-        "load_method",
-        "load_super_method",
-        "call_loaded_method",
-        "call_function_ex",
-        "call_intrinsic",
-        "store_global",
-        "store_nonlocal",
-        "store_attr",
-        "store_index",
-        "store_closure",
-        "dict_set",
-        "list_append",
-        "list_extend",
-        "set_add",
-        "yield",
-        "yield_from",
-        "await",
-        "raise",
-        "store",
-        "guarded_field_set",
+    let escaping_ops: BTreeSet<molt_ir::OpKind> = [
+        molt_ir::OpKind::Call,
+        molt_ir::OpKind::CallInternal,
+        molt_ir::OpKind::CallMethod,
+        molt_ir::OpKind::LoadMethod,
+        molt_ir::OpKind::LoadSuperMethod,
+        molt_ir::OpKind::CallLoadedMethod,
+        molt_ir::OpKind::StoreAttr,
+        molt_ir::OpKind::StoreIndex,
+        molt_ir::OpKind::DictSet,
+        molt_ir::OpKind::ListAppend,
+        molt_ir::OpKind::ListExtend,
+        molt_ir::OpKind::SetAdd,
+        molt_ir::OpKind::Yield,
+        molt_ir::OpKind::YieldFrom,
+        molt_ir::OpKind::Raise,
+        molt_ir::OpKind::Store,
+        molt_ir::OpKind::GuardedFieldSet,
     ]
     .iter()
     .copied()
@@ -86,7 +79,7 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
     // Map from output variable name (owned) → op index.
     let mut alloc_sites: BTreeMap<String, usize> = BTreeMap::new();
     for (idx, op) in func_ir.ops.iter().enumerate() {
-        if alloc_kinds.contains(&op.kind.as_str())
+        if alloc_kinds.contains(&op.kind)
             && let Some(ref out) = op.out
         {
             alloc_sites.insert(out.clone(), idx);
@@ -110,10 +103,10 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
 
     // Forward scan: resolve copy aliases and check uses.
     for op in func_ir.ops.iter() {
-        let kind = op.kind.as_str();
+        let kind = op.kind;
 
         // Handle copy aliases: if source is a tracked alloc, propagate.
-        if kind == "copy" {
+        if kind == molt_ir::OpKind::Copy {
             if let (Some(args), Some(out)) = (&op.args, &op.out)
                 && args.len() == 1
                 && let Some(root) = alias_to_alloc.get(&args[0]).cloned()
@@ -134,11 +127,11 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
                     continue; // already known to escape
                 }
 
-                if safe_use_kinds.contains(kind) {
+                if safe_use_kinds.contains(&kind) {
                     continue; // non-escaping use
                 }
 
-                if escaping_ops.contains(kind) || simpleir_kind_is_return_terminator(kind) {
+                if escaping_ops.contains(&kind) || kind.is_return_terminator() {
                     escaped.insert(root);
                     continue;
                 }
@@ -152,7 +145,7 @@ pub fn escape_analysis(func_ir: &mut FunctionIR) {
         // role permits a source value.
         if let Some(ref var) = op.var
             && let Some(root) = alias_to_alloc.get(var).cloned()
-            && (escaping_ops.contains(kind) || simpleir_kind_is_return_terminator(kind))
+            && (escaping_ops.contains(&kind) || kind.is_return_terminator())
         {
             escaped.insert(root);
         }

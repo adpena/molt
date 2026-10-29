@@ -42,10 +42,11 @@ fn transparent_parameter_alias_return_publishes_once_and_deduplicates_root() {
     let param = func.blocks[&entry].args[0].id;
     let alias = func.fresh_value();
     func.value_types.insert(alias, TirType::DynBox);
-    let mut attrs = AttrDict::new();
-    attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+    let attrs = AttrDict::new();
+
     let block = func.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
+        origin: Some(molt_ir::OpKind::LoadVar),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![param],
@@ -115,6 +116,7 @@ fn fresh_and_raw_returns_do_not_gain_publication_retains() {
         .unwrap()
         .ops
         .push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -199,13 +201,13 @@ fn loop_slot_accumulator_no_double_drop() {
     use molt_passes::tir::passes::run_pipeline;
     use molt_passes::tir::type_refine::refine_types;
 
-    let mk = |kind: &str,
+    let mk = |kind: molt_ir::OpKind,
               out: Option<&str>,
               var: Option<&str>,
               args: Vec<&str>,
               val: Option<i64>,
               sval: Option<&str>| OpIR {
-        kind: kind.into(),
+        kind: kind,
         out: out.map(|s| s.to_string()),
         var: var.map(|s| s.to_string()),
         args: if args.is_empty() {
@@ -215,7 +217,7 @@ fn loop_slot_accumulator_no_double_drop() {
         },
         value: val,
         s_value: sval.map(|s| s.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind.into())
     };
     // Shape from tmp/.../native/final_ir/bigint_accumulator__accumulate.txt:
     // total = 1<<60 ; i=0 ; while i<n: total=total+1; total=total-1; total=total+1; i=i+1 ; return total
@@ -224,23 +226,72 @@ fn loop_slot_accumulator_no_double_drop() {
         name: "diag__accumulate".into(),
         params: vec!["n".into()],
         ops: vec![
-            mk("const", Some("v106"), None, vec![], Some(1), None),
-            mk("const", Some("v107"), None, vec![], Some(60), None),
             mk(
-                "lshift",
+                molt_ir::OpKind::Const,
+                Some("v106"),
+                None,
+                vec![],
+                Some(1),
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Const,
+                Some("v107"),
+                None,
+                vec![],
+                Some(60),
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Lshift,
                 Some("v108"),
                 None,
                 vec!["v106", "v107"],
                 None,
                 None,
             ),
-            mk("const", Some("v109"), None, vec![], Some(0), None),
-            mk("const", Some("v114"), None, vec![], Some(1), None),
-            mk("const", Some("v117"), None, vec![], Some(1), None),
-            mk("const", Some("v120"), None, vec![], Some(1), None),
-            mk("const", Some("v123"), None, vec![], Some(1), None),
             mk(
-                "store_var",
+                molt_ir::OpKind::Const,
+                Some("v109"),
+                None,
+                vec![],
+                Some(0),
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Const,
+                Some("v114"),
+                None,
+                vec![],
+                Some(1),
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Const,
+                Some("v117"),
+                None,
+                vec![],
+                Some(1),
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Const,
+                Some("v120"),
+                None,
+                vec![],
+                Some(1),
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Const,
+                Some("v123"),
+                None,
+                vec![],
+                Some(1),
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::StoreVar,
                 None,
                 Some("_bb1_arg0"),
                 vec!["v108"],
@@ -248,18 +299,18 @@ fn loop_slot_accumulator_no_double_drop() {
                 None,
             ),
             mk(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 None,
                 Some("_bb1_arg1"),
                 vec!["v109"],
                 None,
                 None,
             ),
-            mk("jump", None, None, vec![], Some(8), None),
-            mk("label", None, None, vec![], Some(8), None),
-            mk("loop_start", None, None, vec![], None, None),
+            mk(molt_ir::OpKind::Jump, None, None, vec![], Some(8), None),
+            mk(molt_ir::OpKind::Label, None, None, vec![], Some(8), None),
+            mk(molt_ir::OpKind::LoopStart, None, None, vec![], None, None),
             mk(
-                "load_var",
+                molt_ir::OpKind::LoadVar,
                 Some("_v19"),
                 Some("_bb1_arg0"),
                 vec![],
@@ -267,21 +318,63 @@ fn loop_slot_accumulator_no_double_drop() {
                 None,
             ),
             mk(
-                "load_var",
+                molt_ir::OpKind::LoadVar,
                 Some("_v20"),
                 Some("_bb1_arg1"),
                 vec![],
                 None,
                 None,
             ),
-            mk("lt", Some("v112"), None, vec!["_v20", "n"], None, None),
-            mk("loop_break_if_false", None, None, vec!["v112"], None, None),
-            mk("add", Some("v115"), None, vec!["_v19", "v114"], None, None),
-            mk("sub", Some("v118"), None, vec!["v115", "v117"], None, None),
-            mk("add", Some("v121"), None, vec!["v118", "v120"], None, None),
-            mk("add", Some("v124"), None, vec!["_v20", "v123"], None, None),
             mk(
-                "store_var",
+                molt_ir::OpKind::Lt,
+                Some("v112"),
+                None,
+                vec!["_v20", "n"],
+                None,
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::LoopBreakIfFalse,
+                None,
+                None,
+                vec!["v112"],
+                None,
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Add,
+                Some("v115"),
+                None,
+                vec!["_v19", "v114"],
+                None,
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Sub,
+                Some("v118"),
+                None,
+                vec!["v115", "v117"],
+                None,
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Add,
+                Some("v121"),
+                None,
+                vec!["v118", "v120"],
+                None,
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::Add,
+                Some("v124"),
+                None,
+                vec!["_v20", "v123"],
+                None,
+                None,
+            ),
+            mk(
+                molt_ir::OpKind::StoreVar,
                 None,
                 Some("_bb1_arg0"),
                 vec!["v121"],
@@ -289,18 +382,32 @@ fn loop_slot_accumulator_no_double_drop() {
                 None,
             ),
             mk(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 None,
                 Some("_bb1_arg1"),
                 vec!["v124"],
                 None,
                 None,
             ),
-            mk("loop_continue", None, None, vec![], None, None),
-            mk("loop_end", None, None, vec![], None, None),
-            mk("jump", None, None, vec![], Some(12), None),
-            mk("label", None, None, vec![], Some(12), None),
-            mk("ret", None, Some("_v19"), vec!["_v19"], None, None),
+            mk(
+                molt_ir::OpKind::LoopContinue,
+                None,
+                None,
+                vec![],
+                None,
+                None,
+            ),
+            mk(molt_ir::OpKind::LoopEnd, None, None, vec![], None, None),
+            mk(molt_ir::OpKind::Jump, None, None, vec![], Some(12), None),
+            mk(molt_ir::OpKind::Label, None, None, vec![], Some(12), None),
+            mk(
+                molt_ir::OpKind::Ret,
+                None,
+                Some("_v19"),
+                vec!["_v19"],
+                None,
+                None,
+            ),
         ],
         param_types: Some(vec!["Any".into()]),
         source_file: None,
@@ -491,7 +598,7 @@ fn iter_next_unboxed_value_not_return_boundary_dropped_on_exhaustion_edge() {
             id: body,
             args: vec![],
             ops: vec![original_copy_with_operands(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 vec![iter_value],
                 vec![stored_local],
             )],
@@ -802,9 +909,10 @@ fn unused_list_pop_result_is_dropped_at_pop_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(const_str(list));
         b.ops.push(op(OpCode::ConstNone, vec![], vec![idx]));
-        let mut attrs = AttrDict::new();
-        attrs.insert("_original_kind".into(), AttrValue::Str("list_pop".into()));
+        let attrs = AttrDict::new();
+
         b.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::ListPop),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![list, idx],
@@ -823,8 +931,8 @@ fn unused_list_pop_result_is_dropped_at_pop_boundary() {
         .position(|o| {
             o.opcode == OpCode::Copy
                 && matches!(
-                    o.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(k)) if k == "list_pop"
+                    o.origin,
+                    Some(k) if k == molt_ir::OpKind::ListPop
                 )
         })
         .expect("list_pop op present");
@@ -869,12 +977,10 @@ fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
         b.ops.push(op(OpCode::ConstNone, vec![], vec![flags]));
         b.ops
             .push(named_call("fixture_external_call", vec![], vec![child]));
-        let mut ctor_attrs = AttrDict::new();
-        ctor_attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("dataclass_new_values".into()),
-        );
+        let ctor_attrs = AttrDict::new();
+
         b.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::DataclassNewValues),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![name, fields, flags, child],
@@ -884,12 +990,10 @@ fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
         });
         b.ops
             .push(named_call("fixture_external_call", vec![], vec![class_obj]));
-        let mut set_class_attrs = AttrDict::new();
-        set_class_attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("dataclass_set_class".into()),
-        );
+        let set_class_attrs = AttrDict::new();
+
         b.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::DataclassSetClass),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![instance, class_obj],
@@ -908,8 +1012,8 @@ fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
         .position(|o| {
             o.opcode == OpCode::Copy
                 && matches!(
-                    o.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(k)) if k == "dataclass_set_class"
+                    o.origin,
+                    Some(k) if k == molt_ir::OpKind::DataclassSetClass
                 )
         })
         .expect("dataclass_set_class op present");
@@ -949,13 +1053,11 @@ fn call_bind_callargs_operand_not_dropped() {
         // callee = <fresh owned value> (model as a Call so it is owned).
         b.ops
             .push(named_call("fixture_external_call", vec![], vec![callee]));
-        // builder = callargs_new (opaque Copy carrying _original_kind).
-        let mut ca = AttrDict::new();
-        ca.insert(
-            "_original_kind".into(),
-            AttrValue::Str("callargs_new".into()),
-        );
+        // builder = callargs_new (opaque Copy carrying origin).
+        let ca = AttrDict::new();
+
         b.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::CallargsNew),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -963,7 +1065,7 @@ fn call_bind_callargs_operand_not_dropped() {
             attrs: ca,
             source_span: None,
         });
-        // result = call_bind(callee, builder) — Call carrying _original_kind.
+        // result = call_bind(callee, builder) — Call carrying origin.
         b.ops.push(call_bind(callee, builder, vec![result]));
         b.terminator = Terminator::Return {
             values: vec![result],
@@ -1016,7 +1118,7 @@ fn owned_getter_result_does_not_extend_receiver_lifetime() {
                 let mut ops = vec![named_call("fixture_external_call", vec![], vec![source])];
                 let receiver = if alias_receiver {
                     ops.push(original_copy_with_operands(
-                        "load_var",
+                        molt_ir::OpKind::LoadVar,
                         vec![source],
                         vec![alias],
                     ));
@@ -1091,6 +1193,7 @@ fn raw_i64_gets_no_drops() {
         let mut a0 = AttrDict::new();
         a0.insert("value".into(), AttrValue::Int(3));
         b.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -1101,6 +1204,7 @@ fn raw_i64_gets_no_drops() {
         let mut a1 = AttrDict::new();
         a1.insert("value".into(), AttrValue::Int(4));
         b.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -1674,7 +1778,7 @@ fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
             id: body,
             args: vec![],
             ops: vec![original_copy_with_operands(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 vec![value],
                 vec![stored],
             )],
@@ -1985,7 +2089,11 @@ fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
             ops: vec![
                 body_boundary,
                 const_str(next_value),
-                original_copy_with_operands("store_var", vec![next_value], vec![next_slot]),
+                original_copy_with_operands(
+                    molt_ir::OpKind::StoreVar,
+                    vec![next_value],
+                    vec![next_slot],
+                ),
             ],
             terminator: Terminator::Branch {
                 target: header,
@@ -2058,7 +2166,7 @@ fn explicit_del_boundary_splits_shared_return_keep_path_release() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_call(owner));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![owner],
             vec![stored],
         ));
@@ -2177,7 +2285,7 @@ fn explicit_del_boundary_join_before_return_splits_keep_edge() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_call(owner));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![owner],
             vec![stored],
         ));
@@ -2332,8 +2440,7 @@ fn mixed_phi_borrowed_param_retained_on_entry_edge() {
             args: vec![],
             ops: vec![{
                 let mut o = op(OpCode::Copy, vec![base], vec![x0]);
-                o.attrs
-                    .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                o.origin = Some(molt_ir::OpKind::CopyVar);
                 o
             }],
             terminator: Terminator::Branch {
@@ -2368,8 +2475,7 @@ fn mixed_phi_borrowed_param_retained_on_entry_edge() {
             ops: vec![
                 {
                     let mut o = op(OpCode::Copy, vec![acc_phi], vec![load_x]);
-                    o.attrs
-                        .insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+                    o.origin = Some(molt_ir::OpKind::LoadVar);
                     o
                 },
                 // acc_next = Call(load_x, base): fresh owned, reads base each iter.
@@ -2464,8 +2570,7 @@ fn forwarded_owned_value_not_edge_dropped_at_join() {
             args: vec![],
             ops: vec![const_str(owned), {
                 let mut o = op(OpCode::Copy, vec![owned], vec![fwd]);
-                o.attrs
-                    .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                o.origin = Some(molt_ir::OpKind::CopyVar);
                 o
             }],
             // Forward `fwd` (owned, via alias) into the join's phi.
@@ -2559,8 +2664,7 @@ fn phi_edge_clean_transfer_ignores_release_on_other_branch() {
             args: vec![],
             ops: vec![{
                 let mut o = op(OpCode::Copy, vec![source], vec![then_alias]);
-                o.attrs
-                    .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                o.origin = Some(molt_ir::OpKind::CopyVar);
                 o
             }],
             terminator: Terminator::Branch {
@@ -2659,8 +2763,7 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
         // raw Switch selector.
         b.ops.push({
             let mut o = op(OpCode::Copy, vec![base], vec![case0_alias]);
-            o.attrs
-                .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+            o.origin = Some(molt_ir::OpKind::CopyVar);
             o
         });
         b.ops.push(const_str(fresh_owned));
@@ -2853,8 +2956,7 @@ fn forwarded_into_phi_on_every_edge_releases_exactly_once() {
             args: vec![],
             ops: vec![{
                 let mut o = op(OpCode::Copy, vec![r], vec![r_alias]);
-                o.attrs
-                    .insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+                o.origin = Some(molt_ir::OpKind::LoadVar);
                 o
             }],
             terminator: Terminator::Branch {
@@ -3202,7 +3304,7 @@ fn builtin_reference_result_releases_or_transfers_its_independent_owner() {
             let name_value = function.blocks[&entry].args[0].id;
             let result = function.fresh_value();
             function.value_types.insert(result, TirType::DynBox);
-            let mut lookup = original_copy("builtin_func", vec![result]);
+            let mut lookup = original_copy(molt_ir::OpKind::BuiltinFunc, vec![result]);
             lookup
                 .attrs
                 .insert("s_value".into(), AttrValue::Str("molt_len".into()));
@@ -3245,14 +3347,14 @@ fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
     // Published acquisitions, constructors, custom-symbol calls, and a boxed
     // immediate-returning mutation all obey the same custody protocol.
     for (kind, arity) in [
-        ("dict_get", 3),
-        ("list_copy", 1),
-        ("list_int_new", 2),
-        ("module_new", 1),
-        ("exception_current", 0),
-        ("gen_send", 2),
-        ("call_async", 1),
-        ("list_append", 2),
+        (molt_ir::OpKind::DictGet, 3),
+        (molt_ir::OpKind::ListCopy, 1),
+        (molt_ir::OpKind::ListIntNew, 2),
+        (molt_ir::OpKind::ModuleNew, 1),
+        (molt_ir::OpKind::ExceptionCurrent, 0),
+        (molt_ir::OpKind::GenSend, 2),
+        (molt_ir::OpKind::CallAsync, 1),
+        (molt_ir::OpKind::ListAppend, 2),
     ] {
         for returned in [false, true] {
             let mut function = TirFunction::new(
@@ -3275,7 +3377,7 @@ fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
             function.value_types.insert(result, TirType::DynBox);
             let mut operation = original_copy(kind, vec![result]);
             operation.operands = vec![operand; arity];
-            if kind == "call_async" {
+            if kind == molt_ir::OpKind::CallAsync {
                 operation
                     .attrs
                     .insert("s_value".into(), AttrValue::Str("poll_body".into()));
@@ -3310,9 +3412,9 @@ fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
 #[test]
 fn runtime_nonowning_copy_results_do_not_release_borrowed_storage() {
     for (kind, arity) in [
-        ("dict_set", 3),
-        ("dict_update_missing", 3),
-        ("function_closure_bits", 1),
+        (molt_ir::OpKind::DictSet, 3),
+        (molt_ir::OpKind::DictUpdateMissing, 3),
+        (molt_ir::OpKind::FunctionClosureBits, 1),
     ] {
         let mut function = TirFunction::new(
             format!("{kind}_borrow"),

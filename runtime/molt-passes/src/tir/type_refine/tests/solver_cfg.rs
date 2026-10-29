@@ -402,10 +402,13 @@ fn dynbox_stays_dynbox_for_unknown_operands() {
 fn dynamic_transfer_widens_stale_precise_result_and_stays_idempotent() {
     let source = ValueId(0);
     let result = ValueId(1);
-    let mut attrs = AttrDict::new();
-    attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+    let attrs = AttrDict::new();
+
     let mut func = single_block_func(
-        vec![make_op(OpCode::Copy, vec![source], vec![result], attrs)],
+        vec![
+            make_op(OpCode::Copy, vec![source], vec![result], attrs)
+                .with_origin(molt_ir::OpKind::CopyVar),
+        ],
         2,
     );
     func.value_types.insert(source, TirType::DynBox);

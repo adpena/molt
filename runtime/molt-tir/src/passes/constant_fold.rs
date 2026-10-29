@@ -18,33 +18,38 @@ pub fn fold_constants(ops: &mut [OpIR]) {
     let mut const_bools: BTreeMap<String, bool> = BTreeMap::new();
 
     for op in ops.iter_mut() {
-        match op.kind.as_str() {
-            "const" => {
+        match op.kind {
+            molt_ir::OpKind::Const => {
                 if let (Some(out), Some(val)) = (op.out.as_ref(), op.value) {
                     const_ints.insert(out.clone(), val);
                 }
             }
-            "const_bool" => {
+            molt_ir::OpKind::ConstBool => {
                 if let (Some(out), Some(val)) = (op.out.as_ref(), op.value) {
                     const_bools.insert(out.clone(), val != 0);
                 }
             }
 
             // Binary integer arithmetic: add, sub, mul, inplace_add, inplace_sub, inplace_mul
-            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" => {
+            molt_ir::OpKind::Add
+            | molt_ir::OpKind::Sub
+            | molt_ir::OpKind::Mul
+            | molt_ir::OpKind::InplaceAdd
+            | molt_ir::OpKind::InplaceSub
+            | molt_ir::OpKind::InplaceMul => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
                     let a_val = const_ints.get(&args[0]).copied();
                     let b_val = const_ints.get(&args[1]).copied();
                     if let (Some(a), Some(b)) = (a_val, b_val) {
-                        let result = match op.kind.as_str() {
-                            "add" | "inplace_add" => a.wrapping_add(b),
-                            "sub" | "inplace_sub" => a.wrapping_sub(b),
-                            "mul" | "inplace_mul" => a.wrapping_mul(b),
+                        let result = match op.kind {
+                            molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => a.wrapping_add(b),
+                            molt_ir::OpKind::Sub | molt_ir::OpKind::InplaceSub => a.wrapping_sub(b),
+                            molt_ir::OpKind::Mul | molt_ir::OpKind::InplaceMul => a.wrapping_mul(b),
                             _ => unreachable!(),
                         };
-                        op.kind = "const".to_string();
+                        op.kind = molt_ir::OpKind::Const;
                         op.value = Some(result);
                         op.args = None;
                         if let Some(ref out) = op.out {
@@ -61,21 +66,25 @@ pub fn fold_constants(ops: &mut [OpIR]) {
             }
 
             // Bitwise integer ops: bit_and, bit_or, bit_xor and inplace variants
-            "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-            | "inplace_bit_xor" => {
+            molt_ir::OpKind::BitAnd
+            | molt_ir::OpKind::BitOr
+            | molt_ir::OpKind::BitXor
+            | molt_ir::OpKind::InplaceBitAnd
+            | molt_ir::OpKind::InplaceBitOr
+            | molt_ir::OpKind::InplaceBitXor => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
                     let a_val = const_ints.get(&args[0]).copied();
                     let b_val = const_ints.get(&args[1]).copied();
                     if let (Some(a), Some(b)) = (a_val, b_val) {
-                        let result = match op.kind.as_str() {
-                            "bit_and" | "inplace_bit_and" => a & b,
-                            "bit_or" | "inplace_bit_or" => a | b,
-                            "bit_xor" | "inplace_bit_xor" => a ^ b,
+                        let result = match op.kind {
+                            molt_ir::OpKind::BitAnd | molt_ir::OpKind::InplaceBitAnd => a & b,
+                            molt_ir::OpKind::BitOr | molt_ir::OpKind::InplaceBitOr => a | b,
+                            molt_ir::OpKind::BitXor | molt_ir::OpKind::InplaceBitXor => a ^ b,
                             _ => unreachable!(),
                         };
-                        op.kind = "const".to_string();
+                        op.kind = molt_ir::OpKind::Const;
                         op.value = Some(result);
                         op.args = None;
                         if let Some(ref out) = op.out {
@@ -91,13 +100,13 @@ pub fn fold_constants(ops: &mut [OpIR]) {
             }
 
             // Boolean not: `not` on a known bool constant.
-            "not" => {
+            molt_ir::OpKind::Not => {
                 if let Some(ref args) = op.args
                     && args.len() == 1
                     && let Some(&val) = const_bools.get(&args[0])
                 {
                     let result = !val;
-                    op.kind = "const_bool".to_string();
+                    op.kind = molt_ir::OpKind::ConstBool;
                     op.value = Some(if result { 1 } else { 0 });
                     op.args = None;
                     if let Some(ref out) = op.out {
@@ -113,8 +122,16 @@ pub fn fold_constants(ops: &mut [OpIR]) {
             }
 
             // Control flow boundaries: clear all tracked constants.
-            "if" | "else" | "end_if" | "loop_start" | "loop_end" | "try_start" | "try_end"
-            | "jump" | "label" | "state_switch" => {
+            molt_ir::OpKind::If
+            | molt_ir::OpKind::Else
+            | molt_ir::OpKind::EndIf
+            | molt_ir::OpKind::LoopStart
+            | molt_ir::OpKind::LoopEnd
+            | molt_ir::OpKind::TryStart
+            | molt_ir::OpKind::TryEnd
+            | molt_ir::OpKind::Jump
+            | molt_ir::OpKind::Label
+            | molt_ir::OpKind::StateSwitch => {
                 const_ints.clear();
                 const_bools.clear();
             }
@@ -165,34 +182,39 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
     let mut branch_stack: Vec<BranchSnapshot> = Vec::new();
 
     for op in ops.iter_mut() {
-        match op.kind.as_str() {
+        match op.kind {
             // ----- constant definitions -----
-            "const" => {
+            molt_ir::OpKind::Const => {
                 if let (Some(out), Some(val)) = (op.out.as_ref(), op.value) {
                     const_ints.insert(out.clone(), val);
                 }
             }
-            "const_bool" => {
+            molt_ir::OpKind::ConstBool => {
                 if let (Some(out), Some(val)) = (op.out.as_ref(), op.value) {
                     const_bools.insert(out.clone(), val != 0);
                 }
             }
 
             // ----- binary integer arithmetic -----
-            "add" | "sub" | "mul" | "inplace_add" | "inplace_sub" | "inplace_mul" => {
+            molt_ir::OpKind::Add
+            | molt_ir::OpKind::Sub
+            | molt_ir::OpKind::Mul
+            | molt_ir::OpKind::InplaceAdd
+            | molt_ir::OpKind::InplaceSub
+            | molt_ir::OpKind::InplaceMul => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
                     let a_val = const_ints.get(&args[0]).copied();
                     let b_val = const_ints.get(&args[1]).copied();
                     if let (Some(a), Some(b)) = (a_val, b_val) {
-                        let result = match op.kind.as_str() {
-                            "add" | "inplace_add" => a.wrapping_add(b),
-                            "sub" | "inplace_sub" => a.wrapping_sub(b),
-                            "mul" | "inplace_mul" => a.wrapping_mul(b),
+                        let result = match op.kind {
+                            molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => a.wrapping_add(b),
+                            molt_ir::OpKind::Sub | molt_ir::OpKind::InplaceSub => a.wrapping_sub(b),
+                            molt_ir::OpKind::Mul | molt_ir::OpKind::InplaceMul => a.wrapping_mul(b),
                             _ => unreachable!(),
                         };
-                        op.kind = "const".to_string();
+                        op.kind = molt_ir::OpKind::Const;
                         op.value = Some(result);
                         op.args = None;
                         if let Some(ref out) = op.out {
@@ -208,21 +230,25 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
             }
 
             // ----- bitwise integer ops -----
-            "bit_and" | "bit_or" | "bit_xor" | "inplace_bit_and" | "inplace_bit_or"
-            | "inplace_bit_xor" => {
+            molt_ir::OpKind::BitAnd
+            | molt_ir::OpKind::BitOr
+            | molt_ir::OpKind::BitXor
+            | molt_ir::OpKind::InplaceBitAnd
+            | molt_ir::OpKind::InplaceBitOr
+            | molt_ir::OpKind::InplaceBitXor => {
                 if let Some(ref args) = op.args
                     && args.len() == 2
                 {
                     let a_val = const_ints.get(&args[0]).copied();
                     let b_val = const_ints.get(&args[1]).copied();
                     if let (Some(a), Some(b)) = (a_val, b_val) {
-                        let result = match op.kind.as_str() {
-                            "bit_and" | "inplace_bit_and" => a & b,
-                            "bit_or" | "inplace_bit_or" => a | b,
-                            "bit_xor" | "inplace_bit_xor" => a ^ b,
+                        let result = match op.kind {
+                            molt_ir::OpKind::BitAnd | molt_ir::OpKind::InplaceBitAnd => a & b,
+                            molt_ir::OpKind::BitOr | molt_ir::OpKind::InplaceBitOr => a | b,
+                            molt_ir::OpKind::BitXor | molt_ir::OpKind::InplaceBitXor => a ^ b,
                             _ => unreachable!(),
                         };
-                        op.kind = "const".to_string();
+                        op.kind = molt_ir::OpKind::Const;
                         op.value = Some(result);
                         op.args = None;
                         if let Some(ref out) = op.out {
@@ -238,13 +264,13 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
             }
 
             // ----- boolean not -----
-            "not" => {
+            molt_ir::OpKind::Not => {
                 if let Some(ref args) = op.args
                     && args.len() == 1
                     && let Some(&val) = const_bools.get(&args[0])
                 {
                     let result = !val;
-                    op.kind = "const_bool".to_string();
+                    op.kind = molt_ir::OpKind::ConstBool;
                     op.value = Some(if result { 1 } else { 0 });
                     op.args = None;
                     if let Some(ref out) = op.out {
@@ -260,7 +286,7 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
             }
 
             // ----- structured control flow: if / else / end_if -----
-            "if" => {
+            molt_ir::OpKind::If => {
                 branch_stack.push(BranchSnapshot {
                     pre_ints: const_ints.clone(),
                     pre_bools: const_bools.clone(),
@@ -268,7 +294,7 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                     then_bools: None,
                 });
             }
-            "else" => {
+            molt_ir::OpKind::Else => {
                 if let Some(snapshot) = branch_stack.last_mut() {
                     snapshot.then_ints = Some(const_ints.clone());
                     snapshot.then_bools = Some(const_bools.clone());
@@ -279,7 +305,7 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
                     const_bools.clear();
                 }
             }
-            "end_if" => {
+            molt_ir::OpKind::EndIf => {
                 if let Some(snapshot) = branch_stack.pop() {
                     if let (Some(then_ints), Some(then_bools)) =
                         (snapshot.then_ints, snapshot.then_bools)
@@ -339,8 +365,13 @@ pub fn fold_constants_cross_block(ops: &mut [OpIR]) {
             }
 
             // ----- unstructured / opaque control flow: conservative clear -----
-            "loop_start" | "loop_end" | "try_start" | "try_end" | "jump" | "label"
-            | "state_switch" => {
+            molt_ir::OpKind::LoopStart
+            | molt_ir::OpKind::LoopEnd
+            | molt_ir::OpKind::TryStart
+            | molt_ir::OpKind::TryEnd
+            | molt_ir::OpKind::Jump
+            | molt_ir::OpKind::Label
+            | molt_ir::OpKind::StateSwitch => {
                 const_ints.clear();
                 const_bools.clear();
                 branch_stack.clear();

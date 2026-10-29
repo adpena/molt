@@ -21,8 +21,10 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     // Only transform stateful functions (generators / async).
     let is_stateful = func_ir.ops.iter().any(|op| {
         matches!(
-            op.kind.as_str(),
-            "state_switch" | "state_transition" | "state_yield"
+            op.kind,
+            molt_ir::OpKind::StateSwitch
+                | molt_ir::OpKind::StateTransition
+                | molt_ir::OpKind::StateYield
         )
     });
     if !is_stateful {
@@ -34,8 +36,11 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     for op in &func_ir.ops {
         if let Some(id) = op.value
             && matches!(
-                op.kind.as_str(),
-                "state_yield" | "state_transition" | "state_label" | "label"
+                op.kind,
+                molt_ir::OpKind::StateYield
+                    | molt_ir::OpKind::StateTransition
+                    | molt_ir::OpKind::StateLabel
+                    | molt_ir::OpKind::Label
             )
         {
             max_state_id = max_state_id.max(id);
@@ -57,8 +62,8 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
     let mut finished_loops: Vec<LoopInfo> = Vec::new();
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" | "loop_index_start" => {
+        match op.kind {
+            molt_ir::OpKind::LoopStart | molt_ir::OpKind::LoopIndexStart => {
                 loop_stack.push(LoopInfo {
                     start_idx: idx,
                     end_idx: 0,
@@ -69,32 +74,32 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                     break_if_falses: Vec::new(),
                 });
             }
-            "state_yield" => {
+            molt_ir::OpKind::StateYield => {
                 for frame in loop_stack.iter_mut() {
                     frame.has_yield = true;
                 }
             }
-            "loop_continue" => {
+            molt_ir::OpKind::LoopContinue => {
                 if let Some(frame) = loop_stack.last_mut() {
                     frame.continues.push(idx);
                 }
             }
-            "loop_break" => {
+            molt_ir::OpKind::LoopBreak => {
                 if let Some(frame) = loop_stack.last_mut() {
                     frame.breaks.push(idx);
                 }
             }
-            "loop_break_if_true" => {
+            molt_ir::OpKind::LoopBreakIfTrue => {
                 if let Some(frame) = loop_stack.last_mut() {
                     frame.break_if_trues.push(idx);
                 }
             }
-            "loop_break_if_false" => {
+            molt_ir::OpKind::LoopBreakIfFalse => {
                 if let Some(frame) = loop_stack.last_mut() {
                     frame.break_if_falses.push(idx);
                 }
             }
-            "loop_break_if_exception" => {
+            molt_ir::OpKind::LoopBreakIfException => {
                 // `loop_break_if_exception` is emitted by the frontend ONLY in
                 // functions WITHOUT the exception stack (function_exception_label
                 // == None).  Generator/coroutine bodies — the only functions
@@ -111,7 +116,7 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                     func_ir.name, idx
                 );
             }
-            "loop_end" => {
+            molt_ir::OpKind::LoopEnd => {
                 if let Some(mut frame) = loop_stack.pop() {
                     frame.end_idx = idx;
                     finished_loops.push(frame);
@@ -168,51 +173,51 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
         if let Some(&body_label) = body_label_for_start.get(&idx) {
             // Replace loop_start with state_label (loop body entry).
             new_ops.push(OpIR {
-                kind: "state_label".to_string(),
+                kind: molt_ir::OpKind::StateLabel,
                 value: Some(body_label),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StateLabel)
             });
         } else if let Some(&after_label) = after_label_for_end.get(&idx) {
             // Replace loop_end with state_label (break target).
             new_ops.push(OpIR {
-                kind: "state_label".to_string(),
+                kind: molt_ir::OpKind::StateLabel,
                 value: Some(after_label),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StateLabel)
             });
         } else if let Some(&target) = continue_target.get(&idx) {
             // Replace loop_continue with jump to body label.
             new_ops.push(OpIR {
-                kind: "jump".to_string(),
+                kind: molt_ir::OpKind::Jump,
                 value: Some(target),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             });
         } else if let Some(&target) = break_target.get(&idx) {
-            match op.kind.as_str() {
-                "loop_break" => {
+            match op.kind {
+                molt_ir::OpKind::LoopBreak => {
                     new_ops.push(OpIR {
-                        kind: "jump".to_string(),
+                        kind: molt_ir::OpKind::Jump,
                         value: Some(target),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Jump)
                     });
                 }
-                "loop_break_if_true" => {
+                molt_ir::OpKind::LoopBreakIfTrue => {
                     // Expand: if(cond) { jump(after_label) } end_if
                     new_ops.push(OpIR {
-                        kind: "if".to_string(),
+                        kind: molt_ir::OpKind::If,
                         args: op.args.clone(),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::If)
                     });
                     new_ops.push(OpIR {
-                        kind: "jump".to_string(),
+                        kind: molt_ir::OpKind::Jump,
                         value: Some(target),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Jump)
                     });
                     new_ops.push(OpIR {
-                        kind: "end_if".to_string(),
-                        ..OpIR::default()
+                        kind: molt_ir::OpKind::EndIf,
+                        ..OpIR::new(molt_ir::OpKind::EndIf)
                     });
                 }
-                "loop_break_if_false" => {
+                molt_ir::OpKind::LoopBreakIfFalse => {
                     let cond = op
                         .args
                         .as_ref()
@@ -220,24 +225,24 @@ pub fn rewrite_stateful_loops(func_ir: &mut FunctionIR) {
                         .unwrap_or_default();
                     let not_var = format!("__slr_not_{idx}");
                     new_ops.push(OpIR {
-                        kind: "not".to_string(),
+                        kind: molt_ir::OpKind::Not,
                         args: Some(vec![cond]),
                         out: Some(not_var.clone()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Not)
                     });
                     new_ops.push(OpIR {
-                        kind: "if".to_string(),
+                        kind: molt_ir::OpKind::If,
                         args: Some(vec![not_var]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::If)
                     });
                     new_ops.push(OpIR {
-                        kind: "jump".to_string(),
+                        kind: molt_ir::OpKind::Jump,
                         value: Some(target),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Jump)
                     });
                     new_ops.push(OpIR {
-                        kind: "end_if".to_string(),
-                        ..OpIR::default()
+                        kind: molt_ir::OpKind::EndIf,
+                        ..OpIR::new(molt_ir::OpKind::EndIf)
                     });
                 }
                 _ => new_ops.push(op),

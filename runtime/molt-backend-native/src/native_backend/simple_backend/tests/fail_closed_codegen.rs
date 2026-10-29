@@ -1,6 +1,7 @@
 use super::*;
+use molt_ir::OpKind;
 
-fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, returns_value: bool) {
+fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, returns_value: bool) {
     let mut backend = SimpleBackend::new();
     let mut signature = backend.module.make_signature();
     for _ in 0..arity {
@@ -23,7 +24,7 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
         molt_codegen_abi::EntryCustodyDeclaration::declare(false, arity, &[]),
     );
     let args = match kind {
-        "stateful_locals_register" => {
+        OpKind::StatefulLocalsRegister => {
             vec!["metadata".to_string(), "metadata".to_string()]
         }
         _ => Vec::new(),
@@ -34,21 +35,19 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "const_none".to_string(),
                 out: Some("metadata".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             OpIR {
-                kind: kind.to_string(),
                 s_value: Some(target.to_string()),
                 args: Some(args),
-                out: matches!(kind, "func_new" | "call_async").then(|| "result".to_string()),
-                value: (kind == "func_new").then_some(arity as i64),
-                ..OpIR::default()
+                out: matches!(kind, OpKind::FuncNew | OpKind::CallAsync)
+                    .then(|| "result".to_string()),
+                value: (kind == OpKind::FuncNew).then_some(arity as i64),
+                ..OpIR::new(kind)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -76,7 +75,7 @@ fn compile_exact_target_reference(kind: &str, target: &str, arity: usize, return
 
 #[test]
 fn metadata_pointer_declarations_use_exact_target_abi() {
-    for kind in ["stateful_locals_register"] {
+    for kind in [OpKind::StatefulLocalsRegister] {
         for (target, arity, returns_value) in [
             ("opaque_body", 1, true),
             ("ordinary_poll", 0, true),
@@ -91,19 +90,19 @@ fn metadata_pointer_declarations_use_exact_target_abi() {
 #[test]
 fn ordinary_poll_named_callable_keeps_its_declared_arity() {
     for arity in [0, 2] {
-        compile_exact_target_reference("func_new", "ordinary_poll", arity, true);
+        compile_exact_target_reference(OpKind::FuncNew, "ordinary_poll", arity, true);
     }
 }
 
 #[test]
 fn call_async_accepts_exact_opaque_task_target() {
-    compile_exact_target_reference("call_async", "opaque_body", 1, true);
+    compile_exact_target_reference(OpKind::CallAsync, "opaque_body", 1, true);
 }
 
 #[test]
 #[should_panic(expected = "must have ABI (i64) -> i64")]
 fn call_async_rejects_poll_spelling_with_wrong_signature() {
-    compile_exact_target_reference("call_async", "ordinary_poll", 0, true);
+    compile_exact_target_reference(OpKind::CallAsync, "ordinary_poll", 0, true);
 }
 
 fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
@@ -149,16 +148,14 @@ fn builtin_func_rejects_compiled_target_even_with_declared_machine_signature() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "builtin_func".to_string(),
                 s_value: Some("helper".to_string()),
                 out: Some("helper_obj".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::BuiltinFunc)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["helper_obj".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -179,16 +176,14 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "func_new".to_string(),
                 s_value: Some("helper".to_string()),
                 out: Some("helper_obj".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::FuncNew)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["helper_obj".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -209,25 +204,21 @@ fn stateful_locals_register_signature_mismatch_fails_closed_at_codegen() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "const_none".to_string(),
                 out: Some("names".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             OpIR {
-                kind: "const_none".to_string(),
                 out: Some("layout".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             OpIR {
-                kind: "stateful_locals_register".to_string(),
                 s_value: Some("helper".to_string()),
                 args: Some(vec!["names".to_string(), "layout".to_string()]),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StatefulLocalsRegister)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -248,22 +239,19 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("arg".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "call".to_string(),
                 s_value: Some("helper".to_string()),
                 out: Some("result".to_string()),
                 args: Some(vec!["arg".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["result".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -275,7 +263,7 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
     });
 }
 
-fn compile_missing_static_target_symbol(kind: &str) {
+fn compile_missing_static_target_symbol(kind: OpKind) {
     compile_function_to_clif_text(
         vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -283,14 +271,12 @@ fn compile_missing_static_target_symbol(kind: &str) {
             params: Vec::new(),
             ops: vec![
                 OpIR {
-                    kind: kind.to_string(),
                     args: Some(vec!["callee".to_string()]),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 },
             ],
             param_types: None,
@@ -307,19 +293,19 @@ fn compile_missing_static_target_symbol(kind: &str) {
 #[test]
 #[should_panic(expected = "call missing static target symbol")]
 fn call_missing_target_symbol_fails_closed_at_codegen() {
-    compile_missing_static_target_symbol("call");
+    compile_missing_static_target_symbol(OpKind::Call);
 }
 
 #[test]
 #[should_panic(expected = "call_internal missing static target symbol")]
 fn call_internal_missing_target_symbol_fails_closed_at_codegen() {
-    compile_missing_static_target_symbol("call_internal");
+    compile_missing_static_target_symbol(OpKind::CallInternal);
 }
 
 #[test]
 #[should_panic(expected = "call_guarded missing static target symbol")]
 fn call_guarded_missing_target_symbol_fails_closed_at_codegen() {
-    compile_missing_static_target_symbol("call_guarded");
+    compile_missing_static_target_symbol(OpKind::CallGuarded);
 }
 
 #[test]
@@ -332,13 +318,11 @@ fn const_str_missing_payload_fails_closed_at_codegen() {
             params: Vec::new(),
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
                     out: Some("missing".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 },
             ],
             param_types: None,
@@ -361,15 +345,13 @@ fn const_str_empty_string_payload_still_compiles() {
             params: Vec::new(),
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
                     out: Some("empty".to_string()),
                     s_value: Some(String::new()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["empty".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             param_types: None,
@@ -394,27 +376,23 @@ fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "const_none".to_string(),
                 out: Some("callee".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             OpIR {
-                kind: "const".to_string(),
                 out: Some("arg".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "call_guarded".to_string(),
                 s_value: Some("helper".to_string()),
                 out: Some("result".to_string()),
                 args: Some(vec!["callee".to_string(), "arg".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::CallGuarded)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["result".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -439,9 +417,8 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
                 name: "helper".to_string(),
                 params: vec!["value".to_string()],
                 ops: vec![OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["value".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 }],
                 param_types: None,
                 source_file: None,
@@ -456,29 +433,25 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
                 params: Vec::new(),
                 ops: vec![
                     OpIR {
-                        kind: "const".to_string(),
                         out: Some("arg".to_string()),
                         value: Some(1),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Const)
                     },
                     OpIR {
-                        kind: "func_new".to_string(),
                         s_value: Some("helper".to_string()),
                         out: Some("helper_obj".to_string()),
                         value: Some(0),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "call_internal".to_string(),
                         s_value: Some("helper".to_string()),
                         out: Some("result".to_string()),
                         args: Some(vec!["arg".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallInternal)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["result".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Ret)
                     },
                 ],
                 param_types: None,
@@ -502,22 +475,19 @@ fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "const_none".to_string(),
                 out: Some("closure".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             OpIR {
-                kind: "func_new_closure".to_string(),
                 s_value: Some("helper".to_string()),
                 out: Some("helper_obj".to_string()),
                 args: Some(vec!["closure".to_string()]),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::FuncNewClosure)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["helper_obj".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -527,4 +497,58 @@ fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
+}
+
+#[test]
+fn no_codegen_markers_refuse_declared_values() {
+    for kind in [
+        OpKind::Nop,
+        OpKind::DropInserted,
+        OpKind::ExceptionRegionDropsInserted,
+    ] {
+        for output in [None, Some("none"), Some("fresh"), Some("keep")] {
+            let name = format!("no_codegen_{kind}_{}", output.unwrap_or("absent"));
+            let function = FunctionIR {
+                name: name.clone(),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                params: vec!["keep".into()],
+                param_types: Some(vec!["dyn".into()]),
+                ops: vec![
+                    OpIR {
+                        out: output.map(str::to_owned),
+                        ..OpIR::new(kind)
+                    },
+                    OpIR {
+                        args: Some(vec![
+                            output
+                                .filter(|value| *value != "none")
+                                .unwrap_or("keep")
+                                .into(),
+                        ]),
+                        ..OpIR::new(OpKind::Ret)
+                    },
+                ],
+                ..FunctionIR::default()
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                compile_function_to_clif_text(vec![function], &name)
+            }));
+            if let Some(output) = output.filter(|value| *value != "none") {
+                let refusal = result.expect_err("a marker cannot manufacture or overwrite a value");
+                let message = refusal
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| refusal.downcast_ref::<&str>().copied())
+                    .unwrap_or("");
+                assert!(message.contains("no-codegen op kind"), "{message}");
+                assert!(message.contains(kind.as_str()), "{message}");
+                assert!(message.contains(output), "{message}");
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "{kind}: a marker without a definition must remain valid"
+                );
+            }
+        }
+    }
 }

@@ -5,20 +5,19 @@ use molt_ir::simple_verify::{
     EdgeRole, simple_ir_executable_flow, validate_simple_ir_control_flow,
 };
 
-fn op(kind: &str, value: Option<i64>) -> OpIR {
+fn op(kind: molt_ir::OpKind, value: Option<i64>) -> OpIR {
     OpIR {
-        kind: kind.into(),
         value,
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 #[test]
 fn dispatch_control_uses_canonical_forward_label_identity() {
     let ops = vec![
-        op("jump", Some(7)),
-        op("const_none", None),
-        op("label", Some(7)),
+        op(molt_ir::OpKind::Jump, Some(7)),
+        op(molt_ir::OpKind::ConstNone, None),
+        op(molt_ir::OpKind::Label, Some(7)),
     ];
     let flow = simple_ir_executable_flow(&ops);
     assert_eq!(flow.edges[0][0].target, 2);
@@ -29,23 +28,23 @@ fn dispatch_control_uses_canonical_forward_label_identity() {
 fn path_local_region_closes_preserve_canonical_if_loop_and_handler_edges() {
     for stateful in [false, true] {
         let mut ops = vec![
-            op("try_start", Some(7)),
-            op("loop_start", None),
-            op_with_io("if", Some(vec!["condition"]), None),
-            op("try_end", Some(7)),
-            op("loop_break", None),
-            op("end_if", None),
-            op("loop_end", None),
-            op("try_end", Some(7)),
-            op("label", Some(7)),
-            op("ret_void", None),
+            op(molt_ir::OpKind::TryStart, Some(7)),
+            op(molt_ir::OpKind::LoopStart, None),
+            op_with_io(molt_ir::OpKind::If, Some(vec!["condition"]), None),
+            op(molt_ir::OpKind::TryEnd, Some(7)),
+            op(molt_ir::OpKind::LoopBreak, None),
+            op(molt_ir::OpKind::EndIf, None),
+            op(molt_ir::OpKind::LoopEnd, None),
+            op(molt_ir::OpKind::TryEnd, Some(7)),
+            op(molt_ir::OpKind::Label, Some(7)),
+            op(molt_ir::OpKind::RetVoid, None),
         ];
         if stateful {
             ops.insert(
                 0,
                 OpIR {
                     state_targets: Some(vec![]),
-                    ..op("state_switch", None)
+                    ..op(molt_ir::OpKind::StateSwitch, None)
                 },
             );
         }
@@ -92,10 +91,16 @@ fn path_local_region_closes_preserve_canonical_if_loop_and_handler_edges() {
 #[test]
 fn malformed_control_is_rejected_by_shared_admission() {
     for (name, ops) in [
-        ("missing_jump_label", vec![op("jump", None)]),
-        ("orphan_jump_label", vec![op("jump", Some(99))]),
-        ("unbalanced_if", vec![op("if", None)]),
-        ("break_without_loop", vec![op("loop_break", None)]),
+        ("missing_jump_label", vec![op(molt_ir::OpKind::Jump, None)]),
+        (
+            "orphan_jump_label",
+            vec![op(molt_ir::OpKind::Jump, Some(99))],
+        ),
+        ("unbalanced_if", vec![op(molt_ir::OpKind::If, None)]),
+        (
+            "break_without_loop",
+            vec![op(molt_ir::OpKind::LoopBreak, None)],
+        ),
     ] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -111,22 +116,21 @@ fn malformed_control_is_rejected_by_shared_admission() {
     }
 }
 
-fn op_with_io(kind: &str, args: Option<Vec<&str>>, out: Option<&str>) -> OpIR {
+fn op_with_io(kind: molt_ir::OpKind, args: Option<Vec<&str>>, out: Option<&str>) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         args: args.map(|a| a.into_iter().map(String::from).collect()),
         out: out.map(String::from),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 #[test]
 fn non_linear_control_flow_detection_handles_jumpful_functions() {
     let ops = vec![
-        op_with_io("const", None, Some("v0")),
-        op_with_io("check_exception", None, None),
-        op_with_io("jump", None, None),
-        op_with_io("label", None, None),
+        op_with_io(molt_ir::OpKind::Const, None, Some("v0")),
+        op_with_io(molt_ir::OpKind::CheckException, None, None),
+        op_with_io(molt_ir::OpKind::Jump, None, None),
+        op_with_io(molt_ir::OpKind::Label, None, None),
     ];
     assert!(has_non_linear_control_flow(&ops));
 }
@@ -134,9 +138,9 @@ fn non_linear_control_flow_detection_handles_jumpful_functions() {
 #[test]
 fn non_linear_control_flow_detection_ignores_straight_line_ops() {
     let ops = vec![
-        op_with_io("const", None, Some("v0")),
-        op_with_io("add", Some(vec!["v0", "v1"]), Some("v2")),
-        op_with_io("tuple_new", Some(vec!["v2"]), Some("v3")),
+        op_with_io(molt_ir::OpKind::Const, None, Some("v0")),
+        op_with_io(molt_ir::OpKind::Add, Some(vec!["v0", "v1"]), Some("v2")),
+        op_with_io(molt_ir::OpKind::TupleNew, Some(vec!["v2"]), Some("v3")),
     ];
     assert!(!has_non_linear_control_flow(&ops));
 }

@@ -2,31 +2,28 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_set_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "set_new" | "frozenset_new" => {
+        match op.kind {
+            molt_ir::OpKind::SetNew | molt_ir::OpKind::FrozensetNew => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let kind = if op.kind == "frozenset_new" {
-                    "frozenset"
-                } else {
-                    "set"
-                };
+                let frozen = op.kind == molt_ir::OpKind::FrozensetNew;
+                let kind = if frozen { "frozenset" } else { "set" };
                 self.emit_line(&format!("local {out} = molt_set_new(\"{kind}\")"));
                 for value in args {
                     self.emit_line(&format!("molt_set_add({out}, {})", sanitize_ident(value)));
                 }
-                if kind == "frozenset" {
+                if frozen {
                     self.emit_line(&format!("molt_set_freeze({out})"));
                 }
             }
-            "set_clear" => {
+            molt_ir::OpKind::SetClear => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(tbl) = args.first() {
                     let tbl = sanitize_ident(tbl);
                     self.emit_line(&format!("molt_set_clear({tbl})"));
                 }
             }
-            "set_add" | "set_add_probe" => {
+            molt_ir::OpKind::SetAdd | molt_ir::OpKind::SetAddProbe => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
@@ -34,7 +31,7 @@ impl LuauBackend {
                     self.emit_line(&format!("molt_set_add({set}, {val})"));
                 }
             }
-            "frozenset_add" => {
+            molt_ir::OpKind::FrozensetAdd => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
@@ -42,7 +39,7 @@ impl LuauBackend {
                     self.emit_line(&format!("molt_frozenset_build_add({set}, {val})"));
                 }
             }
-            "set_discard" => {
+            molt_ir::OpKind::SetDiscard => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
@@ -50,7 +47,7 @@ impl LuauBackend {
                     self.emit_line(&format!("molt_set_discard({set}, {val}, true)"));
                 }
             }
-            "set_remove" => {
+            molt_ir::OpKind::SetRemove => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);
@@ -58,7 +55,7 @@ impl LuauBackend {
                     self.emit_line(&format!("molt_set_discard({set}, {val}, false)"));
                 }
             }
-            "set_pop" => {
+            molt_ir::OpKind::SetPop => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(set) = args.first() {
@@ -66,7 +63,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_set_pop({set})"));
                 }
             }
-            "set_update" => {
+            molt_ir::OpKind::SetUpdate => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let set = sanitize_ident(&args[0]);

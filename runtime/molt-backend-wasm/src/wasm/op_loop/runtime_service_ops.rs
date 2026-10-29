@@ -9,7 +9,6 @@ use wasm_encoder::Function;
 
 mod async_task_ops;
 mod exception_ops;
-mod linear_memory_ops;
 
 pub(super) struct RuntimeServiceOpContext<'a> {
     pub(super) call_site_abi: &'a WasmCallableCallSiteAbi<'a>,
@@ -39,15 +38,12 @@ pub(super) fn emit_runtime_service_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    if let Some(call) = op_loop_runtime_call(op.kind.as_str(), op.is_async_work_poll()) {
+    if let Some(call) = op_loop_runtime_call(op.kind, op.is_async_work_poll()) {
         emit_op_loop_runtime_call(&context.op_loop_call_context(), func, op, call);
         return true;
     }
     if async_task_ops::emit_async_task_runtime_op(&mut context, func, op) {
         return true;
     }
-    if exception_ops::emit_exception_runtime_op(&context, func, op) {
-        return true;
-    }
-    linear_memory_ops::emit_linear_memory_runtime_op(&context, func, op)
+    exception_ops::emit_exception_runtime_op(&context, func, op)
 }

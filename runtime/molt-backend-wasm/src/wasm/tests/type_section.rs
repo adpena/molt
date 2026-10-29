@@ -6,7 +6,7 @@ fn function(name: &str, arity: usize) -> FunctionIR {
     FunctionIR {
         name: name.into(),
         params: (0..arity).map(|i| format!("arg{i}")).collect(),
-        ops: vec![wasm_test_op("ret_void", None, vec![])],
+        ops: vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
         return_abi: molt_ir::FunctionReturnAbi::Value,
         ..Default::default()
     }
@@ -50,10 +50,13 @@ fn equally_typed_user_functions_reference_one_module_type() {
     let mut first = function("first", 2);
     // Escaping the callable preserves both functions through reachability and
     // prevents inlining from erasing the independent type references.
-    let mut callable = wasm_test_op("func_new", Some("callable"), vec![]);
+    let mut callable = wasm_test_op(molt_ir::OpKind::FuncNew, Some("callable"), vec![]);
     callable.s_value = Some("second".into());
     callable.value = Some(2);
-    first.ops = vec![callable, wasm_test_op("ret", None, vec!["callable"])];
+    first.ops = vec![
+        callable,
+        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["callable"]),
+    ];
     let bytes = compile(vec![first, function("second", 2)]);
     let signatures = wasm_type_section_value_signatures(&bytes);
     let requested = (vec!["I64".to_string(); 2], vec!["I64".to_string()]);

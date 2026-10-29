@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 /// `Some(src)` when `op` is a `Copy` that holds the same value as one source.
@@ -22,13 +22,16 @@ pub fn copy_value_source(op: &TirOp) -> Option<ValueId> {
     if op.opcode != OpCode::Copy || op.results.len() != 1 || op.operands.is_empty() {
         return None;
     }
-    let kind_ok = match op.attrs.get("_original_kind") {
+    let kind_ok = match op.origin {
         None => true,
-        Some(AttrValue::Str(k)) => matches!(
-            k.as_str(),
-            "copy" | "copy_var" | "store_var" | "load_var" | "identity_alias"
+        Some(k) => matches!(
+            k,
+            molt_ir::OpKind::Copy
+                | molt_ir::OpKind::CopyVar
+                | molt_ir::OpKind::StoreVar
+                | molt_ir::OpKind::LoadVar
+                | molt_ir::OpKind::IdentityAlias
         ),
-        Some(_) => false,
     };
     if !kind_ok {
         return None;
@@ -59,14 +62,14 @@ pub fn no_heap_alias_source(op: &TirOp) -> Option<ValueId> {
         return None;
     }
     let arity = match opcode_alias_transparent_alias_role_table(op.opcode) {
-        AliasTransparentAliasRole::Copy => match op.attrs.get("_original_kind") {
+        AliasTransparentAliasRole::Copy => match op.origin {
             None => 1,
-            Some(AttrValue::Str(kind)) if copy_kind_is_explicit_no_heap_move_table(kind) => {
+            Some(kind) if copy_kind_is_explicit_no_heap_move_table(kind) => {
                 simpleir_op_shape(kind).map_or(1, |shape| shape.operands)
             }
             _ => return None,
         },
-        AliasTransparentAliasRole::TypeGuard if !op.attrs.contains_key("_original_kind") => 1,
+        AliasTransparentAliasRole::TypeGuard if !op.origin.is_some() => 1,
         _ => return None,
     };
     (op.operands.len() == arity)
@@ -106,7 +109,7 @@ pub fn scalar_value_source(op: &TirOp) -> Option<ValueId> {
     if op.opcode != OpCode::Copy || op.results.len() != 1 || op.operands.len() != 1 {
         return None;
     }
-    let Some(AttrValue::Str(kind)) = op.attrs.get("_original_kind") else {
+    let Some(kind) = op.origin else {
         return None;
     };
     crate::tir::op_kinds_generated::copy_kind_forwards_scalar_value_table(kind)

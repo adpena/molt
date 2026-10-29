@@ -13,6 +13,7 @@ fn block(id: BlockId, ops: Vec<TirOp>, terminator: Terminator) -> TirBlock {
 
 fn operation(opcode: OpCode, operands: Vec<ValueId>, value: Option<i64>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -113,7 +114,7 @@ fn suffix_first_exception_cleanup_is_forward_and_preserves_each_release_route() 
     for (label, expected) in [(300, ["left", "shared"]), (400, ["right", "shared"])] {
         let observation = ops
             .iter()
-            .position(|op| op.kind == "check_exception" && op.value == Some(label))
+            .position(|op| op.kind == molt_ir::OpKind::CheckException && op.value == Some(label))
             .unwrap();
         let mut cursor = flow.edges[observation]
             .iter()
@@ -124,11 +125,11 @@ fn suffix_first_exception_cleanup_is_forward_and_preserves_each_release_route() 
         let mut last_label = None;
         for _ in 0..ops.len() {
             let op = &ops[cursor];
-            if op.kind == "label" {
+            if op.kind == molt_ir::OpKind::Label {
                 last_label = op.value;
-            } else if op.kind == "dec_ref" {
+            } else if op.kind == molt_ir::OpKind::DecRef {
                 releases.push(op.args.as_ref().unwrap()[0].as_str());
-            } else if op.kind == "ret_void" {
+            } else if op.kind == molt_ir::OpKind::RetVoid {
                 break;
             }
             assert_eq!(
@@ -138,7 +139,7 @@ fn suffix_first_exception_cleanup_is_forward_and_preserves_each_release_route() 
             );
             cursor = flow.edges[cursor][0].target;
         }
-        assert_eq!(ops[cursor].kind, "ret_void");
+        assert_eq!(ops[cursor].kind, molt_ir::OpKind::RetVoid);
         assert_eq!(last_label, Some(100));
         assert_eq!(releases, expected);
     }
@@ -166,7 +167,7 @@ fn ordinary_cycle_keeps_its_real_backward_transfer() {
     molt_ir::ir_schema::validate_normalized_simple_ir_ops(&func.name, &ops).unwrap();
     let entry_label = ops
         .iter()
-        .position(|op| op.kind == "label" && op.value == Some(10))
+        .position(|op| op.kind == molt_ir::OpKind::Label && op.value == Some(10))
         .unwrap();
     let flow = simple_ir_executable_flow(&ops);
     assert!(
@@ -253,19 +254,22 @@ fn three_suspensions_keep_resume_adjacency_default_and_metadata() {
     let ops = lower_to_simple_ir(&func);
     molt_ir::ir_schema::validate_normalized_simple_ir_ops(&func.name, &ops).unwrap();
     molt_ir::ir_schema::validate_state_dispatch(&ops).unwrap();
-    let switch = ops.iter().position(|op| op.kind == "state_switch").unwrap();
+    let switch = ops
+        .iter()
+        .position(|op| op.kind == molt_ir::OpKind::StateSwitch)
+        .unwrap();
     assert_eq!(
         ops[switch].state_targets.as_deref(),
         Some([(5, 91), (9, 72), (12, 133)].as_slice())
     );
-    assert_eq!(ops[switch + 1].kind, "jump");
+    assert_eq!(ops[switch + 1].kind, molt_ir::OpKind::Jump);
     assert_eq!(ops[switch + 1].value, Some(40));
     for (state, label) in [(5, 91), (9, 72), (12, 133)] {
         let suspension = ops
             .iter()
-            .position(|op| op.kind == "state_yield" && op.value == Some(state))
+            .position(|op| op.kind == molt_ir::OpKind::StateYield && op.value == Some(state))
             .unwrap();
-        assert_eq!(ops[suspension + 1].kind, "state_label");
+        assert_eq!(ops[suspension + 1].kind, molt_ir::OpKind::StateLabel);
         assert_eq!(ops[suspension + 1].value, Some(label));
     }
 }
@@ -283,7 +287,7 @@ fn shared_cyclic_resume_targets_keep_explicit_identity_without_duplicate_blocks(
     molt_ir::ir_schema::validate_state_dispatch(&ops).unwrap();
     let targets = ops
         .iter()
-        .find(|op| op.kind == "state_switch")
+        .find(|op| op.kind == molt_ir::OpKind::StateSwitch)
         .unwrap()
         .state_targets
         .as_deref()
@@ -292,7 +296,7 @@ fn shared_cyclic_resume_targets_keep_explicit_identity_without_duplicate_blocks(
     for label in [91, 72] {
         assert_eq!(
             ops.iter()
-                .filter(|op| op.kind == "state_label" && op.value == Some(label))
+                .filter(|op| op.kind == molt_ir::OpKind::StateLabel && op.value == Some(label))
                 .count(),
             1
         );

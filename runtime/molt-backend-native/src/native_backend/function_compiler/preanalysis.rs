@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
@@ -94,7 +95,7 @@ pub(in crate::native_backend::function_compiler) fn import_runtime_func_ref(
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn declare_function_object_target(
     module: &mut dyn Module,
-    op_kind: &str,
+    op_kind: OpKind,
     func_name: &str,
     linkage: Linkage,
     sig: &cranelift_codegen::ir::Signature,
@@ -181,7 +182,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_alias_source(
     // Only the generated no-incref move family can share one owner token.
     // BoxVal/UnboxVal and binding_alias mint independent result credits even
     // when their boxed bits equal the operand.
-    crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(&op.kind)
+    crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(op.kind)
         .then(|| {
             let mut source = None;
             crate::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
@@ -212,8 +213,8 @@ pub(in crate::native_backend::function_compiler) fn simple_ir_op_absorbs_finaliz
         kind_result_absorbs_operand_ownership_table, kind_to_opcode_table,
         opcode_result_absorbs_operand_ownership_table,
     };
-    kind_to_opcode_table(&op.kind).is_some_and(opcode_result_absorbs_operand_ownership_table)
-        || kind_result_absorbs_operand_ownership_table(&op.kind)
+    kind_to_opcode_table(op.kind).is_some_and(opcode_result_absorbs_operand_ownership_table)
+        || kind_result_absorbs_operand_ownership_table(op.kind)
 }
 
 #[cfg(feature = "native-backend")]
@@ -226,7 +227,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     // RC drop-insertion substrate (design 20, R1 guard): set by the leading
     // `drop_inserted` marker op the TIR back-conversion emits for drop-processed
     // functions.
-    let mut drop_inserted = func_ir.ops.iter().any(|op| op.kind == "drop_inserted");
+    let mut drop_inserted = func_ir.ops.iter().any(|op| op.kind == OpKind::DropInserted);
     // Static alias roots describe immutable SSA identities, never a changing
     // storage cell. A store owns its retained binding and a load owns a retained
     // snapshot; otherwise a later rebind would retarget an earlier SSA alias.
@@ -273,10 +274,10 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     }
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "drop_inserted" => drop_inserted = true,
-            "state_switch" => stateful = true,
-            "store" => {}
+        match op.kind {
+            OpKind::DropInserted => drop_inserted = true,
+            OpKind::StateSwitch => stateful = true,
+            OpKind::Store => {}
             _ => {}
         }
 
@@ -312,14 +313,14 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             }
         });
 
-        match op.kind.as_str() {
-            "if" => if_stack.push((idx, None)),
-            "else" => {
+        match op.kind {
+            OpKind::If => if_stack.push((idx, None)),
+            OpKind::Else => {
                 if let Some((_, else_idx)) = if_stack.last_mut() {
                     *else_idx = Some(idx);
                 }
             }
-            "end_if" => {
+            OpKind::EndIf => {
                 if let Some((if_idx, else_idx)) = if_stack.pop() {
                     if_to_end_if.insert(if_idx, idx);
                     if let Some(else_idx) = else_idx {
@@ -328,22 +329,22 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     }
                 }
             }
-            "label" | "state_label" => {
+            OpKind::Label | OpKind::StateLabel => {
                 if let Some(state_id) = op.value {
-                    if matches!(op.kind.as_str(), "label" | "state_label")
+                    if matches!(op.kind, OpKind::Label | OpKind::StateLabel)
                         && seen_label_ids.insert(state_id)
                     {
                         label_ids.push(state_id);
                     }
-                    if op.kind == "state_label" {
+                    if op.kind == OpKind::StateLabel {
                         state_label_ids.insert(state_id);
                     }
-                    if matches!(op.kind.as_str(), "label" | "state_label") {
+                    if matches!(op.kind, OpKind::Label | OpKind::StateLabel) {
                         label_positions.push((idx, state_id));
                     }
                 }
             }
-            kind if crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
+            kind if kind.is_exception_check() => {
                 if let Some(label_id) = op.value {
                     exception_label_ids.insert(label_id);
                 }
@@ -386,8 +387,8 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
         let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
         for (idx, op) in func_ir.ops.iter().enumerate() {
-            match op.kind.as_str() {
-                "loop_start" => {
+            match op.kind {
+                OpKind::LoopStart => {
                     // Indexed loops may materialize loop-invariant constants
                     // between LOOP_START and LOOP_INDEX_START. Treat that
                     // whole prelude as part of the indexed-loop opener so we
@@ -397,10 +398,10 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                         loop_stack_post.push(idx);
                     }
                 }
-                "loop_index_start" => {
+                OpKind::LoopIndexStart => {
                     loop_stack_post.push(idx);
                 }
-                "loop_end" => {
+                OpKind::LoopEnd => {
                     if let Some(start) = loop_stack_post.pop() {
                         loop_ranges.push((start, idx));
                     }
@@ -420,14 +421,14 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             let mut label_pos: std::collections::HashMap<i64, usize> =
                 std::collections::HashMap::new();
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "label" | "state_label")
+                if matches!(op.kind, OpKind::Label | OpKind::StateLabel)
                     && let Some(id) = op.value
                 {
                     label_pos.insert(id, idx);
                 }
             }
             for (idx, op) in func_ir.ops.iter().enumerate() {
-                if matches!(op.kind.as_str(), "jump" | "br_if")
+                if matches!(op.kind, OpKind::Jump | OpKind::BrIf)
                     && let Some(target_id) = op.value
                     && let Some(&target_pos) = label_pos.get(&target_id)
                     && target_pos < idx
@@ -517,7 +518,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                 let explicit_del_roots: BTreeSet<String> = func_ir
                     .ops
                     .iter()
-                    .filter(|op| matches!(op.kind.as_str(), "del_boundary" | "delete_var"))
+                    .filter(|op| matches!(op.kind, OpKind::DelBoundary | OpKind::DeleteVar))
                     .filter_map(|op| op.args.as_ref())
                     .flat_map(|args| args.iter())
                     .filter(|name| name.as_str() != "none")
@@ -562,17 +563,29 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             // the loop machinery manages its refcount separately.
             let counter_name: Option<&str> = {
                 let start_op = &func_ir.ops[start];
-                if start_op.kind == "loop_index_start" {
+                if start_op.kind == OpKind::LoopIndexStart {
                     start_op.out.as_deref()
                 } else {
                     // For plain loop_start, scan forward for loop_index_start
                     let mut cn = None;
                     for idx in (start + 1)..end {
-                        if func_ir.ops[idx].kind == "loop_index_start" {
+                        if func_ir.ops[idx].kind == OpKind::LoopIndexStart {
                             cn = func_ir.ops[idx].out.as_deref();
                             break;
                         }
-                        if !func_ir.ops[idx].kind.starts_with("const") {
+                        if !matches!(
+                            func_ir.ops[idx].kind,
+                            OpKind::Const
+                                | OpKind::ConstBigint
+                                | OpKind::ConstBool
+                                | OpKind::ConstBytes
+                                | OpKind::ConstEllipsis
+                                | OpKind::ConstFloat
+                                | OpKind::ConstInt
+                                | OpKind::ConstNone
+                                | OpKind::ConstNotImplemented
+                                | OpKind::ConstStr
+                        ) {
                             break;
                         }
                     }
@@ -638,7 +651,8 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
 
     let field_store_modes = representation_plan.typed_slot_store_modes().clone();
     let needs_field_store_profile = func_ir.ops.iter().enumerate().any(|(idx, op)| {
-        op.kind == "store" && field_store_modes.get(&idx) != Some(&FieldStoreMode::DirectNonHeap)
+        op.kind == OpKind::Store
+            && field_store_modes.get(&idx) != Some(&FieldStoreMode::DirectNonHeap)
     });
 
     let mut var_names: Vec<String> = var_names.into_iter().collect();

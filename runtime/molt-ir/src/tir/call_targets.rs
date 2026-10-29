@@ -3,17 +3,25 @@ use super::ops::{AttrValue, OpCode, TirOp};
 use super::types::TirType;
 
 /// One identity/result authority for lifting and every TIR GPU call consumer.
-const GPU_RUNTIME_INTRINSICS: &[(&str, &str, TirType)] = &[
-    ("gpu_thread_id", "molt_gpu_thread_id", TirType::I64),
-    ("gpu_block_id", "molt_gpu_block_id", TirType::I64),
-    ("gpu_block_dim", "molt_gpu_block_dim", TirType::I64),
-    ("gpu_grid_dim", "molt_gpu_grid_dim", TirType::I64),
-    ("gpu_barrier", "molt_gpu_barrier", TirType::None),
+const GPU_RUNTIME_INTRINSICS: &[(crate::OpKind, &str, TirType)] = &[
+    (
+        crate::OpKind::GpuThreadId,
+        "molt_gpu_thread_id",
+        TirType::I64,
+    ),
+    (crate::OpKind::GpuBlockId, "molt_gpu_block_id", TirType::I64),
+    (
+        crate::OpKind::GpuBlockDim,
+        "molt_gpu_block_dim",
+        TirType::I64,
+    ),
+    (crate::OpKind::GpuGridDim, "molt_gpu_grid_dim", TirType::I64),
+    (crate::OpKind::GpuBarrier, "molt_gpu_barrier", TirType::None),
 ];
 
 /// Runtime helper symbol produced when SimpleIR GPU intrinsics are lifted into
 /// first-class TIR `Call` ops.
-pub fn gpu_runtime_symbol_for_simple_kind(kind: &str) -> Option<&'static str> {
+pub fn gpu_runtime_symbol_for_simple_kind(kind: crate::OpKind) -> Option<&'static str> {
     GPU_RUNTIME_INTRINSICS
         .iter()
         .find_map(|(source, symbol, _)| (*source == kind).then_some(*symbol))
@@ -35,9 +43,9 @@ pub fn direct_call_symbol_for_op(op: &TirOp) -> Option<&str> {
     if symbol.is_empty() {
         return None;
     }
-    match op.attrs.get("_original_kind") {
+    match op.origin {
         None => (op.opcode == OpCode::Call).then_some(symbol.as_str()),
-        Some(AttrValue::Str(kind)) => match simpleir_call_target_role(kind) {
+        Some(kind) => match simpleir_call_target_role(kind) {
             Some(
                 SimpleIrCallTargetRole::ExternalOrRuntime
                 | SimpleIrCallTargetRole::InternalRequired,
@@ -47,7 +55,6 @@ pub fn direct_call_symbol_for_op(op: &TirOp) -> Option<&str> {
                 && gpu_runtime_symbol_for_simple_kind(kind) == Some(symbol.as_str()))
             .then_some(symbol.as_str()),
         },
-        Some(_) => None,
     }
 }
 
@@ -62,9 +69,7 @@ pub fn gpu_runtime_result_type_for_op(op: &TirOp) -> Option<TirType> {
     // Every genuine GPU lift preserves its source spelling. Requiring that
     // explicit provenance prevents an ordinary module call whose function name
     // happens to equal a runtime helper from minting a fixed scalar result.
-    let AttrValue::Str(kind) = op.attrs.get("_original_kind")? else {
-        return None;
-    };
+    let kind = op.origin?;
     let symbol = direct_call_symbol_for_op(op)?;
     GPU_RUNTIME_INTRINSICS
         .iter()
@@ -79,13 +84,11 @@ mod tests {
     use crate::tir::ops::{AttrDict, Dialect};
     use crate::tir::values::ValueId;
 
-    fn call(symbol: &str, original: Option<&str>) -> TirOp {
+    fn call(symbol: &str, original: Option<crate::OpKind>) -> TirOp {
         let mut attrs = AttrDict::new();
         attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
-        if let Some(kind) = original {
-            attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
-        }
         TirOp {
+            origin: original,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -98,11 +101,19 @@ mod tests {
     #[test]
     fn gpu_simple_kinds_map_to_runtime_symbols() {
         for (kind, symbol, result_type) in [
-            ("gpu_thread_id", "molt_gpu_thread_id", TirType::I64),
-            ("gpu_block_id", "molt_gpu_block_id", TirType::I64),
-            ("gpu_block_dim", "molt_gpu_block_dim", TirType::I64),
-            ("gpu_grid_dim", "molt_gpu_grid_dim", TirType::I64),
-            ("gpu_barrier", "molt_gpu_barrier", TirType::None),
+            (
+                crate::OpKind::GpuThreadId,
+                "molt_gpu_thread_id",
+                TirType::I64,
+            ),
+            (crate::OpKind::GpuBlockId, "molt_gpu_block_id", TirType::I64),
+            (
+                crate::OpKind::GpuBlockDim,
+                "molt_gpu_block_dim",
+                TirType::I64,
+            ),
+            (crate::OpKind::GpuGridDim, "molt_gpu_grid_dim", TirType::I64),
+            (crate::OpKind::GpuBarrier, "molt_gpu_barrier", TirType::None),
         ] {
             assert_eq!(gpu_runtime_symbol_for_simple_kind(kind), Some(symbol));
             let intrinsic = call(symbol, Some(kind));
@@ -111,13 +122,20 @@ mod tests {
                 gpu_runtime_result_type_for_op(&intrinsic),
                 Some(result_type)
             );
-            for original in [None, Some("call"), Some("call_internal")] {
+            for original in [
+                None,
+                Some(crate::OpKind::Call),
+                Some(crate::OpKind::CallInternal),
+            ] {
                 let op = call(symbol, original);
                 assert_eq!(direct_call_symbol_for_op(&op), Some(symbol));
                 assert_eq!(gpu_runtime_result_type_for_op(&op), None);
             }
         }
-        assert_eq!(gpu_runtime_symbol_for_simple_kind("call"), None);
+        assert_eq!(
+            gpu_runtime_symbol_for_simple_kind(crate::OpKind::Call),
+            None
+        );
         assert_eq!(
             gpu_runtime_result_type_for_op(&call("user_function", None)),
             None
@@ -127,13 +145,12 @@ mod tests {
     #[test]
     fn opaque_original_kinds_cannot_mint_fixed_gpu_facts() {
         for kind in [
-            "call_func",
-            "call_function",
-            "call_indirect",
-            "call_bind",
-            "call_guarded",
-            "invoke_ffi",
-            "future_unknown_call",
+            crate::OpKind::CallFunc,
+            crate::OpKind::CallFunction,
+            crate::OpKind::CallIndirect,
+            crate::OpKind::CallBind,
+            crate::OpKind::CallGuarded,
+            crate::OpKind::InvokeFfi,
         ] {
             for symbol in ["molt_gpu_thread_id", "molt_gpu_barrier", "module_function"] {
                 let op = call(symbol, Some(kind));
@@ -151,15 +168,18 @@ mod tests {
     fn copy_transport_requires_a_registered_direct_call_role() {
         for original in [
             None,
-            Some("copy"),
-            Some("call_func"),
-            Some("call"),
-            Some("call_internal"),
-            Some("gpu_thread_id"),
+            Some(crate::OpKind::Copy),
+            Some(crate::OpKind::CallFunc),
+            Some(crate::OpKind::Call),
+            Some(crate::OpKind::CallInternal),
+            Some(crate::OpKind::GpuThreadId),
         ] {
             let mut op = call("molt_gpu_thread_id", original);
             op.opcode = OpCode::Copy;
-            let direct = matches!(original, Some("call" | "call_internal"));
+            let direct = matches!(
+                original,
+                Some(crate::OpKind::Call | crate::OpKind::CallInternal)
+            );
             assert_eq!(
                 direct_call_symbol_for_op(&op).is_some(),
                 direct,
@@ -171,17 +191,16 @@ mod tests {
 
     #[test]
     fn gpu_identity_rejects_mismatched_metadata_opcode_and_result_shape() {
-        let internal = call("molt_gpu_thread_id", Some("call_internal"));
+        let internal = call("molt_gpu_thread_id", Some(crate::OpKind::CallInternal));
         assert_eq!(
             direct_call_symbol_for_op(&internal),
             Some("molt_gpu_thread_id")
         );
         assert_eq!(gpu_runtime_result_type_for_op(&internal), None);
-        let mut op = call("molt_gpu_thread_id", Some("gpu_barrier"));
+        let mut op = call("molt_gpu_thread_id", Some(crate::OpKind::GpuBarrier));
         assert_eq!(gpu_runtime_result_type_for_op(&op), None);
-        op.attrs.insert("_original_kind".into(), AttrValue::Int(1));
+        op.origin = None;
         assert_eq!(gpu_runtime_result_type_for_op(&op), None);
-        op.attrs.remove("_original_kind");
         op.opcode = OpCode::Copy;
         assert_eq!(gpu_runtime_result_type_for_op(&op), None);
         op.opcode = OpCode::Call;
@@ -189,10 +208,7 @@ mod tests {
         assert_eq!(gpu_runtime_result_type_for_op(&op), None);
         op.results.clear();
         assert_eq!(gpu_runtime_result_type_for_op(&op), None);
-        op.attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("gpu_thread_id".into()),
-        );
+        op.origin = Some(crate::OpKind::GpuThreadId);
         assert_eq!(gpu_runtime_result_type_for_op(&op), Some(TirType::I64));
     }
 }

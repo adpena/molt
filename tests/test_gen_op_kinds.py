@@ -8,9 +8,8 @@ pattern):
 
   1. The checked-in generated files are byte-identical to a fresh in-memory
      render (a forgotten regeneration fails here, not at runtime).
-  2. The table MIRRORS the current Rust reality the audit tool extracts from
-     source — the mapper arms, the three classifier sets, the per-OpCode effect
-     oracle — so the table can never silently diverge from the code it generates.
+  2. Generated typed decisions preserve the registry's semantic and mutation
+     oracles. Rust checks consumer domains and exhaustive dispatch itself.
   3. Every kind the FRONTEND can emit that maps to a first-class opcode is in the
      table's mapper (a new first-class frontend kind without a table row = red).
 
@@ -30,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from tools.import_file import molt_module_name
+from tools.op_kinds.render_wire import variant as _wire_variant
 
 from tools.op_kinds.paths import (
     OUT_RS,
@@ -205,7 +205,9 @@ def _rust_pub_decl(src: str, kind: str, name: str) -> bool:
 
 def _rust_pub_fn(src: str, name: str) -> bool:
     return (
-        re.search(rf"\bpub(?:\(crate\))?\s+fn\s+{re.escape(name)}\s*\(", src)
+        re.search(
+            rf"\bpub(?:\(crate\))?\s+(?:const\s+)?fn\s+{re.escape(name)}\s*\(", src
+        )
         is not None
     )
 
@@ -246,6 +248,60 @@ def _rust_fn_body(src: str, marker: str) -> str:
     return src[start:end]
 
 
+def _enum_match_decisions(
+    source: str, function: str, enum: str = "OpKind"
+) -> dict[str, str]:
+    """Read generated enum decisions, independently of OR-arm grouping/layout.
+
+    Keys stay enum variants. This examines generated projection semantics;
+    it neither reconstructs the retired string API nor scans implementation
+    consumers to infer their coverage.
+    """
+    function_source = _rust_fn_body(source, f"fn {function}(")
+    start = function_source.index("{", function_source.index("match ")) + 1
+    body = function_source[start:]
+    tokens = re.findall(r'"(?:\\.|[^"\\])*"|=>|[A-Za-z_]\w*|::|\S', body)
+    decisions: dict[str, str] = {}
+    index = 0
+    while index < len(tokens) and tokens[index] != "}":
+        pattern: list[str] = []
+        while tokens[index] != "=>":
+            pattern.append(tokens[index])
+            index += 1
+        index += 1
+        expression: list[str] = []
+        depth = 0
+        block_expression = tokens[index] == "{"
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "," and depth == 0:
+                index += 1
+                break
+            if token in ("(", "[", "{"):
+                depth += 1
+            elif token in (")", "]", "}"):
+                if depth == 0:
+                    break
+                depth -= 1
+            expression.append(token)
+            index += 1
+            # Rust permits an arm block to omit the trailing comma. Rustfmt
+            # introduces this form when a mutated pattern grows past one line.
+            if block_expression and depth == 0:
+                if index < len(tokens) and tokens[index] == ",":
+                    index += 1
+                break
+        if block_expression:
+            expression = expression[1:-1]
+        variants = re.findall(rf"{enum}::(\w+)", "".join(pattern))
+        assert variants and "_" not in pattern, (function, pattern)
+        for variant in variants:
+            assert variant not in decisions, (function, variant)
+            decisions[variant] = "".join(expression)
+    assert decisions, function
+    return decisions
+
+
 # ---------------------------------------------------------------------------
 # 1. Freshness: the checked-in generated files match a fresh render.
 # ---------------------------------------------------------------------------
@@ -271,206 +327,6 @@ def test_generated_py_is_in_sync() -> None:
         f"{OUT_PY.relative_to(ROOT)} is stale — run "
         "`python3 tools/gen_op_kinds.py --write` to regenerate from op_kinds.toml."
     )
-
-
-def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
-    """SimpleIR CFG/SSA/pre-SSA control facts live in the registry."""
-    gen = _gen()
-    audit_mod = _audit()
-    data = gen.load_table()
-    rendered = gen.render_rs(data)
-    mod_rs = _read_rs_module_cluster(tir_path("mod.rs"))
-    cfg_rs = _read_rs_module_cluster(tir_path("cfg.rs"))
-    lower_from_simple = _read_rs_module_cluster(tir_path("lower_from_simple.rs"))
-    audit = (ROOT / "tools/audit_op_kinds.py").read_text(encoding="utf-8")
-
-    base_expected = {
-        "label": {"structural", "block_leader"},
-        "state_label": {"structural", "block_leader"},
-        "if": {"structural", "block_leader", "conditional_branch"},
-        "else": {"structural", "block_leader"},
-        "end_if": {"structural", "block_leader"},
-        "loop_start": {"structural", "block_leader", "block_ender"},
-        "loop_end": {"structural", "block_leader", "block_ender"},
-        "loop_break": {"structural", "terminator"},
-        "loop_continue": {"structural", "terminator"},
-        "jump": {"structural", "terminator"},
-        "goto": {"structural", "terminator"},
-        "br_if": {"structural", "conditional_branch"},
-        "loop_break_if_true": {"structural", "conditional_branch"},
-        "loop_break_if_false": {"structural", "conditional_branch"},
-        "loop_break_if_exception": {"structural", "conditional_branch"},
-        "ret": {"structural", "terminator"},
-        "ret_void": {"structural", "terminator"},
-        "nop": {"structural"},
-        "drop_inserted": {"structural"},
-        "exception_region_drops_inserted": {"structural"},
-        "loop_index_end": {"structural"},
-        "state_switch": {"structural", "block_ender"},
-        "state_yield": {"suspend", "block_ender"},
-        "state_transition": {"suspend", "repoll", "block_leader", "block_ender"},
-        "loop_index_start": {"pre_ssa_rewritten"},
-        "loop_index_next": {"pre_ssa_rewritten"},
-        "phi": {"ssa_only"},
-    }
-    wasm_expected = {
-        "label": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_leader",
-            "wasm_dispatch_block_terminator",
-            "wasm_state_resume_at",
-        },
-        "state_label": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_leader",
-            "wasm_dispatch_block_terminator",
-            "wasm_state_resume_at",
-        },
-        "if": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "else": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "end_if": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "loop_start": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_leader",
-            "wasm_dispatch_block_terminator",
-        },
-        "loop_end": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_leader",
-            "wasm_dispatch_block_terminator",
-        },
-        "loop_break": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "loop_continue": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "jump": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "goto": {"wasm_split_barrier"},
-        "br_if": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "loop_break_if_true": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-        },
-        "loop_break_if_false": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-        },
-        "loop_break_if_exception": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-        },
-        "ret": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "ret_void": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "state_switch": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-            "wasm_stateful_dispatch",
-        },
-        "state_yield": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-            "wasm_stateful_dispatch",
-            "wasm_state_resume_after",
-        },
-        "state_transition": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-            "wasm_stateful_dispatch",
-            "wasm_state_resume_after",
-        },
-        "loop_index_start": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_leader",
-            "wasm_dispatch_block_terminator",
-        },
-        "loop_index_end": {"wasm_split_barrier"},
-        "for_iter_start": {"wasm_split_barrier"},
-        "for_iter_end": {"wasm_split_barrier"},
-        "while_start": {"wasm_split_barrier"},
-        "while_end": {"wasm_split_barrier"},
-        "try_start": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "try_end": {"wasm_split_barrier", "wasm_dispatch_block_terminator"},
-        "async_for_start": {"wasm_split_barrier"},
-        "async_for_end": {"wasm_split_barrier"},
-        "check_exception": {
-            "wasm_split_barrier",
-            "wasm_dispatch_block_terminator",
-        },
-    }
-    expected = {kind: set(facts) for kind, facts in base_expected.items()}
-    for kind, facts in wasm_expected.items():
-        expected.setdefault(kind, set()).update(facts)
-    fields = gen._SIMPLEIR_CONTROL_FACT_FIELDS
-    actual = {
-        row["kind"]: {field for field in fields if row[field]}
-        for row in data["simpleir_control_kind"]
-    }
-    assert actual == expected
-
-    for field in fields:
-        fn_name = f"simpleir_kind_is_{field}"
-        assert _rust_pub_fn(rendered, fn_name)
-        body = _rust_fn_body(rendered, f"pub fn {fn_name}(")
-        for kind, facts in expected.items():
-            assert (f'"{kind}"' in body) == (field in facts)
-        assert ('"async_work_poll"' in body) == (field in expected["check_exception"])
-
-    return_body = _rust_fn_body(rendered, "pub fn simpleir_kind_is_return_terminator(")
-    assert 'matches!(kind, "ret" | "ret_void")' in return_body
-    assert '"return"' not in return_body
-    return_shape_body = _rust_fn_body(rendered, "pub fn simpleir_return_shape(")
-    assert '"ret_void" => SimpleIrReturnShape::Void' in return_shape_body
-    assert '"ret" => SimpleIrReturnShape::Value' in return_shape_body
-    assert "_ => SimpleIrReturnShape::NotReturn" in return_shape_body
-
-    consumed_body = _rust_fn_body(
-        rendered, "pub fn simpleir_kind_is_cfg_or_ssa_consumed("
-    )
-    audit_exempt = audit_mod.structural_kinds_from_registry(data)
-    assert audit_exempt == {
-        kind
-        for kind, facts in expected.items()
-        if facts & {"structural", "pre_ssa_rewritten", "ssa_only"}
-    }
-    for kind in audit_exempt:
-        assert f'"{kind}"' in consumed_body
-    for mapped_suspend in {
-        "state_yield",
-        "state_transition",
-    }:
-        assert f'"{mapped_suspend}"' not in consumed_body
-        assert mapped_suspend not in audit_exempt
-
-    assert "op_kinds_generated::simpleir_kind_is_structural(kind)" in _rust_fn_body(
-        mod_rs, "pub(crate) fn is_structural("
-    )
-    for marker, table in (
-        ("fn is_terminator(", "simpleir_kind_is_terminator(kind)"),
-        ("fn is_block_leader(", "simpleir_kind_is_block_leader(kind)"),
-        ("fn is_block_ender(", "simpleir_kind_is_block_ender(kind)"),
-        ("fn is_conditional_branch(", "simpleir_kind_is_conditional_branch(kind)"),
-    ):
-        body = _rust_fn_body(cfg_rs, marker)
-        assert table in body
-        assert "matches!" not in body
-        assert "loop_start" not in body
-
-    pre_ssa_body = _rust_fn_body(lower_from_simple, "pub fn normalize_loop_indices(")
-    assert "simpleir_kind_is_pre_ssa_rewritten(op.kind.as_str())" in pre_ssa_body
-    assert "validate_normalized_simple_ir_ops(function_name, &result)" in pre_ssa_body
-    normalized_schema = _read_rs_module_cluster(
-        ROOT / "runtime/molt-ir/src/ir_schema.rs"
-    )
-    normalized_body = _rust_fn_body(
-        normalized_schema, "pub fn validate_normalized_simple_ir_ops("
-    )
-    assert "simpleir_kind_is_pre_ssa_rewritten(&op.kind)" in normalized_body
-    assert "matches!" not in normalized_body
-    assert "PRE_SSA_REWRITTEN_KINDS" not in lower_from_simple
-
-    assert "structural_kinds_from_registry(registry)" in audit
-    assert "_STRUCTURAL_CLASSIFIER_FNS" not in audit
-    structural_fn = audit.split("def structural_kinds_from_registry", maxsplit=1)[
-        1
-    ].split("\n\n@dataclass", maxsplit=1)[0]
-    assert "extract_rust_str_slice_const" not in structural_fn
 
 
 def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> None:
@@ -531,7 +387,7 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     } == dict.fromkeys(stores, 0)
     rendered = gen.render_rs(data)
     assert "pub const SIMPLEIR_OP_SHAPES" in rendered
-    assert "pub fn simpleir_op_shape" in rendered
+    assert _rust_pub_fn(rendered, "simpleir_op_shape")
     assert '"list_repeat_range"' not in rendered
     assert "pub requires_result:" not in rendered
     assert "SIMPLEIR_OP_SHAPES.iter().find" not in rendered
@@ -542,7 +398,10 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
         for spelling in (row["kind"], *aliases.get(row["kind"], []))
     ]
     for index, kind in enumerate(spellings):
-        assert f'"{kind}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
+        assert (
+            _enum_match_decisions(rendered, "simpleir_op_shape")[_wire_variant(kind)]
+            == f"Some(&SIMPLEIR_OP_SHAPES[{index}])"
+        )
     schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
     assert "RANGE_FILL_OP_SCHEMAS" not in schema
     # SimpleIR may diagnose a missing required module-slot result; result
@@ -601,8 +460,13 @@ def test_representation_shape_aliases_follow_the_canonical_kind_mapping() -> Non
     gen._validate_simpleir_op_shapes(data)
     rendered = gen._render_simpleir_op_shapes(data)
     for index, spelling in enumerate(("box", "box_from_raw_int", "box_shape_probe")):
-        assert f'kind: "{spelling}"' in rendered
-        assert f'"{spelling}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
+        assert f"kind: OpKind::{_wire_variant(spelling)}" in rendered
+        assert (
+            _enum_match_decisions(rendered, "simpleir_op_shape")[
+                _wire_variant(spelling)
+            ]
+            == f"Some(&SIMPLEIR_OP_SHAPES[{index}])"
+        )
     assert rendered.count("operands: 1,") == 3
 
 
@@ -617,7 +481,13 @@ def test_representation_shape_var_is_forbidden_for_canonical_and_alias(
     data["simpleir_var_forbidden_kinds"] = [canonical]
     # Do not accept args-only admission followed by SSA appending a var read.
     rendered = gen._render_simpleir_field_roles(data)
-    assert f'"{canonical}" | "{alias}" => SimpleIrVarFieldRole::Forbidden' in rendered
+    for spelling in (canonical, alias):
+        assert (
+            _enum_match_decisions(rendered, "simpleir_var_field_role_table")[
+                _wire_variant(spelling)
+            ]
+            == "SimpleIrVarFieldRole::Forbidden"
+        )
 
 
 @pytest.mark.parametrize(
@@ -718,31 +588,8 @@ def test_simpleir_control_kind_validation_rejects_drift() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. The table mirrors the Rust reality the audit extracts from source.
+# 2. Typed generated decisions and independent semantic oracles.
 # ---------------------------------------------------------------------------
-
-
-def test_generated_mapper_matches_table() -> None:
-    """The GENERATED Rust mapper (`kind_to_opcode_table`) must recognize exactly
-    the table's mapper spellings — pinning the registry⇄generated-Rust direction
-    by parsing the generated file directly (the audit's Rust `match` parser)."""
-    gen = _gen()
-    audit = _audit()
-    data = gen.load_table()
-
-    table_spellings: set[str] = set()
-    for row in data["kind"]:
-        table_spellings.add(row["canonical"])
-        table_spellings.update(row.get("aliases", []))
-
-    gen_spellings = set(
-        audit.extract_match_arms(OUT_RS, "kind_to_opcode_table", "match kind {")
-    )
-    assert gen_spellings == table_spellings, (
-        "kind_to_opcode_table in the generated Rust drifted from op_kinds.toml: "
-        f"gen-only={sorted(gen_spellings - table_spellings)} "
-        f"table-only={sorted(table_spellings - gen_spellings)}"
-    )
 
 
 def _opcode_default_canonical_kind(name: str) -> str:
@@ -764,116 +611,20 @@ def test_generated_opcode_canonical_kind_matches_table() -> None:
     for row in data["opcode"]:
         expected.setdefault(row["name"], _opcode_default_canonical_kind(row["name"]))
 
+    from tools.op_kinds.registration import registered_simpleir_kinds
+
+    registered = registered_simpleir_kinds(data)
     generated_source = OUT_RS.read_text(encoding="utf-8")
-    match_block = re.search(
-        r"pub fn opcode_canonical_kind_table\(opcode: OpCode\) -> &'static str \{\n"
-        r"\s+match opcode \{\n(?P<body>.*?)\n\s+\}\n\}",
-        generated_source,
-        flags=re.S,
+    generated = _enum_match_decisions(
+        generated_source, "opcode_canonical_kind_table", "OpCode"
     )
-    assert match_block is not None
-    generated = dict(
-        re.findall(
-            r"OpCode::([A-Za-z0-9_]+)\s*=>\s*\"([^\"]+)\"",
-            match_block.group("body"),
-        )
-    )
-    assert generated == expected
-
-
-def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
-    """CFG/pre-SSA/SSA-only SimpleIR control facts are registry-owned."""
-    gen = _gen()
-    audit = _audit()
-    data = gen.load_table()
-
-    rows = data["simpleir_control_kind"]
-    aliases = {row["canonical"]: set(row.get("aliases", [])) for row in data["kind"]}
-    for field in gen._SIMPLEIR_CONTROL_FACT_FIELDS:
-        expected = {
-            spelling
-            for row in rows
-            if row[field]
-            for spelling in {row["kind"], *aliases.get(row["kind"], set())}
-        }
-        generated = set(
-            audit.extract_matches_macro(OUT_RS, f"simpleir_kind_is_{field}")
-        )
-        assert generated == expected, (
-            f"simpleir_kind_is_{field} drifted from [[simpleir_control_kind]]"
-        )
-
-    consumed_expected = {
-        spelling
-        for row in rows
-        if row["structural"] or row["pre_ssa_rewritten"] or row["ssa_only"]
-        for spelling in {row["kind"], *aliases.get(row["kind"], set())}
-    }
-    consumed_generated = set(
-        audit.extract_matches_macro(OUT_RS, "simpleir_kind_is_cfg_or_ssa_consumed")
-    )
-    assert consumed_generated == consumed_expected
-
-    tir_mod = _read_rs_module_cluster(tir_path("mod.rs"))
-    cfg = _read_rs_module_cluster(tir_path("cfg.rs"))
-    lower_from_simple = _read_rs_module_cluster(tir_path("lower_from_simple.rs"))
-    audit_source = (ROOT / "tools/audit_op_kinds.py").read_text(encoding="utf-8")
-
-    assert "op_kinds_generated::simpleir_kind_is_structural(kind)" in tir_mod
-    assert "simpleir_kind_is_terminator(kind)" in cfg
-    assert "simpleir_kind_is_block_leader(kind)" in cfg
-    assert "simpleir_kind_is_block_ender(kind)" in cfg
-    assert "simpleir_kind_is_conditional_branch(kind)" in cfg
-    assert "fn is_suspend_op" not in cfg
-    assert "fn is_repoll_op" not in cfg
-    assert "simpleir_kind_is_suspend" in cfg
-    assert "simpleir_kind_is_repoll" in cfg
-    assert "simpleir_kind_is_pre_ssa_rewritten(op.kind.as_str())" in lower_from_simple
-    assert "PRE_SSA_REWRITTEN_KINDS" not in lower_from_simple
-    assert "structural_kinds_from_registry(registry)" in audit_source
-    assert "derive_structural_kinds" not in audit_source
-    assert "_STRUCTURAL_CLASSIFIER_FNS" not in audit_source
-
-
-def test_generated_classifier_matches_table() -> None:
-    """The GENERATED Rust classifier tables (`*_table` matches!) must contain
-    exactly the table's flat classifier sets — parsed from the generated file."""
-    gen = _gen()
-    audit = _audit()
-    data = gen.load_table()
-
-    gen_fresh = set(
-        audit.extract_matches_macro(OUT_RS, "copy_kind_mints_owned_value_table")
-    )
-    gen_owned_alias = set(
-        audit.extract_matches_macro(OUT_RS, "copy_kind_mints_owned_alias_ref_table")
-    )
-    gen_inert = set(
-        audit.extract_matches_macro(OUT_RS, "copy_kind_is_inert_marker_table")
-    )
-    gen_transparent_alias = set(
-        audit.extract_matches_macro(
-            OUT_RS, "copy_kind_is_explicit_transparent_alias_table"
-        )
-    )
-    gen_no_heap = set(
-        audit.extract_matches_macro(OUT_RS, "copy_kind_is_explicit_no_heap_move_table")
-    )
-    assert gen_fresh == set(data["classifier_owned_value"]), (
-        "generated fresh-value table drifted from classifier_owned_value"
-    )
-    assert gen_owned_alias == set(data["classifier_owned_alias"]), (
-        "generated owned-alias table drifted from classifier_owned_alias"
-    )
-    assert gen_inert == set(data["classifier_inert_marker"]), (
-        "generated inert-marker table drifted from classifier_inert_marker"
-    )
-    assert gen_transparent_alias == set(data["classifier_transparent_alias"]), (
-        "generated transparent-alias table drifted from classifier_transparent_alias"
-    )
-    assert gen_no_heap == set(data["classifier_no_heap_move"]), (
-        "generated no-heap-move table drifted from classifier_no_heap_move"
-    )
+    assert set(generated) == set(expected)
+    for opcode, kind in expected.items():
+        if kind in registered:
+            assert generated[opcode] == f"Some(OpKind::{_wire_variant(kind)})"
+        else:
+            assert opcode in {"ScfFor", "ScfWhile"}
+            assert generated[opcode] == "None"
 
 
 def test_removed_absorbing_constructor_helper_stays_removed() -> None:
@@ -920,7 +671,12 @@ def test_explicit_release_operand_contract_covers_python_release_ops() -> None:
     )[1].split("fn kind_result_mints_owned_selected_operand_table")[0]
     assert "OpCode::And" in selected_block
     assert "OpCode::Or" in selected_block
-    assert "kind_to_opcode_table(kind)" in rendered
+    selected = _enum_match_decisions(
+        rendered, "kind_result_mints_owned_selected_operand_table"
+    )
+    for kind in ("and", "or", "box", "unbox"):
+        assert selected[_wire_variant(kind)] == "true"
+    assert selected["BindingAlias"] == "false"
 
 
 def test_explicit_release_operand_rejects_out_of_range_numeric_operand() -> None:
@@ -960,78 +716,6 @@ def test_explicit_release_operand_numeric_requires_fixed_opcode_arity() -> None:
         raise AssertionError(
             "numeric explicit_release_operand without fixed arity was accepted"
         )
-
-
-def test_audit_sources_backend_vocab_from_registry() -> None:
-    """The audit tool must source the backend mapper + classifier vocabularies
-    from the registry (post phase-2), so its drift matrix compares the FRONTEND
-    emitter against the registry. Verify the audit's extracted sets equal the
-    table's (the audit reads op_kinds.toml, not the now-delegating Rust)."""
-    gen = _gen()
-    audit = _audit()
-    data = gen.load_table()
-    res = audit.run_audit()
-
-    table_spellings: set[str] = set()
-    for row in data["kind"]:
-        table_spellings.add(row["canonical"])
-        table_spellings.update(row.get("aliases", []))
-
-    assert res.mapper_kinds == table_spellings
-    assert res.owned_value == set(data["classifier_owned_value"])
-    assert res.owned_alias == set(data["classifier_owned_alias"])
-    assert res.inert_marker == set(data["classifier_inert_marker"])
-    assert res.transparent_alias == set(data["classifier_transparent_alias"])
-    assert res.no_heap_move == set(data["classifier_no_heap_move"])
-
-
-def test_audit_native_arms_include_extracted_op_family_authority() -> None:
-    """Native dispatch coverage follows fc/* HANDLED_KINDS after decomposition."""
-    audit = _audit()
-    native_arms = audit.extract_native_simpleir_arm_kinds()
-    memory_consts = audit.extract_rust_str_slice_consts(
-        ROOT
-        / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/memory.rs",
-        {"HANDLED_KINDS"},
-    )
-
-    assert "guarded_field_set" in memory_consts["HANDLED_KINDS"]
-    assert "guarded_field_set" in native_arms
-    assert "const" in native_arms
-
-
-def test_audit_native_single_kind_handlers_may_be_matchless() -> None:
-    """A one-kind native family may be straight-line, but multi-kind families must match."""
-    audit = _audit()
-    handlers = audit.extract_native_family_handlers()
-
-    for family, expected_kind in {
-        "SubscriptGet": "index",
-        "SubscriptStore": "store_index",
-    }.items():
-        module, fn_name = handlers[family]
-        path = (
-            ROOT
-            / f"runtime/molt-backend-native/src/native_backend/function_compiler/fc/{module}.rs"
-        )
-        assert audit.extract_native_handler_arm_kinds(
-            path, fn_name, {expected_kind}
-        ) == {expected_kind}
-
-
-def test_audit_llvm_decomposition_sources_real_coverage_authorities() -> None:
-    audit = _audit()
-    res = audit.run_audit()
-
-    for kind in ("vec_sum", "vec_prod", "vec_min", "vec_max"):
-        row = res.rows[kind]
-        assert row.llvm_runtime_fallback_eligible
-        assert not row.llvm_dedicated_arm
-        assert row.llvm_covered
-
-    inplace_matmul = res.rows["inplace_matmul"]
-    assert inplace_matmul.llvm_runtime_fallback_eligible
-    assert inplace_matmul.llvm_covered
 
 
 def test_field_initialization_spellings_are_retired_from_generated_authority() -> None:
@@ -1387,7 +1071,7 @@ def test_call_sites_share_effect_authority() -> None:
         "call_method",
         "invoke_ffi",
     ]
-    assert "simpleir_kind_requires_async_work_poll_after" in rendered
+    assert _rust_pub_fn(rendered, "requires_async_work_poll_after")
 
 
 def test_callback_effect_validation_requires_independent_explicit_fact(
@@ -1480,19 +1164,16 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     assert "copy_var" not in data["ssa_original_kind_preserving_kinds"]
     assert "load_var" not in data["ssa_original_kind_preserving_kinds"]
 
-    attr_block = rendered.split("fn opcode_ssa_s_value_attr_key_table", maxsplit=1)[
-        1
-    ].split("fn simpleir_kind_preserves_original_kind_for_ssa", maxsplit=1)[0]
+    attr_block = _rust_fn_body(rendered, "fn opcode_ssa_s_value_attr_key_table(")
     for opcode, attr in expected_attrs.items():
         assert f'OpCode::{opcode} => Some("{attr}"),' in attr_block
     for opcode in ("Call", "Copy", "Index", "StoreIndex"):
         assert f"OpCode::{opcode} => None," in attr_block
 
-    preserve_block = rendered.split(
-        "fn simpleir_kind_preserves_original_kind_for_ssa", maxsplit=1
-    )[1].split("fn copy_kind_mints_owned_value_table", maxsplit=1)[0]
-    for kind in expected_original_kind:
-        assert f'"{kind}"' in preserve_block
+    preserved = _enum_match_decisions(rendered, "preserves_original_kind_for_ssa")
+    assert {
+        variant for variant, decision in preserved.items() if decision == "true"
+    } == {_wire_variant(kind) for kind in expected_original_kind}
     for kind in (
         "copy",
         "load_var",
@@ -1503,22 +1184,16 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
         "load_super_method",
         "call_loaded_method",
     ):
-        assert f'"{kind}"' not in preserve_block
+        assert preserved[_wire_variant(kind)] == "false"
 
-    mapper_block = rendered.split("fn kind_to_opcode_table", maxsplit=1)[1].split(
-        "fn opcode_ssa_s_value_attr_key_table", maxsplit=1
-    )[0]
-    assert (
-        '"copy" | "store_var" | "load_var" | "copy_var" => Some(OpCode::Copy)'
-        in mapper_block
-    )
+    mapper = _enum_match_decisions(rendered, "kind_to_opcode_table")
+    for kind in ("copy", "store_var", "load_var", "copy_var"):
+        assert mapper[_wire_variant(kind)] == "Some(OpCode::Copy)"
 
     production = ssa.split("#[cfg(test)]", maxsplit=1)[0]
     assert "opcode_ssa_s_value_attr_key_table(opcode)" in production
-    assert (
-        "simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())" in production
-    )
-    assert "kind_to_opcode_table(op.kind.as_str()).is_some()" in production
+    assert "op.kind.preserves_original_kind_for_ssa()" in production
+    assert "kind_to_opcode_table(op.kind).is_some()" in production
     for stale in (
         "match opcode {\n                OpCode::Import",
         "OpCode::ImportFrom\n                | OpCode::LoadAttr",
@@ -1972,7 +1647,10 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     production = _rust_tokens(_rs_production_source(type_refine))
     assert "opcode_type_refine_attr_result_type_rule_table(opcode)" in production
     assert "opcode_type_refine_operand_type_rule_table(opcode)" in production
-    assert "attr_result_type_override(op.opcode, &op.attrs, &op.operands)" in production
+    assert (
+        "attr_result_type_override( op.opcode, op.origin, &op.attrs, &op.operands, )"
+        in production
+    )
     override_body = _rust_fn_body(production, "fn attr_result_type_override")
     # Public callable spelling cannot establish a return type. Copy-lifted
     # runtime primitives use their shared representation and result authorities.
@@ -1982,7 +1660,9 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     infer_body = production.split("fn infer_single_result_type_with_attrs", maxsplit=1)[
         1
     ].split("fn owned_value_kind_result_type", maxsplit=1)[0]
-    assert "attr_result_type_override(opcode, attrs, operand_types)" in infer_body
+    assert (
+        "attr_result_type_override(opcode, origin, attrs, operand_types)" in infer_body
+    )
     assert "match opcode {" not in infer_body
     assert "OpCode::Add | OpCode::InplaceAdd" not in infer_body
     assert "OpCode::Copy =>" not in infer_body
@@ -4109,7 +3789,9 @@ def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> N
     table_name = "opcode_uses_boxed_runtime_inplace_dispatch_table"
     body = _rust_fn_body(llvm_lowering, "fn emit_binary_arith(")
     assert table_name in body
-    assert 'k.starts_with("inplace_")' in body
+    assert 'starts_with("inplace_")' not in body
+    assert "op.origin.is_some_and" in body
+    assert "OpKind::InplaceDiv" in body
     assert "matches!(\n                    op.opcode" not in body
     assert "OpCode::InplaceAdd | OpCode::InplaceSub | OpCode::InplaceMul" not in body
 
@@ -5387,24 +5069,6 @@ def test_render_detects_frontend_table_mutation() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_frontend_emitter_fully_resolved_and_no_new_drift() -> None:
-    """The audit must fully understand the frontend emitter (no UNRESOLVED computed
-    kind-emission sites — an unresolved site means a new emit pattern the extractor
-    can't prove, itself a drift hazard) and its self-validation (the floordiv /
-    matmul / classifier anchors) must hold. A new first-class frontend kind that
-    drifts dangerously is caught by `audit_op_kinds.py --check` against the
-    baseline (the CI gate); this test pins the extractor's completeness, which
-    that gate depends on."""
-    audit = _audit()
-    res = audit.run_audit()
-    assert not res.frontend.unresolved, (
-        "frontend emitter has UNRESOLVED computed kind sites the extractor cannot "
-        f"prove: {res.frontend.unresolved}"
-    )
-    fails = audit.self_validate(res)
-    assert not fails, f"audit self-validation failed: {fails}"
-
-
 def test_dangerous_cell_baseline_matches_current_audit() -> None:
     """The dangerous-cell baseline is exact, not an allowlist superset.
 
@@ -5418,20 +5082,25 @@ def test_dangerous_cell_baseline_matches_current_audit() -> None:
         (ROOT / "tools/op_kinds_baseline.json").read_text(encoding="utf-8")
     )
 
-    assert baseline.get("dangerous", {}) == res.dangerous()
+    assert baseline["schema"] == "molt.op-kind-audit.v2"
+    assert {
+        key: baseline[key]
+        for key in ("unregistered_frontend_wire", "llvm_boxed_runtime_abi_mismatch")
+    } == res.dangerous()
 
 
 def test_audit_separates_boxed_contracts_from_dedicated_machine_constants() -> None:
-    audit = _audit()
-    imports = audit.extract_llvm_boxed_runtime_abis()
+    from tools.llvm_runtime_abi_audit import runtime_boxed_abi_facts
+
+    imports = runtime_boxed_abi_facts()
 
     expected = {
         "molt_cancel_token_get_current": 0,
         "molt_task_register_execution": 3,
     }
     for symbol, param_count in expected.items():
-        assert imports[symbol].arity == param_count
-        assert imports[symbol].return_abi == "I64"
+        assert imports[(symbol, param_count)].arity == param_count
+        assert imports[(symbol, param_count)].return_abi == "I64"
     from tools.llvm_runtime_abi_audit import runtime_import_abi_facts
 
     dedicated, _ = runtime_import_abi_facts(include_fixed=False)
@@ -5441,7 +5110,7 @@ def test_audit_separates_boxed_contracts_from_dedicated_machine_constants() -> N
         ("molt_asyncgen_new", 1),
         ("molt_function_closure_bits", 1),
     ):
-        assert symbol not in imports
+        assert (symbol, arity) not in imports
         assert dedicated[(symbol, arity)].return_abi == "I64"
 
 
@@ -5596,11 +5265,10 @@ def test_consuming_kind_table_renders_callargs_consume() -> None:
     """The `[[consuming_kind]]` rows render into `kind_consumed_operand_table`
     with the EXACT CallArgs-builder semantics: `call_bind` /
     `call_indirect` consume the LAST operand (`arity.checked_sub(1)`), every
-    receiver-prefix adopts operand 1; other spellings consume none (`_ => None`)."""
+    receiver-prefix adopts operand 1; other registered variants explicitly consume none."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    region = _re_search(rendered, "fn kind_consumed_operand_table")
 
     consuming = {row["kind"]: row["consumed_operand"] for row in data["consuming_kind"]}
     # The two CallArgs forms free their builder, the last operand; a frame-home
@@ -5617,15 +5285,17 @@ def test_consuming_kind_table_renders_callargs_consume() -> None:
         f"(call_bind/call_indirect → last): {consuming}"
     )
     for kind, sel in consuming.items():
-        arm = (
-            f'"{kind}" => arity.checked_sub(1),'
-            if sel == "last"
-            else f'"{kind}" => Some({sel}),'
+        expected = "arity.checked_sub(1)" if sel == "last" else f"Some({sel})"
+        assert (
+            _enum_match_decisions(rendered, "kind_consumed_operand_table")[
+                _wire_variant(kind)
+            ]
+            == expected
         )
-        assert arm in region, (
-            f"kind_consumed_operand_table missing the {kind} → {sel} arm"
-        )
-    assert "_ => None," in region
+    assert (
+        _enum_match_decisions(rendered, "kind_consumed_operand_table")["LoadVar"]
+        == "None"
+    )
 
 
 def test_consuming_kinds_are_known_consuming_spellings() -> None:
@@ -5691,10 +5361,12 @@ def test_consuming_kind_admits_copy_lifted_storage_owners_only() -> None:
         mutated = json.loads(json.dumps(base))
         mutated["consuming_kind"].append(good)
         gen._validate_consuming_kinds(mutated, owner)
-        region = _re_search(
-            gen.render_rs(mutated), "fn kind_consumed_operand_table"
-        ).split("pub fn", 1)[0]
-        assert f'"{good["kind"]}" =>' in region, good
+        decisions = _enum_match_decisions(
+            gen.render_rs(mutated), "kind_consumed_operand_table"
+        )
+        selector = good["consumed_operand"]
+        expected = "arity.checked_sub(1)" if selector == "last" else f"Some({selector})"
+        assert decisions[_wire_variant(good["kind"])] == expected, good
     for bad in (
         {"kind": "binding_alias", "consumed_operand": 0},
         {"kind": "synthetic_borrowed_getter", "consumed_operand": "last"},
@@ -5719,18 +5391,27 @@ def test_source_call_kinds_render_and_reject_malformed_rows() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    adopted = _re_search(rendered, "fn kind_is_source_call").split("pub fn", 1)[0]
-    callables = _re_search(rendered, "fn kind_source_call_callable_operand").split(
-        "pub fn", 1
-    )[0]
     rows = {row["kind"]: row for row in data["source_call_kind"]}
     for kind, row in rows.items():
-        assert f'"{kind}"' in adopted, kind
-        if "callable_operand" in row:
-            assert f'"{kind}" => Some({row["callable_operand"]}),' in callables, kind
-        else:
-            assert f'"{kind}"' not in callables, kind
-    assert "_ => None," in callables
+        assert (
+            _enum_match_decisions(rendered, "kind_is_source_call")[_wire_variant(kind)]
+            == "true"
+        ), kind
+        expected = (
+            f"Some({row['callable_operand']})" if "callable_operand" in row else "None"
+        )
+        assert (
+            _enum_match_decisions(rendered, "kind_source_call_callable_operand")[
+                _wire_variant(kind)
+            ]
+            == expected
+        ), kind
+    assert (
+        _enum_match_decisions(rendered, "kind_source_call_callable_operand")[
+            "InvokeFfi"
+        ]
+        == "None"
+    )
     assert not {"invoke_ffi", "call_builtin", "call_function"} & rows.keys()
     assert {"call_func", "call_bind"} <= {
         kind for kind, row in rows.items() if "callable_operand" in row
@@ -5756,54 +5437,6 @@ def test_source_call_kinds_render_and_reject_malformed_rows() -> None:
         raise AssertionError(f"source_call_kind row {bad} must be rejected")
 
 
-def test_binding_views_render_and_stay_non_owning() -> None:
-    """`classifier_binding_view` renders `copy_kind_is_binding_view_table`, the
-    fact `OwnershipRootFacts` reads to keep frame binding views, and the block
-    arguments that carry only them, out of every release. The generated table
-    matches the declared set (an empty set renders a never-matching arm). A view
-    must sit in the explicit transparent-alias bucket and in no bucket that
-    mints, moves or marks a reference, or generation fails."""
-    gen = _gen()
-    audit = _audit()
-    data = gen.load_table()
-    declared = set(data.get("classifier_binding_view", []))
-    generated = set(
-        audit.extract_matches_macro(OUT_RS, "copy_kind_is_binding_view_table")
-    ) - {"\\0__never__"}
-    assert generated == declared, (
-        "generated binding-view table drifted from classifier_binding_view"
-    )
-    gen._validate_binding_views(data)
-    base = json.loads(json.dumps(data))
-    base["classifier_transparent_alias"].append("synthetic_home_load")
-    base.setdefault("classifier_binding_view", []).append("synthetic_home_load")
-    gen._validate_binding_views(base)
-    region = _re_search(
-        gen.render_rs(base), "fn copy_kind_is_binding_view_table"
-    ).split("pub fn", 1)[0]
-    assert '"synthetic_home_load"' in region
-    rejected = []
-    for bucket in (
-        "classifier_owned_value",
-        "classifier_owned_alias",
-        "classifier_exception_creation_ref",
-        "classifier_inert_marker",
-        "classifier_no_heap_move",
-    ):
-        mutated = json.loads(json.dumps(base))
-        mutated[bucket].append("synthetic_home_load")
-        rejected.append((f"also in {bucket}", mutated))
-    mutated = json.loads(json.dumps(base))
-    mutated["classifier_transparent_alias"].remove("synthetic_home_load")
-    rejected.append(("outside classifier_transparent_alias", mutated))
-    for reason, mutated in rejected:
-        try:
-            gen._validate_binding_views(mutated)
-        except gen.OpKindTableError:
-            continue
-        raise AssertionError(f"a binding view {reason} must be rejected")
-
-
 def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes() -> (
     None
 ):
@@ -5812,11 +5445,9 @@ def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes(
     assert data["classifier_scalar_value_forward"] == ["frame_home_store"]
     gen._validate_scalar_value_forwarding(data)
     rendered = gen.render_rs(data)
-    region = _re_search(rendered, "fn copy_kind_forwards_scalar_value_table").split(
-        "pub fn", 1
-    )[0]
-    assert '"frame_home_store"' in region
-    assert '"frame_home_load"' not in region
+    decisions = _enum_match_decisions(rendered, "copy_kind_forwards_scalar_value_table")
+    assert decisions["FrameHomeStore"] == "true"
+    assert decisions["FrameHomeLoad"] == "false"
     without = json.loads(json.dumps(data))
     without["classifier_scalar_value_forward"] = []
     unforwarded = gen.render_rs(without)
@@ -5827,9 +5458,8 @@ def test_scalar_value_forwarding_is_generated_without_effect_or_custody_changes(
         "kind_consumed_operand_table",
         "opcode_effects_table",
     ):
-        assert (
-            _re_search(rendered, f"fn {function}").split("pub fn", 1)[0]
-            == (_re_search(unforwarded, f"fn {function}").split("pub fn", 1)[0])
+        assert _rust_fn_body(rendered, f"fn {function}(") == _rust_fn_body(
+            unforwarded, f"fn {function}("
         )
 
 
@@ -5885,7 +5515,6 @@ def test_container_absorbing_kind_table_renders_storage_boundaries() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    region = _re_search(rendered, "fn kind_container_absorbed_operand_table")
 
     absorbing = {
         row["kind"]: row["absorbed_operand"] for row in data["absorbing_operand_kind"]
@@ -5895,9 +5524,10 @@ def test_container_absorbing_kind_table_renders_storage_boundaries() -> None:
         "set_attr_generic_obj": 1,
         "set_attr_generic_ptr": 1,
     }
+    decisions = _enum_match_decisions(rendered, "kind_container_absorbed_operand_table")
     for kind in absorbing:
-        assert f'"{kind}" => Some(1),' in region
-    assert "_ => None," in region
+        assert decisions[_wire_variant(kind)] == "Some(1)"
+    assert decisions["LoadVar"] == "None"
 
 
 def test_result_finalizer_source_kind_table_renders_list_pop_boundary() -> None:
@@ -5906,7 +5536,6 @@ def test_result_finalizer_source_kind_table_renders_list_pop_boundary() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    region = _re_search(rendered, "fn kind_result_finalizer_source_operand_table")
 
     result_sources = {
         row["kind"]: row["source_operand"]
@@ -5914,8 +5543,11 @@ def test_result_finalizer_source_kind_table_renders_list_pop_boundary() -> None:
     }
     assert result_sources == {"list_pop": 0}
     assert "list_pop" in set(data["classifier_owned_value"])
-    assert '"list_pop" => Some(0),' in region
-    assert "_ => None," in region
+    decisions = _enum_match_decisions(
+        rendered, "kind_result_finalizer_source_operand_table"
+    )
+    assert decisions["ListPop"] == "Some(0)"
+    assert decisions["ListAppend"] == "None"
 
 
 def test_result_absorption_tables_render_container_authority() -> None:
@@ -5927,7 +5559,6 @@ def test_result_absorption_tables_render_container_authority() -> None:
     opcode_region = _re_search(
         rendered, "fn opcode_result_absorbs_operand_ownership_table"
     ).split("fn kind_result_absorbs_operand_ownership_table")[0]
-    kind_region = _re_search(rendered, "fn kind_result_absorbs_operand_ownership_table")
 
     truthy = {row["name"] for row in data["opcode"] if row["result_absorbs_operands"]}
     assert truthy == {
@@ -5953,8 +5584,12 @@ def test_result_absorption_tables_render_container_authority() -> None:
         "slice_new",
         "tuple_new",
     }
-    for kind in absorbing:
-        assert f'"{kind}"' in kind_region
+    decisions = _enum_match_decisions(
+        rendered, "kind_result_absorbs_operand_ownership_table"
+    )
+    assert {
+        variant for variant, decision in decisions.items() if decision == "true"
+    } == {_wire_variant(kind) for kind in absorbing}
 
 
 def test_result_validity_table_renders_iter_next_unboxed_value_out() -> None:
@@ -6016,11 +5651,15 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
     assert data["simpleir_trailing_arg_result"] == [
         {"kind": "unpack_sequence", "first_result_arg": 1}
     ]
+    decisions = _enum_match_decisions(rendered_rs, "simpleir_var_field_role_table")
+    for kind in data["simpleir_var_result_kinds"]:
+        assert decisions[_wire_variant(kind)] == "SimpleIrVarFieldRole::Result"
     assert (
-        '"checked_add" | "checked_mul" | "iter_next_unboxed" | "load_method"\n'
-        '        | "load_super_method" => SimpleIrVarFieldRole::Result'
-    ) in rendered_rs
-    assert '"unpack_sequence" => Some(1)' in rendered_rs
+        _enum_match_decisions(rendered_rs, "simpleir_first_trailing_result_arg_table")[
+            "UnpackSequence"
+        ]
+        == "Some(1)"
+    )
     assert "SIMPLEIR_VAR_RESULT_KINDS" in rendered_py
     assert '"unpack_sequence": 1' in rendered_py
 
@@ -6042,7 +5681,9 @@ def test_simpleir_return_family_forbids_var_through_generated_field_roles() -> N
     assert return_kinds.isdisjoint(data.get("simpleir_var_forbidden_kinds", []))
     rendered = gen.render_rs(data)
     assert "Forbidden" in rendered
-    assert '"ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden' in rendered
+    decisions = _enum_match_decisions(rendered, "simpleir_var_field_role_table")
+    for kind in return_kinds:
+        assert decisions[_wire_variant(kind)] == "SimpleIrVarFieldRole::Forbidden"
 
 
 def test_execution_frame_and_introspection_requirements_are_distinct() -> None:
@@ -6219,24 +5860,18 @@ def test_defined_function_reference_authority_is_distinct_and_generated() -> Non
         "call_internal",
         "func_new",
         "func_new_closure",
-        "func_new_builtin",
         "code_new",
         "call_guarded",
         "call_indirect",
         "alloc_task",
         "call_async",
         "stateful_locals_register",
-        "task_new",
-        "generator_send",
         "call_func",
         "call_method",
         "import_from",
         "import_name",
         "class_def",
-        "decorator",
-        "super_call",
         "yield_from",
-        "await",
     }
     assert set(data["simpleir_defined_function_reference_s_value_kinds"]) == expected
     assert data["simpleir_function_reference_s_value_kinds"] == [
@@ -6253,20 +5888,18 @@ def test_defined_function_reference_authority_is_distinct_and_generated() -> Non
     rendered = gen.render_rs(data)
     table = rendered.split(
         "pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS", 1
-    )[1]
-    table = table.split("];", 1)[0]
-    assert set(re.findall(r'"([a-z_]+)"', table)) == expected
-    predicate = rendered.split("pub fn simpleir_kind_references_defined_function", 1)[1]
-    predicate = predicate.split("\n}", 1)[0]
-    assert set(re.findall(r'"([a-z_]+)"', predicate)) == expected
-    runtime_carriers = rendered.split(
-        "pub fn simpleir_kind_has_function_reference_s_value", 1
-    )[1]
-    runtime_carriers = runtime_carriers.split("\n}", 1)[0]
-    assert set(re.findall(r'"([a-z_]+)"', runtime_carriers)) == {
-        "func_new",
-        "func_new_closure",
+    )[1].split("];", 1)[0]
+    assert set(re.findall(r"OpKind::(\w+)", table)) == {
+        _wire_variant(kind) for kind in expected
     }
+    references = _enum_match_decisions(rendered, "references_defined_function")
+    assert {
+        variant for variant, decision in references.items() if decision == "true"
+    } == {_wire_variant(kind) for kind in expected}
+    runtime_carriers = _enum_match_decisions(rendered, "has_function_reference_s_value")
+    assert {
+        variant for variant, decision in runtime_carriers.items() if decision == "true"
+    } == {"FuncNew", "FuncNewClosure"}
 
 
 def test_call_target_roles_are_closed_and_shared_by_python_and_rust() -> None:
@@ -6300,14 +5933,20 @@ def test_call_target_roles_are_closed_and_shared_by_python_and_rust() -> None:
     }
     for kind, role in expected.items():
         assert (
-            f'"{kind}" => Some(SimpleIrCallTargetRole::{rust_roles[role]})' in rendered
+            _enum_match_decisions(rendered, "simpleir_call_target_role")[
+                _wire_variant(kind)
+            ]
+            == f"Some(SimpleIrCallTargetRole::{rust_roles[role]})"
         )
     call = next(row for row in data["kind"] if row["canonical"] == "call")
     call["simpleir_call_target_roles"][0]["role"] = "opaque"
     mutated: dict[str, object] = {}
     exec(gen.render_py(data), mutated)
     assert mutated["SIMPLEIR_CALL_TARGET_ROLES"] == {**expected, "call": "opaque"}
-    assert '"call" => Some(SimpleIrCallTargetRole::Opaque)' in gen.render_rs(data)
+    assert (
+        _enum_match_decisions(gen.render_rs(data), "simpleir_call_target_role")["Call"]
+        == "Some(SimpleIrCallTargetRole::Opaque)"
+    )
 
 
 @pytest.mark.parametrize(
@@ -6491,7 +6130,7 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
     assert "SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS" in rendered
     rust_rendered = generator.render_rs(generator.load_table())
     assert "SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS" in rust_rendered
-    assert "simpleir_kind_may_carry_runtime_requirement_bits" in rust_rendered
+    assert "pub const fn may_carry_runtime_requirement_bits" in rust_rendered
     for kind in [
         "builtin_func",
         "call_func",
@@ -6502,10 +6141,15 @@ def test_python_runtime_callable_attribute_authority_is_generated_from_qualified
         "module_import_from",
     ]:
         assert f'        "{kind}",' in rendered
-        assert f'"{kind}"' in rust_rendered
+        assert (
+            _enum_match_decisions(rust_rendered, "may_carry_runtime_requirement_bits")[
+                _wire_variant(kind)
+            ]
+            == "true"
+        )
     assert "SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS" in rendered
     assert "SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS" in rust_rendered
-    assert "simpleir_kind_may_carry_runtime_symbol" in rust_rendered
+    assert "pub const fn may_carry_runtime_symbol" in rust_rendered
 
 
 def test_runtime_callable_requirements_compose_generated_roles_without_frame_shortcuts() -> (
@@ -7719,15 +7363,13 @@ def test_serialized_singletons_are_registered_without_broad_runtime_admission():
     )
     assert rust_profile["supported"] == []
     rendered = _render_rs_unformatted(data)
-    body = rendered.split("pub fn simpleir_runtime_requirements_table", 1)[1].split(
-        "_ => None", 1
-    )[0]
-    pattern = re.search(
-        r"(?P<patterns>[^;{}]+) => Some\(SimpleIrRuntimeRequirements\(0\)\)", body
+    requirements = _enum_match_decisions(
+        rendered, "simpleir_runtime_requirements_table"
     )
-    assert pattern is not None
     for kind in neutral:
-        assert f'"{kind}"' in pattern.group("patterns")
+        assert (
+            requirements[_wire_variant(kind)] == "Some(SimpleIrRuntimeRequirements(0))"
+        )
 
 
 def test_frame_publication_has_effects_without_a_call_return_poll_role() -> None:
@@ -8085,3 +7727,40 @@ def test_shared_frontend_wire_spelling_requires_declared_identity():
         match="frontend effect tokens leak into runtime wire vocabulary: const",
     ):
         gen._validate_frontend_tables(data, data["opcode"])
+
+
+def test_closed_rust_wire_kind_domain_equals_registry() -> None:
+    """The transport type includes every registered spelling once, including private kinds."""
+    from tools.op_kinds.registration import (
+        registered_simpleir_kinds,
+        backend_private_kinds,
+    )
+    from tools.op_kinds.render_wire import variant
+
+    data = _gen().load_table()
+    rendered = _gen().render_rs(data)
+    enum = rendered.split("pub enum OpKind {", 1)[1].split("\n}", 1)[0]
+    members = re.findall(r'#\[serde\(rename = "([^"]+)"\)\]\s+(\w+),', enum)
+    expected = registered_simpleir_kinds(data)
+    assert {spelling for spelling, _ in members} == expected
+    assert len(members) == len(expected)
+    assert {name for _, name in members} == {variant(kind) for kind in expected}
+    assert len(backend_private_kinds(data)) == 26
+    assert "#[repr(u16)]" in rendered
+    assert "Other(" not in enum
+    assert "pub fn simpleir_kind_" not in rendered
+    assert "kind: &str" not in rendered
+    methods: list[tuple[str, str]] = []
+    for implementation in re.finditer(r"impl OpKind\s*\{", rendered):
+        block = _rust_fn_body(rendered[implementation.start() :], "impl OpKind")
+        methods.extend(
+            re.findall(
+                r"pub const fn (\w+)\(self\) -> bool \{(.*?)\n    \}", block, re.S
+            )
+        )
+    assert len(methods) >= 36
+    for name, body in methods:
+        assert "_ =>" not in body, name
+        assert set(re.findall(r"OpKind::(\w+)", body)) == {
+            variant(kind) for kind in expected
+        }, name

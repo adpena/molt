@@ -1,71 +1,72 @@
 use super::*;
+use molt_ir::OpKind;
 
-/// Handler-owned authority for LLVM preserved SimpleIR ops lowered directly by
-/// this module. The dispatcher in `preserved_ops.rs` routes through this slice;
-/// audit tooling compares it with the adjacent `match kind` arms so routing and
-/// lowering cannot drift independently. A kind whose runtime entry is exactly
-/// `molt_<kind>` with a generated positional boxed-ABI row has no arm here: it
-/// takes the shared admitted boxed-call path.
-pub(super) const HANDLED_KINDS: &[&str] = &[
-    "call_async",
-    "alloc_class",
-    "cast",
-    "widen",
-    "store_var",
-    "copy_var",
-    "gen_send",
-    "class_def",
-    "exception_new_builtin",
-    "exception_new_builtin_empty",
-    "exception_new_builtin_one",
-    "exception_push",
-    "exception_stack_enter",
-    "exception_stack_depth",
-    "exception_pop",
-    "exception_stack_clear",
-    "exception_last",
-    "exception_last_pending",
-    "exception_finally_pending_observer",
-    "exception_active",
-    "exception_current",
-    "exception_clear",
-    "builtin_type",
-    "class_set_definition",
-    "string_format",
-    "object_new",
-    "exception_match_builtin",
-    "type_of",
-    "missing",
-    "get_attr_name_default",
-    "dataclass_new",
-    "dataclass_new_values",
-    "abs",
-    "const_ellipsis",
-    "const_not_implemented",
-    "gen_throw",
-    "gen_close",
-    "get_attr_special_obj",
-    "borrow",
-    "identity_alias",
-    "binding_alias",
-    "release",
-    "stateful_locals_register",
-    "guard_type",
-    "guard_tag",
-    "guard_layout",
-    "floordiv",
-    "invert",
-    "contains",
-    "inplace_bit_and",
-    "inplace_bit_or",
-    "inplace_bit_xor",
-    "inplace_div",
-    "inplace_floordiv",
-    "inplace_mod",
-    "inplace_pow",
-    "inplace_lshift",
-    "inplace_rshift",
-];
+// Handler-owned authority for LLVM preserved SimpleIR ops lowered directly by
+// this module. The dispatcher in `preserved_ops.rs` routes through this slice;
+// audit tooling compares it with the adjacent `match kind` arms so routing and
+// lowering cannot drift independently. A kind whose runtime entry is exactly
+// `molt_<kind>` with a generated positional boxed-ABI row has no arm here: it
+// takes the shared admitted boxed-call path.
+define_llvm_op_kinds!(
+    OpKind::CallAsync,
+    OpKind::AllocClass,
+    OpKind::Cast,
+    OpKind::Widen,
+    OpKind::StoreVar,
+    OpKind::CopyVar,
+    OpKind::GenSend,
+    OpKind::ClassDef,
+    OpKind::ExceptionNewBuiltin,
+    OpKind::ExceptionNewBuiltinEmpty,
+    OpKind::ExceptionNewBuiltinOne,
+    OpKind::ExceptionPush,
+    OpKind::ExceptionStackEnter,
+    OpKind::ExceptionStackDepth,
+    OpKind::ExceptionPop,
+    OpKind::ExceptionStackClear,
+    OpKind::ExceptionLast,
+    OpKind::ExceptionLastPending,
+    OpKind::ExceptionFinallyPendingObserver,
+    OpKind::ExceptionActive,
+    OpKind::ExceptionCurrent,
+    OpKind::ExceptionClear,
+    OpKind::BuiltinType,
+    OpKind::ClassSetDefinition,
+    OpKind::StringFormat,
+    OpKind::ObjectNew,
+    OpKind::ExceptionMatchBuiltin,
+    OpKind::TypeOf,
+    OpKind::Missing,
+    OpKind::GetAttrNameDefault,
+    OpKind::DataclassNew,
+    OpKind::DataclassNewValues,
+    OpKind::Abs,
+    OpKind::ConstEllipsis,
+    OpKind::ConstNotImplemented,
+    OpKind::GenThrow,
+    OpKind::GenClose,
+    OpKind::GetAttrSpecialObj,
+    OpKind::Borrow,
+    OpKind::IdentityAlias,
+    OpKind::BindingAlias,
+    OpKind::Release,
+    OpKind::StatefulLocalsRegister,
+    OpKind::GuardType,
+    OpKind::GuardTag,
+    OpKind::GuardLayout,
+    OpKind::Floordiv,
+    OpKind::Invert,
+    OpKind::Contains,
+    OpKind::InplaceBitAnd,
+    OpKind::InplaceBitOr,
+    OpKind::InplaceBitXor,
+    OpKind::InplaceDiv,
+    OpKind::InplaceFloordiv,
+    OpKind::InplaceMod,
+    OpKind::InplacePow,
+    OpKind::InplaceLshift,
+    OpKind::InplaceRshift,
+);
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn runtime_guard_profile_flag(&mut self) -> inkwell::values::IntValue<'ctx> {
@@ -92,17 +93,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         flag
     }
 
-    pub(super) fn lower_preserved_direct_op(&mut self, op: &TirOp, kind: &str) -> bool {
+    pub(super) fn lower_preserved_direct_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
         let i64_ty = self.backend.context.i64_type();
         match kind {
-            "call_async" => self.lower_preserved_call_async_op(op),
+            OpKind::CallAsync => self.lower_preserved_call_async_op(op),
             // Repr-identity SimpleIR ops. Native and WASM lower these as
             // operand-0 passthroughs over the same NaN-boxed value format; LLVM
             // must claim the exact same identity fact explicitly so the terminal
             // preserved-op guard remains a true fail-loud backstop rather than a
             // backend skew. No runtime call, ownership transfer, or new value is
             // introduced here.
-            "cast" | "widen" | "store_var" | "copy_var" => {
+            OpKind::Cast | OpKind::Widen | OpKind::StoreVar | OpKind::CopyVar => {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
                 };
@@ -121,7 +122,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // Dedicated arms below own a mixed ABI or a symbol other than
             // `molt_<kind>`. Boxed operands are borrowed through the
             // operation's custody; results are owned unless noted.
-            "gen_send" => {
+            OpKind::GenSend => {
                 if op.operands.len() != 2 {
                     return false;
                 }
@@ -130,12 +131,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     func,
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "gen_send",
                 );
                 true
             }
-            "class_def" => {
+            OpKind::ClassDef => {
                 let Some(meta) = op.attrs.get("s_value").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
                     _ => None,
@@ -166,14 +167,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             // The builtin-exception tag is a raw ABI word; the argument (an
             // args tuple, or the single argument) is borrowed.
-            "exception_new_builtin" | "exception_new_builtin_one" => {
+            OpKind::ExceptionNewBuiltin | OpKind::ExceptionNewBuiltinOne => {
                 let Some(&arg_id) = op.operands.first() else {
                     return false;
                 };
                 let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
                     return false;
                 };
-                let symbol = if kind == "exception_new_builtin" {
+                let symbol = if kind == OpKind::ExceptionNewBuiltin {
                     "molt_exception_new_builtin"
                 } else {
                     "molt_exception_new_builtin_one"
@@ -188,12 +189,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(arg_id),
                     ],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
-                    kind,
+                    kind.as_str(),
+                    kind.as_str(),
                 );
                 true
             }
-            "exception_new_builtin_empty" => {
+            OpKind::ExceptionNewBuiltinEmpty => {
                 let Some(AttrValue::Int(tag)) = op.attrs.get("value") else {
                     return false;
                 };
@@ -216,7 +217,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_push" => {
+            OpKind::ExceptionPush => {
                 let push_fn = self.ensure_runtime_i64_fn("molt_exception_push", 0);
                 let result = self
                     .backend
@@ -231,7 +232,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_stack_enter" => {
+            OpKind::ExceptionStackEnter => {
                 let enter_fn = self.ensure_runtime_i64_fn("molt_exception_stack_enter", 0);
                 let result = self
                     .backend
@@ -246,7 +247,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_stack_depth" => {
+            OpKind::ExceptionStackDepth => {
                 let depth_fn = self.ensure_runtime_i64_fn("molt_exception_stack_depth", 0);
                 let result = self
                     .backend
@@ -261,7 +262,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_pop" => {
+            OpKind::ExceptionPop => {
                 let pop_fn = self.ensure_runtime_i64_fn("molt_exception_pop", 0);
                 let result = self
                     .backend
@@ -276,7 +277,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_stack_clear" => {
+            OpKind::ExceptionStackClear => {
                 let clear_fn = self.ensure_runtime_i64_fn("molt_exception_stack_clear", 0);
                 let result = self
                     .backend
@@ -291,7 +292,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_last" => {
+            OpKind::ExceptionLast => {
                 let last_fn = self.ensure_runtime_i64_fn("molt_exception_last", 0);
                 let result = self
                     .backend
@@ -306,7 +307,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_last_pending" | "exception_finally_pending_observer" => {
+            OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
                 let symbol =
                     crate::exception_observer_abi::pending_exception_observer_runtime_symbol(
                         kind,
@@ -327,7 +328,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_active" => {
+            OpKind::ExceptionActive => {
                 let active_fn = self.ensure_runtime_i64_fn("molt_exception_active", 0);
                 let result = self
                     .backend
@@ -342,7 +343,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_current" => {
+            OpKind::ExceptionCurrent => {
                 let current_fn = self.ensure_runtime_i64_fn("molt_exception_current", 0);
                 let result = self
                     .backend
@@ -357,7 +358,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_clear" => {
+            OpKind::ExceptionClear => {
                 let clear_fn = self.ensure_runtime_i64_fn("molt_exception_clear", 0);
                 let result = self
                     .backend
@@ -373,7 +374,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             // The tag is a boxed int; the builtin type is returned retained.
-            "builtin_type" => {
+            OpKind::BuiltinType => {
                 let Some(&tag_id) = op.operands.first() else {
                     return false;
                 };
@@ -383,14 +384,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     builtin_type_fn,
                     &[RuntimeArg::Operand(tag_id)],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "builtin_type",
                 );
                 true
             }
             // operands = [class]; the stamp names its class statement in
             // `class_definition` (HF-220).
-            "class_set_definition" => {
+            OpKind::ClassSetDefinition => {
                 if op.operands.len() != 1 {
                     return false;
                 }
@@ -404,7 +405,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Word(definition_slot.into()),
                     ],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "class_set_definition",
                 );
                 true
@@ -415,7 +416,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    through to the passthrough, returned `s`, and was double-freed. --
             // -- format(val, spec) (f-string field / format()): fresh owned str. --
             // `molt_format_builtin(val, spec)`.
-            "string_format" => {
+            OpKind::StringFormat => {
                 if op.operands.len() != 2 {
                     return false;
                 }
@@ -424,7 +425,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     fmt_fn,
                     Self::canonical_boxed_return("molt_format_builtin", 2),
-                    kind,
+                    kind.as_str(),
                     "string_format",
                 );
                 true
@@ -433,14 +434,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // `Copy` kind (classified `OwnedValue` in `alias_analysis`), but it is
             // already lowered explicitly further down via `emit_containment`
             // (`molt_contains` + `NotIn` negation). It therefore never reaches the
-            // `Copy` passthrough fatal gate, and adding a second `"contains" =>` arm
+            // `Copy` passthrough fatal gate, and adding a second `OpKind::Contains =>` arm
             // here would be an unreachable duplicate. Left to its established arm.
             // -- slice(start, stop, step): a fresh owned slice object. --
             // -- dict.keys()/values()/items(): fresh owned view objects. --
             // -- enumerate(iterable[, start]): a fresh owned enumerate object. --
             // -- dict(x): a fresh owned dict. --
             // -- object(): a fresh owned bare object. No operands. --
-            "object_new" => {
+            OpKind::ObjectNew => {
                 let object_new_fn = self.ensure_runtime_i64_fn("molt_object_new", 0);
                 let result = self
                     .backend
@@ -457,7 +458,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             // The builtin-exception tag is a raw ABI word; the match result is
             // a boolean.
-            "exception_match_builtin" => {
+            OpKind::ExceptionMatchBuiltin => {
                 let Some(&exc_id) = op.operands.first() else {
                     return false;
                 };
@@ -474,13 +475,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Word(tag_val.into()),
                     ],
                     RuntimeResultCustody::Unowned,
-                    kind,
+                    kind.as_str(),
                     "exception_match_builtin",
                 );
                 true
             }
             // The type is returned retained.
-            "type_of" => {
+            OpKind::TypeOf => {
                 let Some(&obj_id) = op.operands.first() else {
                     return false;
                 };
@@ -490,12 +491,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     type_of_fn,
                     &[RuntimeArg::Operand(obj_id)],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "type_of",
                 );
                 true
             }
-            "missing" => {
+            OpKind::Missing => {
                 let missing_fn = self.ensure_runtime_i64_fn("molt_missing", 0);
                 let result = self
                     .backend
@@ -512,7 +513,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             // One owned result on both branches: a miss may preserve the
             // default's identity, but the runtime retains it for the result.
-            "get_attr_name_default" => {
+            OpKind::GetAttrNameDefault => {
                 if op.operands.len() != 3 {
                     return false;
                 }
@@ -521,13 +522,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     get_fn,
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "get_attr_name_default",
                 );
                 true
             }
-            "dataclass_new" => self.emit_dataclass_new(op),
-            "dataclass_new_values" => self.emit_dataclass_from_values(op),
+            OpKind::DataclassNew => self.emit_dataclass_new(op),
+            OpKind::DataclassNewValues => self.emit_dataclass_from_values(op),
 
             // -- Preserved value-producing / side-effecting ops whose runtime
             //    symbol name DIFFERS from `molt_<kind>` (so the generic
@@ -546,7 +547,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // does not apply on the TIR/LLVM lane, which has no raw-int primary
             // vars; the boxed path is correct and overflow-safe for BigInt).
             // Symbol is `molt_abs_builtin`, NOT `molt_abs`.
-            "abs" => {
+            OpKind::Abs => {
                 let Some(&x_id) = op.operands.first() else {
                     return false;
                 };
@@ -556,14 +557,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     abs_fn,
                     &[RuntimeArg::Operand(x_id)],
                     Self::canonical_boxed_return("molt_abs_builtin", 1),
-                    kind,
+                    kind.as_str(),
                     "abs",
                 );
                 true
             }
             // `...` literal ? the Ellipsis singleton. Symbol `molt_ellipsis`,
             // NOT `molt_const_ellipsis`. 0 operands.
-            "const_ellipsis" => {
+            OpKind::ConstEllipsis => {
                 let ell_fn = self.ensure_runtime_i64_fn("molt_ellipsis", 0);
                 let result = self
                     .backend
@@ -580,7 +581,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             // `NotImplemented` singleton (e.g. a `__eq__` returning it). Symbol
             // `molt_not_implemented`, NOT `molt_const_not_implemented`.
-            "const_not_implemented" => {
+            OpKind::ConstNotImplemented => {
                 let ni_fn = self.ensure_runtime_i64_fn("molt_not_implemented", 0);
                 let result = self
                     .backend
@@ -597,7 +598,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             // `gen.throw(exc)` ? `molt_generator_throw(gen, val)` (operands
             // [gen, val]). Symbol differs from `molt_gen_throw`.
-            "gen_throw" => {
+            OpKind::GenThrow => {
                 if op.operands.len() != 2 {
                     return false;
                 }
@@ -606,14 +607,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     throw_fn,
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "gen_throw",
                 );
                 true
             }
             // `gen.close()` -> `molt_generator_close(gen)` (operand [gen]).
             // Symbol differs from `molt_gen_close`.
-            "gen_close" => {
+            OpKind::GenClose => {
                 let Some(&gen_id) = op.operands.first() else {
                     return false;
                 };
@@ -623,7 +624,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     close_fn,
                     &[RuntimeArg::Operand(gen_id)],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "gen_close",
                 );
                 true
@@ -637,7 +638,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // OWNERSHIP: `molt_get_attr_special` returns one owned reference on
             // every successful path, matching the other canonical getattr
             // entry points.
-            "get_attr_special_obj" => {
+            OpKind::GetAttrSpecialObj => {
                 let Some(&obj_id) = op.operands.first() else {
                     return false;
                 };
@@ -672,7 +673,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Word(name_len_bits.into()),
                     ],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "get_attr_special_obj",
                 );
                 true
@@ -681,7 +682,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // +1, while generated transparent aliases only forward the bits.
             // `release` is the dual and is handled in its own arm below because
             // its result convention differs (it never aliases the source).
-            "borrow" | "identity_alias" | "binding_alias" => {
+            OpKind::Borrow | OpKind::IdentityAlias | OpKind::BindingAlias => {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
                 };
@@ -691,7 +692,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .get(&src_id)
                     .cloned()
                     .unwrap_or(TirType::DynBox);
-                if kind == "borrow"
+                if kind == OpKind::Borrow
                     || crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
                 {
                     // Only a heap-capable carrier holds a reference, as the
@@ -727,7 +728,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // the source and, when the op carries an out var, binds it to NONE
             // (`def_var_named(out, box_none())`), never to the released source.
             // We mirror that: emit the dec_ref, then bind any result to None.
-            "release" => {
+            OpKind::Release => {
                 let Some(&src_id) = op.operands.first() else {
                     return false;
                 };
@@ -747,7 +748,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "alloc_class" => {
+            OpKind::AllocClass => {
                 if op.operands.len() != 1 || op.results.len() > 1 {
                     return false;
                 }
@@ -755,7 +756,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return false;
                 };
                 let size = i64_ty.const_int(*size as u64, false);
-                let mut custody = self.begin_borrowed_operands(&op.operands, kind);
+                let mut custody = self.begin_borrowed_operands(&op.operands, kind.as_str());
                 let class_bits = self.borrowed_operand(&mut custody, op.operands[0]);
                 let alloc = self.ensure_runtime_i64_fn("molt_alloc_class", 2);
                 let unpublished = self
@@ -789,7 +790,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // Every stateful family registers a raw function address and its
             // two boxed layout tuples. This adapter owns that mixed ABI; the
             // operation may not enter the positional boxed-call fallback.
-            "stateful_locals_register" => {
+            OpKind::StatefulLocalsRegister => {
                 if op.operands.len() != 2 || op.results.len() > 1 {
                     return false;
                 }
@@ -829,15 +830,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(op.operands[1]),
                     ],
                     RuntimeResultCustody::SideEffect,
-                    kind,
-                    kind,
+                    kind.as_str(),
+                    kind.as_str(),
                 );
                 true
             }
 
             // Runtime mismatch only profiles and preserves the source. A tag
             // rejected by to_i64 can raise; unary TypeGuard is distinct.
-            "guard_type" | "guard_tag" => {
+            OpKind::GuardType | OpKind::GuardTag => {
                 if op.operands.len() != 2 {
                     return false;
                 }
@@ -879,7 +880,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     guard_fn,
                     RuntimeResultCustody::SideEffect,
-                    kind,
+                    kind.as_str(),
                     "guard_type",
                 );
                 if let Some(join) = profile_join {
@@ -909,7 +910,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // scalar mismatches return false without dereferencing their
             // payload. operands = [obj, expected_version]; the class statement
             // is the op's `class_definition` (HF-220); the result is a boolean.
-            "guard_layout" => {
+            OpKind::GuardLayout => {
                 if op.operands.len() != 2 {
                     return false;
                 }
@@ -924,7 +925,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(op.operands[1]),
                     ],
                     RuntimeResultCustody::Unowned,
-                    kind,
+                    kind.as_str(),
                     "guard_layout",
                 );
                 true
@@ -936,7 +937,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // The SimpleIR?TIR lift (`kind_to_opcode`) maps some operator kinds
             // the frontend emits — `floordiv`, `invert`, `contains`, the
             // `inplace_bit_*` family, `matmul`, `pow_mod` — to `OpCode::Copy`
-            // with `_original_kind` preserved, rather than to their dedicated
+            // with `origin` preserved, rather than to their dedicated
             // opcodes. The native/Cranelift and WASM lanes consume SimpleIR
             // directly (where these are real op kinds) and are unaffected, but
             // the LLVM lane lowers the TIR, where these arrive as `Copy`. Without
@@ -951,65 +952,65 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // `Copy`-carried `in`/`contains` correctly take the non-negated path).
             // `matmul`/`pow_mod` have no dedicated opcode or arith-specialized
             // path, so they lower to their boxed runtime calls (mirroring WASM).
-            "floordiv" => {
-                self.emit_binary_arith(op, "floordiv");
+            OpKind::Floordiv => {
+                self.emit_binary_arith(op, OpKind::Floordiv);
                 true
             }
-            "invert" => {
-                self.emit_unary(op, "invert");
+            OpKind::Invert => {
+                self.emit_unary(op, OpKind::Invert);
                 true
             }
-            "contains" => {
+            OpKind::Contains => {
                 // `x in y`. `emit_containment` negates only for `OpCode::NotIn`;
                 // a `Copy`-carried `contains` is the affirmative membership test.
                 self.emit_containment(op);
                 true
             }
-            "inplace_bit_and" => {
-                self.emit_bitwise(op, "bit_and");
+            OpKind::InplaceBitAnd => {
+                self.emit_bitwise(op, OpKind::BitAnd);
                 true
             }
-            "inplace_bit_or" => {
-                self.emit_bitwise(op, "bit_or");
+            OpKind::InplaceBitOr => {
+                self.emit_bitwise(op, OpKind::BitOr);
                 true
             }
-            "inplace_bit_xor" => {
-                self.emit_bitwise(op, "bit_xor");
+            OpKind::InplaceBitXor => {
+                self.emit_bitwise(op, OpKind::BitXor);
                 true
             }
             // In-place augmented arithmetic for `//=`, `%=`, `**=`, `<<=`, `>>=`.
-            // These ride `Copy{_original_kind}` (no first-class opcode, mirroring
+            // These ride `Copy{origin}` (no first-class opcode, mirroring
             // `floordiv`/`inplace_bit_*`). We lower them with the SAME fast int/
             // float lane emitter as their binary opcode (the static int/float path
             // is byte-identical — builtin numerics have no in-place dunder), and
             // `emit_binary_arith`/`emit_bitwise` detect the `inplace_` prefix on
-            // `_original_kind` to route the BOXED slow path to
+            // `origin` to route the BOXED slow path to
             // `molt_inplace_<op>` (which tries `__i<op>__` first). `@=`/
             // `inplace_matmul` has no arith-specialized path and falls through to
             // the generic runtime-call fallback below, which emits
             // `molt_inplace_matmul`.
-            "inplace_div" => {
-                self.emit_binary_arith(op, "div");
+            OpKind::InplaceDiv => {
+                self.emit_binary_arith(op, OpKind::Div);
                 true
             }
-            "inplace_floordiv" => {
-                self.emit_binary_arith(op, "floordiv");
+            OpKind::InplaceFloordiv => {
+                self.emit_binary_arith(op, OpKind::Floordiv);
                 true
             }
-            "inplace_mod" => {
-                self.emit_binary_arith(op, "mod");
+            OpKind::InplaceMod => {
+                self.emit_binary_arith(op, OpKind::Mod);
                 true
             }
-            "inplace_pow" => {
-                self.emit_binary_arith(op, "pow");
+            OpKind::InplacePow => {
+                self.emit_binary_arith(op, OpKind::Pow);
                 true
             }
-            "inplace_lshift" => {
-                self.emit_bitwise(op, "lshift");
+            OpKind::InplaceLshift => {
+                self.emit_bitwise(op, OpKind::Lshift);
                 true
             }
-            "inplace_rshift" => {
-                self.emit_bitwise(op, "rshift");
+            OpKind::InplaceRshift => {
+                self.emit_bitwise(op, OpKind::Rshift);
                 true
             }
             _ => unreachable!("llvm preserved direct-op family routed unsupported kind `{kind}`"),

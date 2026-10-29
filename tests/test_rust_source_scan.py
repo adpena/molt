@@ -33,6 +33,27 @@ def test_rust_source_tokens_keep_every_literal_as_one_verbatim_atom(literal):
     assert rust_token_range(source, literal) == (start, start + len(literal))
 
 
+def test_rust_match_arms_depth_selects_outer_dispatch_with_same_nested_header():
+    from molt.rust_source_scan import rust_match_arms
+
+    source = """
+    match op.kind {
+        OpKind::Add => {
+            match op.kind { OpKind::Add => lower(), _ => unreachable!(), }
+        }
+        OpKind::Sub => reject(),
+    }
+    """
+    assert rust_match_arms(source, "op.kind") is None
+    arms = rust_match_arms(source, "op.kind", depth=0)
+    assert arms is not None
+    assert [arm.pattern.strip() for arm in arms] == ["OpKind::Add", "OpKind::Sub"]
+    assert "match op.kind" in arms[0].body
+    nested = rust_match_arms(source, "op.kind", depth=2)
+    assert nested is not None
+    assert [arm.pattern.strip() for arm in nested] == ["OpKind::Add", "_"]
+
+
 def test_rust_match_arms_separate_literal_trivia_and_structural_punctuation():
     from molt.rust_source_scan import rust_literal_pattern_names, rust_match_arms
 

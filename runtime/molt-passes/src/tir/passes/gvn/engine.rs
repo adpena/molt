@@ -304,6 +304,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             let old = block.ops[*op_idx].clone();
             let result = old.results[0];
             let mut replacement = TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![*leader],

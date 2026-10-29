@@ -176,12 +176,12 @@ mod tests {
             },
             FunctionIR {
                 name: "small".into(),
-                ops: vec![crate::OpIR::default()],
+                ops: vec![crate::OpIR::new(molt_ir::OpKind::Nop)],
                 ..FunctionIR::default()
             },
             FunctionIR {
                 name: "largest".into(),
-                ops: vec![crate::OpIR::default(); 3],
+                ops: vec![crate::OpIR::new(molt_ir::OpKind::Nop); 3],
                 ..FunctionIR::default()
             },
         ];

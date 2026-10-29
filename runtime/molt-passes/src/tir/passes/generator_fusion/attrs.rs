@@ -24,20 +24,19 @@ pub(in crate::tir::passes::generator_fusion) fn attr_task_kind(op: &TirOp) -> Op
     }
 }
 
-/// Read an op's `_original_kind` string attr (the SimpleIR op-name annotation
+/// Read an op's typed `origin` field (the SimpleIR op-name annotation
 /// preserved on `Copy`-lowered ops such as `iter`).
-pub(in crate::tir::passes::generator_fusion) fn attr_original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }
+pub(in crate::tir::passes::generator_fusion) fn attr_original_kind(
+    op: &TirOp,
+) -> Option<molt_ir::OpKind> {
+    op.origin
 }
 
 /// True if `op` is the consumer's `GetIter` over a value — either the
 /// first-class [`OpCode::GetIter`] or the runtime `iter` op (lowered as a
-/// `Copy` carrying `_original_kind == "iter"`, the form the frontend emits for
+/// `Copy` carrying `origin == "iter"`, the form the frontend emits for
 /// `for x in <expr>`).
 pub(in crate::tir::passes::generator_fusion) fn is_get_iter_op(op: &TirOp) -> bool {
     op.opcode == OpCode::GetIter
-        || (op.opcode == OpCode::Copy && attr_original_kind(op) == Some("iter"))
+        || (op.opcode == OpCode::Copy && attr_original_kind(op) == Some(molt_ir::OpKind::Iter))
 }

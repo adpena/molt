@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 from tools import llvm_runtime_abi_audit as AUDIT
 
@@ -12,12 +11,9 @@ def test_llvm_runtime_abi_audit_passes_current_repo() -> None:
     result = AUDIT.run_audit(ROOT)
 
     assert result.ok is True, AUDIT.format_report(result)
-    assert result.missing == ()
-    assert result.mismatched == ()
     assert result.duplicate_facts == ()
     assert result.classified_fact_issues == ()
     assert result.boxed_fact_issues == ()
-    assert result.unresolved_frontend == ()
 
 
 def test_boxed_projection_does_not_infer_semantics_from_machine_facts() -> None:
@@ -52,85 +48,6 @@ def test_dedicated_machine_facts_do_not_mirror_generated_boxed_contracts() -> No
     assert not conservative.keys() & AUDIT.runtime_boxed_abi_facts().keys()
     assert ("molt_asyncgen_new", 1) in conservative
     assert ("molt_asyncgen_new", 1) not in AUDIT.runtime_boxed_abi_facts()
-
-
-def test_mixed_and_borrowed_ops_have_real_dedicated_llvm_handlers() -> None:
-    from tools import audit_op_kinds
-
-    dedicated = audit_op_kinds.extract_llvm_preserved_op_kinds(root=ROOT)
-    boxed = AUDIT.runtime_boxed_abi_facts()
-    machine, duplicates = AUDIT.runtime_import_abi_facts()
-    assert not duplicates
-    for kind, arity in (
-        ("alloc_class", 2),
-        ("stateful_locals_register", 3),
-        ("asyncgen_new", 1),
-        ("function_closure_bits", 1),
-    ):
-        assert kind in dedicated
-        key = (f"molt_{kind}", arity)
-        assert key in machine
-        assert key not in boxed
-    # Handler coverage is accepted only when the actual match arms and the
-    # routed HANDLED_KINDS authority agree; declarations alone are insufficient.
-    assert audit_op_kinds.extract_llvm_preserved_handler_routing_drifts() == []
-
-
-def test_owned_constructors_and_reductions_use_only_generated_boxed_contracts() -> None:
-    from tools import audit_op_kinds
-
-    dedicated = audit_op_kinds.extract_llvm_preserved_op_kinds(root=ROOT)
-    boxed = AUDIT.runtime_boxed_abi_facts()
-    machine, duplicates = AUDIT.runtime_import_abi_facts()
-    assert not duplicates
-    for kind, arity in (
-        ("classmethod_new", 1),
-        ("staticmethod_new", 1),
-        ("property_new", 3),
-        ("bound_method_new", 2),
-        ("vec_sum", 3),
-        ("vec_prod", 3),
-        ("vec_min", 3),
-        ("vec_max", 3),
-    ):
-        assert kind not in dedicated
-        key = (f"molt_{kind}", arity)
-        assert key not in machine
-        assert boxed[key] == AUDIT.AbiFact(key[0], arity, "I64", ("I64",) * arity)
-
-
-def test_machine_i64_fact_cannot_hide_missing_generic_semantics(monkeypatch) -> None:
-    from tools import audit_op_kinds
-
-    raw = AUDIT.RuntimeSignature("molt_raw_probe", 1, "u64", "runtime.rs", "", ("u64",))
-    fact = AUDIT.AbiFact("molt_raw_probe", 1, "I64", ("I64",))
-    monkeypatch.setattr(
-        audit_op_kinds,
-        "extract_frontend_kinds",
-        lambda **kw: SimpleNamespace(all={"raw_probe"}, unresolved=[]),
-    )
-    monkeypatch.setattr(
-        audit_op_kinds, "extract_llvm_preserved_op_kinds", lambda **kw: set()
-    )
-    monkeypatch.setattr(AUDIT, "mapped_tir_kinds", lambda path: set())
-    monkeypatch.setattr(AUDIT, "runtime_exports", lambda roots: {raw.symbol: raw})
-    monkeypatch.setattr(AUDIT, "runtime_type_aliases", lambda roots: {})
-    monkeypatch.setattr(
-        AUDIT,
-        "runtime_import_abi_facts",
-        lambda *args, **kw: ({(raw.symbol, 1): fact}, ()),
-    )
-    monkeypatch.setattr(AUDIT, "runtime_boxed_abi_facts", lambda: {})
-    monkeypatch.setattr(AUDIT, "boxed_runtime_export_issues", lambda: ())
-    result = AUDIT.run_audit()
-    assert not result.ok
-    assert [issue.symbol for issue in result.missing] == ["molt_raw_probe"]
-    # An explicitly dedicated handler owns raw conversion; it must not be
-    # mislabeled as a generic boxed call or require a semantic allowlist entry.
-    monkeypatch.setattr(
-        audit_op_kinds, "extract_llvm_preserved_op_kinds", lambda **kw: {"raw_probe"}
-    )
-    assert AUDIT.run_audit().ok
 
 
 def test_runtime_export_scan_includes_runtime_leaf_crates() -> None:

@@ -3,12 +3,8 @@ use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements,
     SimpleIrVarFieldRole, kind_consumed_operand_table, kind_is_source_call,
     kind_source_call_callable_operand, kind_to_opcode_table, simpleir_backend_private_owner,
-    simpleir_backend_service_kind, simpleir_call_target_role,
-    simpleir_kind_carries_class_definition, simpleir_kind_has_function_reference_s_value,
-    simpleir_kind_is_pre_ssa_rewritten, simpleir_kind_is_registered,
-    simpleir_kind_may_carry_async_work_poll_marker,
-    simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
-    simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
+    simpleir_backend_service_kind, simpleir_call_target_role, simpleir_op_shape,
+    simpleir_return_shape, simpleir_var_field_role_table,
 };
 use crate::{OpIR, ParameterCustody};
 
@@ -26,10 +22,9 @@ const CONTAINER_TYPES: &[&str] = &[
     "tuple",
 ];
 
-const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
+const BCE_SAFE_KINDS: &[crate::OpKind] = &[crate::OpKind::Index, crate::OpKind::StoreIndex];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
-    UnregisteredKind,
     BackendPrivate {
         backend: &'static str,
     },
@@ -57,9 +52,6 @@ pub enum OpShapeViolation {
         expected: usize,
         actual: Option<usize>,
     },
-    Retired {
-        reason: &'static str,
-    },
     NonNegativeValue {
         actual: Option<i64>,
     },
@@ -75,12 +67,6 @@ pub struct OpShapeDiagnostic {
 impl std::fmt::Display for OpShapeDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.violation {
-            OpShapeViolation::Retired { reason } => {
-                return write!(f, "retired compiler operation `{}`: {reason}", self.kind);
-            }
-            OpShapeViolation::UnregisteredKind => {
-                return write!(f, "unregistered op kind `{}`", self.kind);
-            }
             OpShapeViolation::BackendPrivate { backend } => {
                 return write!(
                     f,
@@ -161,9 +147,7 @@ impl std::fmt::Display for OpShapeDiagnostic {
                     None => write!(f, "none"),
                 }
             }
-            OpShapeViolation::Retired { .. }
-            | OpShapeViolation::UnregisteredKind
-            | OpShapeViolation::BackendPrivate { .. } => {
+            OpShapeViolation::BackendPrivate { .. } => {
                 unreachable!("admission diagnostic formatted above")
             }
             OpShapeViolation::NonNegativeValue { actual } => {
@@ -180,35 +164,6 @@ impl std::error::Error for OpShapeDiagnostic {}
 
 /// Retirement applies to both wire spellings and preserved origins, regardless
 /// of which typed opcode currently carries the operation.
-pub(crate) fn validate_op_not_retired(kind: &str) -> Result<(), OpShapeDiagnostic> {
-    let retired = match kind {
-        "store_init" => Some((
-            "store_init",
-            "emit `store`; fresh-slot initialization is derived from typed-slot ownership facts",
-        )),
-        "guarded_field_init" => Some((
-            "guarded_field_init",
-            "emit `guarded_field_set`; initialization cannot be asserted by wire spelling",
-        )),
-        "object_new_bound_stack" => Some((
-            "object_new_bound_stack",
-            "frame placement requires an owner-lifetime proof; use owned `object_new_bound` allocation",
-        )),
-        "list_repeat_range" => Some((
-            "list_repeat_range",
-            "use canonical list construction, multiplication or comprehension lowering",
-        )),
-        _ => None,
-    };
-    if let Some((kind, reason)) = retired {
-        return Err(OpShapeDiagnostic {
-            family: "retired",
-            kind: kind.into(),
-            violation: OpShapeViolation::Retired { reason },
-        });
-    }
-    Ok(())
-}
 
 /// Reject retired spellings and validate generated operand/integer shape without
 /// assuming a complete program, value definitions, slot-table initialization or
@@ -216,23 +171,26 @@ pub(crate) fn validate_op_not_retired(kind: &str) -> Result<(), OpShapeDiagnosti
 /// the result authority; this checker does not duplicate them.
 /// Both SimpleIR and preserved TIR operations project into this same checker.
 pub fn validate_op_shape(
-    kind: &str,
+    kind: crate::OpKind,
     operands: Option<usize>,
     value: Option<i64>,
 ) -> Result<(), OpShapeDiagnostic> {
-    validate_op_not_retired(kind)?;
     if matches!(
         kind,
-        "call" | "call_internal" | "code_slot_set" | "trace_enter_slot" | "module_slot"
+        crate::OpKind::Call
+            | crate::OpKind::CallInternal
+            | crate::OpKind::CodeSlotSet
+            | crate::OpKind::TraceEnterSlot
+            | crate::OpKind::ModuleSlot
     ) && value.is_some()
     {
         return Err(OpShapeDiagnostic {
-            family: if kind == "module_slot" {
+            family: if kind == crate::OpKind::ModuleSlot {
                 "module_registry"
             } else {
                 "code_metadata"
             },
-            kind: kind.into(),
+            kind: kind.to_string(),
             violation: OpShapeViolation::ForbiddenValue,
         });
     }
@@ -254,40 +212,32 @@ pub fn validate_op_shape(
     match violation {
         Some(violation) => Err(OpShapeDiagnostic {
             family: shape.family,
-            kind: shape.kind.into(),
+            kind: shape.kind.to_string(),
             violation,
         }),
         None => Ok(()),
     }
 }
 
-pub(crate) fn validate_registered_op_kind(kind: &str) -> Result<(), OpShapeDiagnostic> {
-    validate_op_not_retired(kind)?;
-    if !simpleir_kind_is_registered(kind) {
-        return Err(OpShapeDiagnostic {
-            family: "registration",
-            kind: kind.into(),
-            violation: OpShapeViolation::UnregisteredKind,
-        });
-    }
-    Ok(())
-}
-
 pub fn validate_program_slot_symbol(
-    kind: &str,
+    kind: crate::OpKind,
     symbol: Option<&str>,
 ) -> Result<(), OpShapeDiagnostic> {
-    if matches!(kind, "code_slot_set" | "trace_enter_slot") && symbol.is_none_or(str::is_empty) {
+    if matches!(
+        kind,
+        crate::OpKind::CodeSlotSet | crate::OpKind::TraceEnterSlot
+    ) && symbol.is_none_or(str::is_empty)
+    {
         return Err(OpShapeDiagnostic {
             family: "code_metadata",
-            kind: kind.into(),
+            kind: kind.to_string(),
             violation: OpShapeViolation::CodeSlotSymbol,
         });
     }
-    if kind == "module_slot" && symbol.is_none_or(str::is_empty) {
+    if kind == crate::OpKind::ModuleSlot && symbol.is_none_or(str::is_empty) {
         return Err(OpShapeDiagnostic {
             family: "module_registry",
-            kind: kind.into(),
+            kind: kind.to_string(),
             violation: OpShapeViolation::ModuleSlotSymbol,
         });
     }
@@ -298,27 +248,26 @@ pub fn validate_program_slot_symbol(
 /// names a nonempty class statement symbol, and no other operation names one.
 /// `kind` is the wire spelling (a TIR carrier passes its original spelling).
 pub fn validate_class_definition_symbol(
-    kind: &str,
+    kind: crate::OpKind,
     symbol: Option<&str>,
 ) -> Result<(), OpShapeDiagnostic> {
-    let violation = match (simpleir_kind_carries_class_definition(kind), symbol) {
+    let violation = match (kind.carries_class_definition(), symbol) {
         (true, None | Some("")) => OpShapeViolation::ClassDefinitionSymbol,
         (false, Some(_)) => OpShapeViolation::ForbiddenClassDefinition,
         _ => return Ok(()),
     };
     Err(OpShapeDiagnostic {
         family: "class_layout",
-        kind: kind.into(),
+        kind: kind.to_string(),
         violation,
     })
 }
 
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
-    validate_registered_op_kind(&op.kind)?;
-    validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
-    validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;
-    validate_class_definition_symbol(&op.kind, op.class_definition.as_deref())?;
-    if op.kind == "module_slot"
+    validate_op_shape(op.kind, op.args.as_ref().map(Vec::len), op.value)?;
+    validate_program_slot_symbol(op.kind, op.s_value.as_deref())?;
+    validate_class_definition_symbol(op.kind, op.class_definition.as_deref())?;
+    if op.kind == crate::OpKind::ModuleSlot
         && op
             .out
             .as_deref()
@@ -326,17 +275,17 @@ fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     {
         return Err(OpShapeDiagnostic {
             family: "module_registry",
-            kind: op.kind.clone(),
+            kind: op.kind.to_string(),
             violation: OpShapeViolation::MissingResult,
         });
     }
-    if let Some(shape) = simpleir_op_shape(&op.kind)
-        && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
+    if let Some(shape) = simpleir_op_shape(op.kind)
+        && simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Forbidden
         && op.var.is_some()
     {
         return Err(OpShapeDiagnostic {
             family: shape.family,
-            kind: shape.kind.into(),
+            kind: shape.kind.to_string(),
             violation: OpShapeViolation::ForbiddenVar,
         });
     }
@@ -371,13 +320,13 @@ pub fn validate_normalized_simple_ir_ops(
     ops: &[OpIR],
 ) -> Result<(), FunctionOpShapeDiagnostic> {
     for (op_index, op) in ops.iter().enumerate() {
-        if simpleir_kind_is_pre_ssa_rewritten(&op.kind) {
+        if op.kind.is_pre_ssa_rewritten() {
             return Err(FunctionOpShapeDiagnostic {
                 function: function.into(),
                 op_index,
                 shape: OpShapeDiagnostic {
                     family: "normalization",
-                    kind: op.kind.clone(),
+                    kind: op.kind.to_string(),
                     violation: OpShapeViolation::Unnormalized {
                         source_op_idx: op.source_op_idx,
                     },
@@ -419,13 +368,13 @@ pub fn validate_function_admission_op_shapes(
 ) -> Result<(), FunctionOpShapeDiagnostic> {
     validate_function_op_shapes(func)?;
     for (op_index, op) in func.ops.iter().enumerate() {
-        if let Some(backend) = simpleir_backend_private_owner(&op.kind) {
+        if let Some(backend) = simpleir_backend_private_owner(op.kind) {
             return Err(FunctionOpShapeDiagnostic {
                 function: func.name.clone(),
                 op_index,
                 shape: OpShapeDiagnostic {
                     family: "registration",
-                    kind: op.kind.clone(),
+                    kind: op.kind.to_string(),
                     violation: OpShapeViolation::BackendPrivate { backend },
                 },
             });
@@ -443,7 +392,7 @@ pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
     let mut labels = BTreeSet::new();
     let mut duplicate_labels = BTreeSet::new();
     for op in ops {
-        if matches!(op.kind.as_str(), "label" | "state_label")
+        if matches!(op.kind, crate::OpKind::Label | crate::OpKind::StateLabel)
             && let Some(label) = op.value
             && !labels.insert(label)
         {
@@ -452,7 +401,7 @@ pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
     }
     let mut switches = 0;
     for (index, op) in ops.iter().enumerate() {
-        if op.kind == "state_switch" {
+        if op.kind == crate::OpKind::StateSwitch {
             switches += 1;
             if switches > 1 {
                 return Err(format!("op#{index}: multiple state_switch dispatch sites"));
@@ -461,7 +410,7 @@ pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
         let Some(targets) = &op.state_targets else {
             continue;
         };
-        if op.kind != "state_switch" {
+        if op.kind != crate::OpKind::StateSwitch {
             return Err(format!(
                 "op#{index}: state_targets requires state_switch, found `{}`",
                 op.kind
@@ -483,15 +432,15 @@ pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
 }
 
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
-    if op.kind == "callargs_new" {
+    if op.kind == crate::OpKind::CallargsNew {
         op.call_argument_form()?;
     }
     // Interpret symbol metadata only on executable/callable carriers, never
     // arbitrary string literals. The service-to-kind relation has one owner.
-    let direct_symbol = (simpleir_call_target_role(&op.kind).is_some()
-        || simpleir_kind_has_function_reference_s_value(&op.kind)
-        || op.kind == "builtin_func"
-        || kind_to_opcode_table(&op.kind) == Some(crate::tir::ops::OpCode::CallBuiltin))
+    let direct_symbol = (simpleir_call_target_role(op.kind).is_some()
+        || op.kind.has_function_reference_s_value()
+        || op.kind == crate::OpKind::BuiltinFunc
+        || kind_to_opcode_table(op.kind) == Some(crate::tir::ops::OpCode::CallBuiltin))
     .then_some(op.s_value.as_deref())
     .flatten();
     for symbol in [
@@ -521,13 +470,13 @@ pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
 fn validate_value_transport(op: &OpIR) -> Result<(), String> {
     use crate::tir::op_kinds_generated::{
         copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
-        opcode_fixed_result_count_table, simpleir_kind_is_structural,
+        opcode_fixed_result_count_table,
     };
     use crate::tir::simple_def_use::{
         simple_ir_binding, visit_simple_ir_reads, visit_simple_ir_result_names,
     };
 
-    let binding = simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Definition;
+    let binding = simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Definition;
     if binding {
         let destination = simple_ir_binding(op).map(|binding| binding.destination);
         if destination.is_none_or(|name| name.is_empty() || name == "none") {
@@ -537,13 +486,13 @@ fn validate_value_transport(op: &OpIR) -> Result<(), String> {
             ));
         }
     }
-    if copy_kind_is_explicit_no_heap_move_table(&op.kind)
-        || copy_kind_mints_owned_alias_ref_table(&op.kind)
+    if copy_kind_is_explicit_no_heap_move_table(op.kind)
+        || copy_kind_mints_owned_alias_ref_table(op.kind)
     {
         // Ownership transparency identifies the result's alias, not the number
         // of reads. Runtime guards also read their expected tag. Their exact
         // generated shape owns that arity; ordinary copy transports are unary.
-        let expected = simpleir_op_shape(&op.kind).map_or(1, |shape| shape.operands);
+        let expected = simpleir_op_shape(op.kind).map_or(1, |shape| shape.operands);
         let mut actual = 0;
         visit_simple_ir_reads(op, |_| actual += 1);
         if actual != expected {
@@ -553,8 +502,8 @@ fn validate_value_transport(op: &OpIR) -> Result<(), String> {
             ));
         }
     }
-    if simpleir_kind_is_structural(&op.kind)
-        || kind_to_opcode_table(&op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
+    if op.kind.is_structural()
+        || kind_to_opcode_table(op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
     {
         let mut result = false;
         visit_simple_ir_result_names(op, |_| result = true);
@@ -590,8 +539,7 @@ pub(crate) fn validate_function_param_types(
 }
 
 fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
-    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Forbidden
-        && op.var.is_some()
+    if simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Forbidden && op.var.is_some()
     {
         return Err(format!(
             "return-family op `{}` forbids `var`; `args` is the sole value carrier",
@@ -599,7 +547,7 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
         ));
     }
     let args_len = op.args.as_ref().map_or(0, Vec::len);
-    match simpleir_return_shape(op.kind.as_str()) {
+    match simpleir_return_shape(op.kind) {
         SimpleIrReturnShape::Value if args_len != 1 => {
             return Err(format!(
                 "value return op `{}` requires exactly one `args` operand, found {args_len}",
@@ -623,7 +571,10 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             ));
         }
     }
-    if matches!(op.kind.as_str(), "func_new" | "func_new_closure") {
+    if matches!(
+        op.kind,
+        crate::OpKind::FuncNew | crate::OpKind::FuncNewClosure
+    ) {
         match (op.task_kind.as_deref(), op.task_closure_size) {
             (None, None) => {}
             (Some("generator" | "coroutine" | "async_generator"), Some(size)) if size >= 0 => {}
@@ -651,7 +602,7 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     } else if op.task_closure_size.is_some() {
         return Err(format!("op `{}` cannot carry task_closure_size", op.kind));
     }
-    if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind.as_str()) {
+    if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry bce_safe", op.kind));
     }
     if op.arena_eligible.is_some() {
@@ -664,7 +615,7 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if let Some(type_hint) = op.type_hint.as_deref() {
         validate_clean_symbol(type_hint, &format!("op `{}` type_hint", op.kind))?;
     }
-    if op.kind == "builtin_func" {
+    if op.kind == crate::OpKind::BuiltinFunc {
         let name_arg_count = op.args.as_ref().map_or(0, Vec::len);
         match op.builtin_name.as_deref() {
             Some(builtin_name) => {
@@ -696,12 +647,12 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     }
     if let Some(runtime_symbol) = op.runtime_symbol.as_deref() {
         validate_clean_symbol(runtime_symbol, &format!("op `{}` runtime_symbol", op.kind))?;
-        if !simpleir_kind_may_carry_runtime_symbol(op.kind.as_str()) {
+        if !op.kind.may_carry_runtime_symbol() {
             return Err(format!("op `{}` cannot carry runtime_symbol", op.kind));
         }
     }
     if op.runtime_requirement_bits != 0 {
-        if !simpleir_kind_may_carry_runtime_requirement_bits(op.kind.as_str()) {
+        if !op.kind.may_carry_runtime_requirement_bits() {
             return Err(format!(
                 "op `{}` cannot carry runtime_requirement_bits",
                 op.kind
@@ -714,7 +665,7 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
             ));
         }
     }
-    if op.async_work_poll && !simpleir_kind_may_carry_async_work_poll_marker(op.kind.as_str()) {
+    if op.async_work_poll && !op.kind.may_carry_async_work_poll_marker() {
         return Err(format!("op `{}` cannot carry async_work_poll", op.kind));
     }
     validate_argument_custody(op)?;
@@ -730,7 +681,7 @@ fn validate_native_callable_fields(op: &OpIR) -> Result<(), String> {
     if !has_native_callable {
         return Ok(());
     }
-    if op.kind != "invoke_ffi" {
+    if op.kind != crate::OpKind::InvokeFfi {
         return Err(format!(
             "op `{}` cannot carry native callable export metadata",
             op.kind
@@ -825,7 +776,7 @@ fn validate_argument_custody(op: &OpIR) -> Result<(), String> {
     let Some(custody) = op.argument_custody.as_deref() else {
         return Ok(());
     };
-    if !kind_is_source_call(&op.kind) {
+    if !kind_is_source_call(op.kind) {
         return Err(format!("op `{}` cannot carry argument_custody", op.kind));
     }
     validate_custody_projection(
@@ -834,13 +785,13 @@ fn validate_argument_custody(op: &OpIR) -> Result<(), String> {
         &format!("op `{}` argument_custody", op.kind),
     )?;
     if matches!(
-        simpleir_call_target_role(&op.kind),
+        simpleir_call_target_role(op.kind),
         Some(SimpleIrCallTargetRole::InternalRequired | SimpleIrCallTargetRole::ExternalOrRuntime)
     ) {
         return Ok(());
     }
-    let callable = kind_source_call_callable_operand(&op.kind);
-    let builder_call = kind_consumed_operand_table(&op.kind, custody.len()).is_some();
+    let callable = kind_source_call_callable_operand(op.kind);
+    let builder_call = kind_consumed_operand_table(op.kind, custody.len()).is_some();
     for (position, &actual) in custody.iter().enumerate() {
         if builder_call && Some(position) == callable {
             continue;
@@ -873,20 +824,20 @@ mod op_shape_tests {
     #[test]
     fn executable_symbols_reject_numeric_identity_without_erasing_dynamic_diagnostics() {
         for (kind, operands) in [
-            ("call", 0),
-            ("call_internal", 0),
-            ("code_slot_set", 2),
-            ("trace_enter_slot", 0),
-            ("module_slot", 0),
+            (crate::OpKind::Call, 0),
+            (crate::OpKind::CallInternal, 0),
+            (crate::OpKind::CodeSlotSet, 2),
+            (crate::OpKind::TraceEnterSlot, 0),
+            (crate::OpKind::ModuleSlot, 0),
         ] {
             assert!(validate_op_shape(kind, Some(operands), None).is_ok());
             for value in [i64::MIN, -1, 0, 1, i64::MAX] {
                 let error = validate_op_shape(kind, Some(operands), Some(value)).unwrap_err();
-                assert_eq!(error.kind, kind);
+                assert_eq!(error.kind, kind.as_str());
                 assert_eq!(error.violation, OpShapeViolation::ForbiddenValue);
             }
         }
-        for kind in ["code_slot_set", "trace_enter_slot"] {
+        for kind in [crate::OpKind::CodeSlotSet, crate::OpKind::TraceEnterSlot] {
             for symbol in [None, Some("")] {
                 assert_eq!(
                     validate_program_slot_symbol(kind, symbol)
@@ -897,20 +848,20 @@ mod op_shape_tests {
             }
             assert!(validate_program_slot_symbol(kind, Some("module.function")).is_ok());
         }
-        assert!(validate_op_shape("call_func", Some(1), Some(7)).is_ok());
-        assert!(validate_op_shape("code_slots_init", None, Some(7)).is_ok());
+        assert!(validate_op_shape(crate::OpKind::CallFunc, Some(1), Some(7)).is_ok());
+        assert!(validate_op_shape(crate::OpKind::CodeSlotsInit, None, Some(7)).is_ok());
         for symbol in [None, Some("")] {
             assert_eq!(
-                validate_program_slot_symbol("module_slot", symbol)
+                validate_program_slot_symbol(crate::OpKind::ModuleSlot, symbol)
                     .unwrap_err()
                     .violation,
                 OpShapeViolation::ModuleSlotSymbol
             );
         }
         let mut slot = OpIR {
-            kind: "module_slot".into(),
+            kind: crate::OpKind::ModuleSlot,
             s_value: Some("pkg.sub".into()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ModuleSlot)
         };
         assert_eq!(
             validate_simple_op_shape(&slot).unwrap_err().violation,
@@ -935,7 +886,7 @@ mod op_shape_tests {
                 );
             }
         }
-        for kind in ["get_attr_generic_ptr", "code_slot_set"] {
+        for kind in [crate::OpKind::GetAttrGenericPtr, crate::OpKind::CodeSlotSet] {
             assert!(validate_class_definition_symbol(kind, None).is_ok());
             assert_eq!(
                 validate_class_definition_symbol(kind, Some("class:m:P"))
@@ -945,10 +896,10 @@ mod op_shape_tests {
             );
         }
         let mut guard = OpIR {
-            kind: "guard_layout".into(),
+            kind: crate::OpKind::GuardLayout,
             args: Some(vec!["obj".into(), "version".into()]),
             out: Some("ok".into()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::GuardLayout)
         };
         assert_eq!(
             validate_simple_op_shape(&guard).unwrap_err().violation,
@@ -1005,7 +956,7 @@ mod op_shape_tests {
             }
         }
         // Source lines are not code-slot identities and retain their distinct policy.
-        assert!(validate_op_shape("line", None, None).is_ok());
-        assert!(validate_op_shape("code_new", Some(9), None).is_ok());
+        assert!(validate_op_shape(crate::OpKind::Line, None, None).is_ok());
+        assert!(validate_op_shape(crate::OpKind::CodeNew, Some(9), None).is_ok());
     }
 }

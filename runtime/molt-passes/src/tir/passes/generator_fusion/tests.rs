@@ -27,6 +27,7 @@ fn only_candidate(poll: &TirFunction, caller: &TirFunction) -> FusionCandidate {
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -244,8 +245,7 @@ fn consumer() -> TirFunction {
         at.attrs.insert("value".into(), AttrValue::Int(64));
         e.ops.push(at);
         let mut iter = op(OpCode::Copy, vec![g], vec![it]);
-        iter.attrs
-            .insert("_original_kind".into(), AttrValue::Str("iter".into()));
+        iter.origin = Some(molt_ir::OpKind::Iter);
         e.ops.push(iter);
         e.ops.push(op(OpCode::ConstNone, vec![], vec![nonev]));
         e.ops.push(op(OpCode::Is, vec![it, nonev], vec![isnone]));
@@ -881,8 +881,7 @@ fn yielded_read<'f>(func: &'f TirFunction, candidate: &FusionCandidate) -> &'f T
 /// Whether `operation` is an owned alias, a copy whose result holds a reference
 /// of its own.
 fn is_owned_alias(operation: &TirOp) -> bool {
-    operation.opcode == OpCode::Copy
-        && operation.attrs.get("_original_kind") == Some(&AttrValue::Str("binding_alias".into()))
+    operation.opcode == OpCode::Copy && operation.origin == Some(molt_ir::OpKind::BindingAlias)
 }
 
 /// The fused element is a copy of the yielded value that keeps the reference

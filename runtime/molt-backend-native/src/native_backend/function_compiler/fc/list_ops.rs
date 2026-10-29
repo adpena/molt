@@ -1,26 +1,27 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_list_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_list_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "list_new",
-    "list_int_new",
-    "list_fill_new",
-    "list_from_range",
-    "list_append",
-    "list_pop",
-    "list_extend",
-    "list_insert",
-    "list_remove",
-    "list_clear",
-    "list_copy",
-    "list_reverse",
-    "list_count",
-    "list_index",
-    "list_index_range",
-    "tuple_from_list",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::ListNew,
+    OpKind::ListIntNew,
+    OpKind::ListFillNew,
+    OpKind::ListFromRange,
+    OpKind::ListAppend,
+    OpKind::ListPop,
+    OpKind::ListExtend,
+    OpKind::ListInsert,
+    OpKind::ListRemove,
+    OpKind::ListClear,
+    OpKind::ListCopy,
+    OpKind::ListReverse,
+    OpKind::ListCount,
+    OpKind::ListIndex,
+    OpKind::ListIndexRange,
+    OpKind::TupleFromList,
+);
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -68,8 +69,8 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "list_new" => {
+    match op.kind {
+        OpKind::ListNew => {
             emit_fixed_aggregate_constructor(
                 op,
                 FixedAggregateConstructor::List,
@@ -85,7 +86,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 block_tracked_ptr,
             );
         }
-        "list_int_new" => {
+        OpKind::ListIntNew => {
             // Specialized flat i64 list: args = [count, fill_value]
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let count = var_get_boxed_overflow_safe(
@@ -124,7 +125,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_fill_new" => {
+        OpKind::ListFillNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let count = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -162,7 +163,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_from_range" => {
+        OpKind::ListFromRange => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let start = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -211,7 +212,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_append" => {
+        OpKind::ListAppend => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -250,7 +251,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_pop" => {
+        OpKind::ListPop => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -288,7 +289,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_extend" => {
+        OpKind::ListExtend => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -326,7 +327,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_insert" => {
+        OpKind::ListInsert => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -375,7 +376,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_remove" => {
+        OpKind::ListRemove => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -413,7 +414,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_clear" => {
+        OpKind::ListClear => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -440,7 +441,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_copy" => {
+        OpKind::ListCopy => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -467,7 +468,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_reverse" => {
+        OpKind::ListReverse => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -494,7 +495,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_count" => {
+        OpKind::ListCount => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -532,7 +533,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_index" => {
+        OpKind::ListIndex => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -570,7 +571,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "list_index_range" => {
+        OpKind::ListIndexRange => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -632,7 +633,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "tuple_from_list" => {
+        OpKind::TupleFromList => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let list = var_get_boxed_overflow_safe(
                 &mut *module,

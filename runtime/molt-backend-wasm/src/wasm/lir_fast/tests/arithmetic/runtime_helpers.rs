@@ -10,6 +10,7 @@ fn unary_carrier_function(opcode: OpCode, operand_ty: TirType) -> (TirFunction, 
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(0)],
@@ -107,6 +108,7 @@ fn unary_proven_numeric_results_keep_raw_operations_and_float_signs() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Neg,
         operands: vec![operand],
@@ -173,6 +175,7 @@ fn dynbox_or_retains_selected_operand_result() {
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Or,
         operands: vec![ValueId(0), ValueId(1)],
@@ -223,6 +226,7 @@ fn dynbox_unary_scalar_helpers_stay_lir_fast_runtime_calls() {
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0)],
@@ -259,6 +263,7 @@ fn dynbox_pow_stays_lir_fast_runtime_call() {
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Pow,
         operands: vec![ValueId(0), ValueId(1)],
@@ -303,6 +308,7 @@ fn dynbox_binary_bitwise_and_shift_helpers_stay_lir_fast_runtime_calls() {
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0), ValueId(1)],
@@ -349,6 +355,7 @@ fn bool_bitwise_results_stay_bool1_without_boxed_runtime_calls() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         for (id, value) in [(lhs, true), (rhs, false)] {
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstBool,
                 operands: vec![],
@@ -358,6 +365,7 @@ fn bool_bitwise_results_stay_bool1_without_boxed_runtime_calls() {
             });
         }
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![lhs, rhs],
@@ -413,6 +421,7 @@ fn raw_bitwise_operands_with_boxed_results_use_boxed_runtime_calls() {
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0), ValueId(1)],
@@ -465,6 +474,7 @@ fn integer_invert_with_raw_input_and_boxed_result_uses_boxed_runtime() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BitNot,
         operands: vec![ValueId(0)],
@@ -528,6 +538,7 @@ fn dynbox_inplace_arithmetic_uses_generated_numeric_lir_helpers() {
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0), ValueId(1)],
@@ -570,6 +581,7 @@ fn binary_float_divrem_boxed_results_do_not_enter_raw_carriers() {
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0), ValueId(1)],

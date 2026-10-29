@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 mod cargo_test_artifacts {
     include!(concat!(
@@ -16,7 +17,7 @@ mod native_object_execution {
 fn task_factory(
     name: &str,
     poll: &str,
-    kind: &str,
+    task_kind: &str,
     arity: usize,
     has_closure: bool,
     extent: i64,
@@ -32,6 +33,14 @@ fn task_factory(
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: Some(
+            if has_closure {
+                OpKind::FuncNewClosure
+            } else {
+                OpKind::FuncNew
+            }
+            .into(),
+        ),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: if has_closure {
@@ -41,20 +50,9 @@ fn task_factory(
         },
         results: vec![result],
         attrs: AttrDict::from([
-            (
-                "_original_kind".into(),
-                AttrValue::Str(
-                    if has_closure {
-                        "func_new_closure"
-                    } else {
-                        "func_new"
-                    }
-                    .into(),
-                ),
-            ),
             ("s_value".into(), AttrValue::Str(poll.into())),
             ("value".into(), AttrValue::Int(arity as i64)),
-            ("task_kind".into(), AttrValue::Str(kind.into())),
+            ("task_kind".into(), AttrValue::Str(task_kind.into())),
             ("task_closure_size".into(), AttrValue::Int(extent)),
         ]),
         source_span: None,

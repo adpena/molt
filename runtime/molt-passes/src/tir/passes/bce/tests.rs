@@ -12,6 +12,7 @@ use crate::tir::values::{TirValue, ValueId};
 
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -32,6 +33,7 @@ fn make_const_int(result: ValueId, value: i64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -42,9 +44,10 @@ fn make_const_int(result: ValueId, value: i64) -> TirOp {
 }
 
 fn make_len_primitive(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
-    let mut attrs = AttrDict::new();
-    attrs.insert("_original_kind".into(), AttrValue::Str("len".into()));
+    let attrs = AttrDict::new();
+
     TirOp {
+        origin: Some(molt_ir::OpKind::Len),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
@@ -974,6 +977,7 @@ fn while_lt_len_container_index_marked_safe() {
                 .unwrap();
             lookup.opcode = OpCode::CallBuiltin;
             lookup.attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+            lookup.origin = None;
         }
         let stats = run_bce(&mut candidate);
         let index = candidate.blocks[&body_id]

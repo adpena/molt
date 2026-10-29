@@ -5,7 +5,8 @@
 //! I64+I64), we emit native LLVM instructions; when types are dynamic
 //! (DynBox), we emit calls to the Molt runtime.
 
-#[cfg(feature = "llvm")]
+#[cfg(all(test, feature = "llvm"))]
+use molt_ir::OpKind;
 use std::{cell::RefCell, collections::HashMap};
 
 #[cfg(feature = "llvm")]
@@ -1006,41 +1007,6 @@ mod operation_shape_tests {
     use crate::tir::values::ValueId;
 
     #[test]
-    fn retired_typed_origins_are_rejected_before_llvm_module_mutation() {
-        for (kind, operands) in [("store_init", 2), ("guarded_field_init", 4)] {
-            let context = inkwell::context::Context::create();
-            let backend = LlvmBackend::new(&context, "retired_origin_admission");
-            let before = backend.module.print_to_string().to_string();
-            let mut func = TirFunction::new(
-                "retired_store".into(),
-                vec![],
-                TirType::None,
-                molt_ir::FunctionReturnAbi::Void,
-            );
-            func.blocks
-                .get_mut(&func.entry_block)
-                .unwrap()
-                .ops
-                .push(TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::StoreAttr,
-                    operands: (0..operands).map(ValueId).collect(),
-                    results: vec![],
-                    attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
-                    source_span: None,
-                });
-            let error = try_lower_tir_to_llvm(&func, &backend)
-                .expect_err("retired typed origin must fail before mutation");
-            assert!(
-                error
-                    .to_string()
-                    .contains(&format!("retired compiler operation `{kind}`"))
-            );
-            assert_eq!(backend.module.print_to_string().to_string(), before);
-        }
-    }
-
-    #[test]
     fn malformed_preserved_metadata_is_rejected_before_llvm_module_mutation() {
         for (operands, owner, value) in [
             (1, Some("owner"), None),
@@ -1057,10 +1023,8 @@ mod operation_shape_tests {
                 TirType::None,
                 molt_ir::FunctionReturnAbi::Void,
             );
-            let mut attrs = AttrDict::from([(
-                "_original_kind".into(),
-                AttrValue::Str("code_slot_set".into()),
-            )]);
+            let origin = Some(OpKind::CodeSlotSet);
+            let mut attrs = AttrDict::from([]);
             if let Some(owner) = owner {
                 attrs.insert("s_value".into(), AttrValue::Str(owner.into()));
             }
@@ -1072,6 +1036,7 @@ mod operation_shape_tests {
                 .unwrap()
                 .ops
                 .push(TirOp {
+                    origin,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: (0..operands).map(ValueId).collect(),

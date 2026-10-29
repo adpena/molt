@@ -4,6 +4,7 @@ fn make_type_guard_op(operand: ValueId, result: ValueId, expected_type: &str) ->
     let mut attrs = AttrDict::new();
     attrs.insert("expected_type".into(), AttrValue::Str(expected_type.into()));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],

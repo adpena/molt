@@ -9,6 +9,7 @@ use crate::tir::values::{TirValue, ValueId};
 use inkwell::attributes::Attribute;
 use inkwell::context::Context;
 use inkwell::values::AnyValue;
+use molt_ir::OpKind;
 
 fn make_backend(ctx: &Context) -> LlvmBackend<'_> {
     let backend = LlvmBackend::new(ctx, "test");
@@ -59,6 +60,7 @@ fn assert_lowering_error_contains(err: &LlvmLoweringError, needle: &str) {
 
 fn const_none_def(result: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -90,6 +92,7 @@ fn lowering_error_for_single_op(
             entry.ops.push(const_none_def(value));
         }
         entry.ops.push(TirOp {
+            origin: None,
             dialect,
             opcode,
             operands,
@@ -113,6 +116,7 @@ fn const_int_def(result: ValueId, value: i64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -164,6 +168,7 @@ fn build_i64_add_func() -> (TirFunction, ValueId) {
     let v_sum = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -178,13 +183,13 @@ fn build_i64_add_func() -> (TirFunction, ValueId) {
 }
 
 /// Build a single-block function whose only op is a preserved `Copy`
-/// carrying `_original_kind = kind` with `n_operands` ConstNone operands and
+/// carrying `origin = kind` with `n_operands` ConstNone operands and
 /// (optionally) a result, then lower it and return the printed IR. Shared by
 /// the preserved-op passthrough-class regressions below.
 #[cfg(feature = "llvm")]
 fn lower_preserved_kind_ir(
     backend: &LlvmBackend<'_>,
-    kind: &str,
+    kind: OpKind,
     n_operands: usize,
     with_result: bool,
     s_value: Option<&str>,
@@ -202,11 +207,12 @@ fn lower_preserved_kind_ir(
         entry.ops.push(const_none_def(o));
     }
     let mut attrs = AttrDict::new();
-    attrs.insert("_original_kind".into(), AttrValue::Str(kind.to_string()));
+    let origin = Some(kind);
     if let Some(s) = s_value {
         attrs.insert("s_value".into(), AttrValue::Str(s.to_string()));
     }
     entry.ops.push(TirOp {
+        origin,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,

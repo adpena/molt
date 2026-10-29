@@ -3,17 +3,18 @@ use super::support::*;
 #[test]
 fn ordinary_task_initialization_is_success_only_and_preserves_result() {
     for (op_kind, task_kind) in [
-        ("alloc_task", "generator"),
-        ("alloc_task", "future"),
-        ("alloc_task", "coroutine"),
-        ("call_async", "future"),
+        (molt_ir::OpKind::AllocTask, "generator"),
+        (molt_ir::OpKind::AllocTask, "future"),
+        (molt_ir::OpKind::AllocTask, "coroutine"),
+        (molt_ir::OpKind::CallAsync, "future"),
     ] {
         for result in [None, Some("none"), Some("unused"), Some("task")] {
             let bound = result == Some("task");
             let mut allocation = wasm_test_op(op_kind, result, vec!["arg"]);
             allocation.s_value = Some("task_allocation_poll".into());
             allocation.value = Some(64);
-            allocation.task_kind = (op_kind == "alloc_task").then(|| task_kind.into());
+            allocation.task_kind =
+                (op_kind == molt_ir::OpKind::AllocTask).then(|| task_kind.into());
             let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
                 SimpleIR {
                     functions: vec![
@@ -24,7 +25,7 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
                             vec![
                                 allocation,
                                 wasm_test_op(
-                                    "ret",
+                                    molt_ir::OpKind::Ret,
                                     None,
                                     vec![if bound { "task" } else { "none" }],
                                 ),
@@ -34,7 +35,7 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
                             "task_allocation_poll",
                             vec!["task"],
                             None,
-                            vec![wasm_test_op("ret", None, vec!["task"])],
+                            vec![wasm_test_op(molt_ir::OpKind::Ret, None, vec!["task"])],
                         ),
                     ],
                     profile: None,
@@ -86,7 +87,7 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
                         .iter()
                         .any(|op| matches!(op, wasmparser::Operator::Return))
                 );
-                if op_kind == "alloc_task" && task_kind != "generator" {
+                if op_kind == molt_ir::OpKind::AllocTask && task_kind != "generator" {
                     let register = imports["task_register_execution"];
                     assert!(initialize[..end].iter().any(|op| matches!(op, wasmparser::Operator::Call {function_index} if *function_index == register)));
                 }

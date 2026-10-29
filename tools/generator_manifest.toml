@@ -338,7 +338,6 @@ discovery_only = false
 tool = "tools/gen_wasm_abi.py"
 outputs = [
   "runtime/molt-backend-native/src/exception_observer_abi.rs",
-  "runtime/molt-backend-wasm/src/wasm_abi_generated/bulk_memory_ops.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/callable_table.rs",
   "runtime/molt-backend-wasm/src/wasm_abi_generated/call_indirect.rs",
   "runtime/molt-wasm-facts/src/callable_table_generated.rs",
@@ -505,7 +504,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_luau_support_matrix.py"
 outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
-source = "runtime/molt-backend-luau/src/luau + runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds/runtime_requirements.py + tools/generator_io.py"
+source = "runtime/molt-backend-luau/src/luau + runtime/molt-ir/src/tir/op_kinds.toml + runtime/molt-ir/src/tir/op_kinds_generated.rs + tools/op_kinds/runtime_requirements.py + tools/structural_audit_rust.py + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 toolchains = []
 check_command = "tools/gen_luau_support_matrix.py --check"

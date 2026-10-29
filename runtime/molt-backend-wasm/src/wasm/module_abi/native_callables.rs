@@ -134,7 +134,7 @@ fn wasm_native_callable_abi(export_name: &str, abi: &str, arity: usize) -> Nativ
 impl NativeCallableRequest {
     fn from_op(op: &OpIR) -> Option<Self> {
         let export_name = op.native_callable_export.as_deref()?;
-        if op.kind != "invoke_ffi" {
+        if op.kind != molt_ir::OpKind::InvokeFfi {
             panic!(
                 "native callable export `{export_name}` is attached to unsupported op kind `{}`",
                 op.kind

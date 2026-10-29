@@ -10,15 +10,31 @@ fn compiler_bootstrap_fixture_has_object_return_linkage_on_every_exit() {
     .unwrap();
     assert_eq!(function.name, "molt_isolate_bootstrap");
     assert!(function.function_signature().unwrap().returns_value);
-    assert_eq!(function.ops.iter().filter(|op| op.kind == "ret").count(), 2);
-    assert!(!function.ops.iter().any(|op| op.kind == "ret_void"));
-    for returned in function.ops.iter().filter(|op| op.kind == "ret") {
+    assert_eq!(
+        function
+            .ops
+            .iter()
+            .filter(|op| op.kind == molt_ir::OpKind::Ret)
+            .count(),
+        2
+    );
+    assert!(
+        !function
+            .ops
+            .iter()
+            .any(|op| op.kind == molt_ir::OpKind::RetVoid)
+    );
+    for returned in function
+        .ops
+        .iter()
+        .filter(|op| op.kind == molt_ir::OpKind::Ret)
+    {
         let result = returned.args.as_ref().unwrap().first().unwrap();
         assert!(
             function
                 .ops
                 .iter()
-                .any(|op| op.kind == "const_none" && op.out.as_ref() == Some(result))
+                .any(|op| op.kind == molt_ir::OpKind::ConstNone && op.out.as_ref() == Some(result))
         );
     }
 }

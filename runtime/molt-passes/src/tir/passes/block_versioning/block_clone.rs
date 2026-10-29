@@ -53,6 +53,7 @@ pub(super) fn clone_block_with_fresh_values(
             .map(|&v| *remap.get(&v).unwrap_or(&v))
             .collect();
         new_ops.push(TirOp {
+            origin: op.origin,
             dialect: op.dialect,
             opcode: op.opcode,
             operands: new_operands,

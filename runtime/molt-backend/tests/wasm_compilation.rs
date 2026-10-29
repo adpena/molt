@@ -13,11 +13,8 @@ use molt_backend::{WasmBackend, WasmCompileOptions};
 use std::f64::consts::PI;
 use wasmparser::{Operator, Parser, Payload, TypeRef, Validator};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 fn compile_ir(ir: SimpleIR) -> Vec<u8> {
@@ -217,7 +214,7 @@ fn wasm_contains_name_fragment(wasm: &[u8], needle: &str) -> bool {
 }
 
 fn ret_value(name: &str) -> OpIR {
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec![name.to_string()]);
     ret
 }
@@ -233,7 +230,7 @@ fn empty_module_compiles_to_valid_wasm() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -255,7 +252,7 @@ fn module_registry_emits_valid_dense_module_id_dispatch() {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: name.to_string(),
         params: vec![],
-        ops: vec![op("ret_void")],
+        ops: vec![op(molt_ir::OpKind::RetVoid)],
         param_types: None,
         source_file: None,
         is_extern: false,
@@ -342,7 +339,7 @@ fn empty_module_is_structurally_valid_wasm() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -363,7 +360,7 @@ fn empty_module_exports_molt_main() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -389,7 +386,7 @@ fn empty_module_exports_memory() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -410,7 +407,7 @@ fn empty_module_exports_memory() {
 
 #[test]
 fn single_function_produces_code_section() {
-    let wasm = compile_single_function(vec![op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![op(molt_ir::OpKind::RetVoid)], &[]);
     let code_count = count_code_sections(&wasm);
     assert!(
         code_count > 0,
@@ -424,57 +421,57 @@ fn single_function_produces_code_section() {
 
 #[test]
 fn const_int_compiles() {
-    let mut c = op("const");
+    let mut c = op(molt_ir::OpKind::Const);
     c.value = Some(42);
     c.out = Some("v0".to_string());
 
     // Should not panic — the constant should be inlined as i64.const.
-    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![c, op(molt_ir::OpKind::RetVoid)], &[]);
     assert!(wasm.len() > 8);
 }
 
 #[test]
 fn const_float_compiles() {
-    let mut c = op("const_float");
+    let mut c = op(molt_ir::OpKind::ConstFloat);
     c.f_value = Some(PI);
     c.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![c, op(molt_ir::OpKind::RetVoid)], &[]);
     assert!(wasm.len() > 8);
 }
 
 #[test]
 fn const_none_compiles() {
-    let mut c = op("const_none");
+    let mut c = op(molt_ir::OpKind::ConstNone);
     c.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![c, op(molt_ir::OpKind::RetVoid)], &[]);
     assert!(wasm.len() > 8);
 }
 
 #[test]
 fn const_bool_true_compiles() {
-    let mut c = op("const_bool");
+    let mut c = op(molt_ir::OpKind::ConstBool);
     c.value = Some(1);
     c.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![c, op(molt_ir::OpKind::RetVoid)], &[]);
     assert!(wasm.len() > 8);
 }
 
 #[test]
 fn const_bool_false_compiles() {
-    let mut c = op("const_bool");
+    let mut c = op(molt_ir::OpKind::ConstBool);
     c.value = Some(0);
     c.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![c, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![c, op(molt_ir::OpKind::RetVoid)], &[]);
     assert!(wasm.len() > 8);
 }
 
 #[test]
 fn const_str_compiles_and_calls_string_from_bytes() {
-    let mut c = op("const_str");
+    let mut c = op(molt_ir::OpKind::ConstStr);
     c.s_value = Some("hello".to_string());
     c.out = Some("v0".to_string());
 
@@ -493,7 +490,7 @@ fn const_str_compiles_and_calls_string_from_bytes() {
 
 #[test]
 fn add_op_calls_add_import() {
-    let mut add = op("add");
+    let mut add = op(molt_ir::OpKind::Add);
     add.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     add.out = Some("v0".to_string());
 
@@ -508,12 +505,12 @@ fn add_op_calls_add_import() {
 
 #[test]
 fn scalar_type_hint_alone_does_not_select_wasm_str_concat() {
-    let mut add = op("add");
+    let mut add = op(molt_ir::OpKind::Add);
     add.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     add.out = Some("v0".to_string());
     add.type_hint = Some("str".to_string());
 
-    let mut inplace_add = op("inplace_add");
+    let mut inplace_add = op(molt_ir::OpKind::InplaceAdd);
     inplace_add.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     inplace_add.out = Some("v1".to_string());
     inplace_add.type_hint = Some("str".to_string());
@@ -529,12 +526,12 @@ fn scalar_type_hint_alone_does_not_select_wasm_str_concat() {
 
 #[test]
 fn scalar_type_hint_alone_does_not_select_wasm_truthiness_fast_imports() {
-    let mut bool_hint = op("bool");
+    let mut bool_hint = op(molt_ir::OpKind::Bool);
     bool_hint.args = Some(vec!["p0".to_string()]);
     bool_hint.out = Some("v0".to_string());
     bool_hint.type_hint = Some("bool".to_string());
 
-    let mut int_hint = op("cast_bool");
+    let mut int_hint = op(molt_ir::OpKind::CastBool);
     int_hint.args = Some(vec!["p1".to_string()]);
     int_hint.out = Some("v1".to_string());
     int_hint.type_hint = Some("int".to_string());
@@ -559,7 +556,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_truthiness_fast_imports() {
 
 #[test]
 fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
-    let mut hinted_len = op("len");
+    let mut hinted_len = op(molt_ir::OpKind::Len);
     hinted_len.args = Some(vec!["p0".to_string()]);
     hinted_len.out = Some("v0".to_string());
     hinted_len.type_hint = Some("str".to_string());
@@ -576,7 +573,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
         "unknown len operands should use generic len"
     );
 
-    let mut transport_len = op("len");
+    let mut transport_len = op(molt_ir::OpKind::Len);
     transport_len.args = Some(vec!["p0".to_string()]);
     transport_len.out = Some("v0".to_string());
     transport_len.container_type = Some("str".to_string());
@@ -593,7 +590,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
         "transport-only container_type=str should use generic len"
     );
 
-    let mut structured_len = op("len");
+    let mut structured_len = op(molt_ir::OpKind::Len);
     structured_len.args = Some(vec!["p0".to_string()]);
     structured_len.out = Some("v0".to_string());
 
@@ -611,7 +608,7 @@ fn scalar_type_hint_alone_does_not_select_wasm_len_specialization() {
 
 #[test]
 fn sub_op_calls_sub_import() {
-    let mut sub = op("sub");
+    let mut sub = op(molt_ir::OpKind::Sub);
     sub.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     sub.out = Some("v0".to_string());
 
@@ -625,7 +622,7 @@ fn sub_op_calls_sub_import() {
 
 #[test]
 fn mul_op_calls_mul_import() {
-    let mut mul = op("mul");
+    let mut mul = op(molt_ir::OpKind::Mul);
     mul.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     mul.out = Some("v0".to_string());
 
@@ -646,11 +643,14 @@ fn call_func_uses_dispatch() {
     // call_func args: [callee, arg0, arg1, ...] — first is the callee object.
     // The WASM backend now outlines call_func via call_func_dispatch (spills
     // args to linear memory instead of using callargs_new/call_bind_ic).
-    let mut call = op("call_func");
+    let mut call = op(molt_ir::OpKind::CallFunc);
     call.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     call.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1", "p2"]);
+    let wasm = compile_single_function(
+        vec![call, op(molt_ir::OpKind::RetVoid)],
+        &["p0", "p1", "p2"],
+    );
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "call_func_dispatch") > 0,
@@ -660,29 +660,29 @@ fn call_func_uses_dispatch() {
 
 #[test]
 fn call_bind_without_output_compiles() {
-    let mut call = op("call_bind");
+    let mut call = op(molt_ir::OpKind::CallBind);
     call.args = Some(vec!["p0".to_string(), "p1".to_string()]);
 
-    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
+    let wasm = compile_single_function(vec![call, op(molt_ir::OpKind::RetVoid)], &["p0", "p1"]);
     validate_wasm(&wasm).expect("output-less call_bind should still produce valid wasm");
 }
 
 #[test]
 fn call_indirect_without_output_compiles() {
-    let mut call = op("call_indirect");
+    let mut call = op(molt_ir::OpKind::CallIndirect);
     call.args = Some(vec!["p0".to_string(), "p1".to_string()]);
 
-    let wasm = compile_single_function(vec![call, op("ret_void")], &["p0", "p1"]);
+    let wasm = compile_single_function(vec![call, op(molt_ir::OpKind::RetVoid)], &["p0", "p1"]);
     validate_wasm(&wasm).expect("output-less call_indirect should still produce valid wasm");
 }
 
 fn tail_call_candidate_ir() -> SimpleIR {
-    let mut call = op("call_internal");
+    let mut call = op(molt_ir::OpKind::CallInternal);
     call.s_value = Some("tail_target".to_string());
     call.args = Some(vec!["p0".to_string()]);
     call.out = Some("v0".to_string());
 
-    let mut recursive_call = op("call_internal");
+    let mut recursive_call = op(molt_ir::OpKind::CallInternal);
     recursive_call.s_value = Some("tail_target".to_string());
     recursive_call.args = Some(vec!["p0".to_string()]);
     recursive_call.out = Some("v1".to_string());
@@ -773,12 +773,12 @@ fn tail_call_default_env_keeps_feature_disabled() {
 
 #[test]
 fn call_guarded_escaped_function_dispatches_on_object() {
-    let mut func_new = op("func_new");
+    let mut func_new = op(molt_ir::OpKind::FuncNew);
     func_new.s_value = Some("guarded_target".to_string());
     func_new.value = Some(2);
     func_new.out = Some("v_func".to_string());
 
-    let mut call = op("call_guarded");
+    let mut call = op(molt_ir::OpKind::CallGuarded);
     call.s_value = Some("guarded_target".to_string());
     call.args = Some(vec![
         "v_func".to_string(),
@@ -805,7 +805,7 @@ fn call_guarded_escaped_function_dispatches_on_object() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "guarded_target".to_string(),
                 params: vec!["arg0".to_string(), "arg1".to_string()],
-                ops: vec![op("ret_void")],
+                ops: vec![op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -830,19 +830,19 @@ fn call_guarded_escaped_function_dispatches_on_object() {
 
 #[test]
 fn class_def_uses_guarded_class_def_import() {
-    let mut class_name = op("const_str");
+    let mut class_name = op(molt_ir::OpKind::ConstStr);
     class_name.s_value = Some("A".to_string());
     class_name.out = Some("v_name".to_string());
 
-    let mut attr_name = op("const_str");
+    let mut attr_name = op(molt_ir::OpKind::ConstStr);
     attr_name.s_value = Some("x".to_string());
     attr_name.out = Some("v_attr".to_string());
 
-    let mut attr_value = op("const");
+    let mut attr_value = op(molt_ir::OpKind::Const);
     attr_value.value = Some(1);
     attr_value.out = Some("v_value".to_string());
 
-    let mut class_def = op("class_def");
+    let mut class_def = op(molt_ir::OpKind::ClassDef);
     class_def.args = Some(vec![
         "v_name".to_string(),
         "v_attr".to_string(),
@@ -871,27 +871,27 @@ fn class_def_uses_guarded_class_def_import() {
 
 #[test]
 fn class_def_pins_spilled_refs_across_guarded_helper() {
-    let mut class_name = op("const_str");
+    let mut class_name = op(molt_ir::OpKind::ConstStr);
     class_name.s_value = Some("Huge".to_string());
     class_name.out = Some("v_name".to_string());
 
-    let mut attr_name_a = op("const_str");
+    let mut attr_name_a = op(molt_ir::OpKind::ConstStr);
     attr_name_a.s_value = Some("a".to_string());
     attr_name_a.out = Some("v_attr_a".to_string());
 
-    let mut attr_name_b = op("const_str");
+    let mut attr_name_b = op(molt_ir::OpKind::ConstStr);
     attr_name_b.s_value = Some("b".to_string());
     attr_name_b.out = Some("v_attr_b".to_string());
 
-    let mut attr_value_a = op("const");
+    let mut attr_value_a = op(molt_ir::OpKind::Const);
     attr_value_a.value = Some(1);
     attr_value_a.out = Some("v_value_a".to_string());
 
-    let mut attr_value_b = op("const");
+    let mut attr_value_b = op(molt_ir::OpKind::Const);
     attr_value_b.value = Some(2);
     attr_value_b.out = Some("v_value_b".to_string());
 
-    let mut class_def = op("class_def");
+    let mut class_def = op(molt_ir::OpKind::ClassDef);
     class_def.args = Some(vec![
         "v_name".to_string(),
         "v_attr_a".to_string(),
@@ -943,11 +943,11 @@ fn class_def_pins_spilled_refs_across_guarded_helper() {
 
 #[test]
 fn ret_with_value_compiles() {
-    let mut c = op("const");
+    let mut c = op(molt_ir::OpKind::Const);
     c.value = Some(42);
     c.out = Some("v0".to_string());
 
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["v0".to_string()]);
 
     let wasm = compile_single_function(vec![c, ret], &[]);
@@ -956,7 +956,7 @@ fn ret_with_value_compiles() {
 
 #[test]
 fn function_without_explicit_ret_still_validates() {
-    let mut c = op("const");
+    let mut c = op(molt_ir::OpKind::Const);
     c.value = Some(42);
     c.out = Some("v0".to_string());
 
@@ -972,7 +972,7 @@ fn multiple_functions_compile() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
-                ops: vec![op("ret_void")],
+                ops: vec![op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -985,7 +985,7 @@ fn multiple_functions_compile() {
                 name: "molt_helper".to_string(),
                 params: vec!["p0".to_string()],
                 ops: vec![{
-                    let mut ret = op("ret");
+                    let mut ret = op(molt_ir::OpKind::Ret);
                     ret.args = Some(vec!["p0".to_string()]);
                     ret
                 }],
@@ -1009,17 +1009,17 @@ fn multiple_functions_compile() {
 
 #[test]
 fn try_block_compiles() {
-    let mut dict_new = op("dict_new");
+    let mut dict_new = op(molt_ir::OpKind::DictNew);
     dict_new.out = Some("v0".to_string());
     dict_new.args = Some(vec![]);
 
     let wasm = compile_single_function(
         vec![
-            op("try_start"),
+            op(molt_ir::OpKind::TryStart),
             dict_new,
-            op("check_exception"),
-            op("try_end"),
-            op("ret_void"),
+            op(molt_ir::OpKind::CheckException),
+            op(molt_ir::OpKind::TryEnd),
+            op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );
@@ -1028,25 +1028,25 @@ fn try_block_compiles() {
 
 #[test]
 fn nested_try_blocks_compile() {
-    let mut dict1 = op("dict_new");
+    let mut dict1 = op(molt_ir::OpKind::DictNew);
     dict1.out = Some("v0".to_string());
     dict1.args = Some(vec![]);
 
-    let mut dict2 = op("dict_new");
+    let mut dict2 = op(molt_ir::OpKind::DictNew);
     dict2.out = Some("v1".to_string());
     dict2.args = Some(vec![]);
 
     let wasm = compile_single_function(
         vec![
-            op("try_start"),
+            op(molt_ir::OpKind::TryStart),
             dict1,
-            op("check_exception"),
-            op("try_start"),
+            op(molt_ir::OpKind::CheckException),
+            op(molt_ir::OpKind::TryStart),
             dict2,
-            op("check_exception"),
-            op("try_end"),
-            op("try_end"),
-            op("ret_void"),
+            op(molt_ir::OpKind::CheckException),
+            op(molt_ir::OpKind::TryEnd),
+            op(molt_ir::OpKind::TryEnd),
+            op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );
@@ -1059,11 +1059,11 @@ fn nested_try_blocks_compile() {
 
 #[test]
 fn dict_literal_calls_full_pairs_import_without_incremental_mutation() {
-    let mut d = op("dict_new");
+    let mut d = op(molt_ir::OpKind::DictNew);
     d.out = Some("v0".to_string());
     d.args = Some(vec![]);
 
-    let wasm = compile_single_function(vec![d, op("ret_void")], &[]);
+    let wasm = compile_single_function(vec![d, op(molt_ir::OpKind::RetVoid)], &[]);
     let calls = import_call_counts(&wasm);
     assert_eq!(
         count_import(&calls, "dict_from_pairs"),
@@ -1081,7 +1081,7 @@ fn dict_literal_calls_full_pairs_import_without_incremental_mutation() {
 
 /// Fixed-arity lists borrow one private scratch word range through the
 /// canonical constructor; the incremental builder is a host API only.
-fn assert_list_uses_word_range_constructor(kind: &str, wasm: &[u8]) {
+fn assert_list_uses_word_range_constructor(kind: molt_ir::OpKind, wasm: &[u8]) {
     let calls = import_call_counts(wasm);
     for builder in [
         "list_builder_new",
@@ -1113,27 +1113,27 @@ fn assert_list_uses_word_range_constructor(kind: &str, wasm: &[u8]) {
 
 #[test]
 fn list_new_compiles_using_word_range_constructor() {
-    let mut list = op("list_new");
+    let mut list = op(molt_ir::OpKind::ListNew);
     list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     list.out = Some("v0".to_string());
 
-    let wasm = compile_single_function(vec![list, op("ret_void")], &["p0", "p1"]);
-    assert_list_uses_word_range_constructor("list_new", &wasm);
+    let wasm = compile_single_function(vec![list, op(molt_ir::OpKind::RetVoid)], &["p0", "p1"]);
+    assert_list_uses_word_range_constructor(molt_ir::OpKind::ListNew, &wasm);
 }
 
 #[test]
 fn build_list_compiles_using_word_range_constructor() {
-    let mut list = op("build_list");
+    let mut list = op(molt_ir::OpKind::BuildList);
     list.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     list.out = Some("v0".to_string());
 
     let wasm = compile_single_function(vec![list, ret_value("v0")], &["p0", "p1"]);
-    assert_list_uses_word_range_constructor("build_list", &wasm);
+    assert_list_uses_word_range_constructor(molt_ir::OpKind::BuildList, &wasm);
 }
 
 #[test]
 fn iter_next_unboxed_compiles_using_iter_next_and_index_imports() {
-    let mut iter_next = op("iter_next_unboxed");
+    let mut iter_next = op(molt_ir::OpKind::IterNextUnboxed);
     iter_next.args = Some(vec!["p0".to_string()]);
     iter_next.var = Some("value".to_string());
     iter_next.out = Some("done".to_string());
@@ -1152,10 +1152,10 @@ fn iter_next_unboxed_compiles_using_iter_next_and_index_imports() {
 
 #[test]
 fn guard_tag_compiles_using_guard_type_import() {
-    let mut guard = op("guard_tag");
+    let mut guard = op(molt_ir::OpKind::GuardTag);
     guard.args = Some(vec!["p0".to_string(), "p1".to_string()]);
 
-    let wasm = compile_single_function(vec![guard, op("ret_void")], &["p0", "p1"]);
+    let wasm = compile_single_function(vec![guard, op(molt_ir::OpKind::RetVoid)], &["p0", "p1"]);
     let calls = import_call_counts(&wasm);
     assert!(
         count_import(&calls, "guard_type") > 0,
@@ -1165,7 +1165,7 @@ fn guard_tag_compiles_using_guard_type_import() {
 
 #[test]
 fn alloc_task_generator_keeps_task_new_import() {
-    let mut alloc_task = op("alloc_task");
+    let mut alloc_task = op(molt_ir::OpKind::AllocTask);
     alloc_task.s_value = Some("__main_____f_poll".to_string());
     alloc_task.value = Some(48);
     alloc_task.task_kind = Some("generator".to_string());
@@ -1190,7 +1190,7 @@ fn alloc_task_generator_keeps_task_new_import() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "__main_____f_poll".to_string(),
                 params: vec!["self".to_string()],
-                ops: vec![op("ret_void")],
+                ops: vec![op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1210,7 +1210,7 @@ fn alloc_task_generator_keeps_task_new_import() {
 
 #[test]
 fn alloc_task_future_without_args_compiles_without_resolve_local() {
-    let mut alloc_task = op("alloc_task");
+    let mut alloc_task = op(molt_ir::OpKind::AllocTask);
     alloc_task.s_value = Some("__main_____future_poll".to_string());
     alloc_task.value = Some(0);
     alloc_task.task_kind = Some("future".to_string());
@@ -1235,7 +1235,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "__main_____future_poll".to_string(),
                 params: vec!["self".to_string()],
-                ops: vec![op("ret_void")],
+                ops: vec![op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1252,7 +1252,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
 #[test]
 #[should_panic(expected = "call_async targets molt_async_sleep, expected *_poll")]
 fn call_async_rejects_non_poll_table_target() {
-    let mut call_async = op("call_async");
+    let mut call_async = op(molt_ir::OpKind::CallAsync);
     call_async.s_value = Some("molt_async_sleep".to_string());
     call_async.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     call_async.out = Some("v0".to_string());
@@ -1276,87 +1276,87 @@ fn call_async_rejects_non_poll_table_target() {
 
 #[test]
 fn list_from_intrinsic_list_survives_tir_roundtrip() {
-    let mut require_intrinsic = op("builtin_func");
+    let mut require_intrinsic = op(molt_ir::OpKind::BuiltinFunc);
     require_intrinsic.s_value = Some("molt_getargv".to_string());
     require_intrinsic.value = Some(0);
     require_intrinsic.out = Some("v0".to_string());
 
-    let mut callargs_new = op("callargs_new");
+    let mut callargs_new = op(molt_ir::OpKind::CallargsNew);
     callargs_new.out = Some("v1".to_string());
 
-    let mut call_indirect = op("call_indirect");
+    let mut call_indirect = op(molt_ir::OpKind::CallIndirect);
     call_indirect.args = Some(vec!["v0".to_string(), "v1".to_string()]);
     call_indirect.out = Some("v2".to_string());
 
-    let mut list_new = op("list_new");
+    let mut list_new = op(molt_ir::OpKind::ListNew);
     list_new.args = Some(vec![]);
     list_new.out = Some("v3".to_string());
     list_new.type_hint = Some("list".to_string());
 
-    let mut iter = op("iter");
+    let mut iter = op(molt_ir::OpKind::Iter);
     iter.args = Some(vec!["v2".to_string()]);
     iter.out = Some("v4".to_string());
     iter.type_hint = Some("iter".to_string());
 
-    let mut none_a = op("const_none");
+    let mut none_a = op(molt_ir::OpKind::ConstNone);
     none_a.out = Some("v5".to_string());
-    let mut none_b = op("const_none");
+    let mut none_b = op(molt_ir::OpKind::ConstNone);
     none_b.out = Some("v6".to_string());
 
-    let mut is_op = op("is");
+    let mut is_op = op(molt_ir::OpKind::Is);
     is_op.args = Some(vec!["v4".to_string(), "v6".to_string()]);
     is_op.out = Some("v7".to_string());
 
-    let mut if_op = op("if");
+    let mut if_op = op(molt_ir::OpKind::If);
     if_op.args = Some(vec!["v7".to_string()]);
     if_op.type_hint = Some("bool".to_string());
 
-    let mut err_msg = op("const_str");
+    let mut err_msg = op(molt_ir::OpKind::ConstStr);
     err_msg.s_value = Some("object is not iterable".to_string());
     err_msg.out = Some("v8".to_string());
 
-    let mut err_type = op("const_str");
+    let mut err_type = op(molt_ir::OpKind::ConstStr);
     err_type.s_value = Some("TypeError".to_string());
     err_type.out = Some("v9".to_string());
 
-    let mut err_args = op("tuple_new");
+    let mut err_args = op(molt_ir::OpKind::TupleNew);
     err_args.args = Some(vec!["v8".to_string()]);
     err_args.out = Some("v10".to_string());
     err_args.type_hint = Some("tuple".to_string());
 
-    let mut err_obj = op("exception_new");
+    let mut err_obj = op(molt_ir::OpKind::ExceptionNew);
     err_obj.args = Some(vec!["v9".to_string(), "v10".to_string()]);
     err_obj.out = Some("v11".to_string());
 
-    let mut raise_op = op("raise");
+    let mut raise_op = op(molt_ir::OpKind::Raise);
     raise_op.args = Some(vec!["v11".to_string()]);
     raise_op.out = Some("none".to_string());
 
-    let mut zero = op("const");
+    let mut zero = op(molt_ir::OpKind::Const);
     zero.value = Some(0);
     zero.out = Some("v12".to_string());
 
-    let mut one = op("const");
+    let mut one = op(molt_ir::OpKind::Const);
     one.value = Some(1);
     one.out = Some("v13".to_string());
 
-    let mut iter_next = op("iter_next");
+    let mut iter_next = op(molt_ir::OpKind::IterNext);
     iter_next.args = Some(vec!["v4".to_string()]);
     iter_next.out = Some("v14".to_string());
 
-    let mut done_index = op("index");
+    let mut done_index = op(molt_ir::OpKind::Index);
     done_index.args = Some(vec!["v14".to_string(), "v13".to_string()]);
     done_index.out = Some("v15".to_string());
 
-    let mut loop_break = op("loop_break_if_true");
+    let mut loop_break = op(molt_ir::OpKind::LoopBreakIfTrue);
     loop_break.args = Some(vec!["v15".to_string()]);
     loop_break.type_hint = Some("bool".to_string());
 
-    let mut value_index = op("index");
+    let mut value_index = op(molt_ir::OpKind::Index);
     value_index.args = Some(vec!["v14".to_string(), "v12".to_string()]);
     value_index.out = Some("v16".to_string());
 
-    let mut list_append = op("list_append");
+    let mut list_append = op(molt_ir::OpKind::ListAppend);
     list_append.args = Some(vec!["v3".to_string(), "v16".to_string()]);
     list_append.out = Some("none".to_string());
     list_append.type_hint = Some("list".to_string());
@@ -1364,13 +1364,13 @@ fn list_from_intrinsic_list_survives_tir_roundtrip() {
     let wasm = compile_single_function(
         vec![
             require_intrinsic,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             callargs_new,
             call_indirect,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             list_new,
             iter,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             none_a,
             none_b,
             is_op,
@@ -1379,24 +1379,24 @@ fn list_from_intrinsic_list_survives_tir_roundtrip() {
             err_type,
             err_args,
             err_obj,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             raise_op,
-            op("check_exception"),
-            op("end_if"),
+            op(molt_ir::OpKind::CheckException),
+            op(molt_ir::OpKind::EndIf),
             zero,
             one,
-            op("loop_start"),
+            op(molt_ir::OpKind::LoopStart),
             iter_next,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             done_index,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             loop_break,
             value_index,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             list_append,
-            op("check_exception"),
-            op("loop_continue"),
-            op("loop_end"),
+            op(molt_ir::OpKind::CheckException),
+            op(molt_ir::OpKind::LoopContinue),
+            op(molt_ir::OpKind::LoopEnd),
             ret_value("v3"),
         ],
         &[],
@@ -1410,15 +1410,22 @@ fn list_from_intrinsic_list_survives_tir_roundtrip() {
 
 #[test]
 fn comparison_ops_compile() {
-    for op_name in &["lt", "le", "gt", "ge", "eq", "ne"] {
-        let mut cmp = op(op_name);
+    for op_name in &[
+        molt_ir::OpKind::Lt,
+        molt_ir::OpKind::Le,
+        molt_ir::OpKind::Gt,
+        molt_ir::OpKind::Ge,
+        molt_ir::OpKind::Eq,
+        molt_ir::OpKind::Ne,
+    ] {
+        let mut cmp = op(*op_name);
         cmp.args = Some(vec!["p0".to_string(), "p1".to_string()]);
         cmp.out = Some("v0".to_string());
 
         let wasm = compile_single_function(vec![cmp, ret_value("v0")], &["p0", "p1"]);
         let calls = import_call_counts(&wasm);
         assert!(
-            count_import(&calls, op_name) > 0,
+            count_import(&calls, op_name.as_str()) > 0,
             "{op_name} op should call {op_name} import"
         );
     }
@@ -1430,7 +1437,7 @@ fn comparison_ops_compile() {
 
 #[test]
 fn missing_singleton_compiles() {
-    let mut m = op("missing");
+    let mut m = op(molt_ir::OpKind::Missing);
     m.out = Some("v0".to_string());
 
     let wasm = compile_single_function(vec![m, ret_value("v0")], &[]);
@@ -1443,7 +1450,7 @@ fn missing_singleton_compiles() {
 
 #[test]
 fn not_implemented_singleton_compiles() {
-    let mut m = op("const_not_implemented");
+    let mut m = op(molt_ir::OpKind::ConstNotImplemented);
     m.out = Some("v0".to_string());
 
     let wasm = compile_single_function(vec![m, ret_value("v0")], &[]);
@@ -1456,7 +1463,7 @@ fn not_implemented_singleton_compiles() {
 
 #[test]
 fn ellipsis_singleton_compiles() {
-    let mut m = op("const_ellipsis");
+    let mut m = op(molt_ir::OpKind::ConstEllipsis);
     m.out = Some("v0".to_string());
 
     let wasm = compile_single_function(vec![m, ret_value("v0")], &[]);
@@ -1469,32 +1476,32 @@ fn ellipsis_singleton_compiles() {
 
 #[test]
 fn jumpful_br_if_function_validates() {
-    let mut cond = op("const_bool");
+    let mut cond = op(molt_ir::OpKind::ConstBool);
     cond.value = Some(1);
     cond.out = Some("v0".to_string());
 
-    let mut br_if = op("br_if");
+    let mut br_if = op(molt_ir::OpKind::BrIf);
     br_if.args = Some(vec!["v0".to_string()]);
     br_if.value = Some(2);
 
-    let mut one = op("const");
+    let mut one = op(molt_ir::OpKind::Const);
     one.value = Some(1);
     one.out = Some("v1".to_string());
 
-    let mut jump = op("jump");
+    let mut jump = op(molt_ir::OpKind::Jump);
     jump.value = Some(3);
 
-    let mut label_then = op("label");
+    let mut label_then = op(molt_ir::OpKind::Label);
     label_then.value = Some(2);
 
-    let mut two = op("const");
+    let mut two = op(molt_ir::OpKind::Const);
     two.value = Some(2);
     two.out = Some("v1".to_string());
 
-    let mut label_join = op("label");
+    let mut label_join = op(molt_ir::OpKind::Label);
     label_join.value = Some(3);
 
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["v1".to_string()]);
 
     let wasm = compile_single_function(
@@ -1506,29 +1513,29 @@ fn jumpful_br_if_function_validates() {
 
 #[test]
 fn wasm_does_not_split_non_linear_control_functions() {
-    let mut cond = op("const_bool");
+    let mut cond = op(molt_ir::OpKind::ConstBool);
     cond.value = Some(1);
     cond.out = Some("v0".to_string());
 
-    let mut br_if = op("br_if");
+    let mut br_if = op(molt_ir::OpKind::BrIf);
     br_if.args = Some(vec!["v0".to_string()]);
     br_if.value = Some(2);
 
-    let mut one = op("const");
+    let mut one = op(molt_ir::OpKind::Const);
     one.value = Some(1);
     one.out = Some("v1".to_string());
 
-    let mut jump = op("jump");
+    let mut jump = op(molt_ir::OpKind::Jump);
     jump.value = Some(3);
 
-    let mut label_then = op("label");
+    let mut label_then = op(molt_ir::OpKind::Label);
     label_then.value = Some(2);
 
-    let mut two = op("const");
+    let mut two = op(molt_ir::OpKind::Const);
     two.value = Some(2);
     two.out = Some("v1".to_string());
 
-    let mut label_join = op("label");
+    let mut label_join = op(molt_ir::OpKind::Label);
     label_join.value = Some(3);
 
     let wasm = compile_ir_with_env(
@@ -1567,11 +1574,11 @@ fn wasm_does_not_split_non_linear_control_functions() {
 
 #[test]
 fn wasm_preserves_frontend_module_chunk_boundaries() {
-    let mut one = op("const");
+    let mut one = op(molt_ir::OpKind::Const);
     one.value = Some(1);
     one.out = Some("v1".to_string());
 
-    let mut two = op("const");
+    let mut two = op(molt_ir::OpKind::Const);
     two.value = Some(2);
     two.out = Some("v2".to_string());
 
@@ -1581,7 +1588,7 @@ fn wasm_preserves_frontend_module_chunk_boundaries() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "app__molt_module_chunk_6".to_string(),
                 params: vec!["__molt_module_obj__".to_string()],
-                ops: vec![one, two, op("ret_void")],
+                ops: vec![one, two, op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,

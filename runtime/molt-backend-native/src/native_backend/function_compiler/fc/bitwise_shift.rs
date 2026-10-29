@@ -1,25 +1,26 @@
 use super::super::*;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
+use molt_ir::OpKind;
 
-/// Bitwise and shift kind authority for [`handle_bitwise_shift_op`]. Keep this
-/// disjoint from [`super::arith::HANDLED_KINDS`] so scalar arithmetic does not
-/// grow back into a monolithic operator bucket.
+// Bitwise and shift kind authority for [`handle_bitwise_shift_op`]. Keep this
+// disjoint from [`super::arith::HANDLED_KINDS`] so scalar arithmetic does not
+// grow back into a monolithic operator bucket.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "bit_or",
-    "inplace_bit_or",
-    "bit_and",
-    "inplace_bit_and",
-    "bit_xor",
-    "inplace_bit_xor",
-    "lshift",
-    "shl",
-    "inplace_lshift",
-    "rshift",
-    "shr",
-    "inplace_rshift",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::BitOr,
+    OpKind::InplaceBitOr,
+    OpKind::BitAnd,
+    OpKind::InplaceBitAnd,
+    OpKind::BitXor,
+    OpKind::InplaceBitXor,
+    OpKind::Lshift,
+    OpKind::Shl,
+    OpKind::InplaceLshift,
+    OpKind::Rshift,
+    OpKind::Shr,
+    OpKind::InplaceRshift,
+);
 
 /// Cranelift codegen handlers for bitwise and shift ops.
 #[cfg(feature = "native-backend")]
@@ -63,8 +64,8 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
         )
     };
 
-    match op.kind.as_str() {
-        "bit_or" => {
+    match op.kind {
+        OpKind::BitOr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
                 let lhs_name = &args[0];
@@ -191,7 +192,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "inplace_bit_or" => {
+        OpKind::InplaceBitOr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -277,7 +278,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bit_and" => {
+        OpKind::BitAnd => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
                 let lhs_name = &args[0];
@@ -403,7 +404,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "inplace_bit_and" => {
+        OpKind::InplaceBitAnd => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -489,7 +490,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bit_xor" => {
+        OpKind::BitXor => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
                 let lhs_name = &args[0];
@@ -615,7 +616,7 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "inplace_bit_xor" => {
+        OpKind::InplaceBitXor => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -701,12 +702,12 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "lshift" | "shl" | "inplace_lshift" => {
+        OpKind::Lshift | OpKind::Shl | OpKind::InplaceLshift => {
             // `<<` and `<<=`.  The inplace variant differs ONLY in the
             // boxed runtime symbol (molt_inplace_lshift tries __ilshift__
             // before the binary __lshift__/__rlshift__ chain); builtin int
             // has no in-place dunder so there is no fast-lane divergence.
-            let boxed_sym = if op.kind == "inplace_lshift" {
+            let boxed_sym = if op.kind == OpKind::InplaceLshift {
                 "molt_inplace_lshift"
             } else {
                 "molt_lshift"
@@ -748,10 +749,10 @@ pub(in crate::native_backend::function_compiler) fn handle_bitwise_shift_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "rshift" | "shr" | "inplace_rshift" => {
+        OpKind::Rshift | OpKind::Shr | OpKind::InplaceRshift => {
             // `>>` and `>>=`.  Inplace variant: molt_inplace_rshift tries
             // __irshift__ before the binary chain.
-            let boxed_sym = if op.kind == "inplace_rshift" {
+            let boxed_sym = if op.kind == OpKind::InplaceRshift {
                 "molt_inplace_rshift"
             } else {
                 "molt_rshift"

@@ -8,6 +8,7 @@ use crate::tir::values::ValueId;
 /// Helper to make a simple TirOp.
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -183,20 +184,18 @@ fn object_new_bound_copied_into_container_escapes() {
     );
 }
 
-/// Build a `StoreAttr` op with the given `_original_kind` spelling targeting
+/// Build a `StoreAttr` op with the given `origin` spelling targeting
 /// `target` (operand 0). The frontend's offset-keyed `store` form is a
 /// typed-slot write; everything else (`set_attr_generic_ptr`, …)
 /// is dict-routed.
-fn make_store_attr(original_kind: &str, target: ValueId, value: ValueId) -> TirOp {
+fn make_store_attr(original_kind: molt_ir::OpKind, target: ValueId, value: ValueId) -> TirOp {
     let mut attrs = AttrDict::new();
-    if original_kind == "store" {
+    if original_kind == molt_ir::OpKind::Store {
         attrs.insert("value".into(), AttrValue::Int(0));
     }
-    attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str(original_kind.into()),
-    );
+
     TirOp {
+        origin: Some(original_kind),
         dialect: Dialect::Molt,
         opcode: OpCode::StoreAttr,
         operands: vec![target, value],
@@ -206,16 +205,18 @@ fn make_store_attr(original_kind: &str, target: ValueId, value: ValueId) -> TirO
     }
 }
 
-/// Build a `Copy` op carrying an `_original_kind` passthrough (the form the
+/// Build a `Copy` op carrying an `origin` passthrough (the form the
 /// SSA lift assigns to SimpleIR ops without a dedicated TIR opcode, e.g.
 /// container constructors like `list_new`/`dict_new`).
-fn make_passthrough(original_kind: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
-    let mut attrs = AttrDict::new();
-    attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str(original_kind.into()),
-    );
+fn make_passthrough(
+    original_kind: molt_ir::OpKind,
+    operands: Vec<ValueId>,
+    results: Vec<ValueId>,
+) -> TirOp {
+    let attrs = AttrDict::new();
+
     TirOp {
+        origin: Some(original_kind),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands,
@@ -227,7 +228,7 @@ fn make_passthrough(original_kind: &str, operands: Vec<ValueId>, results: Vec<Va
 
 /// Regression for the real production lowering: container constructors
 /// (`list_new`/`dict_new`/…) have no dedicated TIR opcode and ride the
-/// `OpCode::Copy` `_original_kind` passthrough. A freshly-constructed object
+/// `OpCode::Copy` `origin` passthrough. A freshly-constructed object
 /// passed *directly* as such a constructor's operand — `obj = ObjectNewBound;
 /// lst = Copy[list_new] obj` — must be classified `GlobalEscape`. Before the
 /// fix the escape pass treated every `Copy` as a pure no-escape move, so the
@@ -252,9 +253,11 @@ fn object_new_bound_into_list_new_passthrough_escapes() {
         vec![class_ref],
         vec![inst_val],
     ));
-    entry
-        .ops
-        .push(make_passthrough("list_new", vec![inst_val], vec![list_val]));
+    entry.ops.push(make_passthrough(
+        molt_ir::OpKind::ListNew,
+        vec![inst_val],
+        vec![list_val],
+    ));
     entry.terminator = Terminator::Return {
         values: vec![list_val],
     };
@@ -294,6 +297,7 @@ fn object_new_bound_into_dict_new_passthrough_escapes() {
         ..make_op(OpCode::ConstStr, vec![], vec![key_val])
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ObjectNewBound,
         operands: vec![class_ref],
@@ -302,7 +306,7 @@ fn object_new_bound_into_dict_new_passthrough_escapes() {
         source_span: None,
     });
     entry.ops.push(make_passthrough(
-        "dict_new",
+        molt_ir::OpKind::DictNew,
         vec![key_val, inst_val],
         vec![dict_val],
     ));
@@ -334,9 +338,11 @@ fn generic_store_through_move_alias_is_global_escape() {
     entry
         .ops
         .push(make_op(OpCode::Copy, vec![instance], vec![alias]));
-    entry
-        .ops
-        .push(make_store_attr("set_attr_generic_ptr", alias, value));
+    entry.ops.push(make_store_attr(
+        molt_ir::OpKind::SetAttrGenericPtr,
+        alias,
+        value,
+    ));
     entry.terminator = Terminator::Return { values: vec![] };
 
     let escapes = analyze(&func);
@@ -531,6 +537,7 @@ fn make_op_with_attrs(
     attrs: AttrDict,
 ) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

@@ -21,6 +21,7 @@
 //! becomes a thin delegating arm per extracted family.
 
 use super::*;
+use molt_ir::OpKind;
 
 /// Control-flow signal a family handler returns to `compile_func_inner`'s
 /// dispatch loop, so a handler whose arm body used `continue` on the outer
@@ -36,6 +37,16 @@ use super::*;
 pub(in crate::native_backend::function_compiler) enum OpFlow {
     Proceed,
     Continue,
+}
+
+// One family declaration produces both its typed census and its dispatch pattern.
+macro_rules! define_native_op_kinds {
+    ($pattern:ident, $slice:ident; $($kind:path),* $(,)?) => {
+        macro_rules! $pattern { () => { $($kind)|* }; }
+        pub(in crate::native_backend::function_compiler) use $pattern;
+        #[cfg(test)]
+        pub(in crate::native_backend::function_compiler) const $slice: &[OpKind] = &[$($kind),*];
+    };
 }
 
 #[cfg(feature = "native-backend")]
@@ -54,24 +65,24 @@ pub(in crate::native_backend::function_compiler) fn op_prefers_int_lane(
     scalar_fast_paths_enabled
         && (representation_plan.op_scalar_lane(op) == Some(ScalarKind::Int)
             || (matches!(
-                op.kind.as_str(),
-                "add"
-                    | "inplace_add"
-                    | "sub"
-                    | "inplace_sub"
-                    | "mul"
-                    | "inplace_mul"
-                    | "floordiv"
-                    | "inplace_floordiv"
-                    | "mod"
-                    | "mod_"
-                    | "inplace_mod"
-                    | "lt"
-                    | "le"
-                    | "gt"
-                    | "ge"
-                    | "eq"
-                    | "ne"
+                op.kind,
+                OpKind::Add
+                    | OpKind::InplaceAdd
+                    | OpKind::Sub
+                    | OpKind::InplaceSub
+                    | OpKind::Mul
+                    | OpKind::InplaceMul
+                    | OpKind::Floordiv
+                    | OpKind::InplaceFloordiv
+                    | OpKind::Mod
+                    | OpKind::Mod_
+                    | OpKind::InplaceMod
+                    | OpKind::Lt
+                    | OpKind::Le
+                    | OpKind::Gt
+                    | OpKind::Ge
+                    | OpKind::Eq
+                    | OpKind::Ne
             ) && op_args_are_integer_scalar))
 }
 
@@ -123,7 +134,7 @@ pub(in crate::native_backend::function_compiler) mod vec_reductions;
 // each handler's kind list, so the dispatch can no longer drift from a handler.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) use op_family::{
-    NATIVE_NO_CODEGEN_RESULT_KINDS, NativeOpFamily, native_op_family,
+    NativeOpFamily, native_op_family,
 };
 
 /// Free-function form of `compile_func_inner`'s op-local

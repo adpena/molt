@@ -12,6 +12,7 @@ use super::run;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -28,12 +29,11 @@ fn raw_alloc(result: ValueId, payload: i64) -> TirOp {
     o
 }
 
-/// `obj.<offset> = val` typed-slot store (`_original_kind = store`).
+/// `obj.<offset> = val` typed-slot store (`origin = store`).
 fn store(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
     let mut o = op(OpCode::StoreAttr, vec![obj, val], vec![]);
     o.attrs.insert("value".into(), AttrValue::Int(offset));
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
+    o.origin = Some(molt_ir::OpKind::Store);
     o
 }
 
@@ -41,8 +41,7 @@ fn store(obj: ValueId, val: ValueId, offset: i64) -> TirOp {
 fn load(obj: ValueId, offset: i64, r: ValueId) -> TirOp {
     let mut o = op(OpCode::LoadAttr, vec![obj], vec![r]);
     o.attrs.insert("value".into(), AttrValue::Int(offset));
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("load".into()));
+    o.origin = Some(molt_ir::OpKind::Load);
     o
 }
 

@@ -2700,7 +2700,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
 SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
     {
         "alloc_task",
-        "await",
         "call",
         "call_async",
         "call_func",
@@ -2710,16 +2709,11 @@ SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[str] = frozenset(
         "call_method",
         "class_def",
         "code_new",
-        "decorator",
         "func_new",
-        "func_new_builtin",
         "func_new_closure",
-        "generator_send",
         "import_from",
         "import_name",
         "stateful_locals_register",
-        "super_call",
-        "task_new",
         "yield_from",
     }
 )

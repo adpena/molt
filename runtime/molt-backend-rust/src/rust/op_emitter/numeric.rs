@@ -418,7 +418,7 @@ impl RustBackend {
         // Python `is` — identity check (use == for value equality in Rust)
         let o = out();
         let (a, b) = args2(op);
-        let negate = op.kind == "is_not";
+        let negate = op.kind == molt_ir::OpKind::IsNot;
         let cmp = if negate { "!" } else { "" };
         self.emit_line(&declare(
             &o,
@@ -439,7 +439,7 @@ impl RustBackend {
 
         let o = out();
         let (a, b) = args2(op);
-        let negate = op.kind == "not_in";
+        let negate = op.kind == molt_ir::OpKind::NotIn;
         let prefix = if negate { "!" } else { "" };
         self.emit_line(&declare(
             &o,

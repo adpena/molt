@@ -8,6 +8,7 @@ use crate::tir::values::ValueId;
 
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -29,6 +30,7 @@ fn make_op_with_container(
         AttrValue::Str(container_type.to_string()),
     );
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -79,6 +81,7 @@ fn build_list_for_loop(use_build_list: bool) -> TirFunction {
             AttrValue::Str("list".to_string()),
         );
         entry_ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
             operands: vec![],

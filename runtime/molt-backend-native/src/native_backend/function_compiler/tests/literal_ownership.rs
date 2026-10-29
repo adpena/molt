@@ -1,6 +1,7 @@
 use super::super::seal_block_once;
 use super::*;
 use cranelift_codegen::ir::{ExternalName, InstructionData};
+use molt_ir::OpKind;
 
 #[test]
 fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
@@ -13,29 +14,31 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
     let mut ops = Vec::new();
     for index in 0..2 {
         for kind in [
-            "const_str",
-            "const_bytes",
-            "const_bigint",
-            "const",
-            "const_int",
-            "load_const",
+            OpKind::ConstStr,
+            OpKind::ConstBytes,
+            OpKind::ConstBigint,
+            OpKind::Const,
+            OpKind::ConstInt,
+            OpKind::LoadConst,
         ] {
             ops.push(OpIR {
-                kind: kind.into(),
                 out: Some(format!("{kind}_{index}")),
                 s_value: match kind {
-                    "const_str" => Some("non-interned literal".into()),
+                    OpKind::ConstStr => Some("non-interned literal".into()),
                     _ => None,
                 },
                 bytes: match kind {
                     // Independent signed-byte oracle for i64::MAX: the boxed
                     // scalar aliases below must share this literal's anchor.
-                    "const_bigint" => Some(vec![0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
-                    "const_bytes" => Some(vec![0, 255, 128]),
+                    OpKind::ConstBigint => {
+                        Some(vec![0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+                    }
+                    OpKind::ConstBytes => Some(vec![0, 255, 128]),
                     _ => None,
                 },
-                value: matches!(kind, "const" | "const_int" | "load_const").then_some(i64::MAX),
-                ..OpIR::default()
+                value: matches!(kind, OpKind::Const | OpKind::ConstInt | OpKind::LoadConst)
+                    .then_some(i64::MAX),
+                ..OpIR::new(kind)
             });
         }
     }
@@ -235,7 +238,7 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
     use crate::native_backend::simple_backend::tests::{
         compile_selected_functions_direct, emit_direct_object,
     };
-    for kind in ["const", "const_int", "load_const"] {
+    for kind in [OpKind::Const, OpKind::ConstInt, OpKind::LoadConst] {
         for value in [i64::MIN, 0, i64::MAX] {
             let input = FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -244,27 +247,23 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
                 param_types: None,
                 ops: vec![
                     OpIR {
-                        kind: kind.into(),
                         value: Some(value),
                         out: Some("value".into()),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     OpIR {
-                        kind: kind.into(),
                         value: Some(i64::MAX),
                         out: None,
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     OpIR {
-                        kind: kind.into(),
                         value: Some(i64::MAX),
                         out: Some("none".into()),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     OpIR {
-                        kind: "ret".into(),
                         args: Some(vec!["value".into()]),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Ret)
                     },
                 ],
                 source_file: None,

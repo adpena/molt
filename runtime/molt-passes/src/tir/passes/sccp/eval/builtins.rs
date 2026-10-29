@@ -14,8 +14,8 @@ pub(in crate::tir::passes::sccp) fn evaluate_builtin_call(
     {
         return None;
     }
-    let call = builtin_call_view(op.opcode, &op.attrs, operands)?;
-    if call.wire_kind != "range_new" {
+    let call = builtin_call_view(op.opcode, op.origin, &op.attrs, operands)?;
+    if call.wire_kind != molt_ir::OpKind::RangeNew {
         return None;
     }
     let [

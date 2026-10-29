@@ -20,7 +20,7 @@ pub(super) fn emit_op_loop_runtime_call(
     op: &OpIR,
     call: OpLoopRuntimeCallSpec,
 ) {
-    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(&op.kind) {
+    if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind) {
         assert_eq!(
             op.args.as_deref().unwrap_or(&[]).len(),
             abi.arity,
@@ -58,7 +58,10 @@ pub(super) fn emit_op_loop_runtime_call(
     }
 
     emit_call(func, context.reloc_enabled, context.import_ids[call.import]);
-    if matches!(op.kind.as_str(), "guard_tag" | "guard_type") {
+    if matches!(
+        op.kind,
+        molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType
+    ) {
         // Runtime guards validate both reads but share operand zero's owner.
         // An ordinary borrowed runtime return would incorrectly mint a +1.
         func.instruction(&Instruction::Drop);
@@ -107,7 +110,7 @@ pub(super) fn emit_op_loop_local_prefix_call(
     for arg in &args[..arg_count] {
         func.instruction(&Instruction::LocalGet(context.locals[arg]));
     }
-    let import_id = selected_import_id(context.import_ids, import, function_name, &op.kind);
+    let import_id = selected_import_id(context.import_ids, import, function_name, op.kind);
     emit_call(func, context.reloc_enabled, import_id);
     store_runtime_result(
         func,

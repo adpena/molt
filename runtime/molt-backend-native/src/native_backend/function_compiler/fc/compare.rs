@@ -1,10 +1,18 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_compare_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_compare_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["lt", "le", "gt", "ge", "eq", "ne", "string_eq"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Lt,
+    OpKind::Le,
+    OpKind::Gt,
+    OpKind::Ge,
+    OpKind::Eq,
+    OpKind::Ne,
+    OpKind::StringEq,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for comparison ops: numeric ordering, equality,
@@ -70,8 +78,8 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
         )
     };
 
-    match op.kind.as_str() {
-        "lt" => {
+    match op.kind {
+        OpKind::Lt => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let in_active_loop = !loop_stack.is_empty();
             let lr = if in_active_loop {
@@ -240,7 +248,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 );
             }
         }
-        "le" => {
+        OpKind::Le => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
@@ -400,7 +408,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 );
             }
         }
-        "gt" => {
+        OpKind::Gt => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
@@ -560,7 +568,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 );
             }
         }
-        "ge" => {
+        OpKind::Ge => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let rhs_shadow = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
@@ -722,7 +730,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 );
             }
         }
-        "eq" => {
+        OpKind::Eq => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let eq_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let eq_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
@@ -864,7 +872,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 );
             }
         }
-        "ne" => {
+        OpKind::Ne => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let ne_lr = int_raw_value(&mut *builder, vars, representation_plan, &args[0]);
             let ne_rr = int_raw_value(&mut *builder, vars, representation_plan, &args[1]);
@@ -1005,7 +1013,7 @@ pub(in crate::native_backend::function_compiler) fn handle_compare_op(
                 );
             }
         }
-        "string_eq" => {
+        OpKind::StringEq => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
                 &mut *module,

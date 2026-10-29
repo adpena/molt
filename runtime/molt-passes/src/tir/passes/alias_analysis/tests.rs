@@ -9,6 +9,7 @@ use crate::tir::values::TirValue;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -18,10 +19,14 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     }
 }
 
-fn op_kind(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>, kind: &str) -> TirOp {
+fn op_kind(
+    opcode: OpCode,
+    operands: Vec<ValueId>,
+    results: Vec<ValueId>,
+    kind: molt_ir::OpKind,
+) -> TirOp {
     let mut o = op(opcode, operands, results);
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    o.origin = Some(kind);
     o
 }
 
@@ -189,7 +194,12 @@ fn check_exception_callback_effect_is_instance_sensitive() {
 
 #[test]
 fn local_memory_operations_cannot_claim_async_work_observation_role() {
-    let mut load = op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load");
+    let mut load = op_kind(
+        OpCode::LoadAttr,
+        vec![ValueId(0)],
+        vec![ValueId(1)],
+        molt_ir::OpKind::Load,
+    );
     load.attrs.insert("value".into(), AttrValue::Int(0));
     assert!(!load.can_carry_async_work_poll());
     assert_eq!(load.plain_typed_slot_load(), Some((ValueId(0), 0)));
@@ -198,7 +208,7 @@ fn local_memory_operations_cannot_claim_async_work_observation_role() {
         OpCode::StoreAttr,
         vec![ValueId(0), ValueId(2)],
         vec![],
-        "store",
+        molt_ir::OpKind::Store,
     );
     store.attrs.insert("value".into(), AttrValue::Int(0));
     assert!(!store.can_carry_async_work_poll());
@@ -219,9 +229,7 @@ fn typed_slot_store_requires_contextual_release_proof() {
     };
     let mut store = op(OpCode::StoreAttr, vec![root, val], vec![]);
     store.attrs.insert("value".into(), AttrValue::Int(0));
-    store
-        .attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
+    store.origin = Some(molt_ir::OpKind::Store);
     assert!(
         res.may_observe_slot(&store, root),
         "replacing store may run an arbitrary old-value destructor"
@@ -240,9 +248,7 @@ fn typed_slot_store_requires_contextual_release_proof() {
     escape_store
         .attrs
         .insert("value".into(), AttrValue::Int(16));
-    escape_store
-        .attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
+    escape_store.origin = Some(molt_ir::OpKind::Store);
     assert!(
         res.may_observe_slot(&escape_store, root),
         "storing root into another object observes/escapes it"
@@ -256,7 +262,12 @@ fn default_plan_keeps_plain_and_guarded_loads_may_dispatch() {
     let plan = super::super::typed_slot_access::TypedSlotAccessPlan::default();
     let res = empty_res();
     let load = with_field_attrs(
-        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+        op_kind(
+            OpCode::LoadAttr,
+            vec![ValueId(0)],
+            vec![ValueId(1)],
+            molt_ir::OpKind::Load,
+        ),
         8,
     );
     assert_eq!(
@@ -274,7 +285,7 @@ fn default_plan_keeps_plain_and_guarded_loads_may_dispatch() {
             OpCode::LoadAttr,
             vec![ValueId(0), ValueId(3)],
             vec![ValueId(1)],
-            "guarded_field_get",
+            molt_ir::OpKind::GuardedFieldGet,
         ),
         8,
     );
@@ -288,10 +299,10 @@ fn default_plan_keeps_plain_and_guarded_loads_may_dispatch() {
 fn opaque_attr_load_may_dispatch() {
     let plan = super::super::typed_slot_access::TypedSlotAccessPlan::default();
     for kind in [
-        "get_attr",
-        "get_attr_name",
-        "get_attr_generic_ptr",
-        "get_attr_generic_obj",
+        molt_ir::OpKind::GetAttr,
+        molt_ir::OpKind::GetAttrName,
+        molt_ir::OpKind::GetAttrGenericPtr,
+        molt_ir::OpKind::GetAttrGenericObj,
     ] {
         let o = op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], kind);
         assert_eq!(
@@ -515,9 +526,12 @@ fn container_builder_passthrough_copy_is_not_an_alias() {
     let lst = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     // lst = Copy[list_new] obj  — result is a NEW container, not an alias.
-    entry
-        .ops
-        .push(op_kind(OpCode::Copy, vec![obj], vec![lst], "list_new"));
+    entry.ops.push(op_kind(
+        OpCode::Copy,
+        vec![obj],
+        vec![lst],
+        molt_ir::OpKind::ListNew,
+    ));
     entry.terminator = Terminator::Return { values: vec![] };
 
     let res = AliasAnalysisResult::compute(&func);
@@ -543,7 +557,7 @@ fn owned_binding_alias_copy_is_not_a_transparent_root() {
         OpCode::Copy,
         vec![obj],
         vec![alias],
-        "binding_alias",
+        molt_ir::OpKind::BindingAlias,
     ));
     entry.terminator = Terminator::Return { values: vec![] };
 
@@ -558,7 +572,7 @@ fn owned_binding_alias_copy_is_not_a_transparent_root() {
 
 // ── The lowering-truth Copy-class contract (over-release keystone) ──────
 
-/// Every `_original_kind` classifies into exactly one [`CopyLowering`] bucket,
+/// Every `origin` classifies into exactly one [`CopyLowering`] bucket,
 /// and the derived custody, inertness, and passthrough predicates agree with
 /// that generated classifier. Non-owning custody alone does not prove source
 /// identity; alias-root unions use the separate shared `no_heap_alias_source`
@@ -569,78 +583,75 @@ fn copy_lowering_classes_are_total_and_disjoint() {
     // (None) case and the bug-repro fresh-value kinds the review flagged.
     let alias = [
         None,
-        Some("copy"),
-        Some("copy_var"),
-        Some("store_var"),
-        Some("load_var"),
-        Some("identity_alias"),
+        Some(molt_ir::OpKind::Copy),
+        Some(molt_ir::OpKind::CopyVar),
+        Some(molt_ir::OpKind::StoreVar),
+        Some(molt_ir::OpKind::LoadVar),
+        Some(molt_ir::OpKind::IdentityAlias),
         // validate-and-pass-through guards: result == operand 0, no incref.
-        Some("guard_tag"),
-        Some("guard_type"),
+        Some(molt_ir::OpKind::GuardTag),
+        Some(molt_ir::OpKind::GuardType),
     ];
     let inert = [
-        Some("line"),
-        Some("missing"),
-        Some("nop"),
-        Some("guard_layout"),
-        Some("guard_int"),
-        Some("guard_float"),
-        Some("guard_str"),
-        Some("guard_bool"),
-        Some("guard_none"),
+        Some(molt_ir::OpKind::Line),
+        Some(molt_ir::OpKind::Missing),
+        Some(molt_ir::OpKind::Nop),
+        Some(molt_ir::OpKind::GuardLayout),
+        Some(molt_ir::OpKind::GuardInt),
+        Some(molt_ir::OpKind::GuardFloat),
+        Some(molt_ir::OpKind::GuardStr),
+        Some(molt_ir::OpKind::GuardBool),
+        Some(molt_ir::OpKind::GuardNone),
     ];
     // The fresh-value kinds the drop pass releases independently. Each MUST
     // classify OwnedValue (incl. the review's double-free root `slice` and the
     // generator-iterator `iter`) AND must NOT be allowed to reach the benign
     // no-incref passthrough.
     let fresh = [
-        Some("builtin_func"),
-        Some("slice"),
-        Some("slice_new"),
-        Some("string_format"),
-        Some("repr_from_obj"),
-        Some("int_from_obj"),
-        Some("float_from_obj"),
-        Some("contains"),
-        Some("classmethod_new"),
-        Some("code_new"),
-        Some("dataclass_new"),
-        Some("dataclass_new_values"),
-        Some("str_from_obj"),
-        Some("iter"),
-        Some("aiter"),
-        Some("enumerate"),
-        Some("func_new"),
-        Some("func_new_closure"),
-        Some("get_attr_name_default"),
-        Some("dict_keys"),
-        Some("dict_values"),
-        Some("dict_items"),
-        Some("dict_from_obj"),
-        Some("object_new"),
-        Some("property_new"),
-        Some("complex_from_obj"),
-        Some("list_new"),
-        Some("list_pop"),
-        Some("dict_new"),
-        Some("tuple_new"),
-        Some("string_join"),
-        Some("staticmethod_new"),
+        Some(molt_ir::OpKind::BuiltinFunc),
+        Some(molt_ir::OpKind::Slice),
+        Some(molt_ir::OpKind::SliceNew),
+        Some(molt_ir::OpKind::StringFormat),
+        Some(molt_ir::OpKind::ReprFromObj),
+        Some(molt_ir::OpKind::IntFromObj),
+        Some(molt_ir::OpKind::FloatFromObj),
+        Some(molt_ir::OpKind::Contains),
+        Some(molt_ir::OpKind::ClassmethodNew),
+        Some(molt_ir::OpKind::CodeNew),
+        Some(molt_ir::OpKind::DataclassNew),
+        Some(molt_ir::OpKind::DataclassNewValues),
+        Some(molt_ir::OpKind::StrFromObj),
+        Some(molt_ir::OpKind::Iter),
+        Some(molt_ir::OpKind::Aiter),
+        Some(molt_ir::OpKind::Enumerate),
+        Some(molt_ir::OpKind::FuncNew),
+        Some(molt_ir::OpKind::FuncNewClosure),
+        Some(molt_ir::OpKind::GetAttrNameDefault),
+        Some(molt_ir::OpKind::DictKeys),
+        Some(molt_ir::OpKind::DictValues),
+        Some(molt_ir::OpKind::DictItems),
+        Some(molt_ir::OpKind::DictFromObj),
+        Some(molt_ir::OpKind::ObjectNew),
+        Some(molt_ir::OpKind::PropertyNew),
+        Some(molt_ir::OpKind::ComplexFromObj),
+        Some(molt_ir::OpKind::ListNew),
+        Some(molt_ir::OpKind::ListPop),
+        Some(molt_ir::OpKind::DictNew),
+        Some(molt_ir::OpKind::TupleNew),
+        Some(molt_ir::OpKind::StringJoin),
+        Some(molt_ir::OpKind::StaticmethodNew),
         // range()'s bound conversion mints an owned exact int.
-        Some("operator_index"),
+        Some(molt_ir::OpKind::OperatorIndex),
         // Fused-loop kernels: each returns a fresh owned result tuple.
-        Some("vec_sum"),
-        Some("vec_prod"),
-        Some("vec_min"),
-        Some("vec_max"),
-        Some("string_split_ws_dict_inc"),
-        Some("string_split_sep_dict_inc"),
-        Some("dict_str_int_inc"),
+        Some(molt_ir::OpKind::VecSum),
+        Some(molt_ir::OpKind::VecProd),
+        Some(molt_ir::OpKind::VecMin),
+        Some(molt_ir::OpKind::VecMax),
+        Some(molt_ir::OpKind::StringSplitWsDictInc),
+        Some(molt_ir::OpKind::StringSplitSepDictInc),
+        Some(molt_ir::OpKind::DictStrIntInc),
     ];
-    let owned_alias = [Some("binding_alias")];
-    // FAIL-CLOSED: an unrecognized future kind classifies as TransparentAlias
-    // (leak-safe), NOT OwnedValue — so the drop pass never double-frees it.
-    let unknown_fail_closed = [Some("some_brand_new_kind_v2"), Some("promise_new")];
+    let owned_alias = [Some(molt_ir::OpKind::BindingAlias)];
 
     for k in alias {
         assert_eq!(
@@ -687,21 +698,10 @@ fn copy_lowering_classes_are_total_and_disjoint() {
             "{k:?} must lower as inc_ref + alias, not no-incref passthrough"
         );
     }
-    for k in unknown_fail_closed {
-        assert_eq!(
-            classify_copy_kind(k),
-            CopyLowering::TransparentAlias,
-            "{k:?} must FAIL CLOSED to TransparentAlias (leak-safe, never UAF)"
-        );
-        assert!(
-            copy_kind_reaches_no_incref_passthrough(k),
-            "{k:?} fail-closes to the leak-safe passthrough/alias path"
-        );
-    }
 }
 
 /// The exact double-free vector from the adversarial review: a `Copy` carrying
-/// `_original_kind = "slice"` (the `s[-5:]` subscript) must NOT be unioned into
+/// `origin = "slice"` (the `s[-5:]` subscript) must NOT be unioned into
 /// its source operand's alias root. If it were treated as a transparent alias,
 /// the drop pass would drop the slice and its source as one group — but they
 /// are two independent owned references on a correct (OwnedValue) backend.
@@ -723,7 +723,7 @@ fn slice_subscript_copy_is_a_fresh_value_not_an_alias() {
         OpCode::Copy,
         vec![src, start, stop],
         vec![sliced],
-        "slice",
+        molt_ir::OpKind::Slice,
     ));
     entry.terminator = Terminator::Return {
         values: vec![sliced],
@@ -906,7 +906,12 @@ fn raw_allocation_writes_share_proven_local_storage_without_erasing_effects() {
             "storage disjointness must not make allocation pure or movable"
         );
         let field = with_field_attrs(
-            op_kind(OpCode::StoreAttr, vec![root, ValueId(1)], vec![], "store"),
+            op_kind(
+                OpCode::StoreAttr,
+                vec![root, ValueId(1)],
+                vec![],
+                molt_ir::OpKind::Store,
+            ),
             0,
         );
         assert_eq!(res.region_of(&field), MemRegion::GenericHeap);
@@ -937,7 +942,12 @@ fn fresh_result_identity_does_not_disprove_constructor_or_poll_callbacks() {
         let constructor = op(opcode, vec![ValueId(0)], vec![root]);
         assert_eq!(res.region_of(&constructor), MemRegion::GenericHeap);
     }
-    let named_constructor = op_kind(OpCode::Copy, vec![ValueId(0)], vec![root], "alloc_class");
+    let named_constructor = op_kind(
+        OpCode::Copy,
+        vec![ValueId(0)],
+        vec![root],
+        molt_ir::OpKind::AllocClass,
+    );
     assert_eq!(res.region_of(&named_constructor), MemRegion::GenericHeap);
     let mut poll = op(OpCode::CheckException, vec![], vec![]);
     assert!(poll.mark_async_work_poll());
@@ -965,7 +975,12 @@ fn empty_res() -> AliasAnalysisResult {
 fn plain_load_has_physical_projection_but_context_free_accesses_are_generic() {
     let res = empty_res();
     let load = with_field_attrs(
-        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+        op_kind(
+            OpCode::LoadAttr,
+            vec![ValueId(0)],
+            vec![ValueId(1)],
+            molt_ir::OpKind::Load,
+        ),
         8,
     );
     assert_eq!(
@@ -981,7 +996,7 @@ fn plain_load_has_physical_projection_but_context_free_accesses_are_generic() {
             OpCode::StoreAttr,
             vec![ValueId(0), ValueId(2)],
             vec![],
-            "store",
+            molt_ir::OpKind::Store,
         ),
         16,
     );
@@ -994,11 +1009,21 @@ fn plain_load_has_physical_projection_but_context_free_accesses_are_generic() {
 fn loads_of_one_offset_share_one_physical_field() {
     let res = empty_res();
     let base_load = with_field_attrs(
-        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+        op_kind(
+            OpCode::LoadAttr,
+            vec![ValueId(0)],
+            vec![ValueId(1)],
+            molt_ir::OpKind::Load,
+        ),
         24,
     );
     let derived_load = with_field_attrs(
-        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(2)], "load"),
+        op_kind(
+            OpCode::LoadAttr,
+            vec![ValueId(0)],
+            vec![ValueId(2)],
+            molt_ir::OpKind::Load,
+        ),
         24,
     );
     let base_region = res.typed_slot_region(&base_load);
@@ -1020,7 +1045,7 @@ fn loads_of_one_offset_share_one_physical_field() {
 }
 
 /// A `Copy` is classified by whether it touches heap memory: a pure SSA
-/// move (no `_original_kind`) and the inert debug / source-location / guard
+/// move (no `origin`) and the inert debug / source-location / guard
 /// markers are `ScalarRegister`; an opaque passthrough carrier stays the
 /// conservative `GenericHeap`. Lifecycle trace operations are effectful:
 /// entry acquires public namespaces and exit releases frame-owned references.
@@ -1029,17 +1054,17 @@ fn loads_of_one_offset_share_one_physical_field() {
 fn copy_region_pure_and_inert_markers_are_scalar() {
     let res = empty_res();
 
-    // Pure SSA move (no `_original_kind`): identity plumbing, no heap.
+    // Pure SSA move (no `origin`): identity plumbing, no heap.
     let pure_move = op(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)]);
     assert_eq!(res.region_of(&pure_move), MemRegion::ScalarRegister);
 
     // Known-local-alias kinds are pure moves too.
     for kind in [
-        "copy",
-        "copy_var",
-        "store_var",
-        "load_var",
-        "identity_alias",
+        molt_ir::OpKind::Copy,
+        molt_ir::OpKind::CopyVar,
+        molt_ir::OpKind::StoreVar,
+        molt_ir::OpKind::LoadVar,
+        molt_ir::OpKind::IdentityAlias,
     ] {
         let c = op_kind(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)], kind);
         assert_eq!(
@@ -1051,15 +1076,15 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
 
     // Inert debug / source-location / sentinel / guard markers: no heap.
     for kind in [
-        "line",
-        "missing",
-        "nop",
-        "guard_layout",
-        "guard_int",
-        "guard_float",
-        "guard_str",
-        "guard_bool",
-        "guard_none",
+        molt_ir::OpKind::Line,
+        molt_ir::OpKind::Missing,
+        molt_ir::OpKind::Nop,
+        molt_ir::OpKind::GuardLayout,
+        molt_ir::OpKind::GuardInt,
+        molt_ir::OpKind::GuardFloat,
+        molt_ir::OpKind::GuardStr,
+        molt_ir::OpKind::GuardBool,
+        molt_ir::OpKind::GuardNone,
     ] {
         let c = op_kind(OpCode::Copy, vec![], vec![], kind);
         assert_eq!(
@@ -1075,7 +1100,7 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
         OpCode::Copy,
         vec![ValueId(0)],
         vec![ValueId(1)],
-        "list_append",
+        molt_ir::OpKind::ListAppend,
     );
     assert_eq!(res.region_of(&opaque), MemRegion::GenericHeap);
 
@@ -1083,7 +1108,7 @@ fn copy_region_pure_and_inert_markers_are_scalar() {
         OpCode::Copy,
         vec![ValueId(0)],
         vec![ValueId(1)],
-        "binding_alias",
+        molt_ir::OpKind::BindingAlias,
     );
     assert_eq!(res.region_of(&owned_alias), MemRegion::GenericHeap);
 }
@@ -1098,7 +1123,7 @@ fn guarded_field_get_abi_falls_back_to_generic_heap() {
             OpCode::LoadAttr,
             vec![ValueId(0), ValueId(2)], // obj, version
             vec![ValueId(3)],
-            "guarded_field_get",
+            molt_ir::OpKind::GuardedFieldGet,
         ),
         24,
     );
@@ -1120,26 +1145,11 @@ fn guarded_field_set_abi_falls_back_to_generic_heap() {
             OpCode::StoreAttr,
             vec![ValueId(0), ValueId(2), ValueId(3)],
             vec![],
-            "guarded_field_set",
+            molt_ir::OpKind::GuardedFieldSet,
         ),
         32,
     );
     assert_eq!(res.region_of(&set), MemRegion::GenericHeap);
-
-    let rejected = with_field_attrs(
-        op_kind(
-            OpCode::StoreAttr,
-            vec![ValueId(0), ValueId(1), ValueId(2), ValueId(3)],
-            vec![],
-            "guarded_field_set_init",
-        ),
-        32,
-    );
-    assert_eq!(
-        res.region_of(&rejected),
-        MemRegion::GenericHeap,
-        "removed guarded-field init spelling must not remain a typed-slot alias"
-    );
 }
 
 #[test]
@@ -1149,7 +1159,12 @@ fn direct_field_uses_unknown_allocation_identity() {
     // site-specific release-neutral proof.
     let res = empty_res();
     let load = with_field_attrs(
-        op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "load"),
+        op_kind(
+            OpCode::LoadAttr,
+            vec![ValueId(0)],
+            vec![ValueId(1)],
+            molt_ir::OpKind::Load,
+        ),
         8,
     );
     assert_eq!(
@@ -1165,7 +1180,7 @@ fn direct_field_uses_unknown_allocation_identity() {
             OpCode::StoreAttr,
             vec![ValueId(0), ValueId(2)],
             vec![],
-            "store",
+            molt_ir::OpKind::Store,
         ),
         8,
     );
@@ -1183,7 +1198,7 @@ fn opaque_attr_spelling_is_generic_heap_even_with_field_attrs() {
             OpCode::LoadAttr,
             vec![ValueId(0)],
             vec![ValueId(1)],
-            "get_attr",
+            molt_ir::OpKind::GetAttr,
         ),
         8,
     );
@@ -1193,7 +1208,7 @@ fn opaque_attr_spelling_is_generic_heap_even_with_field_attrs() {
             OpCode::StoreAttr,
             vec![ValueId(0), ValueId(2)],
             vec![],
-            "set_attr_generic_ptr",
+            molt_ir::OpKind::SetAttrGenericPtr,
         ),
         8,
     );
@@ -1214,7 +1229,12 @@ fn exact_allocation_field_keeps_identity_independent_of_escape() {
         alloc_roots: [root].into_iter().collect(),
     };
     let load = with_field_attrs(
-        op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
+        op_kind(
+            OpCode::LoadAttr,
+            vec![root],
+            vec![ValueId(1)],
+            molt_ir::OpKind::Load,
+        ),
         8,
     );
     assert_eq!(
@@ -1227,7 +1247,12 @@ fn exact_allocation_field_keeps_identity_independent_of_escape() {
     assert_eq!(res.region_of(&load), MemRegion::GenericHeap);
     // Class metadata cannot change allocation identity.
     let load_c = with_field_attrs(
-        op_kind(OpCode::LoadAttr, vec![root], vec![ValueId(1)], "load"),
+        op_kind(
+            OpCode::LoadAttr,
+            vec![root],
+            vec![ValueId(1)],
+            molt_ir::OpKind::Load,
+        ),
         8,
     );
     assert_eq!(
@@ -1275,7 +1300,12 @@ fn cfg_parameter_that_may_select_external_does_not_mint_allocation_identity() {
                 ty: TirType::DynBox,
             }],
             ops: vec![with_field_attrs(
-                op_kind(OpCode::LoadAttr, vec![parameter], vec![loaded], "load"),
+                op_kind(
+                    OpCode::LoadAttr,
+                    vec![parameter],
+                    vec![loaded],
+                    molt_ir::OpKind::Load,
+                ),
                 0,
             )],
             terminator: Terminator::Return {
@@ -1334,13 +1364,12 @@ fn field_may_alias_matrix() {
 
 #[test]
 fn fresh_result_ownership_is_not_inferred_from_operation_spelling() {
-    for kind in ["vec_unknown", "vec_sum_i64", "vec_sum_extension"] {
-        assert_eq!(
-            classify_copy_kind(Some(kind)),
-            CopyLowering::TransparentAlias
-        );
-    }
-    for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+    for kind in [
+        molt_ir::OpKind::VecSum,
+        molt_ir::OpKind::VecProd,
+        molt_ir::OpKind::VecMin,
+        molt_ir::OpKind::VecMax,
+    ] {
         assert_eq!(classify_copy_kind(Some(kind)), CopyLowering::OwnedValue);
     }
 }
@@ -1348,16 +1377,16 @@ fn fresh_result_ownership_is_not_inferred_from_operation_spelling() {
 #[test]
 fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
     for kind in [
-        "dict_set",
-        "dict_update_missing",
-        "frame_home_load",
-        "frame_home_store",
-        "function_closure_bits",
-        "alloc_class",
-        "const_ellipsis",
-        "const_not_implemented",
-        "cast",
-        "widen",
+        molt_ir::OpKind::DictSet,
+        molt_ir::OpKind::DictUpdateMissing,
+        molt_ir::OpKind::FrameHomeLoad,
+        molt_ir::OpKind::FrameHomeStore,
+        molt_ir::OpKind::FunctionClosureBits,
+        molt_ir::OpKind::AllocClass,
+        molt_ir::OpKind::ConstEllipsis,
+        molt_ir::OpKind::ConstNotImplemented,
+        molt_ir::OpKind::Cast,
+        molt_ir::OpKind::Widen,
     ] {
         assert_eq!(
             classify_copy_kind(Some(kind)),
@@ -1367,11 +1396,11 @@ fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
         assert!(!copy_kind_mints_owned_value(kind), "{kind}");
     }
     for kind in [
-        "dict_get",
-        "list_int_new",
-        "gen_send",
-        "call_async",
-        "list_append",
+        molt_ir::OpKind::DictGet,
+        molt_ir::OpKind::ListIntNew,
+        molt_ir::OpKind::GenSend,
+        molt_ir::OpKind::CallAsync,
+        molt_ir::OpKind::ListAppend,
     ] {
         assert_eq!(
             classify_copy_kind(Some(kind)),
@@ -1385,13 +1414,13 @@ fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
 #[test]
 fn trace_lifecycle_is_nonowning_but_observes_arbitrary_heap() {
     let res = empty_res();
-    for kind in ["trace_enter_slot", "trace_exit"] {
+    for kind in [molt_ir::OpKind::TraceEnterSlot, molt_ir::OpKind::TraceExit] {
         assert_eq!(
             classify_copy_kind(Some(kind)),
             CopyLowering::TransparentAlias
         );
         let mut trace = op_kind(OpCode::Copy, vec![], vec![], kind);
-        if kind == "trace_enter_slot" {
+        if kind == molt_ir::OpKind::TraceEnterSlot {
             trace
                 .attrs
                 .insert("s_value".into(), AttrValue::Str("frame_owner".into()));

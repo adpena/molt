@@ -16,10 +16,10 @@ fn function(name: &str, ops: Vec<OpIR>) -> FunctionIR {
     }
 }
 
-fn op(kind: &str) -> OpIR {
+fn op(kind: crate::OpKind) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
+        kind: kind,
+        ..crate::OpIR::new(kind)
     }
 }
 
@@ -36,9 +36,12 @@ fn document(functions: Vec<FunctionIR>) -> BackendIrDocument {
 
 fn three_functions() -> BackendIrDocument {
     document(vec![
-        function("molt_main", vec![op("ret_void")]),
-        function("helper_a", vec![op("ret_void")]),
-        function("helper_b", vec![op("nop"), op("ret_void")]),
+        function("molt_main", vec![op(crate::OpKind::RetVoid)]),
+        function("helper_a", vec![op(crate::OpKind::RetVoid)]),
+        function(
+            "helper_b",
+            vec![op(crate::OpKind::Nop), op(crate::OpKind::RetVoid)],
+        ),
     ])
 }
 
@@ -169,7 +172,7 @@ fn resident_bodies_fill_the_rest_and_stay_shared() {
 fn a_body_fills_only_the_slot_its_own_bytes_name() {
     let source = three_functions();
     let mut forged = three_functions();
-    forged.ir.functions[1].ops.insert(0, op("nop"));
+    forged.ir.functions[1].ops.insert(0, op(crate::OpKind::Nop));
     // The forged lease lists the honest digests but ships a different body.
     let honest = encode_lease(&source, |_| false).unwrap();
     let forged_body = rmp_serde::to_vec_named(&forged.ir.functions[1]).unwrap();
@@ -196,7 +199,7 @@ fn a_body_fills_only_the_slot_its_own_bytes_name() {
 
 #[test]
 fn repeated_digests_and_bodies_are_refused() {
-    let source = document(vec![function("only", vec![op("ret_void")])]);
+    let source = document(vec![function("only", vec![op(crate::OpKind::RetVoid)])]);
     let body = rmp_serde::to_vec_named(&source.ir.functions[0]).unwrap();
     let digest = *FunctionDigest::of_body(&body).as_bytes();
     let encode = |digests: &[u8], bodies: Vec<WireBytesRef<'_>>| {
@@ -250,20 +253,23 @@ fn the_lease_map_is_closed_and_complete() {
 #[test]
 fn bodies_pass_their_own_contract_on_admission_and_programs_on_assembly() {
     // Each body alone is valid; only the program breaks a cross-function fact.
-    let mut caller = function("caller", vec![op("ret_void")]);
+    let mut caller = function("caller", vec![op(crate::OpKind::RetVoid)]);
     caller.execution_context = ExecutionContextPolicy::Inherited;
     caller.ops.insert(
         0,
         OpIR {
-            kind: "call_internal".to_string(),
+            kind: crate::OpKind::CallInternal,
             s_value: Some("callee".to_string()),
             out: Some("v0".to_string()),
             args: Some(Vec::new()),
             passes_execution_context: true,
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CallInternal)
         },
     );
-    let source = document(vec![caller, function("callee", vec![op("ret_void")])]);
+    let source = document(vec![
+        caller,
+        function("callee", vec![op(crate::OpKind::RetVoid)]),
+    ]);
     let program = decode(&encode_complete_lease(&source).unwrap()).unwrap();
     match program.assemble(|_, _| None) {
         Err(ProgramAssemblyError::Invalid(reason)) => {
@@ -278,9 +284,9 @@ fn bodies_pass_their_own_contract_on_admission_and_programs_on_assembly() {
     let void_with_value = document(vec![function(
         "bad",
         vec![OpIR {
-            kind: "ret".to_string(),
+            kind: crate::OpKind::Ret,
             args: Some(vec!["v0".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Ret)
         }],
     )]);
     let error = decode(&encode_complete_lease(&void_with_value).unwrap())
@@ -291,7 +297,7 @@ fn bodies_pass_their_own_contract_on_admission_and_programs_on_assembly() {
 
 #[test]
 fn retained_bytes_count_each_owned_allocation() {
-    let base = function("f", vec![op("nop")]);
+    let base = function("f", vec![op(crate::OpKind::Nop)]);
     let mut grown = base.clone();
     grown.ops[0].s_value = Some(String::with_capacity(1000));
     assert_eq!(grown.retained_bytes() - base.retained_bytes(), 1000);

@@ -6382,7 +6382,6 @@ required_imports = [
 arg_count = 0
 boxed_call = true
 kinds = [
-  "errno_constants",
   "exception_stack_clear",
   "exception_stack_enter",
   "exception_stack_depth",
@@ -6607,16 +6606,6 @@ kinds = [
   "bytes_count_slice",
   "bytearray_count_slice",
 ]
-
-[[wasm_bulk_memory_op]]
-kind = "memory_copy"
-instruction = "memory_copy"
-arg_count = 3
-
-[[wasm_bulk_memory_op]]
-kind = "memory_fill"
-instruction = "memory_fill"
-arg_count = 3
 
 # Import-name prefixes omitted by the backend Pure profile.
 # These apply to molt_runtime imports, not WASI/env host imports.

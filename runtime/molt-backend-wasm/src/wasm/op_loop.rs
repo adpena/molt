@@ -39,7 +39,10 @@ pub(super) struct WasmFunctionAnalysis {
 impl WasmFunctionAnalysis {
     pub(super) fn for_function(func: &FunctionIR) -> Self {
         let last_use = molt_tir::passes::build_last_use_map(&func.ops);
-        let drop_inserted = func.ops.iter().any(|op| op.kind == "drop_inserted");
+        let drop_inserted = func
+            .ops
+            .iter()
+            .any(|op| op.kind == molt_ir::OpKind::DropInserted);
         // Only the TIR drop plan moves or retains transferred references; the
         // legacy coalescer would release a transferred operand twice, and could
         // not plan an adopted parameter's releases.
@@ -101,12 +104,11 @@ mod analysis_tests {
     use super::*;
     use crate::OpIR;
 
-    fn op(kind: &str, out: Option<&str>, args: &[&str]) -> OpIR {
+    fn op(kind: molt_ir::OpKind, out: Option<&str>, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
             out: out.map(str::to_string),
             args: Some(args.iter().map(|value| (*value).to_string()).collect()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
@@ -128,10 +130,10 @@ mod analysis_tests {
     #[test]
     fn drop_inserted_function_disables_legacy_rc_coalescing() {
         let analysis = WasmFunctionAnalysis::for_function(&function(vec![
-            op("drop_inserted", None, &[]),
-            op("inc_ref", Some("owned"), &["value"]),
-            op("dec_ref", None, &["value"]),
-            op("ret_void", None, &[]),
+            op(molt_ir::OpKind::DropInserted, None, &[]),
+            op(molt_ir::OpKind::IncRef, Some("owned"), &["value"]),
+            op(molt_ir::OpKind::DecRef, None, &["value"]),
+            op(molt_ir::OpKind::RetVoid, None, &[]),
         ]));
         assert!(analysis.rc_skip_inc.is_empty());
         assert!(analysis.rc_skip_dec.is_empty());
@@ -140,17 +142,17 @@ mod analysis_tests {
     #[test]
     fn legacy_rc_and_last_use_are_planned_over_the_complete_function() {
         let analysis = WasmFunctionAnalysis::for_function(&function(vec![
-            op("inc_ref", Some("owned"), &["value"]),
-            op("call", Some("result"), &["owned"]),
-            op("dec_ref", None, &["value"]),
-            op("ret", None, &["result"]),
+            op(molt_ir::OpKind::IncRef, Some("owned"), &["value"]),
+            op(molt_ir::OpKind::Call, Some("result"), &["owned"]),
+            op(molt_ir::OpKind::DecRef, None, &["value"]),
+            op(molt_ir::OpKind::Ret, None, &["result"]),
         ]));
         let last_use = molt_tir::passes::build_last_use_map(
             &function(vec![
-                op("inc_ref", Some("owned"), &["value"]),
-                op("call", Some("result"), &["owned"]),
-                op("dec_ref", None, &["value"]),
-                op("ret", None, &["result"]),
+                op(molt_ir::OpKind::IncRef, Some("owned"), &["value"]),
+                op(molt_ir::OpKind::Call, Some("result"), &["owned"]),
+                op(molt_ir::OpKind::DecRef, None, &["value"]),
+                op(molt_ir::OpKind::Ret, None, &["result"]),
             ])
             .ops,
         );

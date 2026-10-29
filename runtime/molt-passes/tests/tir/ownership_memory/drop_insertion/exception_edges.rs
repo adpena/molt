@@ -67,7 +67,7 @@ fn exception_edges_release_only_prepared_unconsumed_owners() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops = vec![
         check(77),
-        original_copy("callargs_new", vec![builder]),
+        original_copy(molt_ir::OpKind::CallargsNew, vec![builder]),
         check(77),
         check(77),
         call,
@@ -184,7 +184,7 @@ fn owner_created_in_handler_is_released_on_later_exception() {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original_copy("callargs_new", vec![builder])],
+            ops: vec![original_copy(molt_ir::OpKind::CallargsNew, vec![builder])],
             terminator: Terminator::Branch {
                 target: continuation,
                 args: vec![],

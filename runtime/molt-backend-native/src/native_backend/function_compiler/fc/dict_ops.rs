@@ -1,30 +1,31 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_dict_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_dict_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "dict_new",
-    "dict_from_obj",
-    "dict_get",
-    "dict_set",
-    "dict_update_missing",
-    "dict_str_int_inc",
-    "string_split_ws_dict_inc",
-    "string_split_sep_dict_inc",
-    "dict_pop",
-    "dict_setdefault",
-    "dict_setdefault_empty_list",
-    "dict_unpack",
-    "dict_update",
-    "dict_clear",
-    "dict_copy",
-    "dict_popitem",
-    "dict_update_kwstar",
-    "dict_keys",
-    "dict_values",
-    "dict_items",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::DictNew,
+    OpKind::DictFromObj,
+    OpKind::DictGet,
+    OpKind::DictSet,
+    OpKind::DictUpdateMissing,
+    OpKind::DictStrIntInc,
+    OpKind::StringSplitWsDictInc,
+    OpKind::StringSplitSepDictInc,
+    OpKind::DictPop,
+    OpKind::DictSetdefault,
+    OpKind::DictSetdefaultEmptyList,
+    OpKind::DictUnpack,
+    OpKind::DictUpdate,
+    OpKind::DictClear,
+    OpKind::DictCopy,
+    OpKind::DictPopitem,
+    OpKind::DictUpdateKwstar,
+    OpKind::DictKeys,
+    OpKind::DictValues,
+    OpKind::DictItems,
+);
 use super::OpFlow;
 
 /// Hash-container operations share operand ownership, first-error cleanup,
@@ -44,8 +45,8 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
-    let symbol = match op.kind.as_str() {
-        "dict_new" => {
+    let symbol = match op.kind {
+        OpKind::DictNew => {
             emit_hash_container_constructor(
                 op,
                 module,
@@ -61,27 +62,27 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
             );
             return OpFlow::Proceed;
         }
-        "dict_from_obj" => "molt_dict_from_obj",
-        "dict_get" => "molt_dict_get",
-        "dict_str_int_inc" => "molt_dict_str_int_inc",
-        "string_split_ws_dict_inc" => "molt_string_split_ws_dict_inc",
-        "string_split_sep_dict_inc" => "molt_string_split_sep_dict_inc",
-        "dict_pop" => "molt_dict_pop",
-        "dict_setdefault" => "molt_dict_setdefault",
-        "dict_setdefault_empty_list" => "molt_dict_setdefault_empty_list",
-        "dict_unpack" => "molt_dict_unpack",
-        "dict_update" => "molt_dict_update",
-        "dict_clear" => "molt_dict_clear",
-        "dict_copy" => "molt_dict_copy",
-        "dict_popitem" => "molt_dict_popitem",
-        "dict_update_kwstar" => "molt_dict_update_kwstar",
-        "dict_keys" => "molt_dict_keys",
-        "dict_values" => "molt_dict_values",
-        "dict_items" => "molt_dict_items",
+        OpKind::DictFromObj => "molt_dict_from_obj",
+        OpKind::DictGet => "molt_dict_get",
+        OpKind::DictStrIntInc => "molt_dict_str_int_inc",
+        OpKind::StringSplitWsDictInc => "molt_string_split_ws_dict_inc",
+        OpKind::StringSplitSepDictInc => "molt_string_split_sep_dict_inc",
+        OpKind::DictPop => "molt_dict_pop",
+        OpKind::DictSetdefault => "molt_dict_setdefault",
+        OpKind::DictSetdefaultEmptyList => "molt_dict_setdefault_empty_list",
+        OpKind::DictUnpack => "molt_dict_unpack",
+        OpKind::DictUpdate => "molt_dict_update",
+        OpKind::DictClear => "molt_dict_clear",
+        OpKind::DictCopy => "molt_dict_copy",
+        OpKind::DictPopitem => "molt_dict_popitem",
+        OpKind::DictUpdateKwstar => "molt_dict_update_kwstar",
+        OpKind::DictKeys => "molt_dict_keys",
+        OpKind::DictValues => "molt_dict_values",
+        OpKind::DictItems => "molt_dict_items",
         // PyDict_SetItem semantics, as on LLVM and WASM: a dict subclass's
         // `__setitem__` never runs.
-        "dict_set" => "molt_dict_set",
-        "dict_update_missing" => "molt_dict_update_missing",
+        OpKind::DictSet => "molt_dict_set",
+        OpKind::DictUpdateMissing => "molt_dict_update_missing",
         _ => unreachable!("handler invoked with non-matching op.kind"),
     };
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

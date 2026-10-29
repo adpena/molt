@@ -17,18 +17,18 @@ pub(super) fn emit_plain_function_body(
     let mut branch_target_labels: BTreeSet<i64> = BTreeSet::new();
     let mut label_order: Vec<i64> = Vec::new();
     for op in &func_ir.ops {
-        match op.kind.as_str() {
-            "jump" | "br_if" => {
+        match op.kind {
+            molt_ir::OpKind::Jump | molt_ir::OpKind::BrIf => {
                 if let Some(label_id) = op.value {
                     branch_target_labels.insert(label_id);
                 }
             }
-            kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
+            kind if kind.is_exception_check() => {
                 if let Some(label_id) = op.value {
                     branch_target_labels.insert(label_id);
                 }
             }
-            "label" => {
+            molt_ir::OpKind::Label => {
                 if let Some(label_id) = op.value {
                     label_order.push(label_id);
                 }

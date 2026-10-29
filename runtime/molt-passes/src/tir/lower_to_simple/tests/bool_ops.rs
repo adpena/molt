@@ -2,27 +2,27 @@ use super::*;
 
 fn op_const_bool(out: &str, val: bool) -> OpIR {
     OpIR {
-        kind: "const_bool".to_string(),
+        kind: molt_ir::OpKind::ConstBool,
         out: Some(out.to_string()),
         value: Some(if val { 1 } else { 0 }),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstBool)
     }
 }
 
 fn op_not(arg: &str, out: &str) -> OpIR {
     OpIR {
-        kind: "not".to_string(),
+        kind: molt_ir::OpKind::Not,
         args: Some(vec![arg.to_string()]),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Not)
     }
 }
 
 fn op_ret(arg: &str) -> OpIR {
     OpIR {
-        kind: "ret".to_string(),
+        kind: molt_ir::OpKind::Ret,
         args: Some(vec![arg.to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Ret)
     }
 }
 
@@ -93,7 +93,7 @@ fn bool_method_return_preserves_const_bool_value() {
         // value pins the contract end-to-end.
         let const_bool_op = roundtripped
             .iter()
-            .find(|op| op.kind == "const_bool")
+            .find(|op| op.kind == molt_ir::OpKind::ConstBool)
             .expect("const_bool must survive roundtrip");
         assert_eq!(
             const_bool_op.value,
@@ -105,7 +105,7 @@ fn bool_method_return_preserves_const_bool_value() {
         // an int copy or coerced value.
         let ret_op = roundtripped
             .iter()
-            .find(|op| op.kind == "ret")
+            .find(|op| op.kind == molt_ir::OpKind::Ret)
             .expect("ret op must survive roundtrip");
         let ret_args = ret_op.args.as_ref().expect("ret must have args");
         assert_eq!(ret_args.len(), 1, "ret must have exactly 1 arg");
@@ -140,7 +140,9 @@ fn not_true_roundtrip_preserves_operand() {
     let roundtripped = super::lower_to_simple_ir(&tir);
 
     // Find the "not" op
-    let not_op = roundtripped.iter().find(|op| op.kind == "not");
+    let not_op = roundtripped
+        .iter()
+        .find(|op| op.kind == molt_ir::OpKind::Not);
     assert!(not_op.is_some(), "not op must survive roundtrip");
 
     let not_op = not_op.unwrap();
@@ -151,7 +153,7 @@ fn not_true_roundtrip_preserves_operand() {
     let arg_name = &not_args[0];
     let const_op = roundtripped
         .iter()
-        .find(|op| op.kind == "const_bool" && op.out.as_deref() == Some(arg_name));
+        .find(|op| op.kind == molt_ir::OpKind::ConstBool && op.out.as_deref() == Some(arg_name));
     assert!(
         const_op.is_some(),
         "not's operand '{}' must be defined by a const_bool op. ops: {:?}",

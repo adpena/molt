@@ -224,6 +224,7 @@ def test_guard_wiring_audit_changes_select_their_direct_consumers():
     "source",
     [
         "tools/structural_audit.py",
+        "tools/structural_audit_rust.py",
         "tools/structural_audit_rust_admission.py",
         "tools/structural_audit_rust_domains.py",
         "src/molt/rust_source_scan.py",
@@ -235,6 +236,8 @@ def test_structural_audit_producers_select_all_parser_consumers(source):
         "tests/test_structural_audit.py",
         "tests/tools/test_structural_audit_records.py",
         "tests/test_generator_manifest.py",
+        "tests/test_rust_source_scan.py",
+        "tests/tools/test_gen_luau_support_matrix.py",
     }
 
 

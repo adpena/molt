@@ -3,6 +3,7 @@ use crate::repr::{ContainerKind, ContainerStorageKind, ScalarKind};
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::runtime_import_abi::{MOLT_DEC_REF, MOLT_DEC_REF_OBJ, MOLT_INC_REF_OBJ};
 use crate::tir::simple_def_use::simple_ir_binding;
+use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 // Per-op-family Cranelift codegen handlers lifted out of `compile_func_inner`
@@ -145,11 +146,7 @@ impl SimpleBackend {
             let ce_count = func_ir
                 .ops
                 .iter()
-                .filter(|op| {
-                    crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(
-                        op.kind.as_str(),
-                    )
-                })
+                .filter(|op| op.kind.is_exception_check())
                 .count();
             if backend_env::var(BackendEnv::MOLT_DEBUG_CHECK_EXC).is_ok()
                 && (ce_count > 0
@@ -513,7 +510,7 @@ impl SimpleBackend {
         let makes_direct_python_calls = func_ir
             .ops
             .iter()
-            .any(|op| matches!(op.kind.as_str(), "call_guarded" | "call_func"));
+            .any(|op| matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc));
         let thread_record_fn = (inline_exception_checks || makes_direct_python_calls).then(|| {
             import_func_ref(
                 &mut self.module,
@@ -698,18 +695,21 @@ impl SimpleBackend {
             let mut defined_labels = std::collections::HashSet::new();
             let mut found = false;
             for op in &func_ir.ops {
-                match op.kind.as_str() {
-                    "loop_start" | "loop_index_start" | "for_iter_start" | "while_start"
-                    | "async_for_start" => {
+                match op.kind {
+                    OpKind::LoopStart
+                    | OpKind::LoopIndexStart
+                    | OpKind::ForIterStart
+                    | OpKind::WhileStart
+                    | OpKind::AsyncForStart => {
                         found = true;
                         break;
                     }
-                    "label" | "state_label" => {
+                    OpKind::Label | OpKind::StateLabel => {
                         if let Some(id) = op.value {
                             defined_labels.insert(id);
                         }
                     }
-                    "jump" | "br_if" | "loop_continue" => {
+                    OpKind::Jump | OpKind::BrIf | OpKind::LoopContinue => {
                         if let Some(id) = op.value
                             && defined_labels.contains(&id)
                         {
@@ -802,11 +802,9 @@ impl SimpleBackend {
             .ops
             .iter()
             .position(|op| {
-                op.kind != crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR
-                    && op.kind
-                        != crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+                op.kind != OpKind::DropInserted && op.kind != OpKind::ExceptionRegionDropsInserted
             })
-            .filter(|&op_idx| func_ir.ops[op_idx].kind == "trace_enter_slot");
+            .filter(|&op_idx| func_ir.ops[op_idx].kind == OpKind::TraceEnterSlot);
         let leading_frame_code_owner = leading_frame_entry_op_idx.map(|op_idx| {
             func_ir.ops[op_idx]
                 .s_value
@@ -817,7 +815,7 @@ impl SimpleBackend {
             func_ir
                 .ops
                 .get(op_idx + 1)
-                .filter(|op| op.kind == "check_exception")
+                .filter(|op| op.kind == OpKind::CheckException)
                 .map(|_| op_idx + 1)
         });
 
@@ -867,20 +865,23 @@ impl SimpleBackend {
             .iter()
             .filter(|op| {
                 matches!(
-                    op.kind.as_str(),
-                    "frame_home_store"
-                        | "frame_home_cell"
-                        | "frame_home_private_cell"
-                        | "frame_home_load"
-                        | "frame_home_take"
-                        | "frame_home_clear"
+                    op.kind,
+                    OpKind::FrameHomeStore
+                        | OpKind::FrameHomeCell
+                        | OpKind::FrameHomePrivateCell
+                        | OpKind::FrameHomeLoad
+                        | OpKind::FrameHomeTake
+                        | OpKind::FrameHomeClear
                 )
             })
             .filter_map(|op| op.value)
             .max()
             .map(|slot| slot + 1);
         let enters_later = leading_frame_code_owner.is_none()
-            && func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot");
+            && func_ir
+                .ops
+                .iter()
+                .any(|op| op.kind == OpKind::TraceEnterSlot);
         let frame_homes = frame_home_slots.map(|slots| {
             let homes = builder.declare_var(types::I64);
             if enters_later {
@@ -950,7 +951,7 @@ impl SimpleBackend {
                 .iter()
                 .enumerate()
                 .filter_map(|(op_idx, op)| {
-                    if op.kind != "label" {
+                    if op.kind != OpKind::Label {
                         return None;
                     }
                     let label_id = op.value?;
@@ -1008,15 +1009,40 @@ impl SimpleBackend {
         // object itself must still use the canonical runtime layout.
         let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         if backend_env::var(BackendEnv::MOLT_DUMP_IR).as_deref() == Ok("ALL_OPS")
-            && ops.iter().any(|o| o.kind == "not")
+            && ops.iter().any(|o| o.kind == OpKind::Not)
         {
             eprintln!("[FUNC] {} ({} ops)", func_ir.name, ops.len());
             for (i, op) in ops.iter().enumerate() {
-                if op.kind.contains("not")
-                    || op.kind.contains("bool")
-                    || op.kind.contains("print")
-                    || op.kind.contains("const")
-                {
+                if matches!(
+                    op.kind,
+                    OpKind::BitNot
+                        | OpKind::Bool
+                        | OpKind::BoolConst
+                        | OpKind::BuiltinBool
+                        | OpKind::BuiltinPrint
+                        | OpKind::CastBool
+                        | OpKind::Const
+                        | OpKind::ConstBigint
+                        | OpKind::ConstBool
+                        | OpKind::ConstBytes
+                        | OpKind::ConstEllipsis
+                        | OpKind::ConstFloat
+                        | OpKind::ConstInt
+                        | OpKind::ConstNone
+                        | OpKind::ConstNotImplemented
+                        | OpKind::ConstStr
+                        | OpKind::GuardBool
+                        | OpKind::IfNot
+                        | OpKind::IsNot
+                        | OpKind::LoadConst
+                        | OpKind::NoneConst
+                        | OpKind::Not
+                        | OpKind::NotIn
+                        | OpKind::Print
+                        | OpKind::PrintNewline
+                        | OpKind::StringConst
+                        | OpKind::UnaryNot
+                ) {
                     eprintln!(
                         "[OP] {}: kind={:20} out={:15?} args={:?} val={:?}",
                         i, op.kind, op.out, op.args, op.value
@@ -1041,7 +1067,7 @@ impl SimpleBackend {
                 // source point even though no second instruction is emitted.
                 // All structured phi discovery paths share this boundary.
                 if skip_ops.contains(&op_idx)
-                    && crate::tir::op_kinds_generated::simpleir_kind_is_ssa_only(&ops[op_idx].kind)
+                    && ops[op_idx].kind.is_ssa_only()
                     && builder
                         .current_block()
                         .is_some_and(|block| !block_has_terminator(&builder, block))
@@ -1087,7 +1113,7 @@ impl SimpleBackend {
                     .call(frame_line_col_fn, &[col_val, end_col_val]);
             }
             if is_block_filled {
-                if op.kind == "if"
+                if op.kind == OpKind::If
                     && let Some(&end_if_idx) = if_to_end_if.get(&op_idx)
                 {
                     for idx in op_idx..=end_if_idx {
@@ -1095,7 +1121,7 @@ impl SimpleBackend {
                     }
                     let mut phi_idx = end_if_idx + 1;
                     while phi_idx < ops.len() {
-                        if ops[phi_idx].kind != "phi" {
+                        if ops[phi_idx].kind != OpKind::Phi {
                             break;
                         }
                         skip_ops.insert(phi_idx);
@@ -1111,7 +1137,7 @@ impl SimpleBackend {
                 //
                 // Non-leader operations still need a detached lowering block so
                 // their definitions remain available to later structural ops.
-                if !crate::tir::op_kinds_generated::simpleir_kind_is_block_leader(&op.kind) {
+                if !op.kind.is_block_leader() {
                     if builder.current_block().is_none()
                         || block_has_terminator(&builder, builder.current_block().unwrap())
                     {
@@ -1156,20 +1182,26 @@ impl SimpleBackend {
             let alias_src_name = preanalyze_alias_source(&ops[op_idx]).map(str::to_string);
             let mut output_is_ptr = false;
 
-            // Single routing decision for this op, derived from each handler's
-            // `HANDLED_KINDS` authority (see `fc::op_family`). The family arms
-            // below guard on this instead of re-listing kinds, so the dispatch
-            // can never drop a kind a handler owns — the 334c4466d drift class is
-            // unexpressible. `None` means an inline arm (below) or no native
-            // codegen (handled by the loud catch-all).
-            let op_family = fc::native_op_family(op.kind.as_str());
+            // One exhaustive typed routing decision, using the patterns emitted
+            // by each handler's kind declaration. NoCodegen admits only markers
+            // without definitions; Unsupported always refuses with a diagnostic.
+            let op_family = fc::native_op_family(op.kind);
             // FunctionBuilder owns SSA through every handler's internal CFG.
             // Branch insertion records predecessors; use_var resolves only the
             // values actually read. Eagerly snapshotting all live values here
             // repeats whole live sets even for operations that never split.
             pending_definition_op = Some(op_idx);
-            match op.kind.as_str() {
-                _ if op_family == Some(fc::NativeOpFamily::ConstLiterals) => {
+            match op_family {
+                fc::NativeOpFamily::NoCodegen => {
+                    assert!(
+                        defined_names.is_empty(),
+                        "native backend: no-codegen op kind `{}` declares values {:?} in function `{}`",
+                        op.kind,
+                        defined_names,
+                        func_ir.name,
+                    );
+                }
+                fc::NativeOpFamily::ConstLiterals => {
                     let __flow = fc::const_literals::handle_const_literal_op(
                         &op,
                         &mut self.module,
@@ -1193,7 +1225,7 @@ impl SimpleBackend {
                 // both to `NativeOpFamily::Arith`. Dropping the dispatch's copy of
                 // the `vec_*` list was the 334c4466d regression (fixed 85de1bbb2);
                 // there is no longer a copy here to drop.
-                _ if op_family == Some(fc::NativeOpFamily::Arith) => {
+                fc::NativeOpFamily::Arith => {
                     let __flow = fc::arith::handle_arith_op(
                         &op,
                         op_idx,
@@ -1218,7 +1250,7 @@ impl SimpleBackend {
                 }
                 // Bitwise/shift binary operators are split from scalar add/sub/mul
                 // so arithmetic lowering stays a set of smaller codegen units.
-                _ if op_family == Some(fc::NativeOpFamily::BitwiseShift) => {
+                fc::NativeOpFamily::BitwiseShift => {
                     let __flow = fc::bitwise_shift::handle_bitwise_shift_op(
                         &op,
                         &mut self.module,
@@ -1238,7 +1270,7 @@ impl SimpleBackend {
                 }
                 // Matrix operators are runtime-backed binary ops, not scalar
                 // arithmetic; keep their routing authority out of fc::arith.
-                _ if op_family == Some(fc::NativeOpFamily::MatrixOps) => {
+                fc::NativeOpFamily::MatrixOps => {
                     let __flow = fc::matrix_ops::handle_matrix_op(
                         &op,
                         &mut self.module,
@@ -1258,7 +1290,7 @@ impl SimpleBackend {
                 // Division/modulo/power/rounding arithmetic family extracted
                 // from fc::arith so quotient/remainder codegen is its own
                 // function-level rustc codegen unit and kind authority.
-                _ if op_family == Some(fc::NativeOpFamily::ArithDivision) => {
+                fc::NativeOpFamily::ArithDivision => {
                     let __flow = fc::arith_division::handle_arith_division_op(
                         &op,
                         &mut self.module,
@@ -1277,7 +1309,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_sequence_op family - extracted to fc::sequence_ops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Sequence) => {
+                fc::NativeOpFamily::Sequence => {
                     let __flow = fc::sequence_ops::handle_sequence_op(
                         &op,
                         &mut self.module,
@@ -1298,7 +1330,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_generator_op family - extracted to fc::generators (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Generators) => {
+                fc::NativeOpFamily::Generators => {
                     fc::generators::handle_generator_op(
                         &op,
                         &mut self.module,
@@ -1311,7 +1343,7 @@ impl SimpleBackend {
                         &nbc,
                     );
                 }
-                _ if op_family == Some(fc::NativeOpFamily::ScalarBuiltins) => {
+                fc::NativeOpFamily::ScalarBuiltins => {
                     fc::scalar_builtins::handle_scalar_builtin(
                         &op,
                         &mut self.module,
@@ -1325,7 +1357,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_callargs_op family — extracted to fc::callargs (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Callargs) => {
+                fc::NativeOpFamily::Callargs => {
                     let __flow = fc::callargs::handle_callargs_op(
                         &op,
                         &mut self.module,
@@ -1345,7 +1377,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_list_op family — extracted to fc::list_ops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ListOps) => {
+                fc::NativeOpFamily::ListOps => {
                     let __flow = fc::list_ops::handle_list_op(
                         &op,
                         &mut self.module,
@@ -1365,7 +1397,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_dict_op family — extracted to fc::dict_ops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::DictOps) => {
+                fc::NativeOpFamily::DictOps => {
                     let __flow = fc::dict_ops::handle_dict_op(
                         &op,
                         &mut self.module,
@@ -1385,7 +1417,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_set_op family — extracted to fc::set_ops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::SetOps) => {
+                fc::NativeOpFamily::SetOps => {
                     let __flow = fc::set_ops::handle_set_op(
                         &op,
                         &mut self.module,
@@ -1405,7 +1437,7 @@ impl SimpleBackend {
                     }
                 }
                 // Subscript read fast paths: extracted from the old aggregate indexing bucket.
-                _ if op_family == Some(fc::NativeOpFamily::SubscriptGet) => {
+                fc::NativeOpFamily::SubscriptGet => {
                     fc::subscript_get::handle_subscript_get_op(
                         &op,
                         op_idx,
@@ -1427,7 +1459,7 @@ impl SimpleBackend {
                     );
                 }
                 // Subscript write fast paths: mutating list/dict setitem lowering is its own unit.
-                _ if op_family == Some(fc::NativeOpFamily::SubscriptStore) => {
+                fc::NativeOpFamily::SubscriptStore => {
                     fc::subscript_store::handle_subscript_store_op(
                         &op,
                         op_idx,
@@ -1445,7 +1477,7 @@ impl SimpleBackend {
                     );
                 }
                 // Thin delete/slice runtime-call lowering: separate from get/set fast paths.
-                _ if op_family == Some(fc::NativeOpFamily::SliceOps) => {
+                fc::NativeOpFamily::SliceOps => {
                     fc::slice_ops::handle_slice_op(
                         &op,
                         op_idx,
@@ -1463,8 +1495,8 @@ impl SimpleBackend {
                     );
                 }
                 // The ABI manifest admits this complete positional boxed-call family.
-                _ if op_family == Some(fc::NativeOpFamily::BoxedRuntimeCalls) => {
-                    let abi = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(&op.kind)
+                fc::NativeOpFamily::BoxedRuntimeCalls => {
+                    let abi = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(op.kind)
                         .expect("generated boxed-call family must have an ABI");
                     let args = op.args.as_deref().unwrap_or(&[]);
                     assert_eq!(args.len(), abi.arity, "{} boxed-call arity", op.kind);
@@ -1485,7 +1517,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_text_transform family — extracted to fc::text_transform (M1)
-                _ if op_family == Some(fc::NativeOpFamily::TextTransform) => {
+                fc::NativeOpFamily::TextTransform => {
                     fc::text_transform::handle_text_transform(
                         &op,
                         &mut self.module,
@@ -1499,7 +1531,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_runtime_op family - extracted to fc::runtime_ops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::RuntimeOps) => {
+                fc::NativeOpFamily::RuntimeOps => {
                     fc::runtime_ops::handle_runtime_op(
                         &op,
                         &func_ir.name,
@@ -1517,7 +1549,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_type_conversion family — extracted to fc::type_conversions (M1)
-                _ if op_family == Some(fc::NativeOpFamily::TypeConversions) => {
+                fc::NativeOpFamily::TypeConversions => {
                     fc::type_conversions::handle_type_conversion(
                         &op,
                         &mut self.module,
@@ -1533,7 +1565,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_dataclass_op family — extracted to fc::dataclass (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Dataclass) => {
+                fc::NativeOpFamily::Dataclass => {
                     fc::dataclass::handle_dataclass_op(
                         &op,
                         &mut self.module,
@@ -1549,7 +1581,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_compare_op family - extracted to fc::compare (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Compare) => {
+                fc::NativeOpFamily::Compare => {
                     fc::compare::handle_compare_op(
                         &op,
                         &mut self.module,
@@ -1565,7 +1597,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_unary_logic_op family - extracted to fc::unary_logic (M1)
-                _ if op_family == Some(fc::NativeOpFamily::UnaryLogic) => {
+                fc::NativeOpFamily::UnaryLogic => {
                     let __flow = fc::unary_logic::handle_unary_logic_op(
                         &op,
                         &mut self.module,
@@ -1585,7 +1617,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_coroutine_op family - extracted to fc::coroutine (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Coroutine) => {
+                fc::NativeOpFamily::Coroutine => {
                     let __flow = fc::coroutine::handle_coroutine_op(
                         &op,
                         entry_block,
@@ -1610,7 +1642,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_funcobj_op family - extracted to fc::funcobj (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Funcobj) => {
+                fc::NativeOpFamily::Funcobj => {
                     let __flow = fc::funcobj::handle_funcobj_op(
                         &op,
                         op_idx,
@@ -1651,7 +1683,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_object_construct_op family — extracted to fc::object_construct (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ObjectConstruct) => {
+                fc::NativeOpFamily::ObjectConstruct => {
                     fc::object_construct::handle_object_construct_op(
                         &op,
                         &mut self.module,
@@ -1665,7 +1697,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_gpu_intrinsic_op family - extracted to fc::funcobj (M1)
-                _ if op_family == Some(fc::NativeOpFamily::GpuIntrinsic) => {
+                fc::NativeOpFamily::GpuIntrinsic => {
                     fc::funcobj::handle_gpu_intrinsic_op(
                         &op,
                         &mut self.module,
@@ -1676,7 +1708,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_call_op family - extracted to fc::calls (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Calls) => {
+                fc::NativeOpFamily::Calls => {
                     fc::calls::handle_call_op(
                         &op,
                         op_idx,
@@ -1713,12 +1745,12 @@ impl SimpleBackend {
                 // handle_value_transfer_op family - extracted to fc::value_transfer (M1)
                 //
                 // `copy` is grouped with the args-based alias ops here. The
-                // frontend emits `{kind:"copy", args:[src], out:result}` (a
+                // frontend emits `{kind:OpKind::Copy, args:[src], out:result}` (a
                 // pure SSA value move), and typed copy propagation
                 // (ir_rewrites.rs) collapses it to `nop` ONLY when neither
                 // `out` nor `src` is a mutable-storage name — a `copy` whose
                 // result/source is a reassigned local SURVIVES with kind
-                // "copy" and reaches codegen. Omitting it routes the op to the
+                // OpKind::Copy and reaches codegen. Omitting it routes the op to the
                 // silent `_ => {}` arm below, which emits no codegen and leaves
                 // the result SSA value undefined (resolving to the None
                 // sentinel) — the same silent-miscompile class as the vec_*
@@ -1727,7 +1759,7 @@ impl SimpleBackend {
                 // distinguish transparent aliases from the owned
                 // `binding_alias` lane. Keep in sync with
                 // fc::value_transfer::handle_value_transfer_op.
-                _ if op_family == Some(fc::NativeOpFamily::ValueTransfer) => {
+                fc::NativeOpFamily::ValueTransfer => {
                     fc::value_transfer::handle_value_transfer_op(
                         &op,
                         op_idx,
@@ -1748,7 +1780,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_module_op family — extracted to fc::modules (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Modules) => {
+                fc::NativeOpFamily::Modules => {
                     fc::modules::handle_module_op(
                         &op,
                         op_idx,
@@ -1766,7 +1798,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_class_op family — extracted to fc::class_ops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ClassOps) => {
+                fc::NativeOpFamily::ClassOps => {
                     fc::class_ops::handle_class_op(
                         &op,
                         &mut self.module,
@@ -1783,7 +1815,7 @@ impl SimpleBackend {
                 }
                 // Outlined class definition via molt_guarded_class_def
                 // handle_type_check_op family — extracted to fc::type_checks (M1)
-                _ if op_family == Some(fc::NativeOpFamily::TypeChecks) => {
+                fc::NativeOpFamily::TypeChecks => {
                     fc::type_checks::handle_type_check_op(
                         &op,
                         &mut self.module,
@@ -1797,7 +1829,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_op family — extracted to fc::exceptions (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Exceptions) => {
+                fc::NativeOpFamily::Exceptions => {
                     fc::exceptions::handle_exception_op(
                         &op,
                         &mut self.module,
@@ -1811,7 +1843,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_context_op family — extracted to fc::context_mgmt (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ContextMgmt) => {
+                fc::NativeOpFamily::ContextMgmt => {
                     fc::context_mgmt::handle_context_op(
                         &op,
                         &mut self.module,
@@ -1825,7 +1857,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_stack_op family — extracted to fc::exception_stack (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ExceptionStack) => {
+                fc::NativeOpFamily::ExceptionStack => {
                     fc::exception_stack::handle_exception_stack_op(
                         &op,
                         &mut self.module,
@@ -1839,7 +1871,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_control_op family - extracted to fc::exception_control (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ExceptionControl) => {
+                fc::NativeOpFamily::ExceptionControl => {
                     fc::exception_control::handle_exception_control_op(
                         &op,
                         op_idx,
@@ -1874,7 +1906,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_control_flow_op family - extracted to fc::control_flow (M1)
-                _ if op_family == Some(fc::NativeOpFamily::ControlFlow) => {
+                fc::NativeOpFamily::ControlFlow => {
                     let __flow = fc::control_flow::handle_control_flow_op(
                         &op,
                         op_idx,
@@ -1915,7 +1947,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_loop_op family - extracted to fc::loops (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Loops) => {
+                fc::NativeOpFamily::Loops => {
                     let __flow = fc::loops::handle_loop_op(
                         &op,
                         op_idx,
@@ -1955,7 +1987,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_memory_op family - extracted to fc::memory (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Memory) => {
+                fc::NativeOpFamily::Memory => {
                     let __flow = fc::memory::handle_memory_op(
                         &op,
                         op_idx,
@@ -1991,7 +2023,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_attr_op family — extracted to fc::attrs (M1)
-                _ if op_family == Some(fc::NativeOpFamily::Attrs) => {
+                fc::NativeOpFamily::Attrs => {
                     let __flow = fc::attrs::handle_attr_op(
                         &op,
                         op_idx,
@@ -2011,7 +2043,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_ret_jump_op family - extracted to fc::ret_jump (M1)
-                _ if op_family == Some(fc::NativeOpFamily::RetJump) => {
+                fc::NativeOpFamily::RetJump => {
                     let __flow = fc::ret_jump::handle_ret_jump_op(
                         &op,
                         op_idx,
@@ -2062,24 +2094,20 @@ impl SimpleBackend {
                 // leave its result SSA value undefined (resolving to the None
                 // sentinel) -> the exact silent miscompile fixed in 85de1bbb2. Fail
                 // loud here, just as every fc::* handler's own `_ => unreachable!`.
-                _ => {
+                fc::NativeOpFamily::Unsupported => {
                     if let Some(binding) = simple_ir_binding(&op) {
                         panic!(
                             "native backend: no codegen for binding op kind `{}` (destination={:?}) in function `{}`",
                             op.kind, binding.destination, func_ir.name,
                         );
                     }
-                    if op.out.is_some()
-                        && !fc::NATIVE_NO_CODEGEN_RESULT_KINDS.contains(&op.kind.as_str())
                     {
                         panic!(
-                            "native backend: no codegen for result-producing op kind `{}` \
+                            "native backend: no codegen for op kind `{}` \
                              (out={:?}) in function `{}`. It is claimed by no inline dispatch \
                              arm and no fc::* family (HANDLED_KINDS) — the dispatch<->handler \
                              mirror drift class regressed by 334c4466d / fixed 85de1bbb2. Add \
-                             the kind to the owning handler's HANDLED_KINDS, or to \
-                             op_family::NATIVE_NO_CODEGEN_RESULT_KINDS if it legitimately needs \
-                             no native codegen.",
+                             the kind to the owning handler's typed lowering family.",
                             op.kind, op.out, func_ir.name,
                         );
                     }
@@ -2163,9 +2191,12 @@ impl SimpleBackend {
                 && loop_depth == 0
                 && builder.current_block() == Some(body_entry_block)
             {
-                let cleanup_skip = match op.kind.as_str() {
-                    "call_func" | "call_loaded_method" | "call_bind" | "call_indirect"
-                    | "invoke_ffi" => op
+                let cleanup_skip = match op.kind {
+                    OpKind::CallFunc
+                    | OpKind::CallLoadedMethod
+                    | OpKind::CallBind
+                    | OpKind::CallIndirect
+                    | OpKind::InvokeFfi => op
                         .args
                         .as_ref()
                         .and_then(|args| args.first())
@@ -2192,12 +2223,12 @@ impl SimpleBackend {
                 && cleanup_roots.contains(name)
                 // The TIR lane never acquires native owner tokens.
                 && rc_authority.native_value_tracking_enabled()
-                && op.kind != "delete_var"
+                && op.kind != OpKind::DeleteVar
                 && !slot_backed_join_slots.contains_key(name.as_str())
                 && let Some(block) = builder.current_block()
                 // Coalescing is operation-local. A dead retain result must not
                 // suppress an earlier or later owner with the same textual name.
-                && !(matches!(op.kind.as_str(), "inc_ref" | "borrow")
+                && !(matches!(op.kind, OpKind::IncRef | OpKind::Borrow)
                     && rc_skip_inc.contains(&op_idx))
                 {
                     if (simple_ir_binding(&op).is_some()

@@ -1,30 +1,30 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn native_transparency_uses_generated_no_incref_move_authority() {
     for kind in [
-        "copy",
-        "copy_var",
-        "load_var",
-        "store_var",
-        "identity_alias",
-        "binding_alias",
-        "box",
-        "unbox",
-        "cast",
-        "widen",
-        "guard_tag",
-        "guard_type",
+        OpKind::Copy,
+        OpKind::CopyVar,
+        OpKind::LoadVar,
+        OpKind::StoreVar,
+        OpKind::IdentityAlias,
+        OpKind::BindingAlias,
+        OpKind::Box,
+        OpKind::Unbox,
+        OpKind::Cast,
+        OpKind::Widen,
+        OpKind::GuardTag,
+        OpKind::GuardType,
     ] {
         let op = OpIR {
-            kind: kind.into(),
-            args: Some(if matches!(kind, "guard_tag" | "guard_type") {
+            args: Some(if matches!(kind, OpKind::GuardTag | OpKind::GuardType) {
                 vec!["source".into(), "expected_tag".into()]
             } else {
                 vec!["source".into()]
             }),
             out: Some("result".into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         };
         assert_eq!(
             super::super::preanalyze_alias_source(&op).is_some(),
@@ -32,13 +32,12 @@ fn native_transparency_uses_generated_no_incref_move_authority() {
             "{kind}",
         );
     }
-    for kind in ["box", "unbox", "binding_alias"] {
+    for kind in [OpKind::Box, OpKind::Unbox, OpKind::BindingAlias] {
         let mut input = super::cleanup_roots::token_test_ir();
         input.ops.push(OpIR {
-            kind: kind.into(),
             args: Some(vec!["owner".into()]),
             out: Some("independent".into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         });
         let analysis = preanalyze_for_test(&input);
         assert_eq!(
@@ -54,23 +53,20 @@ fn native_definition_scan_preserves_multi_results_and_rejects_metadata() {
     let mut input = super::cleanup_roots::token_test_ir();
     input.ops.extend([
         OpIR {
-            kind: "unpack_sequence".into(),
             args: Some(vec!["borrowed".into(), "first".into(), "second".into()]),
             value: Some(2),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::UnpackSequence)
         },
         OpIR {
-            kind: "checked_add".into(),
             var: Some("sum".into()),
             out: Some("overflow".into()),
             args: Some(vec!["first".into(), "second".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckedAdd)
         },
         OpIR {
-            kind: "dec_ref".into(),
             out: Some("metadata_only".into()),
             args: Some(vec!["owner".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::DecRef)
         },
     ]);
     let analysis = preanalyze_function_ir(&input, &ScalarRepresentationPlan::default());
@@ -93,11 +89,10 @@ fn native_definition_scan_preserves_multi_results_and_rejects_metadata() {
 fn result_carrying_store_preserves_both_binding_and_alias_definition() {
     let mut input = super::cleanup_roots::token_test_ir();
     input.ops.push(OpIR {
-        kind: "store_var".into(),
         var: Some("local".into()),
         out: Some("result".into()),
         args: Some(vec!["owner".into()]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::StoreVar)
     });
     let analysis = preanalyze_for_test(&input);
     assert_eq!(
@@ -121,11 +116,10 @@ fn native_binding_consumers_share_destination_and_optional_result_roles() {
     ] {
         let mut input = super::cleanup_roots::token_test_ir();
         let store = OpIR {
-            kind: "store_var".into(),
             var: var.map(str::to_string),
             out: out.map(str::to_string),
             args: Some(vec!["owner".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         };
         input.ops.push(store.clone());
         let analysis = preanalyze_for_test(&input);
@@ -145,7 +139,7 @@ fn native_binding_consumers_share_destination_and_optional_result_roles() {
 
 #[test]
 fn native_join_planning_uses_semantic_copy_sources_not_metadata() {
-    for kind in ["copy_var", "load_var"] {
+    for kind in [OpKind::CopyVar, OpKind::LoadVar] {
         for (var, args, expected) in [
             ("_bb1_arg0", Some(vec!["source".to_string()]), None),
             (
@@ -157,22 +151,19 @@ fn native_join_planning_uses_semantic_copy_sources_not_metadata() {
             ("_bb1_arg0", Some(vec![]), Some("_bb1_arg0")),
         ] {
             let read = OpIR {
-                kind: kind.into(),
                 var: Some(var.into()),
                 args,
                 out: Some("snapshot".into()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             };
             let ops = vec![
                 OpIR {
-                    kind: "try_start".into(),
                     value: Some(10),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::TryStart)
                 },
                 read.clone(),
                 OpIR {
-                    kind: "exception_pop".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ExceptionPop)
                 },
             ];
             let slots = collect_slot_backed_join_names(&ops, &BTreeSet::from([10]), false);
@@ -194,20 +185,17 @@ fn parameter_entry_definition_makes_single_rebind_a_mutable_epoch() {
     input.return_abi = molt_ir::FunctionReturnAbi::Value;
     input.ops = vec![
         OpIR {
-            kind: "copy".into(),
             out: Some("snapshot".into()),
             args: Some(vec!["borrowed".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Copy)
         },
         OpIR {
-            kind: "alloc".into(),
             out: Some("borrowed".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Alloc)
         },
         OpIR {
-            kind: "ret".into(),
             args: Some(vec!["snapshot".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Ret)
         },
     ];
     let analysis = preanalyze_for_test(&input);
@@ -229,27 +217,23 @@ fn preanalysis_separates_retained_storage_bindings_from_ssa_aliases() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const_str".to_string(),
                 out: Some("src".to_string()),
                 s_value: Some("hi".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstStr)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("_bb4_arg0".to_string()),
                 args: Some(vec!["src".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "load_var".to_string(),
                 var: Some("_bb4_arg0".to_string()),
                 out: Some("joined".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoadVar)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["joined".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -282,16 +266,14 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
         params: vec!["value".to_string(), "metadata_slot".to_string()],
         ops: vec![
             OpIR {
-                kind: "copy_var".to_string(),
                 var: Some("metadata_slot".to_string()),
                 args: Some(vec!["value".to_string()]),
                 out: Some("alias".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::CopyVar)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["alias".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -321,25 +303,21 @@ fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "load_var".to_string(),
                 var: Some("item".to_string()),
                 out: Some("tmp_loaded".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoadVar)
             },
             OpIR {
-                kind: "missing".to_string(),
                 out: Some("tmp_missing".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Missing)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("item".to_string()),
                 args: Some(vec!["tmp_missing".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -364,40 +342,33 @@ fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "loop_start".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopStart)
             },
             OpIR {
-                kind: "const_str".to_string(),
                 out: Some("tmp".to_string()),
                 s_value: Some("hi".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstStr)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("slot".to_string()),
                 args: Some(vec!["tmp".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "const".to_string(),
                 out: Some("v116".to_string()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("_v7".to_string()),
                 args: Some(vec!["v116".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "loop_end".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopEnd)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -425,44 +396,36 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const_bool".to_string(),
                 out: Some("v0".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstBool)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("slot".to_string()),
                 args: Some(vec!["v0".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "loop_start".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopStart)
             },
             OpIR {
-                kind: "const_bool".to_string(),
                 out: Some("v1".to_string()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstBool)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("slot".to_string()),
                 args: Some(vec!["v1".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "loop_continue".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopContinue)
             },
             OpIR {
-                kind: "loop_end".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopEnd)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -486,35 +449,31 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
 
 #[test]
 fn native_runtime_guards_check_expected_tags_and_define_used_results() {
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [OpKind::GuardTag, OpKind::GuardType] {
         let mut input = super::cleanup_roots::token_test_ir();
         input.name = "molt_main".into();
         input.return_abi = molt_ir::FunctionReturnAbi::Value;
         input.params.clear();
         input.ops = vec![
             OpIR {
-                kind: "const".into(),
                 out: Some("source".into()),
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "const".into(),
                 out: Some("tag".into()),
                 value: Some(5),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: kind.into(),
                 args: Some(vec!["source".into(), "tag".into()]),
                 out: Some("checked".into()),
                 s_value: Some("int".into()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["checked".into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ];
         let object = SimpleBackend::new().compile(SimpleIR {

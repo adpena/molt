@@ -5,14 +5,14 @@ fn object_new_bound_import_demand_uses_class_owned_layout_size() {
     let cases = [
         (
             "object_new_bound_unsized_selector",
-            "object_new_bound",
+            molt_ir::OpKind::ObjectNewBound,
             None,
             "object_new_bound",
             "object_new_bound_sized",
         ),
         (
             "object_new_bound_with_static_layout_hint",
-            "object_new_bound",
+            molt_ir::OpKind::ObjectNewBound,
             Some(24),
             "object_new_bound",
             "object_new_bound_sized",
@@ -78,13 +78,17 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
         "call_loaded_method_spilled",
     ];
     for (load_kind, extra_arg_count, expected_call) in [
-        ("load_method", 0, "call_loaded_method0"),
-        ("load_method", 2, "call_loaded_method2"),
-        ("load_method", 4, "call_loaded_method4"),
-        ("load_method", 5, "call_loaded_method_spilled"),
-        ("load_super_method", 0, "call_loaded_method0"),
-        ("load_super_method", 2, "call_loaded_method2"),
-        ("load_super_method", 5, "call_loaded_method_spilled"),
+        (molt_ir::OpKind::LoadMethod, 0, "call_loaded_method0"),
+        (molt_ir::OpKind::LoadMethod, 2, "call_loaded_method2"),
+        (molt_ir::OpKind::LoadMethod, 4, "call_loaded_method4"),
+        (molt_ir::OpKind::LoadMethod, 5, "call_loaded_method_spilled"),
+        (molt_ir::OpKind::LoadSuperMethod, 0, "call_loaded_method0"),
+        (molt_ir::OpKind::LoadSuperMethod, 2, "call_loaded_method2"),
+        (
+            molt_ir::OpKind::LoadSuperMethod,
+            5,
+            "call_loaded_method_spilled",
+        ),
     ] {
         let case = format!("{load_kind}/{extra_arg_count}");
         let reloc_wasm = WasmBackend::with_options(WasmCompileOptions {
@@ -95,7 +99,7 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
         })
         .compile(wasm_loaded_method_ir(load_kind, extra_arg_count));
         let reloc_imports = wasm_function_import_names(&reloc_wasm);
-        for import_name in [load_kind, expected_call] {
+        for import_name in [load_kind.as_str(), expected_call] {
             assert!(
                 reloc_imports.iter().any(|name| name == import_name),
                 "{case} must retain {import_name}; imports={reloc_imports:?}"
@@ -119,7 +123,7 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
         .compile(wasm_loaded_method_ir(load_kind, extra_arg_count));
         let import_indices = wasm_function_import_indices(&direct_wasm);
         let call_indices = wasm_direct_call_indices_for_export(&direct_wasm, "molt_main");
-        for import_name in [load_kind, expected_call] {
+        for import_name in [load_kind.as_str(), expected_call] {
             let index = *import_indices
                 .get(import_name)
                 .unwrap_or_else(|| panic!("{case}: {import_name} import must exist"));
@@ -143,13 +147,12 @@ fn method_load_import_demand_and_codegen_select_the_call_arity() {
 #[test]
 fn method_load_reads_its_out_word_before_releasing_a_discarded_callable() {
     let load = OpIR {
-        kind: "load_method".to_string(),
         var: Some("unused_callable".to_string()),
         out: Some("unused_self".to_string()),
         args: Some(vec!["receiver".to_string()]),
         s_value: Some("selected_method".to_string()),
         source_op_idx: Some(0),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::LoadMethod)
     };
     let ir = SimpleIR {
         functions: vec![wasm_test_function(
@@ -158,8 +161,8 @@ fn method_load_reads_its_out_word_before_releasing_a_discarded_callable() {
             None,
             vec![
                 load,
-                wasm_test_op("const_none", Some("nothing"), vec![]),
-                wasm_test_op("ret", None, vec!["nothing"]),
+                wasm_test_op(molt_ir::OpKind::ConstNone, Some("nothing"), vec![]),
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["nothing"]),
             ],
         )],
         profile: None,
@@ -195,14 +198,21 @@ fn method_load_reads_its_out_word_before_releasing_a_discarded_callable() {
 /// from `iter_next` and no `index` calls to take it apart.
 #[test]
 fn iterator_step_calls_iter_next_unboxed_with_an_out_word() {
-    let mut next = wasm_test_op("iter_next_unboxed", Some("done"), vec!["iterator"]);
+    let mut next = wasm_test_op(
+        molt_ir::OpKind::IterNextUnboxed,
+        Some("done"),
+        vec!["iterator"],
+    );
     next.var = Some("value".into());
     let ir = SimpleIR {
         functions: vec![wasm_test_function(
             "molt_main",
             vec!["iterator"],
             None,
-            vec![next, wasm_test_op("ret", None, vec!["value"])],
+            vec![
+                next,
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
+            ],
         )],
         profile: None,
     };
@@ -247,11 +257,8 @@ fn iterator_step_calls_iter_next_unboxed_with_an_out_word() {
 
 #[test]
 fn explicit_trace_ops_call_their_runtime_imports() {
-    let op = |kind: &str| OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    };
-    let mut enter = op("trace_enter_slot");
+    let op = |kind: molt_ir::OpKind| OpIR::new(kind);
+    let mut enter = op(molt_ir::OpKind::TraceEnterSlot);
     enter.s_value = Some("molt_test_func".into());
     let bindings: molt_ir::code_slots::CodeSlotBindings =
         serde_json::from_value(serde_json::json!({"molt_test_func": 0})).unwrap();
@@ -262,7 +269,11 @@ fn explicit_trace_ops_call_their_runtime_imports() {
                 name: "molt_test_func".into(),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 execution_context: molt_ir::ExecutionContextPolicy::Local,
-                ops: vec![enter, op("trace_exit"), op("ret_void")],
+                ops: vec![
+                    enter,
+                    op(molt_ir::OpKind::TraceExit),
+                    op(molt_ir::OpKind::RetVoid),
+                ],
                 ..FunctionIR::default()
             }],
             profile: None,

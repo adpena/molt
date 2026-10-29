@@ -2,11 +2,11 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_value_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
+        match op.kind {
             // ================================================================
             // Constants
             // ================================================================
-            "const" | "const_int" | "load_const" => {
+            molt_ir::OpKind::Const | molt_ir::OpKind::ConstInt | molt_ir::OpKind::LoadConst => {
                 let out = self.out_var(op);
                 if let Some(v) = op.value {
                     self.emit_line(&format!("local {out}: number = {v}"));
@@ -19,7 +19,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "const_float" => {
+            molt_ir::OpKind::ConstFloat => {
                 if let Some(val) = op.f_value {
                     let out = self.out_var(op);
                     self.emit_line(&format!("local {out}: number = {val}"));
@@ -27,7 +27,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "const_str" => {
+            molt_ir::OpKind::ConstStr => {
                 if let Some(s) = op.s_value.as_deref() {
                     let out = self.out_var(op);
                     let escaped = escape_luau_string(s);
@@ -36,7 +36,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "const_bytes" => {
+            molt_ir::OpKind::ConstBytes => {
                 let out = self.out_var(op);
                 if let Some(ref bytes) = op.bytes {
                     let escaped: String = bytes.iter().map(|b| format!("\\x{b:02x}")).collect();
@@ -52,7 +52,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "const_bool" | "bool_const" => {
+            molt_ir::OpKind::ConstBool | molt_ir::OpKind::BoolConst => {
                 if let Some(value) = op.value {
                     let out = self.out_var(op);
                     let val = if value != 0 { "true" } else { "false" };
@@ -61,11 +61,11 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "const_none" | "none_const" => {
+            molt_ir::OpKind::ConstNone | molt_ir::OpKind::NoneConst => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = nil"));
             }
-            "string_const" => {
+            molt_ir::OpKind::StringConst => {
                 if let Some(s) = op.s_value.as_deref() {
                     let out = self.out_var(op);
                     let escaped = escape_luau_string(s);
@@ -74,7 +74,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "const_bigint" => {
+            molt_ir::OpKind::ConstBigint => {
                 if let Some(value) =
                     molt_tir::target_admission::exact_integer_literal_value(op, 1_u128 << 53)
                 {
@@ -84,15 +84,15 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "const_not_implemented" => {
+            molt_ir::OpKind::ConstNotImplemented => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = molt_not_implemented"));
             }
-            "const_ellipsis" => {
+            molt_ir::OpKind::ConstEllipsis => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = molt_ellipsis"));
             }
-            "missing" => {
+            molt_ir::OpKind::Missing => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = molt_missing_sentinel"));
             }
@@ -100,12 +100,12 @@ impl LuauBackend {
             // ================================================================
             // Variable load/store (both pedagogical and real IR forms)
             // ================================================================
-            "load_local" => {
+            molt_ir::OpKind::LoadLocal => {
                 let out = self.out_var(op);
                 let var = self.var_ref(op);
                 self.emit_line(&format!("local {out} = {var}"));
             }
-            "load_var" | "copy_var" => {
+            molt_ir::OpKind::LoadVar | molt_ir::OpKind::CopyVar => {
                 // Keep source selection aligned with the shared SimpleIR
                 // field-role authority. With explicit args, `var` is local-name
                 // metadata; without args, `var` is the value source.
@@ -120,7 +120,7 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {}", sanitize_ident(source)));
             }
-            "load" | "guarded_load" => {
+            molt_ir::OpKind::Load | molt_ir::OpKind::GuardedLoad => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
@@ -132,7 +132,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "guard_type" | "guard_tag" => {
+            molt_ir::OpKind::GuardType | molt_ir::OpKind::GuardTag => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let value = sanitize_ident(&args[0]);
@@ -149,7 +149,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "closure_load" => {
+            molt_ir::OpKind::ClosureLoad => {
                 // closure_load: args[0] = slot name, out = destination var
                 // Reads from closure slot (stored via closure_store).
                 let out = self.out_var(op);
@@ -162,7 +162,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {var}"));
                 }
             }
-            "store_local" => {
+            molt_ir::OpKind::StoreLocal => {
                 let var = self.var_ref(op);
                 if let Some(ref args) = op.args
                     && let Some(src) = args.first()
@@ -177,7 +177,7 @@ impl LuauBackend {
                     self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                 }
             }
-            "store_var" => {
+            molt_ir::OpKind::StoreVar => {
                 let binding = molt_tir::tir::simple_def_use::simple_ir_binding(op);
                 if binding.is_none_or(|binding| {
                     binding.destination.is_empty() || binding.destination == "none"
@@ -208,7 +208,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "store" => {
+            molt_ir::OpKind::Store => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     // Field offsets are byte offsets in 8-byte MoltValue slots.
@@ -218,7 +218,7 @@ impl LuauBackend {
                     self.emit_line(&format!("{obj}[{slot}] = {value}"));
                 }
             }
-            "closure_store" => {
+            molt_ir::OpKind::ClosureStore => {
                 // closure_store: args[0] = slot name, args[1] = value
                 // Stores value into a closure slot variable.
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -228,7 +228,7 @@ impl LuauBackend {
                     self.emit_line(&format!("__closure_{slot} = {value}"));
                 }
             }
-            "identity_alias" | "binding_alias" => {
+            molt_ir::OpKind::IdentityAlias | molt_ir::OpKind::BindingAlias => {
                 let out = self.out_var(op);
                 if let Some(ref args) = op.args
                     && let Some(src) = args.first()

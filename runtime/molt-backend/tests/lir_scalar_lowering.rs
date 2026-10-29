@@ -55,6 +55,7 @@ fn make_op(
     attrs: AttrDict,
 ) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -76,33 +77,30 @@ fn float_attr(value: f64) -> AttrDict {
     attrs
 }
 
-fn opir(kind: &str, args: &[&str], out: Option<&str>) -> OpIR {
+fn opir(kind: molt_ir::OpKind, args: &[&str], out: Option<&str>) -> OpIR {
     OpIR {
-        kind: kind.into(),
         args: if args.is_empty() {
             None
         } else {
             Some(args.iter().map(|arg| (*arg).into()).collect())
         },
         out: out.map(str::to_string),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 fn const_float_opir(out: &str, value: f64) -> OpIR {
     OpIR {
-        kind: "const_float".into(),
         f_value: Some(value),
         out: Some(out.into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
     }
 }
 
 fn ret_opir(var: &str) -> OpIR {
     OpIR {
-        kind: "ret".into(),
         args: Some(vec![var.into()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Ret)
     }
 }
 
@@ -170,15 +168,15 @@ fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
             params: vec!["a".into(), "b".into(), "w".into()],
             param_types: Some(vec!["float".into(), "float".into(), "float".into()]),
             ops: vec![
-                opir("sub", &["b", "a"], Some("v0")),
+                opir(molt_ir::OpKind::Sub, &["b", "a"], Some("v0")),
                 const_float_opir("c3", 3.0),
                 const_float_opir("c2", 2.0),
-                opir("mul", &["w", "c2"], Some("v1")),
-                opir("sub", &["c3", "v1"], Some("v2")),
-                opir("mul", &["v0", "v2"], Some("v3")),
-                opir("mul", &["v3", "w"], Some("v4")),
-                opir("mul", &["v4", "w"], Some("v5")),
-                opir("add", &["v5", "a"], Some("v6")),
+                opir(molt_ir::OpKind::Mul, &["w", "c2"], Some("v1")),
+                opir(molt_ir::OpKind::Sub, &["c3", "v1"], Some("v2")),
+                opir(molt_ir::OpKind::Mul, &["v0", "v2"], Some("v3")),
+                opir(molt_ir::OpKind::Mul, &["v3", "w"], Some("v4")),
+                opir(molt_ir::OpKind::Mul, &["v4", "w"], Some("v5")),
+                opir(molt_ir::OpKind::Add, &["v5", "a"], Some("v6")),
                 ret_opir("v6"),
             ],
             source_file: None,
@@ -251,7 +249,7 @@ fn lower_dynbox_float_arithmetic_return_stays_dynbox() {
         param_types: None,
         ops: vec![
             const_float_opir("c", 1.5),
-            opir("add", &["x", "c"], Some("v0")),
+            opir(molt_ir::OpKind::Add, &["x", "c"], Some("v0")),
             ret_opir("v0"),
         ],
         source_file: None,

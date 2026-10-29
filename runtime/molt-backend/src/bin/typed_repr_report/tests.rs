@@ -32,6 +32,7 @@ fn counts_lir_scalar_representations() {
             ],
             ops: vec![LirOp {
                 tir_op: TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Add,
                     operands: vec![ValueId(0), ValueId(1)],
@@ -88,6 +89,7 @@ fn counts_ref64_as_reference_not_semantic_scalar() {
             }],
             ops: vec![LirOp {
                 tir_op: TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ObjectNewBound,
                     operands: vec![ValueId(0)],
@@ -133,11 +135,6 @@ fn counts_ref64_as_reference_not_semantic_scalar() {
 #[test]
 fn separates_plain_copy_from_fallback_semantic_copy() {
     let entry = BlockId(0);
-    let mut fallback_attrs = AttrDict::new();
-    fallback_attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("unpack_sequence".into()),
-    );
     let mut blocks = HashMap::new();
     blocks.insert(
         entry,
@@ -151,6 +148,7 @@ fn separates_plain_copy_from_fallback_semantic_copy() {
             ops: vec![
                 LirOp {
                     tir_op: TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Copy,
                         operands: vec![ValueId(0)],
@@ -166,11 +164,12 @@ fn separates_plain_copy_from_fallback_semantic_copy() {
                 },
                 LirOp {
                     tir_op: TirOp {
+                        origin: Some(molt_ir::OpKind::UnpackSequence),
                         dialect: Dialect::Molt,
                         opcode: OpCode::Copy,
                         operands: vec![ValueId(1)],
                         results: vec![ValueId(2)],
-                        attrs: fallback_attrs,
+                        attrs: AttrDict::new(),
                         source_span: None,
                     },
                     result_values: vec![LirValue {

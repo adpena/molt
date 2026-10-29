@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn llvm_backend_keeps_shared_stdlib_partition_external() {
@@ -10,13 +11,11 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "call".to_string(),
                 s_value: Some("molt_init_sys".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -31,8 +30,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         name: "molt_init_sys".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         }],
         param_types: None,
         source_file: None,

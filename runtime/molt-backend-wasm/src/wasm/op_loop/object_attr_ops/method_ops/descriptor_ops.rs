@@ -13,8 +13,8 @@ pub(super) fn emit_method_descriptor_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "classmethod_new" => {
+    match op.kind {
+        molt_ir::OpKind::ClassmethodNew => {
             let args = op.args.as_ref().unwrap();
             let func_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(func_bits));
@@ -32,7 +32,7 @@ pub(super) fn emit_method_descriptor_op(
                 WasmRuntimeImport::ClassmethodNew,
             );
         }
-        "staticmethod_new" => {
+        molt_ir::OpKind::StaticmethodNew => {
             let args = op.args.as_ref().unwrap();
             let func_bits = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(func_bits));
@@ -50,7 +50,7 @@ pub(super) fn emit_method_descriptor_op(
                 WasmRuntimeImport::StaticmethodNew,
             );
         }
-        "property_new" => {
+        molt_ir::OpKind::PropertyNew => {
             let args = op.args.as_ref().unwrap();
             let getter = locals[&args[0]];
             let setter = locals[&args[1]];
@@ -72,7 +72,7 @@ pub(super) fn emit_method_descriptor_op(
                 WasmRuntimeImport::PropertyNew,
             );
         }
-        "bound_method_new" => {
+        molt_ir::OpKind::BoundMethodNew => {
             let args = op.args.as_ref().unwrap();
             let func_bits = locals[&args[0]];
             let self_bits = locals[&args[1]];
@@ -92,7 +92,7 @@ pub(super) fn emit_method_descriptor_op(
                 WasmRuntimeImport::BoundMethodNew,
             );
         }
-        "is_bound_method" => {
+        molt_ir::OpKind::IsBoundMethod => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(obj));

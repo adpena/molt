@@ -6,8 +6,7 @@ use super::super::call_targets::gpu_runtime_symbol_for_simple_kind;
 use super::super::dominators;
 use super::super::op_kinds_generated::{
     kind_to_opcode_table, opcode_ssa_s_value_attr_key_table,
-    simpleir_first_trailing_result_arg_table, simpleir_kind_is_async_work_poll,
-    simpleir_kind_may_carry_async_work_poll_marker, simpleir_kind_preserves_original_kind_for_ssa,
+    simpleir_first_trailing_result_arg_table,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
@@ -57,6 +56,7 @@ impl<'a> SsaContext<'a> {
         };
         let result = self.fresh_value_typed();
         let mut constant = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -76,14 +76,14 @@ impl<'a> SsaContext<'a> {
         op: &OpIR,
         var_stacks: &HashMap<String, Vec<ValueId>>,
     ) -> TirOp {
-        let opcode = kind_to_opcode(&op.kind);
-        let mapped_kind = kind_to_opcode_table(op.kind.as_str()).is_some();
+        let opcode = kind_to_opcode(op.kind);
+        let mapped_kind = kind_to_opcode_table(op.kind).is_some();
         // Resolve operands from args.
         // SimpleIR args can be variable names OR inline constants (e.g., "1", "3.14").
         // Variables resolve via var_stacks; constants get a fresh ConstInt/ConstFloat value.
         let mut operands = Vec::new();
         if let Some(args) = &op.args {
-            let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+            let read_arity = simpleir_first_trailing_result_arg_table(op.kind)
                 .unwrap_or(args.len())
                 .min(args.len());
             for a in args.iter().take(read_arity) {
@@ -143,7 +143,7 @@ impl<'a> SsaContext<'a> {
             // all values as AttrValue::Int, which made ConstBool(True)
             // and ConstBool(False) indistinguishable to passes that only
             // pattern-matched on AttrValue::Bool.
-            if op.kind == "const_bool" {
+            if op.kind == crate::OpKind::ConstBool {
                 attrs.insert("value".into(), AttrValue::Bool(v != 0));
             } else {
                 attrs.insert("value".into(), AttrValue::Int(v));
@@ -156,7 +156,7 @@ impl<'a> SsaContext<'a> {
             attrs.insert("s_value".into(), AttrValue::Str(v.clone()));
         }
         if op.s_value.is_none()
-            && let Some(symbol) = gpu_runtime_symbol_for_simple_kind(op.kind.as_str())
+            && let Some(symbol) = gpu_runtime_symbol_for_simple_kind(op.kind)
         {
             attrs.insert("s_value".into(), AttrValue::Str(symbol.to_string()));
         }
@@ -244,7 +244,7 @@ impl<'a> SsaContext<'a> {
         // names: the synthetic `_v{N}` allocator only avoids spellings it
         // knows, and an unrecorded output name could be reissued to an
         // unrelated value and inherit its raw-carrier representation.
-        if simpleir_first_trailing_result_arg_table(op.kind.as_str()).is_some() {
+        if simpleir_first_trailing_result_arg_table(op.kind).is_some() {
             visit_simple_ir_ssa_result_slots(op, |name, index| {
                 if let Some(name) = name {
                     attrs.insert(
@@ -288,12 +288,12 @@ impl<'a> SsaContext<'a> {
         }
         if op.async_work_poll {
             assert!(
-                simpleir_kind_may_carry_async_work_poll_marker(&op.kind),
+                op.kind.may_carry_async_work_poll_marker(),
                 "SimpleIR op {:?} cannot carry the async-work poll marker",
                 op.kind
             );
         }
-        if op.async_work_poll || simpleir_kind_is_async_work_poll(&op.kind) {
+        if op.async_work_poll || op.kind.is_async_work_poll() {
             attrs.insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
         }
 
@@ -322,7 +322,7 @@ impl<'a> SsaContext<'a> {
         // range_new maps to CallBuiltin but has no s_value to provide the
         // callee name.  Set it explicitly so downstream passes (range_devirt)
         // can pattern-match on name = "range".
-        if op.kind == "range_new" && !attrs.contains_key("name") {
+        if op.kind == crate::OpKind::RangeNew && !attrs.contains_key("name") {
             attrs.insert("name".into(), AttrValue::Str("range".into()));
         }
 
@@ -330,7 +330,7 @@ impl<'a> SsaContext<'a> {
         // re-emission. For `copy_var`/`load_var` it is both resolved into an SSA
         // operand above and carried here as the original local-name fact; the
         // operand is value authority, `_var` is stream-identity authority.
-        if simple_var_field_is_transport_fact(op.kind.as_str())
+        if simple_var_field_is_transport_fact(op.kind)
             && let Some(ref v) = op.var
         {
             attrs.insert("_var".into(), AttrValue::Str(v.clone()));
@@ -342,18 +342,13 @@ impl<'a> SsaContext<'a> {
             }
         }
 
-        // Preserve `_original_kind` for registered Copy carriers and for mapped
-        // spellings whose non-canonical name is semantically visible to
-        // round-trip/backends. The generated predicate owns the mapped spelling
-        // set; registered carrier preservation stays here because SSA is the
-        // backstop for kinds with no first-class opcode.
-        if (opcode == OpCode::Copy && !mapped_kind)
-            || simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())
-        {
-            attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
-        }
+        // Preserve specialization identity on Copy carriers and mapped aliases.
+        let origin = ((opcode == OpCode::Copy && !mapped_kind)
+            || op.kind.preserves_original_kind_for_ssa())
+        .then_some(op.kind);
 
         let mut tir_op = TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -371,20 +366,16 @@ impl<'a> SsaContext<'a> {
     }
 }
 
-/// Map a SimpleIR `kind` string to a TIR `OpCode`.
+/// Map a SimpleIR wire kind to a TIR `OpCode`.
 ///
 /// The kind→opcode table is the single-source-of-truth op-kind registry
 /// (`runtime/molt-ir/src/tir/op_kinds.toml`, generated into
 /// [`crate::tir::op_kinds_generated::kind_to_opcode_table`]; see
 /// `docs/design/foundation/25_op_kind_registry.md`). A kind with no first-class
-/// opcode uses `OpCode::Copy` (carrying its spelling in `_original_kind`).
-/// Admission rejects unregistered spellings before SSA conversion.
-fn kind_to_opcode(kind: &str) -> OpCode {
-    match kind_to_opcode_table(kind) {
-        Some(opcode) => opcode,
-        None if super::super::op_kinds_generated::simpleir_kind_is_registered(kind) => OpCode::Copy,
-        None => panic!("unregistered op kind `{kind}` reached SSA lowering"),
-    }
+/// opcode uses `OpCode::Copy` with the typed kind in `TirOp::origin`.
+/// Wire decoding rejects unregistered spellings before SSA conversion.
+fn kind_to_opcode(kind: crate::OpKind) -> OpCode {
+    kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
 }
 
 #[cfg(test)]
@@ -394,7 +385,11 @@ mod positional_result_tests {
 
     #[test]
     fn fixed_results_allocate_discarded_slots_and_keep_surviving_return_identity() {
-        for kind in ["checked_add", "checked_mul", "iter_next_unboxed"] {
+        for kind in [
+            crate::OpKind::CheckedAdd,
+            crate::OpKind::CheckedMul,
+            crate::OpKind::IterNextUnboxed,
+        ] {
             for discarded in [None, Some("none")] {
                 for (var, out, returned, index) in [
                     (discarded, Some("flag"), Some("flag"), 1),
@@ -403,31 +398,38 @@ mod positional_result_tests {
                 ] {
                     let ops = vec![
                         OpIR {
-                            kind: "const_int".into(),
+                            kind: crate::OpKind::ConstInt,
                             out: Some("source".into()),
                             value: Some(1),
-                            ..OpIR::default()
+                            ..crate::OpIR::new(crate::OpKind::ConstInt)
                         },
                         OpIR {
                             kind: kind.into(),
                             var: var.map(str::to_string),
                             out: out.map(str::to_string),
-                            args: Some(if kind == "iter_next_unboxed" {
+                            args: Some(if kind == crate::OpKind::IterNextUnboxed {
                                 vec!["source".into()]
                             } else {
                                 vec!["source".into(), "source".into()]
                             }),
-                            ..OpIR::default()
+                            ..crate::OpIR::new(kind.into())
                         },
                         OpIR {
                             kind: if returned.is_some() {
-                                "ret"
+                                crate::OpKind::Ret
                             } else {
-                                "ret_void"
+                                crate::OpKind::RetVoid
                             }
                             .into(),
                             args: returned.map(|name| vec![name.to_string()]),
-                            ..OpIR::default()
+                            ..crate::OpIR::new(
+                                if returned.is_some() {
+                                    crate::OpKind::Ret
+                                } else {
+                                    crate::OpKind::RetVoid
+                                }
+                                .into(),
+                            )
                         },
                     ];
                     let cfg = CFG::build(&ops);
@@ -465,20 +467,20 @@ mod positional_result_tests {
     fn trailing_argument_results_keep_their_authored_names() {
         let ops = vec![
             OpIR {
-                kind: "const_none".into(),
+                kind: crate::OpKind::ConstNone,
                 out: Some("pair".into()),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::ConstNone)
             },
             OpIR {
-                kind: "unpack_sequence".into(),
+                kind: crate::OpKind::UnpackSequence,
                 args: Some(vec!["pair".into(), "first".into(), "second".into()]),
                 value: Some(2),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::UnpackSequence)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: crate::OpKind::Ret,
                 args: Some(vec!["second".into()]),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::Ret)
             },
         ];
         let cfg = CFG::build(&ops);

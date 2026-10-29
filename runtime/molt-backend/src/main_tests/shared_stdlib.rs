@@ -261,10 +261,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_init_sys".to_string(),
         params: vec![],
-        ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        }],
+        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
         param_types: None,
         source_file: None,
         is_extern: false,
@@ -277,9 +274,8 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         name: "sys__version".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "const_str".to_string(),
             s_value: Some("3.12".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstStr)
         }],
         param_types: None,
         source_file: None,
@@ -345,11 +341,10 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         name: "collections__UserDict_copy".to_string(),
         params: vec!["self".to_string()],
         ops: vec![OpIR {
-            kind: "call".to_string(),
             s_value: Some("copy__copy".to_string()),
             args: Some(vec!["self".to_string()]),
             out: Some("v0".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         }],
         param_types: None,
         source_file: None,
@@ -363,10 +358,9 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         name: "molt_init_copy".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "call".to_string(),
             s_value: Some("copy__molt_module_chunk_1".to_string()),
             out: Some("v0".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         }],
         param_types: None,
         source_file: None,
@@ -379,10 +373,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "copy__molt_module_chunk_1".to_string(),
         params: vec![],
-        ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        }],
+        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
         param_types: None,
         source_file: None,
         is_extern: false,
@@ -395,9 +386,8 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         name: "copy__copy".to_string(),
         params: vec!["obj".to_string()],
         ops: vec![OpIR {
-            kind: "ret".to_string(),
             args: Some(vec!["obj".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         }],
         param_types: None,
         source_file: None,
@@ -464,36 +454,30 @@ fn shared_stdlib_cache_sidecar_write_failures_propagate() {
 fn stdlib_code_slot_fixture(owner: &str) -> Vec<OpIR> {
     vec![
         OpIR {
-            kind: "const_str".into(),
             s_value: Some("<module>".into()),
             out: Some("code_name".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstStr)
         },
         OpIR {
-            kind: "const".into(),
             value: Some(0),
             out: Some("zero".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         },
         OpIR {
-            kind: "const_none".into(),
             out: Some("linetable".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstNone)
         },
         OpIR {
-            kind: "tuple_new".into(),
             args: Some(vec![]),
             out: Some("names".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TupleNew)
         },
         OpIR {
-            kind: "dict_new".into(),
             args: Some(vec![]),
             out: Some("globals".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictNew)
         },
         OpIR {
-            kind: "code_new".into(),
             args: Some(
                 [
                     "code_name",
@@ -511,13 +495,12 @@ fn stdlib_code_slot_fixture(owner: &str) -> Vec<OpIR> {
                 .collect(),
             ),
             out: Some("code".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CodeNew)
         },
         OpIR {
-            kind: "code_slot_set".into(),
             args: Some(vec!["code".into(), "globals".into()]),
             s_value: Some(owner.into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CodeSlotSet)
         },
     ]
 }
@@ -531,9 +514,8 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "call_internal".to_string(),
                     s_value: Some("molt_init_sys".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallInternal)
                 }],
                 param_types: None,
                 source_file: None,
@@ -618,9 +600,8 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "call_internal".to_string(),
                     s_value: Some("molt_init_sys".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallInternal)
                 }],
                 param_types: None,
                 source_file: None,
@@ -707,9 +688,8 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "call".to_string(),
                     s_value: Some("demo__module".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 }],
                 param_types: None,
                 source_file: None,
@@ -722,10 +702,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "demo__module".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -737,10 +714,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -868,9 +842,8 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         name: "molt_main".to_string(),
                         params: vec![],
                         ops: vec![OpIR {
-                            kind: "call".to_string(),
                             s_value: Some("demo__module".to_string()),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::Call)
                         }],
                         param_types: None,
                         source_file: None,
@@ -883,10 +856,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "demo__module".to_string(),
                         params: vec![],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
+                        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                         param_types: None,
                         source_file: None,
                         is_extern: false,
@@ -898,10 +868,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_isolate_bootstrap".to_string(),
                         params: vec![],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
+                        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                         param_types: None,
                         source_file: None,
                         is_extern: false,
@@ -913,10 +880,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_isolate_import".to_string(),
                         params: vec!["p0".to_string()],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
+                        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                         param_types: None,
                         source_file: None,
                         is_extern: false,
@@ -976,9 +940,8 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 name: "molt_main".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "call".to_string(),
                     s_value: Some("demo__module".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 }],
                 param_types: None,
                 source_file: None,
@@ -991,10 +954,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "demo__module".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1006,10 +966,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_bootstrap".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1021,10 +978,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -1066,27 +1020,24 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
 #[test]
 fn shared_stdlib_async_edge_agrees_with_dfe_and_object_dependencies() {
     check_provider_reference_boundary(vec![OpIR {
-        kind: "call_async".into(),
         s_value: Some("application_body".into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::CallAsync)
     }]);
 }
 
 #[test]
 fn shared_stdlib_gpu_edge_agrees_with_dfe_and_object_dependencies() {
     let descriptor = OpIR {
-        kind: "const_str".into(),
         s_value: Some(r#"{"python_bodies":{"buffer_get":{"symbol":"application_body"}}}"#.into()),
         out: Some("descriptor".into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstStr)
     };
     check_provider_reference_boundary(vec![
         descriptor.clone(),
         OpIR {
-            kind: "call".into(),
             s_value: Some("molt_gpu_kernel_descriptor_set".into()),
             args: Some(vec!["kernel".into(), "descriptor".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         },
     ]);
     // Identical guest data without the compiler's publisher creates no edge.
@@ -1114,10 +1065,7 @@ fn check_provider_reference_boundary(ops: Vec<OpIR>) {
     };
     let target = FunctionIR {
         name: "application_body".into(),
-        ops: vec![OpIR {
-            kind: "ret_void".into(),
-            ..OpIR::default()
-        }],
+        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
         ..FunctionIR::default()
     };
     let functions = vec![provider.clone(), target];

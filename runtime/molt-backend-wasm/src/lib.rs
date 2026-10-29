@@ -13,7 +13,7 @@ pub use molt_ir::stdlib_module_symbols::{
     parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };
 pub use molt_ir::{
-    FunctionIR, MOLT_CLOSURE_PARAM_NAME, OpIR, PgoProfileIR, SimpleIR, debug_artifacts, ir,
+    FunctionIR, MOLT_CLOSURE_PARAM_NAME, OpIR, OpKind, PgoProfileIR, SimpleIR, debug_artifacts, ir,
     ir_schema, json_boundary, native_callable_abi, process_diagnostics, repr,
     runtime_callable_symbols, stdlib_module_symbols, validate_simple_ir,
 };

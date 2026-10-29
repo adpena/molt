@@ -96,7 +96,7 @@ pub(crate) fn selected_import_id(
     import_ids: &TrackedImportIds,
     import_key: WasmRuntimeImport,
     func_name: &str,
-    op_kind: &str,
+    op_kind: molt_ir::OpKind,
 ) -> u32 {
     let import_id = import_ids[import_key];
     assert_ne!(

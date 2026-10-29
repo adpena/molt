@@ -55,7 +55,7 @@ use molt_tir::{FunctionIR, OpIR};
 #[derive(Clone, Copy)]
 struct IntOp {
     /// SimpleIR `OpIR.kind` for the body op `r = i <op> const`.
-    simple_kind: &'static str,
+    simple_kind: molt_ir::OpKind,
     /// Canonical TIR opcode for the same op.
     tir_opcode: OpCode,
     /// Constant right-hand operand for the body op. Chosen so that for a
@@ -78,7 +78,7 @@ const IV_STOP: i64 = 1_000;
 fn int_ops() -> Vec<IntOp> {
     vec![
         IntOp {
-            simple_kind: "mod",
+            simple_kind: molt_ir::OpKind::Mod,
             tir_opcode: OpCode::Mod,
             rhs_const: 7,
             expected_raw: true,
@@ -86,19 +86,19 @@ fn int_ops() -> Vec<IntOp> {
         IntOp {
             // `//` has a value-range transfer rule at both authorities, so a
             // bounded `i // 3` result stays on the raw carrier lane.
-            simple_kind: "floordiv",
+            simple_kind: molt_ir::OpKind::Floordiv,
             tir_opcode: OpCode::FloorDiv,
             rhs_const: 3,
             expected_raw: true,
         },
         IntOp {
-            simple_kind: "add",
+            simple_kind: molt_ir::OpKind::Add,
             tir_opcode: OpCode::Add,
             rhs_const: 7,
             expected_raw: true,
         },
         IntOp {
-            simple_kind: "mul",
+            simple_kind: molt_ir::OpKind::Mul,
             tir_opcode: OpCode::Mul,
             rhs_const: 7,
             expected_raw: true,
@@ -106,7 +106,7 @@ fn int_ops() -> Vec<IntOp> {
         IntOp {
             // Exact integer provenance, inline result range and a count in
             // [0, 63] admit the same raw carrier in both value and name views.
-            simple_kind: "lshift",
+            simple_kind: molt_ir::OpKind::Lshift,
             tir_opcode: OpCode::Shl,
             rhs_const: 1,
             expected_raw: true,
@@ -131,22 +131,22 @@ fn int_ops() -> Vec<IntOp> {
 // This is the exact predicate the modulo P0 store mis-consulted.
 // ======================================================================
 
-fn op(kind: &str, out: Option<&str>, var: Option<&str>, args: &[&str]) -> OpIR {
+fn op(kind: molt_ir::OpKind, out: Option<&str>, var: Option<&str>, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind: kind,
         out: out.map(str::to_string),
         var: var.map(str::to_string),
         args: (!args.is_empty()).then(|| args.iter().map(|a| a.to_string()).collect()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 fn const_int(out: &str, value: i64) -> OpIR {
     OpIR {
-        kind: "const".to_string(),
+        kind: molt_ir::OpKind::Const,
         out: Some(out.to_string()),
         value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Const)
     }
 }
 
@@ -171,17 +171,32 @@ fn bounded_loop_body_op_ir(int_op: IntOp) -> FunctionIR {
             const_int("one", 1),
             const_int("stop", IV_STOP),
             const_int("rhs", int_op.rhs_const),
-            op("store_var", None, Some("i"), &["init"]),
-            op("loop_start", None, None, &[]),
-            op("load_var", Some("i_cur"), Some("i"), &[]),
-            op("lt", Some("keep_going"), None, &["i_cur", "stop"]),
-            op("loop_break_if_false", None, None, &["keep_going"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["init"]),
+            op(molt_ir::OpKind::LoopStart, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_cur"), Some("i"), &[]),
+            op(
+                molt_ir::OpKind::Lt,
+                Some("keep_going"),
+                None,
+                &["i_cur", "stop"],
+            ),
+            op(
+                molt_ir::OpKind::LoopBreakIfFalse,
+                None,
+                None,
+                &["keep_going"],
+            ),
             // The op under test: r = i_cur <op> rhs.
             op(int_op.simple_kind, Some("r"), None, &["i_cur", "rhs"]),
-            op("add", Some("i_next"), None, &["i_cur", "one"]),
-            op("store_var", None, Some("i"), &["i_next"]),
-            op("loop_continue", None, None, &[]),
-            op("loop_end", None, None, &[]),
+            op(
+                molt_ir::OpKind::Add,
+                Some("i_next"),
+                None,
+                &["i_cur", "one"],
+            ),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["i_next"]),
+            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
+            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
         ],
     }
 }
@@ -254,6 +269,7 @@ fn name_keyed_authority_admits_bounded_int_op_results() {
 
 fn tir_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -446,7 +462,7 @@ fn overflowing_result_is_refused_by_both_proof_and_registry() {
     // fragmenting store promoted this boxed result to the raw lane (the modulo
     // P0 in reverse - a > 2^46 value trusted-unboxed) the agreement breaks.
     let overflow_op = IntOp {
-        simple_kind: "mul",
+        simple_kind: molt_ir::OpKind::Mul,
         tir_opcode: OpCode::Mul,
         rhs_const: 1i64 << 40,
         // The whole point of this control: the result is NOT proven inline
@@ -569,7 +585,7 @@ fn fragmented_carrier_map_fails_the_gate() {
     // inline, so in the genuine map it is boxed (not raw) - and the genuine
     // map AGREES with the proof.
     let overflowing_mul = IntOp {
-        simple_kind: "mul",
+        simple_kind: molt_ir::OpKind::Mul,
         tir_opcode: OpCode::Mul,
         rhs_const: 1i64 << 40,
         expected_raw: false,

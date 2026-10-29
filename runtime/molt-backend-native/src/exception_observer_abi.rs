@@ -8,16 +8,15 @@
 /// The base import name is also accepted as a semantic alias. A marker only
 /// changes rows that declare `marked_import_name` in the WASM ABI manifest.
 pub(crate) fn pending_exception_observer_runtime_symbol(
-    kind: &str,
+    kind: molt_ir::OpKind,
     marked: bool,
 ) -> Option<&'static str> {
     match kind {
-        "exception_finally_pending_observer" if marked => {
+        molt_ir::OpKind::ExceptionFinallyPendingObserver if marked => {
             Some("molt_async_work_poll_and_exception_last_pending")
         }
-        "exception_finally_pending_observer" | "exception_last_pending" => {
-            Some("molt_exception_last_pending")
-        }
+        molt_ir::OpKind::ExceptionFinallyPendingObserver
+        | molt_ir::OpKind::ExceptionLastPending => Some("molt_exception_last_pending"),
         _ => None,
     }
 }

@@ -1,10 +1,10 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_class_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_class_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["class_def", "class_set_definition"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::ClassDef, OpKind::ClassSetDefinition);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for the class-statement ops `class_def` and `class_set_definition`.
@@ -53,8 +53,8 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "class_def" => {
+    match op.kind {
+        OpKind::ClassDef => {
             let meta = op.s_value.as_deref().expect("class_def needs s_value");
             let mut parts = meta.split(',');
             let nbases = parts
@@ -107,7 +107,7 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 block_tracked_ptr,
             );
         }
-        "class_set_definition" => {
+        OpKind::ClassSetDefinition => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let class_bits = var_get_boxed_overflow_safe(
                 &mut *module,

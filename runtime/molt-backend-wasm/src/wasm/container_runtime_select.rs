@@ -10,7 +10,7 @@ use molt_tir::tir::types::TirType;
 pub(in crate::wasm) fn selected_container_runtime_import(
     plan: &ScalarRepresentationPlan,
     op_index: usize,
-    kind: &str,
+    kind: molt_ir::OpKind,
     op: &OpIR,
 ) -> Option<WasmRuntimeImport> {
     let selector_op = wasm_container_runtime_op(kind)?;

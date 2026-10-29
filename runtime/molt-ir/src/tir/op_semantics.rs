@@ -22,26 +22,30 @@ use super::values::ValueId;
 /// type. This fact is shared by refinement and allocator provenance; it grants
 /// neither an exact class from annotations nor a physical storage layout.
 /// Element/key types and tuple arity stay unknown until separately proved.
-pub fn container_constructor_result_type(kind: &str) -> Option<TirType> {
+pub fn container_constructor_result_type(kind: crate::OpKind) -> Option<TirType> {
     let dynbox = || Box::new(TirType::DynBox);
     match kind {
         // List builders (variadic elements, typed-int list, runtime fill, range
         // materialization, `.copy()`) — all produce `list`; the element type is
         // not tracked here. NOTE: `list_index_range` is deliberately absent — it
         // is `list.index(value, start, end)`, which returns the int index, not a
-        // list (frontend `type_hint="int"`).
-        "list_new" | "list_int_new" | "list_fill_new" | "list_from_range" | "list_copy" => {
-            Some(TirType::List(dynbox()))
-        }
+        // list (frontend `type_hint=crate::OpKind::Int`).
+        crate::OpKind::ListNew
+        | crate::OpKind::ListIntNew
+        | crate::OpKind::ListFillNew
+        | crate::OpKind::ListFromRange
+        | crate::OpKind::ListCopy => Some(TirType::List(dynbox())),
         // Dict builders. Keys/values not tracked here.
-        "dict_new" | "dict_from_obj" => Some(TirType::Dict(dynbox(), dynbox())),
+        crate::OpKind::DictNew | crate::OpKind::DictFromObj => {
+            Some(TirType::Dict(dynbox(), dynbox()))
+        }
         // Set / frozenset builders. molt has no distinct frozenset container
         // kind; both probe through the shared set hash layout, so both type
         // `Set` for dispatch (`molt_set_contains` handles set + frozenset).
-        "set_new" | "frozenset_new" => Some(TirType::Set(dynbox())),
+        crate::OpKind::SetNew | crate::OpKind::FrozensetNew => Some(TirType::Set(dynbox())),
         // Tuple builders. The element types/arity are not needed for container
         // dispatch, so an unknown-arity tuple is the canonical "is a tuple" fact.
-        "tuple_new" | "tuple_from_list" => Some(TirType::Tuple(Vec::new())),
+        crate::OpKind::TupleNew | crate::OpKind::TupleFromList => Some(TirType::Tuple(Vec::new())),
         _ => None,
     }
 }
@@ -485,6 +489,7 @@ mod tests {
         ] {
             assert_eq!(opcode_fixed_result_count_table(checked), Some(2));
             let op = TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: checked,
                 operands: vec![ValueId(0), ValueId(1)],
@@ -663,6 +668,7 @@ mod tests {
         }
 
         let malformed = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -687,6 +693,7 @@ mod tests {
                         continue;
                     }
                     let op = TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: (0..operands).map(|index| ValueId(index as u32)).collect(),

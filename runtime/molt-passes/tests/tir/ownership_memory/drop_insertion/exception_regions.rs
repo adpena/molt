@@ -17,7 +17,7 @@ fn retained_exception_alias_outlives_its_match_region() {
     func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(4)];
     func.blocks.get_mut(&func.entry_block).unwrap().terminator =
         Terminator::Return { values: vec![] };
-    let mut capture = original_copy("binding_alias", vec![retained]);
+    let mut capture = original_copy(molt_ir::OpKind::BindingAlias, vec![retained]);
     capture.operands = vec![observed];
     func.blocks.insert(
         handler,
@@ -25,10 +25,10 @@ fn retained_exception_alias_outlives_its_match_region() {
             id: handler,
             args: vec![],
             ops: vec![
-                original_copy("exception_last_pending", vec![observed]),
+                original_copy(molt_ir::OpKind::ExceptionLastPending, vec![observed]),
                 capture,
-                original_copy("exception_clear", vec![]),
-                original_copy("exception_pop", vec![]),
+                original_copy(molt_ir::OpKind::ExceptionClear, vec![]),
+                original_copy(molt_ir::OpKind::ExceptionPop, vec![]),
                 named_call("fixture_external_call", vec![retained], vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
@@ -43,9 +43,10 @@ fn retained_exception_alias_outlives_its_match_region() {
             .position(|op| op.opcode == OpCode::DecRef && op.operands == vec![value])
             .expect("each independent owner is released")
     };
-    let pop = ops.iter().position(|op| {
-        matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "exception_pop")
-    }).unwrap();
+    let pop = ops
+        .iter()
+        .position(|op| matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ExceptionPop))
+        .unwrap();
     let callback = ops.iter().position(|op| op.opcode == OpCode::Call).unwrap();
     assert_eq!(drop_at(observed), pop + 1);
     assert!(drop_at(observed) < callback);
@@ -110,7 +111,7 @@ fn exception_region_match_release_inserts_before_handler_full_drop() {
         TirBlock {
             id: clean,
             args: vec![],
-            ops: vec![original_copy("exception_pop", vec![])],
+            ops: vec![original_copy(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -119,7 +120,10 @@ fn exception_region_match_release_inserts_before_handler_full_drop() {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original_copy("exception_last_pending", vec![exc])],
+            ops: vec![original_copy(
+                molt_ir::OpKind::ExceptionLastPending,
+                vec![exc],
+            )],
             terminator: Terminator::Branch {
                 target: handler_pop,
                 args: vec![],
@@ -131,7 +135,7 @@ fn exception_region_match_release_inserts_before_handler_full_drop() {
         TirBlock {
             id: handler_pop,
             args: vec![],
-            ops: vec![original_copy("exception_pop", vec![])],
+            ops: vec![original_copy(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -192,7 +196,7 @@ fn exception_creation_ref_releases_at_raise_with_handler_full_drop() {
 
     func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
         try_start(4),
-        original_copy("exception_new_builtin_one", vec![exc]),
+        original_copy(molt_ir::OpKind::ExceptionNewBuiltinOne, vec![exc]),
         op(OpCode::Raise, vec![exc], vec![]),
     ];
     func.blocks.get_mut(&func.entry_block).unwrap().terminator =
@@ -202,7 +206,7 @@ fn exception_creation_ref_releases_at_raise_with_handler_full_drop() {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![original_copy("exception_pop", vec![])],
+            ops: vec![original_copy(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -403,7 +407,7 @@ fn exception_creation_ref_release_is_path_local_for_alternative_raises() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = vec![
             op(OpCode::Copy, vec![cond_input], vec![cond]),
-            original_copy("exception_new_builtin_one", vec![exc]),
+            original_copy(molt_ir::OpKind::ExceptionNewBuiltinOne, vec![exc]),
         ];
         entry.terminator = Terminator::CondBranch {
             cond,
@@ -463,9 +467,9 @@ fn handler_match_ref_is_not_released_at_reraise() {
             id: handler,
             args: vec![],
             ops: vec![
-                original_copy("exception_last_pending", vec![exc]),
+                original_copy(molt_ir::OpKind::ExceptionLastPending, vec![exc]),
                 op(OpCode::Raise, vec![exc], vec![]),
-                original_copy("exception_pop", vec![]),
+                original_copy(molt_ir::OpKind::ExceptionPop, vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -543,7 +547,10 @@ fn two_exception_region_releases_in_one_block_keep_carrier_indices() {
         TirBlock {
             id: inner_handler,
             args: vec![],
-            ops: vec![original_copy("exception_last_pending", vec![inner_exc])],
+            ops: vec![original_copy(
+                molt_ir::OpKind::ExceptionLastPending,
+                vec![inner_exc],
+            )],
             terminator: Terminator::Branch {
                 target: shared_pops,
                 args: vec![],
@@ -557,7 +564,10 @@ fn two_exception_region_releases_in_one_block_keep_carrier_indices() {
         TirBlock {
             id: outer_handler,
             args: vec![],
-            ops: vec![original_copy("exception_last_pending", vec![outer_exc])],
+            ops: vec![original_copy(
+                molt_ir::OpKind::ExceptionLastPending,
+                vec![outer_exc],
+            )],
             terminator: Terminator::Branch {
                 target: shared_pops,
                 args: vec![],
@@ -572,8 +582,8 @@ fn two_exception_region_releases_in_one_block_keep_carrier_indices() {
             id: shared_pops,
             args: vec![],
             ops: vec![
-                original_copy("exception_pop", vec![]),
-                original_copy("exception_pop", vec![]),
+                original_copy(molt_ir::OpKind::ExceptionPop, vec![]),
+                original_copy(molt_ir::OpKind::ExceptionPop, vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -594,7 +604,7 @@ fn two_exception_region_releases_in_one_block_keep_carrier_indices() {
     for block in func.blocks.values() {
         for (idx, op) in block.ops.iter().enumerate() {
             if op.opcode == OpCode::Copy
-                && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "exception_pop")
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ExceptionPop)
             {
                 // trivially true, but documents the invariant the assert guards:
                 // a carrier stays a Copy and is never clobbered by a DecRef.
@@ -645,7 +655,7 @@ fn exception_region_match_release_splits_shared_pop_by_dominating_edge() {
         TirBlock {
             id: shared_pop,
             args: vec![],
-            ops: vec![original_copy("exception_pop", vec![])],
+            ops: vec![original_copy(molt_ir::OpKind::ExceptionPop, vec![])],
             terminator: Terminator::Branch {
                 target: after_pop,
                 args: vec![],
@@ -667,7 +677,7 @@ fn exception_region_match_release_splits_shared_pop_by_dominating_edge() {
             id: handler,
             args: vec![],
             ops: vec![
-                original_copy("exception_last_pending", vec![exc]),
+                original_copy(molt_ir::OpKind::ExceptionLastPending, vec![exc]),
                 op(OpCode::Copy, vec![exc], vec![matched]),
             ],
             terminator: Terminator::Branch {
@@ -765,7 +775,7 @@ fn exception_region_match_release_splits_shared_pop_with_block_args() {
             id: handler,
             args: vec![],
             ops: vec![
-                original_copy("exception_last_pending", vec![exc]),
+                original_copy(molt_ir::OpKind::ExceptionLastPending, vec![exc]),
                 const_str(handler_arg),
             ],
             terminator: Terminator::Branch {
@@ -795,7 +805,7 @@ fn exception_region_match_release_splits_shared_pop_with_block_args() {
                 ty: TirType::Str,
             }],
             ops: vec![
-                original_copy("exception_pop", vec![]),
+                original_copy(molt_ir::OpKind::ExceptionPop, vec![]),
                 op(OpCode::Copy, vec![pop_arg], vec![tail_value]),
             ],
             terminator: Terminator::Return {
@@ -919,7 +929,7 @@ fn exception_region_match_release_remaps_dominated_successor_uses() {
                 id: handler,
                 args: vec![],
                 ops: vec![
-                    original_copy("exception_last_pending", vec![exc]),
+                    original_copy(molt_ir::OpKind::ExceptionLastPending, vec![exc]),
                     const_str(handler_arg),
                 ],
                 terminator: Terminator::Branch {
@@ -949,8 +959,12 @@ fn exception_region_match_release_remaps_dominated_successor_uses() {
                     ty: TirType::Str,
                 }],
                 ops: vec![
-                    original_copy_with_operands("load_var", vec![pop_arg], vec![pop_alias]),
-                    original_copy("exception_pop", vec![]),
+                    original_copy_with_operands(
+                        molt_ir::OpKind::LoadVar,
+                        vec![pop_arg],
+                        vec![pop_alias],
+                    ),
+                    original_copy(molt_ir::OpKind::ExceptionPop, vec![]),
                 ],
                 terminator: Terminator::Branch {
                     target: after_pop,

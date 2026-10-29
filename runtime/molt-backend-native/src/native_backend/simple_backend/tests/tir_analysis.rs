@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
@@ -8,8 +9,7 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "ret".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             }],
             param_types: None,
             source_file: None,
@@ -37,12 +37,11 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "func_new_closure".to_string(),
                 out: Some("poll_obj".to_string()),
                 s_value: Some("worker_poll".to_string()),
                 task_kind: Some("coroutine".to_string()),
                 task_closure_size: Some(3),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::FuncNewClosure)
             }],
             param_types: None,
             source_file: None,
@@ -83,10 +82,9 @@ fn effective_metadata_unions_module_context_with_local_scan() {
         name: "contextlib___inner".to_string(),
         params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.to_string()],
         ops: vec![OpIR {
-            kind: "func_new_closure".to_string(),
             s_value: Some("contextlib___inner".to_string()),
             out: Some("v0".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::FuncNewClosure)
         }],
         param_types: None,
         source_file: None,
@@ -136,9 +134,8 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             name: "helper".to_string(),
             params: vec!["value".to_string(), "intrinsic".to_string()],
             ops: vec![OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["value".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             }],
             param_types: None,
             source_file: None,
@@ -152,9 +149,8 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             name: "helper_poll".to_string(),
             params: vec!["state".to_string()],
             ops: vec![OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["state".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             }],
             param_types: None,
             source_file: None,
@@ -185,9 +181,8 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             name: "value_helper".to_string(),
             params: vec!["value".to_string()],
             ops: vec![OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["value".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             }],
             param_types: None,
             source_file: None,
@@ -201,8 +196,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             name: "void_helper".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             }],
             param_types: None,
             source_file: None,
@@ -226,20 +220,17 @@ fn prepare_module_context_bounds_bodies_before_freezing_added_linkage_rows() {
     let mut ops = Vec::new();
     for line in 0..1401 {
         ops.push(OpIR {
-            kind: "line".into(),
             value: Some(line),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Line)
         });
         ops.push(OpIR {
-            kind: "const".into(),
             value: Some(line),
             out: Some(format!("unused_{line}")),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Const)
         });
     }
     ops.push(OpIR {
-        kind: "ret_void".into(),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::RetVoid)
     });
     let mut functions = vec![FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -269,8 +260,7 @@ fn shared_context_cannot_override_final_lifetime_callback_facts() {
         params: vec!["owned".into()],
         return_abi: molt_ir::FunctionReturnAbi::Void,
         ops: vec![OpIR {
-            kind: "ret_void".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::RetVoid)
         }],
         ..Default::default()
     };
@@ -289,24 +279,21 @@ fn shared_context_cannot_override_final_lifetime_callback_facts() {
     finalized.ops.insert(
         0,
         OpIR {
-            kind: "drop_inserted".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::DropInserted)
         },
     );
     finalized.ops.insert(
         0,
         OpIR {
-            kind: "dec_ref".into(),
             args: Some(vec!["owned".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::DecRef)
         },
     );
     let mut pure = FunctionIR {
         name: "pure_local".into(),
         return_abi: molt_ir::FunctionReturnAbi::Void,
         ops: vec![OpIR {
-            kind: "ret_void".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::RetVoid)
         }],
         ..Default::default()
     };
@@ -317,15 +304,13 @@ fn shared_context_cannot_override_final_lifetime_callback_facts() {
     exception_only.ops.insert(
         0,
         OpIR {
-            kind: "exception_region_drops_inserted".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::ExceptionRegionDropsInserted)
         },
     );
     pure.ops.insert(
         0,
         OpIR {
-            kind: "drop_inserted".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::DropInserted)
         },
     );
     let ir = SimpleIR {
@@ -342,12 +327,11 @@ fn shared_context_cannot_override_final_lifetime_callback_facts() {
     assert!(!analysis.leaf_functions.contains("exception_only_local"));
 }
 
-fn callback_op(kind: &str, args: &[&str], out: Option<&str>) -> OpIR {
+fn callback_op(kind: OpKind, args: &[&str], out: Option<&str>) -> OpIR {
     OpIR {
-        kind: kind.into(),
         args: (!args.is_empty()).then(|| args.iter().map(|name| (*name).into()).collect()),
         out: out.map(str::to_string),
-        ..Default::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -364,7 +348,7 @@ fn callback_function(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR 
 fn assert_callback_rewrite_preserves_oracle(mut function: FunctionIR) -> FunctionIR {
     function
         .ops
-        .insert(0, callback_op("drop_inserted", &[], None));
+        .insert(0, callback_op(OpKind::DropInserted, &[], None));
     let before = final_leaf_oracle(std::slice::from_ref(&function));
     let mut typed = crate::tir::lower_from_simple::lower_to_tir(&function);
     crate::tir::drop_phase::prepare_final_backend_lowering(
@@ -402,16 +386,16 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
     let _guard = backend_env_lock()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let mut scalar = callback_op("const", &[], Some("source"));
+    let mut scalar = callback_op(OpKind::Const, &[], Some("source"));
     scalar.value = Some(7);
     let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
         "scalar_alias",
         &[],
         vec![
             scalar,
-            callback_op("copy_var", &["source"], Some("alias")),
-            callback_op("dec_ref", &["alias"], None),
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::CopyVar, &["source"], Some("alias")),
+            callback_op(OpKind::DecRef, &["alias"], None),
+            callback_op(OpKind::RetVoid, &[], None),
         ],
     ));
     assert!(
@@ -422,70 +406,79 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
     );
     assert!(final_leaf_oracle(std::slice::from_ref(&rewritten)).contains("scalar_alias"));
 
-    let mut poll = callback_op("async_work_poll", &[], None);
+    let mut poll = callback_op(OpKind::AsyncWorkPoll, &[], None);
     poll.value = Some(9);
-    let mut handler = callback_op("label", &[], None);
+    let mut handler = callback_op(OpKind::Label, &[], None);
     handler.value = Some(9);
     let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
         "poll_callback",
         &[],
         vec![
             poll,
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::RetVoid, &[], None),
             handler,
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::RetVoid, &[], None),
         ],
-    ));
-    assert!(rewritten.ops.iter().any(|op| op.kind == "async_work_poll"));
-    assert!(!final_leaf_oracle(std::slice::from_ref(&rewritten)).contains("poll_callback"));
-
-    // The schema's admitted non-CheckException poll carrier retains its typed
-    // marker; CheckException itself back-converts to the distinct poll kind.
-    let mut observer = callback_op("exception_finally_pending_observer", &[], Some("pending"));
-    observer.async_work_poll = true;
-    let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
-        "observer_callback",
-        &[],
-        vec![observer, callback_op("ret_void", &[], None)],
     ));
     assert!(
         rewritten
             .ops
             .iter()
-            .any(|op| op.kind == "exception_finally_pending_observer" && op.is_async_work_poll())
+            .any(|op| op.kind == OpKind::AsyncWorkPoll)
+    );
+    assert!(!final_leaf_oracle(std::slice::from_ref(&rewritten)).contains("poll_callback"));
+
+    // The schema's admitted non-CheckException poll carrier retains its typed
+    // marker; CheckException itself back-converts to the distinct poll kind.
+    let mut observer = callback_op(
+        OpKind::ExceptionFinallyPendingObserver,
+        &[],
+        Some("pending"),
+    );
+    observer.async_work_poll = true;
+    let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
+        "observer_callback",
+        &[],
+        vec![observer, callback_op(OpKind::RetVoid, &[], None)],
+    ));
+    assert!(
+        rewritten
+            .ops
+            .iter()
+            .any(|op| op.kind == OpKind::ExceptionFinallyPendingObserver && op.is_async_work_poll())
     );
     assert!(!final_leaf_oracle(std::slice::from_ref(&rewritten)).contains("observer_callback"));
 
-    let mut conditional = callback_op("br_if", &["condition"], None);
+    let mut conditional = callback_op(OpKind::BrIf, &["condition"], None);
     conditional.value = Some(9);
-    let mut handler = callback_op("label", &[], None);
+    let mut handler = callback_op(OpKind::Label, &[], None);
     handler.value = Some(9);
     let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
         "truthiness_callback",
         &["condition"],
         vec![
             conditional,
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::RetVoid, &[], None),
             handler,
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::RetVoid, &[], None),
         ],
     ));
     assert!(!final_leaf_oracle(std::slice::from_ref(&rewritten)).contains("truthiness_callback"));
     for mutable in [false, true] {
-        let mut copy = callback_op("copy_var", &["source"], Some("alias"));
+        let mut copy = callback_op(OpKind::CopyVar, &["source"], Some("alias"));
         if mutable {
             copy.var = Some("source".into());
         }
         let mut ops = vec![copy];
         if mutable {
-            let mut store = callback_op("store_var", &["replacement"], None);
+            let mut store = callback_op(OpKind::StoreVar, &["replacement"], None);
             store.var = Some("source".into());
             ops.push(store);
         }
         ops.extend([
-            callback_op("dec_ref", &["alias"], None),
-            callback_op("binding_alias", &["source"], Some("owned_alias")),
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::DecRef, &["alias"], None),
+            callback_op(OpKind::BindingAlias, &["source"], Some("owned_alias")),
+            callback_op(OpKind::RetVoid, &[], None),
         ]);
         let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
             "alias_callbacks",
@@ -495,10 +488,15 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
         // The shared SSA owner preserves a mutable load's value at the load
         // point; immutable identity copies no longer need a source nop.
         if mutable {
-            assert!(rewritten.ops.iter().any(|op| op.kind == "store_var"));
+            assert!(rewritten.ops.iter().any(|op| op.kind == OpKind::StoreVar));
         }
-        assert!(rewritten.ops.iter().any(|op| op.kind == "binding_alias"));
-        assert!(rewritten.ops.iter().any(|op| op.kind == "dec_ref"));
+        assert!(
+            rewritten
+                .ops
+                .iter()
+                .any(|op| op.kind == OpKind::BindingAlias)
+        );
+        assert!(rewritten.ops.iter().any(|op| op.kind == OpKind::DecRef));
     }
 
     for (tag, guard_output, transformed) in [
@@ -506,46 +504,50 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
         (1, None, false),
         (5, Some("observed"), false),
     ] {
-        let mut tag_op = callback_op("const", &[], Some("tag"));
+        let mut tag_op = callback_op(OpKind::Const, &[], Some("tag"));
         tag_op.value = Some(tag);
-        let mut check = callback_op("check_exception", &[], None);
+        let mut check = callback_op(OpKind::CheckException, &[], None);
         check.value = Some(9);
-        let mut label = callback_op("label", &[], None);
+        let mut label = callback_op(OpKind::Label, &[], None);
         label.value = Some(9);
         let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
             "field_callbacks",
             &["hay", "sep", "idx"],
             vec![
                 tag_op,
-                callback_op("string_split_field", &["hay", "sep", "idx"], Some("field")),
+                callback_op(
+                    OpKind::StringSplitField,
+                    &["hay", "sep", "idx"],
+                    Some("field"),
+                ),
                 check,
-                callback_op("guard_type", &["field", "tag"], guard_output),
-                callback_op("len", &["field"], Some("length")),
-                callback_op("ret_void", &[], None),
+                callback_op(OpKind::GuardType, &["field", "tag"], guard_output),
+                callback_op(OpKind::Len, &["field"], Some("length")),
+                callback_op(OpKind::RetVoid, &[], None),
                 label,
-                callback_op("ret_void", &[], None),
+                callback_op(OpKind::RetVoid, &[], None),
             ],
         ));
         assert_eq!(
             rewritten
                 .ops
                 .iter()
-                .any(|op| op.kind == "string_split_field_start"),
+                .any(|op| op.kind == OpKind::StringSplitFieldStart),
             transformed
         );
         assert_eq!(
-            rewritten.ops.iter().any(|op| op.kind == "guard_type"),
+            rewritten.ops.iter().any(|op| op.kind == OpKind::GuardType),
             !transformed
         );
     }
 
-    let mut constructor = callback_op("exception_new_builtin_empty", &[], Some("exc"));
+    let mut constructor = callback_op(OpKind::ExceptionNewBuiltinEmpty, &[], Some("exc"));
     constructor.value = Some(5);
-    let mut check = callback_op("check_exception", &[], None);
+    let mut check = callback_op(OpKind::CheckException, &[], None);
     check.value = Some(9);
-    let mut jump = callback_op("jump", &[], None);
+    let mut jump = callback_op(OpKind::Jump, &[], None);
     jump.value = Some(9);
-    let mut label = callback_op("label", &[], None);
+    let mut label = callback_op(OpKind::Label, &[], None);
     label.value = Some(9);
     let rewritten = assert_callback_rewrite_preserves_oracle(callback_function(
         "raise_callbacks",
@@ -553,20 +555,25 @@ fn final_bridge_rewrites_preserve_typed_callback_eligibility() {
         vec![
             constructor,
             check.clone(),
-            callback_op("raise", &["exc"], None),
+            callback_op(OpKind::Raise, &["exc"], None),
             check,
             jump,
             label,
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::RetVoid, &[], None),
         ],
     ));
-    assert!(!rewritten.ops.iter().any(|op| op.kind == "check_exception"));
-    assert!(rewritten.ops.iter().any(|op| op.kind == "raise"));
+    assert!(
+        !rewritten
+            .ops
+            .iter()
+            .any(|op| op.kind == OpKind::CheckException)
+    );
+    assert!(rewritten.ops.iter().any(|op| op.kind == OpKind::Raise));
 }
 
 #[test]
 fn native_final_custody_requires_every_local_and_rejects_wrong_identity() {
-    let pure = callback_function("pure", &[], vec![callback_op("ret_void", &[], None)]);
+    let pure = callback_function("pure", &[], vec![callback_op(OpKind::RetVoid, &[], None)]);
     for mode in ["missing", "duplicate", "wrong_name", "wrong_params"] {
         let mut typed = crate::tir::lower_from_simple::lower_to_tir(&pure);
         if mode == "wrong_name" {
@@ -602,11 +609,11 @@ fn native_preparation_streams_final_callbacks_for_module_and_batch_paths() {
         for callback in [false, true] {
             let ops = if callback {
                 vec![
-                    callback_op("dec_ref", &["owned"], None),
-                    callback_op("ret_void", &[], None),
+                    callback_op(OpKind::DecRef, &["owned"], None),
+                    callback_op(OpKind::RetVoid, &[], None),
                 ]
             } else {
-                vec![callback_op("ret_void", &[], None)]
+                vec![callback_op(OpKind::RetVoid, &[], None)]
             };
             let mut ir = SimpleIR {
                 functions: vec![callback_function("molt_main", &["owned"], ops)],
@@ -647,8 +654,8 @@ fn final_function_custody_retires_dead_bodies_and_preserves_externs() {
                 name,
                 &[],
                 vec![
-                    callback_op("drop_inserted", &[], None),
-                    callback_op("ret_void", &[], None),
+                    callback_op(OpKind::DropInserted, &[], None),
+                    callback_op(OpKind::RetVoid, &[], None),
                 ],
             )
         })
@@ -685,10 +692,10 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
         "molt_main",
         &[],
         vec![
-            callback_op("drop_inserted", &[], None),
-            callback_op("call_func", &[], None),
-            callback_op("call_func", &[], None),
-            callback_op("ret_void", &[], None),
+            callback_op(OpKind::DropInserted, &[], None),
+            callback_op(OpKind::CallFunc, &[], None),
+            callback_op(OpKind::CallFunc, &[], None),
+            callback_op(OpKind::RetVoid, &[], None),
         ],
     );
     entry.ops[1].s_value = Some("stdlib__helper".into());
@@ -698,8 +705,8 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
             name,
             &[],
             vec![
-                callback_op("drop_inserted", &[], None),
-                callback_op("ret_void", &[], None),
+                callback_op(OpKind::DropInserted, &[], None),
+                callback_op(OpKind::RetVoid, &[], None),
             ],
         )
     };
@@ -790,12 +797,12 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
             .as_nanos()
     ));
     let target = crate::tir::TargetInfo::native_release_fast();
-    let mut seven = callback_op("const", &[], Some("seven"));
+    let mut seven = callback_op(OpKind::Const, &[], Some("seven"));
     seven.value = Some(7);
     let mut source = callback_function(
         "cached_final",
         &[],
-        vec![seven, callback_op("ret", &["seven"], None)],
+        vec![seven, callback_op(OpKind::Ret, &["seven"], None)],
     );
     source.return_abi = molt_ir::FunctionReturnAbi::Value;
     let non_inlinable = std::collections::HashSet::new();
@@ -854,7 +861,7 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
             let literal = body
                 .ops
                 .iter()
-                .find(|operation| operation.kind == "const" && operation.value == Some(7))
+                .find(|operation| operation.kind == OpKind::Const && operation.value == Some(7))
                 .expect("constant return value");
             assert!(plan.is_inline_safe_int_name(literal.out.as_deref().unwrap()));
             let snapshot = (serde_json::to_vec(&body).unwrap(), plan);

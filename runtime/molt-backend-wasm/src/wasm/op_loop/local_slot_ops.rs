@@ -13,8 +13,8 @@ pub(super) fn emit_local_slot_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "store_var" => {
+    match op.kind {
+        molt_ir::OpKind::StoreVar => {
             let args_names = op.args.as_ref().expect("store_var args missing");
             let src_name = args_names
                 .first()
@@ -32,7 +32,7 @@ pub(super) fn emit_local_slot_op(
             copy_local(func, locals, src_name, binding.destination);
             true
         }
-        "delete_var" => {
+        molt_ir::OpKind::DeleteVar => {
             let args_names = op.args.as_ref().expect("delete_var args missing");
             let missing_name = args_names
                 .first()
@@ -49,7 +49,11 @@ pub(super) fn emit_local_slot_op(
             copy_local(func, locals, missing_name, binding.destination);
             true
         }
-        "load_var" | "copy_var" | "copy" | "identity_alias" | "binding_alias" => {
+        molt_ir::OpKind::LoadVar
+        | molt_ir::OpKind::CopyVar
+        | molt_ir::OpKind::Copy
+        | molt_ir::OpKind::IdentityAlias
+        | molt_ir::OpKind::BindingAlias => {
             let mut src_name = None;
             visit_simple_ir_reads(op, |read| {
                 src_name.get_or_insert(read.name);
@@ -62,15 +66,14 @@ pub(super) fn emit_local_slot_op(
                 // owned reference. Keep generic WASM aligned with TIR/LIR-fast:
                 // load/copy/identity aliases share their source ownership root;
                 // binding_alias alone contributes +1.
-                if molt_tir::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(
-                    op.kind.as_str(),
-                ) {
+                if molt_tir::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(op.kind)
+                {
                     func.instruction(&Instruction::LocalGet(src));
                     store_borrowed_value(func, Some(out), import_ids, reloc_enabled);
                 } else {
                     debug_assert!(
                         molt_tir::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(
-                            op.kind.as_str(),
+                            op.kind,
                         ),
                         "local alias '{}' lacks generated ownership classification",
                         op.kind

@@ -57,7 +57,7 @@ fn getattr_default_result_and_default_temporary_are_independent_owned_roots() {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(finalizer_object(default));
         block.ops.push(original_copy_with_operands(
-            "get_attr_name_default",
+            molt_ir::OpKind::GetAttrNameDefault,
             vec![receiver, name, default],
             vec![result],
         ));
@@ -93,7 +93,7 @@ fn special_attribute_result_is_an_independent_owned_root() {
     {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(original_copy_with_operands(
-            "get_attr_special_obj",
+            molt_ir::OpKind::GetAttrSpecialObj,
             vec![receiver],
             vec![result],
         ));
@@ -131,8 +131,11 @@ fn finalizer_sensitive_container_releases_at_return_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_object(item));
         b.ops.push(op(OpCode::BuildList, vec![item], vec![list]));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
         b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
@@ -181,12 +184,12 @@ fn result_carrying_store_var_keeps_container_owner_to_return_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![list],
             vec![stored],
         ));
@@ -200,11 +203,17 @@ fn result_carrying_store_var_keeps_container_owner_to_return_boundary() {
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let store_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "store_var"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::StoreVar)
+        })
         .expect("store_var marker must survive");
     let marker_idx = ops
         .iter()
@@ -249,7 +258,7 @@ fn store_var_boundary_transferred_to_cleanup_block_arg_releases_once() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_call(class_obj));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![class_obj],
             vec![stored],
         ));
@@ -324,10 +333,13 @@ fn store_var_transfer_phi_live_in_descendant_blocks_old_root_drop() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops
-            .push(original_copy_with_operands("list_new", vec![], vec![list]));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::ListNew,
+            vec![],
+            vec![list],
+        ));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
             vec![list],
             vec![stored],
         ));
@@ -427,7 +439,11 @@ fn store_var_transfer_phi_live_in_descendant_blocks_old_root_drop() {
 
 #[test]
 fn returned_phi_alias_keeps_transferred_owner_across_cleanup_blocks() {
-    for alias_kind in ["copy", "load_var", "identity_alias"] {
+    for alias_kind in [
+        molt_ir::OpKind::Copy,
+        molt_ir::OpKind::LoadVar,
+        molt_ir::OpKind::IdentityAlias,
+    ] {
         let mut func = TirFunction::new(
             format!("returned_phi_{alias_kind}_across_cleanup"),
             vec![TirType::Bool],
@@ -451,8 +467,12 @@ fn returned_phi_alias_keeps_transferred_owner_across_cleanup_blocks() {
         {
             let block = func.blocks.get_mut(&entry).unwrap();
             block.ops = vec![
-                original_copy_with_operands("list_new", vec![], vec![original]),
-                original_copy_with_operands("store_var", vec![original], vec![stored]),
+                original_copy_with_operands(molt_ir::OpKind::ListNew, vec![], vec![original]),
+                original_copy_with_operands(
+                    molt_ir::OpKind::StoreVar,
+                    vec![original],
+                    vec![stored],
+                ),
             ];
             block.terminator = Terminator::CondBranch {
                 cond,
@@ -468,7 +488,7 @@ fn returned_phi_alias_keeps_transferred_owner_across_cleanup_blocks() {
                 id: replacement,
                 args: vec![],
                 ops: vec![
-                    original_copy_with_operands("list_new", vec![], vec![other]),
+                    original_copy_with_operands(molt_ir::OpKind::ListNew, vec![], vec![other]),
                     op(OpCode::DelBoundary, vec![stored], vec![]),
                 ],
                 terminator: Terminator::Branch {
@@ -578,12 +598,12 @@ fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_call(owner));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![owner],
             vec![stored],
         ));
         b.ops.push(original_copy_with_operands(
-            "copy_var",
+            molt_ir::OpKind::CopyVar,
             vec![owner],
             vec![alias],
         ));
@@ -677,7 +697,7 @@ fn store_var_boundary_mixed_return_paths_split_non_transfer_release() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_call(class_obj));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![class_obj],
             vec![stored],
         ));
@@ -807,7 +827,7 @@ fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![],
             vec![old_owner],
         ));
@@ -832,7 +852,7 @@ fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
             }],
             ops: vec![
                 op(OpCode::Bool, vec![rebind_current], vec![old_truth]),
-                original_copy_with_operands("list_new", vec![], vec![new_owner]),
+                original_copy_with_operands(molt_ir::OpKind::ListNew, vec![], vec![new_owner]),
                 original_store_var("or_clause", new_owner, new_stored),
             ],
             terminator: Terminator::Branch {
@@ -959,7 +979,7 @@ fn store_var_origin_carrier_live_to_return_cleanup_suppresses_source_release() {
     {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(original_copy_with_operands(
-            "object_new",
+            molt_ir::OpKind::ObjectNew,
             vec![],
             vec![owner],
         ));
@@ -1154,12 +1174,12 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(original_copy_with_operands(
-            "set_new",
+            molt_ir::OpKind::SetNew,
             vec![],
             vec![set_owner],
         ));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![set_owner],
             vec![stored],
         ));
@@ -1198,8 +1218,12 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
                     .insert("s_value".into(), AttrValue::Str("value".into()));
                 vec![
                     rebind_boundary,
-                    original_copy_with_operands("set_new", vec![], vec![next_owner]),
-                    original_copy_with_operands("store_var", vec![next_owner], vec![next_stored]),
+                    original_copy_with_operands(molt_ir::OpKind::SetNew, vec![], vec![next_owner]),
+                    original_copy_with_operands(
+                        molt_ir::OpKind::StoreVar,
+                        vec![next_owner],
+                        vec![next_stored],
+                    ),
                 ]
             },
             terminator: Terminator::Branch {
@@ -1276,16 +1300,19 @@ fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_bounda
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops
-            .push(original_copy_with_operands("list_new", vec![], vec![list]));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::ListNew,
+            vec![],
+            vec![list],
+        ));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
             vec![list],
             vec![stored],
         ));
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_append",
+            molt_ir::OpKind::ListAppend,
             vec![stored, item],
             vec![],
         ));
@@ -1299,15 +1326,24 @@ fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_bounda
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let store_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "store_var"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::StoreVar)
+        })
         .expect("store_var marker must survive");
     let append_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_append"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListAppend)
+        })
         .expect("list_append op must survive");
     let marker_idx = ops
         .iter()
@@ -1356,12 +1392,15 @@ fn copy_list_new_finalizer_sensitive_container_releases_at_return_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
         b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
@@ -1372,7 +1411,10 @@ fn copy_list_new_finalizer_sensitive_container_releases_at_return_boundary() {
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
@@ -1411,12 +1453,12 @@ fn copy_class_def_descriptor_temp_releases_at_class_construction_boundary() {
         b.ops.push(const_str(name));
         b.ops.push(finalizer_object(descriptor));
         b.ops.push(original_copy_with_operands(
-            "class_def",
+            molt_ir::OpKind::ClassDef,
             vec![name, descriptor],
             vec![class_obj],
         ));
         b.ops.push(original_copy_with_operands(
-            "store_var",
+            molt_ir::OpKind::StoreVar,
             vec![class_obj],
             vec![],
         ));
@@ -1430,11 +1472,17 @@ fn copy_class_def_descriptor_temp_releases_at_class_construction_boundary() {
     let ops = &func.blocks[&entry].ops;
     let class_def_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "class_def"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ClassDef)
+        })
         .expect("class_def op must survive");
     let store_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "store_var"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::StoreVar)
+        })
         .expect("store_var op must survive");
     let marker_idx = ops
         .iter()
@@ -1488,12 +1536,15 @@ fn call_result_list_new_finalizer_sensitive_container_releases_at_return_boundar
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_call(item));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
         b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
@@ -1504,7 +1555,10 @@ fn call_result_list_new_finalizer_sensitive_container_releases_at_return_boundar
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
@@ -1541,7 +1595,7 @@ fn unbound_finalizer_container_call_arg_releases_at_call_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
@@ -1557,7 +1611,10 @@ fn unbound_finalizer_container_call_arg_releases_at_call_boundary() {
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let call_idx = ops
         .iter()
@@ -1604,19 +1661,22 @@ fn call_bind_check_exception_list_new_finalizer_releases_at_return_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(op(OpCode::ModuleGetAttr, vec![], vec![callee]));
         b.ops.push(original_copy_with_operands(
-            "callargs_new",
+            molt_ir::OpKind::CallargsNew,
             vec![],
             vec![builder],
         ));
         b.ops.push(finalizer_call_bind(callee, builder, item));
         b.ops.push(op(OpCode::CheckException, vec![], vec![]));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
         b.ops.push(op(OpCode::CheckException, vec![], vec![]));
         b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
@@ -1628,7 +1688,10 @@ fn call_bind_check_exception_list_new_finalizer_releases_at_return_boundary() {
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
@@ -1666,13 +1729,19 @@ fn list_append_absorbed_temp_releases_at_append_boundary() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops
-            .push(original_copy_with_operands("list_new", vec![], vec![list]));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::ListNew,
+            vec![],
+            vec![list],
+        ));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_append",
+            molt_ir::OpKind::ListAppend,
             vec![list, item],
             vec![],
         ));
@@ -1686,7 +1755,10 @@ fn list_append_absorbed_temp_releases_at_append_boundary() {
     let ops = &func.blocks[&entry].ops;
     let append_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_append"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListAppend)
+        })
         .expect("list_append op must survive");
     let marker_idx = ops
         .iter()
@@ -1726,14 +1798,14 @@ fn module_set_attr_releases_absorbed_value_before_later_borrowed_use() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
         b.ops
             .push(op(OpCode::ModuleSetAttr, vec![module, name, list], vec![]));
         b.ops.push(original_copy_with_operands(
-            "list_pop",
+            molt_ir::OpKind::ListPop,
             vec![list],
             vec![popped],
         ));
@@ -1749,7 +1821,10 @@ fn module_set_attr_releases_absorbed_value_before_later_borrowed_use() {
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let store_idx = ops
         .iter()
@@ -1757,7 +1832,10 @@ fn module_set_attr_releases_absorbed_value_before_later_borrowed_use() {
         .expect("module_set_attr op must survive");
     let pop_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_pop"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListPop)
+        })
         .expect("list_pop op must survive");
     let tracked_drops: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1802,15 +1880,12 @@ fn generic_attr_store_releases_absorbed_defaults_tuple_before_later_borrowed_use
         b.ops.push(finalizer_object(item));
         b.ops.push(finalizer_object(func_obj));
         b.ops.push(original_copy_with_operands(
-            "tuple_new",
+            molt_ir::OpKind::TupleNew,
             vec![item],
             vec![defaults],
         ));
         let mut store = op(OpCode::StoreAttr, vec![func_obj, defaults], vec![]);
-        store.attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("set_attr_generic_obj".into()),
-        );
+        store.origin = Some(molt_ir::OpKind::SetAttrGenericObj);
         store
             .attrs
             .insert("s_value".into(), AttrValue::Str("__defaults__".into()));
@@ -1830,12 +1905,16 @@ fn generic_attr_store_releases_absorbed_defaults_tuple_before_later_borrowed_use
     let ops = &func.blocks[&entry].ops;
     let tuple_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "tuple_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::TupleNew)
+        })
         .expect("tuple_new op must survive");
     let store_idx = ops
         .iter()
         .position(|op| {
-            op.opcode == OpCode::StoreAttr && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "set_attr_generic_obj")
+            op.opcode == OpCode::StoreAttr
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::SetAttrGenericObj)
         })
         .expect("generic attr store must survive");
     let version_idx = ops
@@ -1891,14 +1970,17 @@ fn discarded_list_pop_result_releases_at_pop_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
         b.ops.push(original_copy_with_operands(
-            "list_pop",
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::ListPop,
             vec![list],
             vec![popped],
         ));
@@ -1912,11 +1994,17 @@ fn discarded_list_pop_result_releases_at_pop_boundary() {
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let pop_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_pop"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListPop)
+        })
         .expect("list_pop op must survive");
     let marker_idx = ops
         .iter()
@@ -1956,10 +2044,13 @@ fn named_local_absorbed_into_list_is_not_released_at_absorption_boundary() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(finalizer_object(item));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![item], vec![]));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::StoreVar,
+            vec![item],
+            vec![],
+        ));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
@@ -1973,7 +2064,10 @@ fn named_local_absorbed_into_list_is_not_released_at_absorption_boundary() {
     let ops = &func.blocks[&entry].ops;
     let list_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "list_new"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ListNew)
+        })
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
@@ -2009,10 +2103,16 @@ fn non_finalizer_local_store_releases_at_last_use_not_return_boundary() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops
-            .push(original_copy_with_operands("list_new", vec![], vec![list]));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::ListNew,
+            vec![],
+            vec![list],
+        ));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
         b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
@@ -2023,7 +2123,10 @@ fn non_finalizer_local_store_releases_at_last_use_not_return_boundary() {
     let ops = &func.blocks[&entry].ops;
     let store_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::Copy && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "store_var"))
+        .position(|op| {
+            op.opcode == OpCode::Copy
+                && matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::StoreVar)
+        })
         .expect("store_var marker must survive");
     let marker_idx = ops
         .iter()
@@ -2072,12 +2175,15 @@ fn edge_dying_skips_finalizer_boundary_owned_local_root() {
         let b = func.blocks.get_mut(&func.entry_block).unwrap();
         b.ops.push(finalizer_object(item));
         b.ops.push(original_copy_with_operands(
-            "list_new",
+            molt_ir::OpKind::ListNew,
             vec![item],
             vec![list],
         ));
-        b.ops
-            .push(original_copy_with_operands("store_var", vec![list], vec![]));
+        b.ops.push(original_copy_with_operands(
+            molt_ir::OpKind::StoreVar,
+            vec![list],
+            vec![],
+        ));
         b.terminator = Terminator::Branch {
             target: gate,
             args: vec![],
@@ -2193,9 +2299,7 @@ fn delete_var_releases_old_slot_at_delete_boundary() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         let mut missing_op = op(OpCode::ConstNone, vec![], vec![missing]);
-        missing_op
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str("missing".into()));
+        missing_op.origin = Some(molt_ir::OpKind::Missing);
         b.ops.push(missing_op);
         b.ops.push(finalizer_object(item));
         let mut delete = op(OpCode::DeleteVar, vec![missing, item], vec![deleted]);
@@ -2276,7 +2380,7 @@ fn positive_named_ownership_not_finalizer_absence_selects_python_boundary() {
                         entry.ops.push(producer);
                         if slot {
                             entry.ops.push(original_copy_with_operands(
-                                "store_var",
+                                molt_ir::OpKind::StoreVar,
                                 vec![value],
                                 vec![],
                             ));
@@ -2357,7 +2461,7 @@ fn store_var_boundary_moved_on_one_arm_is_released_on_the_other() {
             .insert("bound_local".into(), AttrValue::Bool(true));
         block.ops = vec![
             producer,
-            original_copy_with_operands("store_var", vec![local], vec![]),
+            original_copy_with_operands(molt_ir::OpKind::StoreVar, vec![local], vec![]),
             op(OpCode::Copy, vec![cond_input], vec![cond]),
         ];
         block.terminator = Terminator::CondBranch {

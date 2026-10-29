@@ -12,11 +12,7 @@
 
 use crate::ir::OpIR;
 use crate::tir::dominators::is_simple_exception_transfer_kind;
-use crate::tir::op_kinds_generated::{
-    simpleir_kind_is_block_ender, simpleir_kind_is_block_leader,
-    simpleir_kind_is_conditional_branch, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
-    simpleir_kind_is_terminator,
-};
+
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 // ---------------------------------------------------------------------------
@@ -75,39 +71,39 @@ pub struct CFG {
 
 /// Returns `true` if the op is a control-flow terminator that ends a basic
 /// block (i.e. no fall-through to the next instruction).
-fn is_terminator(kind: &str) -> bool {
-    simpleir_kind_is_terminator(kind)
+fn is_terminator(kind: crate::OpKind) -> bool {
+    kind.is_terminator()
 }
 
 /// Returns `true` if the op starts a new block boundary (the op itself is the
 /// first instruction of the new block).
-fn is_block_leader(kind: &str) -> bool {
-    simpleir_kind_is_block_leader(kind)
+fn is_block_leader(kind: crate::OpKind) -> bool {
+    kind.is_block_leader()
 }
 
 /// Returns `true` if the op ends a block and the next instruction should start
 /// a new block (even if it's not itself a leader type).
-fn is_block_ender(kind: &str) -> bool {
+fn is_block_ender(kind: crate::OpKind) -> bool {
     // An explicit exception transfer has two executable continuations even
     // though its normal continuation is fallthrough and its handler edge is
     // carried separately. End the block here so later definitions cannot be
     // attributed to the transfer's source program point by dominance/liveness.
     // Reuse the same generated transfer authority as compute_exception_edges,
     // including wire aliases such as async_work_poll.
-    simpleir_kind_is_block_ender(kind) || is_simple_exception_transfer_kind(kind)
+    kind.is_block_ender() || is_simple_exception_transfer_kind(kind)
 }
 
 /// Returns `true` if the op is a conditional branch that causes a block split
 /// (has both fall-through and a taken path).
-fn is_conditional_branch(kind: &str) -> bool {
-    simpleir_kind_is_conditional_branch(kind)
+fn is_conditional_branch(kind: crate::OpKind) -> bool {
+    kind.is_conditional_branch()
 }
 
 /// Build a map from label-id → op-index for all `label` / `state_label` ops.
 fn build_label_map(ops: &[OpIR]) -> HashMap<i64, usize> {
     let mut map = HashMap::new();
     for (idx, op) in ops.iter().enumerate() {
-        if matches!(op.kind.as_str(), "label" | "state_label")
+        if matches!(op.kind, crate::OpKind::Label | crate::OpKind::StateLabel)
             && let Some(id) = op.value
         {
             map.insert(id, idx);
@@ -166,7 +162,7 @@ fn find_leaders(ops: &[OpIR], label_map: &HashMap<i64, usize>) -> BTreeSet<usize
     leaders.insert(0);
 
     for (idx, op) in ops.iter().enumerate() {
-        let kind = op.kind.as_str();
+        let kind = op.kind;
 
         // The instruction itself is a leader.
         if is_block_leader(kind) {
@@ -181,16 +177,20 @@ fn find_leaders(ops: &[OpIR], label_map: &HashMap<i64, usize>) -> BTreeSet<usize
         }
 
         // Target of a jump/br_if is a leader.
-        if matches!(kind, "jump" | "goto" | "br_if")
-            && let Some(target_label) = op.value
+        if matches!(
+            kind,
+            crate::OpKind::Jump | crate::OpKind::Goto | crate::OpKind::BrIf
+        ) && let Some(target_label) = op.value
             && let Some(&target_op) = label_map.get(&target_label)
         {
             leaders.insert(target_op);
         }
 
         // `loop_break_if_true` / `loop_break_if_false` target a label if present.
-        if matches!(kind, "loop_break_if_true" | "loop_break_if_false")
-            && let Some(target_label) = op.value
+        if matches!(
+            kind,
+            crate::OpKind::LoopBreakIfTrue | crate::OpKind::LoopBreakIfFalse
+        ) && let Some(target_label) = op.value
             && let Some(&target_op) = label_map.get(&target_label)
         {
             leaders.insert(target_op);
@@ -217,14 +217,14 @@ fn build_if_else_maps(
     let mut else_map = HashMap::new();
     let mut stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
     for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "if" => stack.push((idx, None)),
-            "else" => {
+        match op.kind {
+            crate::OpKind::If => stack.push((idx, None)),
+            crate::OpKind::Else => {
                 if let Some(top) = stack.last_mut() {
                     top.1 = Some(idx);
                 }
             }
-            "end_if" => {
+            crate::OpKind::EndIf => {
                 if let Some((if_idx, else_idx)) = stack.pop() {
                     if_map.insert(if_idx, (else_idx, idx));
                     if let Some(ei) = else_idx {
@@ -259,10 +259,10 @@ fn build_edges(
         let mut targets = HashMap::new();
         let mut header_stack: Vec<usize> = Vec::new();
         for (bid, block) in blocks.iter().enumerate() {
-            let first_kind = ops[block.start_op].kind.as_str();
+            let first_kind = ops[block.start_op].kind;
             match first_kind {
-                "loop_start" => header_stack.push(bid),
-                "loop_end" => {
+                crate::OpKind::LoopStart => header_stack.push(bid),
+                crate::OpKind::LoopEnd => {
                     if let Some(header_bid) = header_stack.pop()
                         && let Some(break_target) =
                             structured_fallthrough_target(ops, blocks, &else_end_if_map, bid)
@@ -282,9 +282,9 @@ fn build_edges(
     for (bid, block) in blocks.iter().enumerate() {
         // Track structured loop markers by first op.
         let first_op = &ops[block.start_op];
-        match first_op.kind.as_str() {
-            "loop_start" => loop_header_stack.push(bid),
-            "loop_end" => {
+        match first_op.kind {
+            crate::OpKind::LoopStart => loop_header_stack.push(bid),
+            crate::OpKind::LoopEnd => {
                 // Back-edge to the loop header.
                 if let Some(&header_bid) = loop_header_stack.last() {
                     add_edge(&mut successors, &mut predecessors, bid, header_bid);
@@ -297,11 +297,11 @@ fn build_edges(
 
         let last_op_idx = block.end_op - 1;
         let last_op = &ops[last_op_idx];
-        let kind = last_op.kind.as_str();
+        let kind = last_op.kind;
 
         match kind {
             // Unconditional jump.
-            "jump" | "goto" => {
+            crate::OpKind::Jump | crate::OpKind::Goto => {
                 if let Some(target_label) = last_op.value
                     && let Some(&target_op) = label_map.get(&target_label)
                     && let Some(target_bid) = block_containing(blocks, target_op)
@@ -311,14 +311,14 @@ fn build_edges(
             }
 
             // Return — no successors.
-            _ if crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind) => {}
+            _ if kind.is_return_terminator() => {}
 
             // Pure suspend: it `ret`s and has no regular successor. Its
             // continuation is reached only via `state_resume_edges`.
-            _ if simpleir_kind_is_suspend(kind) && !simpleir_kind_is_repoll(kind) => {}
+            _ if kind.is_suspend() && !kind.is_repoll() => {}
 
             // Re-poll suspend: pending path `ret`s, ready path falls through.
-            _ if simpleir_kind_is_repoll(kind) => {
+            _ if kind.is_repoll() => {
                 if let Some(target_bid) =
                     structured_fallthrough_target(ops, blocks, &else_end_if_map, bid)
                 {
@@ -330,7 +330,7 @@ fn build_edges(
             // block immediately after the enclosing loop. Without this edge,
             // CFG-based executable-region pruning can incorrectly mark the
             // real break path unreachable and erase it from later lowering.
-            "loop_break" => {
+            crate::OpKind::LoopBreak => {
                 if let Some(&header_bid) = loop_header_stack.last()
                     && let Some(&post_loop_bid) = loop_break_targets.get(&header_bid)
                 {
@@ -339,7 +339,7 @@ fn build_edges(
             }
 
             // Loop continue — jump back to current loop header, no fall-through.
-            "loop_continue" => {
+            crate::OpKind::LoopContinue => {
                 if let Some(&header_bid) = loop_header_stack.last() {
                     add_edge(&mut successors, &mut predecessors, bid, header_bid);
                 }
@@ -347,14 +347,14 @@ fn build_edges(
 
             // Structured `if`: two successors — then-block (fall-through) and
             // else-block or end_if-block.
-            "if" => {
+            crate::OpKind::If => {
                 if let Some(&(else_idx, end_if_idx)) = if_else_map.get(&last_op_idx) {
                     // True branch normally falls through into the then block.
                     // If the next block is `else`, the then branch is empty and
                     // the true edge must skip directly to the join block.
                     if bid + 1 < n {
                         let next_start = blocks[bid + 1].start_op;
-                        let true_target = if ops[next_start].kind == "else" {
+                        let true_target = if ops[next_start].kind == crate::OpKind::Else {
                             end_if_idx
                         } else {
                             next_start
@@ -379,7 +379,7 @@ fn build_edges(
             }
 
             // Conditional branch to label.
-            "br_if" => {
+            crate::OpKind::BrIf => {
                 // Fall-through.
                 if bid + 1 < n {
                     add_edge(&mut successors, &mut predecessors, bid, bid + 1);
@@ -400,7 +400,9 @@ fn build_edges(
             // `loop_break_if_true` (break target FIRST, fall-through SECOND);
             // the SSA terminator builder materializes the flag-read condition
             // (`ExceptionPending`) and routes TRUE → break, FALSE → continue.
-            "loop_break_if_true" | "loop_break_if_false" | "loop_break_if_exception" => {
+            crate::OpKind::LoopBreakIfTrue
+            | crate::OpKind::LoopBreakIfFalse
+            | crate::OpKind::LoopBreakIfException => {
                 // IMPORTANT: successor ordering matters for SSA CondBranch
                 // construction — succs[0] = then_block (TRUE path),
                 // succs[1] = else_block (FALSE path).
@@ -472,7 +474,7 @@ fn structured_fallthrough_target(
     }
 
     let next_start = blocks[next_bid].start_op;
-    if ops[next_start].kind == "else"
+    if ops[next_start].kind == crate::OpKind::Else
         && let Some(&end_if_idx) = else_end_if_map.get(&next_start)
         && let Some(end_if_bid) = block_containing(blocks, end_if_idx)
     {
@@ -574,7 +576,7 @@ fn compute_exception_edges(
         // to place and populate handler block arguments.
         for op_idx in block.start_op..block.end_op {
             let op = &ops[op_idx];
-            if !is_simple_exception_transfer_kind(&op.kind) {
+            if !is_simple_exception_transfer_kind(op.kind) {
                 continue;
             }
             let Some(target_label) = op.value else {
@@ -741,38 +743,38 @@ mod tests {
     use crate::ir::OpIR;
 
     /// Helper to create an `OpIR` with just a `kind`.
-    fn op(kind: &str) -> OpIR {
+    fn op(kind: crate::OpKind) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
-            ..OpIR::default()
+            kind: kind,
+            ..crate::OpIR::new(kind)
         }
     }
 
     /// Helper to create an `OpIR` with `kind` and `value`.
-    fn op_val(kind: &str, value: i64) -> OpIR {
+    fn op_val(kind: crate::OpKind, value: i64) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
+            kind: kind,
             value: Some(value),
-            ..OpIR::default()
+            ..crate::OpIR::new(kind)
         }
     }
 
     /// Helper to create an `OpIR` with `kind` and `args`.
-    fn op_args(kind: &str, args: &[&str]) -> OpIR {
+    fn op_args(kind: crate::OpKind, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
+            kind: kind,
             args: Some(args.iter().map(|s| s.to_string()).collect()),
-            ..OpIR::default()
+            ..crate::OpIR::new(kind)
         }
     }
 
     /// Helper to create an `OpIR` with `kind`, `args`, and `value`.
-    fn op_args_val(kind: &str, args: &[&str], value: i64) -> OpIR {
+    fn op_args_val(kind: crate::OpKind, args: &[&str], value: i64) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
+            kind: kind,
             args: Some(args.iter().map(|s| s.to_string()).collect()),
             value: Some(value),
-            ..OpIR::default()
+            ..crate::OpIR::new(kind)
         }
     }
 
@@ -781,7 +783,11 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn straight_line_single_block() {
-        let ops = vec![op("const"), op("add"), op("ret_void")];
+        let ops = vec![
+            op(crate::OpKind::Const),
+            op(crate::OpKind::Add),
+            op(crate::OpKind::RetVoid),
+        ];
         let cfg = CFG::build(&ops);
         assert_eq!(cfg.blocks.len(), 1);
         assert_eq!(cfg.blocks[0].start_op, 0);
@@ -795,19 +801,23 @@ mod tests {
 
     #[test]
     fn exception_transfer_family_ends_blocks_at_the_transfer_program_point() {
-        for kind in ["check_exception", "async_work_poll", "try_start"] {
+        for kind in [
+            crate::OpKind::CheckException,
+            crate::OpKind::AsyncWorkPoll,
+            crate::OpKind::TryStart,
+        ] {
             let ops = vec![
                 OpIR {
                     s_value: Some("checked_entry".into()),
-                    ..op("trace_enter_slot")
+                    ..op(crate::OpKind::TraceEnterSlot)
                 },
                 op_val(kind, 41),
-                op("const"),
+                op(crate::OpKind::Const),
                 op_val(kind, 41),
-                op("const"),
-                op("ret_void"),
-                op_val("label", 41),
-                op("ret_void"),
+                op(crate::OpKind::Const),
+                op(crate::OpKind::RetVoid),
+                op_val(crate::OpKind::Label, 41),
+                op(crate::OpKind::RetVoid),
             ];
             let cfg = CFG::build(&ops);
             let first = block_containing(&cfg.blocks, 1).unwrap();
@@ -840,8 +850,10 @@ mod tests {
                     .iter()
                     .filter(|op| {
                         matches!(
-                            op.kind.as_str(),
-                            "check_exception" | "async_work_poll" | "try_start"
+                            op.kind,
+                            crate::OpKind::CheckException
+                                | crate::OpKind::AsyncWorkPoll
+                                | crate::OpKind::TryStart
                         )
                     })
                     .count();
@@ -849,7 +861,7 @@ mod tests {
             }
             assert_eq!(
                 cfg.execution_points(&ops).operation_immediate_dominator(6),
-                (kind != "try_start").then_some(1),
+                (kind != crate::OpKind::TryStart).then_some(1),
                 "{kind}: only observations execute a handler; no later definition can dominate it"
             );
         }
@@ -857,14 +869,14 @@ mod tests {
 
     #[test]
     fn exception_lookup_uses_cfg_targets_while_admission_rejects_duplicate_labels() {
-        for last_label_kind in ["label", "state_label"] {
+        for last_label_kind in [crate::OpKind::Label, crate::OpKind::StateLabel] {
             let ops = vec![
-                op_val("check_exception", 7),
-                op("ret_void"),
-                op_val("label", 7),
-                op("ret_void"),
+                op_val(crate::OpKind::CheckException, 7),
+                op(crate::OpKind::RetVoid),
+                op_val(crate::OpKind::Label, 7),
+                op(crate::OpKind::RetVoid),
                 op_val(last_label_kind, 7),
-                op("ret_void"),
+                op(crate::OpKind::RetVoid),
             ];
             // Low-level CFG construction already resolves the last definition;
             // its consumers must not independently select the first one.
@@ -889,7 +901,11 @@ mod tests {
 
     #[test]
     fn pending_exception_producers_do_not_invent_transfer_boundaries() {
-        let ops = vec![op("call"), op("add"), op("ret_void")];
+        let ops = vec![
+            op(crate::OpKind::Call),
+            op(crate::OpKind::Add),
+            op(crate::OpKind::RetVoid),
+        ];
         let cfg = CFG::build(&ops);
         assert_eq!(cfg.blocks.len(), 1);
         assert!(cfg.exception_edges.is_empty());
@@ -898,10 +914,10 @@ mod tests {
     #[test]
     fn async_work_poll_alias_records_the_same_implicit_edge_as_check_exception() {
         let ops = vec![
-            op_val("async_work_poll", 41),
-            op("ret_void"),
-            op_val("label", 41),
-            op("ret_void"),
+            op_val(crate::OpKind::AsyncWorkPoll, 41),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 41),
+            op(crate::OpKind::RetVoid),
         ];
         let cfg = CFG::build(&ops);
         let source = block_containing(&cfg.blocks, 0).expect("poll block");
@@ -914,12 +930,12 @@ mod tests {
 
     #[test]
     fn exception_transfer_to_its_own_block_leader_is_a_self_edge() {
-        for kind in ["check_exception", "async_work_poll"] {
+        for kind in [crate::OpKind::CheckException, crate::OpKind::AsyncWorkPoll] {
             let ops = vec![
-                op_val("label", 5),
-                op("add"),
+                op_val(crate::OpKind::Label, 5),
+                op(crate::OpKind::Add),
                 op_val(kind, 5),
-                op("ret_void"),
+                op(crate::OpKind::RetVoid),
             ];
             let cfg = CFG::build(&ops);
             let block = block_containing(&cfg.blocks, 2).expect("transfer block");
@@ -947,13 +963,13 @@ mod tests {
         // join (end_if):
         //   ret_void
         let ops = vec![
-            op("const"),            // 0  entry
-            op_args("if", &["v0"]), // 1  entry (ends block, next = then)
-            op("add"),              // 2  then-block
-            op("else"),             // 3  else-block start
-            op("sub"),              // 4  else-block
-            op("end_if"),           // 5  join-block
-            op("ret_void"),         // 6  join-block
+            op(crate::OpKind::Const),            // 0  entry
+            op_args(crate::OpKind::If, &["v0"]), // 1  entry (ends block, next = then)
+            op(crate::OpKind::Add),              // 2  then-block
+            op(crate::OpKind::Else),             // 3  else-block start
+            op(crate::OpKind::Sub),              // 4  else-block
+            op(crate::OpKind::EndIf),            // 5  join-block
+            op(crate::OpKind::RetVoid),          // 6  join-block
         ];
         let cfg = CFG::build(&ops);
 
@@ -984,11 +1000,11 @@ mod tests {
         //   (falls through)
         //   ret_void
         let ops = vec![
-            op("const"),      // 0  entry
-            op("loop_start"), // 1  header
-            op("add"),        // 2  body
-            op("loop_end"),   // 3  loop_end block
-            op("ret_void"),   // 4  after loop
+            op(crate::OpKind::Const),     // 0  entry
+            op(crate::OpKind::LoopStart), // 1  header
+            op(crate::OpKind::Add),       // 2  body
+            op(crate::OpKind::LoopEnd),   // 3  loop_end block
+            op(crate::OpKind::RetVoid),   // 4  after loop
         ];
         let cfg = CFG::build(&ops);
 
@@ -1023,13 +1039,13 @@ mod tests {
     fn dominator_tree_if_else() {
         // Block 0 (entry) should dominate all other blocks.
         let ops = vec![
-            op("const"),            // 0
-            op_args("if", &["v0"]), // 1
-            op("add"),              // 2  then
-            op("else"),             // 3  else
-            op("sub"),              // 4  else body
-            op("end_if"),           // 5  join
-            op("ret_void"),         // 6
+            op(crate::OpKind::Const),            // 0
+            op_args(crate::OpKind::If, &["v0"]), // 1
+            op(crate::OpKind::Add),              // 2  then
+            op(crate::OpKind::Else),             // 3  else
+            op(crate::OpKind::Sub),              // 4  else body
+            op(crate::OpKind::EndIf),            // 5  join
+            op(crate::OpKind::RetVoid),          // 6
         ];
         let cfg = CFG::build(&ops);
 
@@ -1065,12 +1081,12 @@ mod tests {
     #[test]
     fn if_with_empty_then_keeps_distinct_true_and_false_edges() {
         let ops = vec![
-            op("const"),            // 0
-            op_args("if", &["v0"]), // 1
-            op("else"),             // 2
-            op("const"),            // 3 else body
-            op("end_if"),           // 4 join
-            op("ret_void"),         // 5
+            op(crate::OpKind::Const),            // 0
+            op_args(crate::OpKind::If, &["v0"]), // 1
+            op(crate::OpKind::Else),             // 2
+            op(crate::OpKind::Const),            // 3 else body
+            op(crate::OpKind::EndIf),            // 4 join
+            op(crate::OpKind::RetVoid),          // 5
         ];
         let cfg = CFG::build(&ops);
 
@@ -1099,11 +1115,11 @@ mod tests {
     #[test]
     fn loop_depth_inside_outside() {
         let ops = vec![
-            op("const"),      // 0  outside
-            op("loop_start"), // 1  loop header
-            op("add"),        // 2  loop body
-            op("loop_end"),   // 3  loop end
-            op("ret_void"),   // 4  outside
+            op(crate::OpKind::Const),     // 0  outside
+            op(crate::OpKind::LoopStart), // 1  loop header
+            op(crate::OpKind::Add),       // 2  loop body
+            op(crate::OpKind::LoopEnd),   // 3  loop end
+            op(crate::OpKind::RetVoid),   // 4  outside
         ];
         let cfg = CFG::build(&ops);
 
@@ -1126,10 +1142,10 @@ mod tests {
     #[test]
     fn loop_break_edges_to_post_loop_block() {
         let ops = vec![
-            op("loop_start"), // 0 header
-            op("loop_break"), // 1 break from loop body
-            op("loop_end"),   // 2 loop end marker
-            op("ret_void"),   // 3 post-loop block
+            op(crate::OpKind::LoopStart), // 0 header
+            op(crate::OpKind::LoopBreak), // 1 break from loop body
+            op(crate::OpKind::LoopEnd),   // 2 loop end marker
+            op(crate::OpKind::RetVoid),   // 3 post-loop block
         ];
         let cfg = CFG::build(&ops);
 
@@ -1145,15 +1161,15 @@ mod tests {
     #[test]
     fn loop_break_in_then_loop_skips_enclosing_else_block() {
         let ops = vec![
-            op_args("if", &["v0"]),                 // 0 enclosing if
-            op("loop_start"),                       // 1 then loop header
-            op_args("loop_break_if_true", &["v1"]), // 2 implicit break target
-            op("add"),                              // 3 loop body fall-through
-            op("loop_end"),                         // 4 then loop end marker
-            op("else"),                             // 5 sibling else block
-            op("sub"),                              // 6 else body
-            op("end_if"),                           // 7 structured join
-            op("ret_void"),                         // 8 after if/else
+            op_args(crate::OpKind::If, &["v0"]), // 0 enclosing if
+            op(crate::OpKind::LoopStart),        // 1 then loop header
+            op_args(crate::OpKind::LoopBreakIfTrue, &["v1"]), // 2 implicit break target
+            op(crate::OpKind::Add),              // 3 loop body fall-through
+            op(crate::OpKind::LoopEnd),          // 4 then loop end marker
+            op(crate::OpKind::Else),             // 5 sibling else block
+            op(crate::OpKind::Sub),              // 6 else body
+            op(crate::OpKind::EndIf),            // 7 structured join
+            op(crate::OpKind::RetVoid),          // 8 after if/else
         ];
         let cfg = CFG::build(&ops);
 
@@ -1186,11 +1202,11 @@ mod tests {
     #[test]
     fn jump_label_edges() {
         let ops = vec![
-            op("const"),         // 0
-            op_val("jump", 42),  // 1  jump to label 42
-            op("add"),           // 2  unreachable (but still a block)
-            op_val("label", 42), // 3  target
-            op("ret_void"),      // 4
+            op(crate::OpKind::Const),         // 0
+            op_val(crate::OpKind::Jump, 42),  // 1  jump to label 42
+            op(crate::OpKind::Add),           // 2  unreachable (but still a block)
+            op_val(crate::OpKind::Label, 42), // 3  target
+            op(crate::OpKind::RetVoid),       // 4
         ];
         let cfg = CFG::build(&ops);
 
@@ -1217,12 +1233,12 @@ mod tests {
     #[test]
     fn br_if_two_successors() {
         let ops = vec![
-            op("const"),                       // 0
-            op_args_val("br_if", &["v0"], 10), // 1  cond jump to label 10
-            op("add"),                         // 2  fall-through
-            op("ret_void"),                    // 3
-            op_val("label", 10),               // 4  branch target
-            op("ret_void"),                    // 5
+            op(crate::OpKind::Const),                      // 0
+            op_args_val(crate::OpKind::BrIf, &["v0"], 10), // 1  cond jump to label 10
+            op(crate::OpKind::Add),                        // 2  fall-through
+            op(crate::OpKind::RetVoid),                    // 3
+            op_val(crate::OpKind::Label, 10),              // 4  branch target
+            op(crate::OpKind::RetVoid),                    // 5
         ];
         let cfg = CFG::build(&ops);
 
@@ -1260,21 +1276,21 @@ mod tests {
         // Build: const; if cond; loop_start; loop_break_if_false cond;
         //        ... loop_end; else; loop_start; loop_end; end_if; ret
         let ops = vec![
-            op("const"),                             // 0  if-cond setup
-            op_args("if", &["c0"]),                  // 1  IF
-            op("loop_start"),                        // 2  THEN-body loop header
-            op("const"),                             // 3  loop body cond
-            op_args("loop_break_if_false", &["c1"]), // 4  exit cond (no label)
-            op("nop"),                               // 5  body op
-            op("loop_continue"),                     // 6
-            op("loop_end"),                          // 7  THEN-body loop end
-            op("else"),                              // 8  ELSE block start
-            op("loop_start"),                        // 9  ELSE-body loop header
-            op_args("loop_break_if_false", &["c2"]), // 10
-            op("loop_continue"),                     // 11
-            op("loop_end"),                          // 12 ELSE-body loop end
-            op("end_if"),                            // 13 join
-            op("ret_void"),                          // 14
+            op(crate::OpKind::Const),                          // 0  if-cond setup
+            op_args(crate::OpKind::If, &["c0"]),               // 1  IF
+            op(crate::OpKind::LoopStart),                      // 2  THEN-body loop header
+            op(crate::OpKind::Const),                          // 3  loop body cond
+            op_args(crate::OpKind::LoopBreakIfFalse, &["c1"]), // 4  exit cond (no label)
+            op(crate::OpKind::Nop),                            // 5  body op
+            op(crate::OpKind::LoopContinue),                   // 6
+            op(crate::OpKind::LoopEnd),                        // 7  THEN-body loop end
+            op(crate::OpKind::Else),                           // 8  ELSE block start
+            op(crate::OpKind::LoopStart),                      // 9  ELSE-body loop header
+            op_args(crate::OpKind::LoopBreakIfFalse, &["c2"]), // 10
+            op(crate::OpKind::LoopContinue),                   // 11
+            op(crate::OpKind::LoopEnd),                        // 12 ELSE-body loop end
+            op(crate::OpKind::EndIf),                          // 13 join
+            op(crate::OpKind::RetVoid),                        // 14
         ];
         let cfg = CFG::build(&ops);
 
@@ -1319,13 +1335,13 @@ mod tests {
     #[test]
     fn nested_loop_depth() {
         let ops = vec![
-            op("const"),      // 0  outside
-            op("loop_start"), // 1  outer header
-            op("loop_start"), // 2  inner header
-            op("add"),        // 3  inner body
-            op("loop_end"),   // 4  inner end
-            op("loop_end"),   // 5  outer end
-            op("ret_void"),   // 6  outside
+            op(crate::OpKind::Const),     // 0  outside
+            op(crate::OpKind::LoopStart), // 1  outer header
+            op(crate::OpKind::LoopStart), // 2  inner header
+            op(crate::OpKind::Add),       // 3  inner body
+            op(crate::OpKind::LoopEnd),   // 4  inner end
+            op(crate::OpKind::LoopEnd),   // 5  outer end
+            op(crate::OpKind::RetVoid),   // 6  outside
         ];
         let cfg = CFG::build(&ops);
 

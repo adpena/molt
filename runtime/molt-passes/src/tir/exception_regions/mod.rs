@@ -2,7 +2,7 @@
 //!
 //! This analysis is the current backend-neutral authority for handler-owned
 //! exception MatchRef release facts. Current TIR still carries several
-//! exception-stack operations as `Copy` + `_original_kind`; this analysis
+//! exception-stack operations as `Copy` + `origin`; this analysis
 //! recognizes those carriers, computes the path-local match-ref release
 //! boundary, feeds pass-manager diagnostics, and drives shared TIR drop
 //! insertion on activated targets.
@@ -63,7 +63,7 @@ pub struct ExceptionMatchRefFact {
     pub producer: ExceptionOpPosition,
     pub releases: Vec<ExceptionOpPosition>,
     pub release_facts: Vec<ExceptionMatchRefRelease>,
-    pub source_kind: String,
+    pub source_kind: molt_ir::OpKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,7 +325,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
             continue;
         }
         if unowned_non_finally_reachable {
-            if source_kind == "exception_last" {
+            if source_kind == molt_ir::OpKind::ExceptionLast {
                 // `exception_last` is also used by module/function exception-exit
                 // cleanup blocks as a public observer of the active exception.
                 // Mixed depth-zero and handler-owned reachability at such a site
@@ -349,7 +349,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                     producer,
                     releases: Vec::new(),
                     release_facts: Vec::new(),
-                    source_kind: source_kind.to_string(),
+                    source_kind: source_kind,
                 },
             );
             continue;
@@ -378,7 +378,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
             continue;
         }
 
-        if unmapped_non_finally_state_reachable && source_kind != "exception_last" {
+        if unmapped_non_finally_state_reachable && source_kind != molt_ir::OpKind::ExceptionLast {
             facts.diagnostics.push(ExceptionRegionDiagnostic {
                 kind: ExceptionRegionDiagnosticKind::AmbiguousProducerDepth,
                 value: Some(value),
@@ -395,7 +395,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                     producer,
                     releases: Vec::new(),
                     release_facts: Vec::new(),
-                    source_kind: source_kind.to_string(),
+                    source_kind: source_kind,
                 },
             );
             continue;
@@ -415,7 +415,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 &owner_states,
             );
             if release_candidates.is_empty() {
-                if source_kind == "exception_last" {
+                if source_kind == molt_ir::OpKind::ExceptionLast {
                     continue;
                 }
                 facts.diagnostics.push(ExceptionRegionDiagnostic {
@@ -448,7 +448,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                     });
             }
         }
-        if release_facts.is_empty() && source_kind == "exception_last" {
+        if release_facts.is_empty() && source_kind == molt_ir::OpKind::ExceptionLast {
             continue;
         }
 
@@ -470,7 +470,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 producer,
                 releases,
                 release_facts: release_facts.into_iter().collect(),
-                source_kind: source_kind.to_string(),
+                source_kind: source_kind,
             },
         );
     }

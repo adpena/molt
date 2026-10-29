@@ -166,12 +166,12 @@ pub fn exception_edge_binds_handler_arguments(opcode: OpCode) -> bool {
 /// all pre-SSA edge discovery through the generated kind-to-opcode registry so
 /// an alias cannot acquire the right TIR opcode while silently losing its CFG
 /// edge and block-argument payload.
-pub fn is_simple_exception_transfer_kind(kind: &str) -> bool {
+pub fn is_simple_exception_transfer_kind(kind: crate::OpKind) -> bool {
     kind_to_opcode_table(kind).is_some_and(is_exception_transfer_edge)
 }
 
 /// Actual exceptional execution, excluding handler registration metadata.
-pub fn is_simple_exception_observation_kind(kind: &str) -> bool {
+pub fn is_simple_exception_observation_kind(kind: crate::OpKind) -> bool {
     kind_to_opcode_table(kind).is_some_and(exception_edge_binds_handler_arguments)
 }
 
@@ -717,6 +717,7 @@ mod tests {
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(crate::tir::ops::TirOp {
+                origin: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: crate::tir::ops::OpCode::ConstBool,
                 operands: vec![],
@@ -801,6 +802,7 @@ mod tests {
             let mut attrs = AttrDict::new();
             attrs.insert("value".into(), AttrValue::Int(100));
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![entry_arg],
@@ -882,6 +884,7 @@ mod tests {
             let mut attrs = AttrDict::new();
             attrs.insert("value".into(), AttrValue::Int(200));
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::TryEnd,
                 operands: vec![],

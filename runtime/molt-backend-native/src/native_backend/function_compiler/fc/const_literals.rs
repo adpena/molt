@@ -1,34 +1,35 @@
 use super::super::*;
 use super::OpFlow;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::OpKind;
 use molt_ir::literal_payload::{integer_literal_bytes, required_simple_literal_bytes};
 
-/// Single-source kind authority for [`handle_const_literal_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Integer aliases use the same generated
-/// ConstInt classification throughout the handler and its planning helpers.
+// Single-source kind authority for [`handle_const_literal_op`], consulted by
+// `op_family::native_op_family`. Integer aliases use the same generated
+// ConstInt classification throughout the handler and its planning helpers.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "const",
-    "const_int",
-    "load_const",
-    "const_bigint",
-    "const_bool",
-    "const_none",
-    "const_not_implemented",
-    "const_ellipsis",
-    "const_float",
-    "const_str",
-    "const_bytes",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Const,
+    OpKind::ConstInt,
+    OpKind::LoadConst,
+    OpKind::ConstBigint,
+    OpKind::ConstBool,
+    OpKind::ConstNone,
+    OpKind::ConstNotImplemented,
+    OpKind::ConstEllipsis,
+    OpKind::ConstFloat,
+    OpKind::ConstStr,
+    OpKind::ConstBytes,
+);
 
 /// Integer literal spellings share the registry's exact ConstInt authority.
 /// Do not canonicalize unrelated original-kind metadata during native dispatch.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn literal_kind(kind: &str) -> &str {
+pub(in crate::native_backend::function_compiler) fn literal_kind(kind: OpKind) -> OpKind {
     if crate::tir::op_kinds_generated::kind_to_opcode_table(kind)
         == Some(crate::tir::ops::OpCode::ConstInt)
     {
-        "const"
+        OpKind::Const
     } else {
         kind
     }
@@ -49,9 +50,9 @@ pub(in crate::native_backend::function_compiler) fn op_uses_heap_literal_data_se
     if simple_ir_out_result(op).is_none() {
         return false;
     }
-    match literal_kind(&op.kind) {
-        "const_str" | "const_bytes" | "const_bigint" => true,
-        "const" => op
+    match literal_kind(op.kind) {
+        OpKind::ConstStr | OpKind::ConstBytes | OpKind::ConstBigint => true,
+        OpKind::Const => op
             .value
             .is_some_and(|val| !native_int_literal_fits_inline(val)),
         _ => false,
@@ -69,8 +70,8 @@ pub(in crate::native_backend::function_compiler) fn collect_loop_entry_const_def
         .iter()
         .filter_map(|op| {
             let out = simple_ir_out_result(op)?;
-            match literal_kind(&op.kind) {
-                "const" => {
+            match literal_kind(op.kind) {
+                OpKind::Const => {
                     let val = *const_int_map.get(out)?;
                     if representation_plan.is_raw_int_carrier_name(out) {
                         return Some((out.to_string(), val));
@@ -81,11 +82,11 @@ pub(in crate::native_backend::function_compiler) fn collect_loop_entry_const_def
                         None
                     }
                 }
-                "const_bool" => {
+                OpKind::ConstBool => {
                     let val = op.value.unwrap_or(0);
                     Some((out.to_string(), box_bool(val)))
                 }
-                "const_none" => Some((out.to_string(), box_none())),
+                OpKind::ConstNone => Some((out.to_string(), box_none())),
                 _ => None,
             }
         })
@@ -292,8 +293,8 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
         std::collections::HashSet::new();
 
     for op in &func_ir.ops {
-        match literal_kind(&op.kind) {
-            "const_str" => {
+        match literal_kind(op.kind) {
+            OpKind::ConstStr => {
                 let bytes = required_simple_literal_bytes(op).to_vec();
                 let out_name = match simple_ir_out_result(op) {
                     Some(n) => n.to_string(),
@@ -303,7 +304,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
                     unique_strs.push((bytes, out_name));
                 }
             }
-            "const_bytes" => {
+            OpKind::ConstBytes => {
                 let bytes = required_simple_literal_bytes(op).to_vec();
                 let out_name = match simple_ir_out_result(op) {
                     Some(n) => n.to_string(),
@@ -313,7 +314,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
                     unique_bytes.push((bytes, out_name));
                 }
             }
-            "const_bigint" => {
+            OpKind::ConstBigint => {
                 let bytes = required_simple_literal_bytes(op).to_vec();
                 let out_name = match simple_ir_out_result(op) {
                     Some(n) => n.to_string(),
@@ -323,7 +324,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
                     unique_bigints.push((bytes, out_name));
                 }
             }
-            "const" => {
+            OpKind::Const => {
                 let val = op.value.unwrap_or(0);
                 let out_name = match simple_ir_out_result(op) {
                     Some(n) if !representation_plan.is_raw_int_carrier_name(n) => n.to_string(),
@@ -355,7 +356,7 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
 
     let mut str_output_slots = BTreeMap::new();
     for op in &func_ir.ops {
-        if op.kind == "const_str" {
+        if op.kind == OpKind::ConstStr {
             let bytes = required_simple_literal_bytes(op);
             if let Some(ref out) = op.out
                 && let Some(&slot) = const_str_slots.get(bytes)
@@ -462,8 +463,8 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
     hoists: &HeapLiteralHoists,
     local_inc_ref_obj: FuncRef,
 ) -> OpFlow {
-    match literal_kind(&op.kind) {
-        "const" => {
+    match literal_kind(op.kind) {
+        OpKind::Const => {
             let val = op.value.unwrap_or(0);
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
@@ -496,7 +497,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 def_var_named(builder, vars, out_name, boxed);
             }
         }
-        "const_bigint" => {
+        OpKind::ConstBigint => {
             let bytes = required_simple_literal_bytes(op);
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
@@ -513,7 +514,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
             );
             def_var_named(builder, vars, out_name, boxed);
         }
-        "const_bool" => {
+        OpKind::ConstBool => {
             let val = op.value.unwrap_or(0);
             let boxed = box_bool(val);
             let iconst = builder.ins().iconst(types::I64, boxed);
@@ -522,13 +523,13 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 def_bool_result(builder, vars, representation_plan, out__, iconst, Some(raw));
             }
         }
-        "const_none" => {
+        OpKind::ConstNone => {
             let iconst = builder.ins().iconst(types::I64, box_none());
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(builder, vars, out__, iconst);
             }
         }
-        "const_not_implemented" => {
+        OpKind::ConstNotImplemented => {
             let callee = SimpleBackend::import_func_id_split(
                 module,
                 import_ids,
@@ -543,7 +544,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 def_var_named(builder, vars, out__, res);
             }
         }
-        "const_ellipsis" => {
+        OpKind::ConstEllipsis => {
             let callee = SimpleBackend::import_func_id_split(
                 module,
                 import_ids,
@@ -558,7 +559,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 def_var_named(builder, vars, out__, res);
             }
         }
-        "const_float" => {
+        OpKind::ConstFloat => {
             let val = op.f_value.expect("Float value not found");
             let raw_f64 = builder.ins().f64const(val);
             if let Some(ref out__) = op.out {
@@ -571,7 +572,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
                 }
             }
         }
-        "const_str" => {
+        OpKind::ConstStr => {
             let bytes = required_simple_literal_bytes(op);
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
@@ -589,7 +590,7 @@ pub(in crate::native_backend::function_compiler) fn handle_const_literal_op(
 
             def_var_named(builder, vars, out_name, boxed);
         }
-        "const_bytes" => {
+        OpKind::ConstBytes => {
             let bytes = required_simple_literal_bytes(op);
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;

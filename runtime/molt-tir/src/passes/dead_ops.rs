@@ -18,69 +18,63 @@ fn simple_ir_unused_result_is_removable(
     }
 
     matches!(
-        op.kind.as_str(),
-        "const"
-            | "const_int"
-            | "const_float"
-            | "const_str"
-            | "const_bool"
-            | "const_none"
-            | "const_bytes"
-            | "const_bigint"
-            | "const_ellipsis"
-            | "missing"
-            | "copy"
-            | "copy_var"
-            | "load_var"
-            | "load_fast"
-            | "load_var_slot"
-            | "load_closure"
-            | "add"
-            | "sub"
-            | "mul"
-            | "inplace_add"
-            | "inplace_sub"
-            | "inplace_mul"
-            | "neg"
-            | "pos"
-            | "bit_and"
-            | "bit_or"
-            | "bit_xor"
-            | "bit_not"
-            | "bitand"
-            | "bitor"
-            | "bitxor"
-            | "shl"
-            | "shr"
-            | "lshift"
-            | "rshift"
-            | "inplace_bit_and"
-            | "inplace_bit_or"
-            | "inplace_bit_xor"
-            | "inplace_lshift"
-            | "inplace_rshift"
-            | "lt"
-            | "le"
-            | "gt"
-            | "ge"
-            | "eq"
-            | "ne"
-            | "is"
-            | "is_not"
-            | "module_cache_get"
-            | "module_get_attr"
-            | "box"
-            | "unbox"
-            | "cast"
-            | "widen"
-            | "identity_alias"
-            | "binding_alias"
-            | "build_list"
-            | "build_tuple"
-            | "build_dict"
-            | "build_set"
-            | "build_slice"
-            | "type_guard"
+        op.kind,
+        molt_ir::OpKind::Const
+            | molt_ir::OpKind::ConstInt
+            | molt_ir::OpKind::ConstFloat
+            | molt_ir::OpKind::ConstStr
+            | molt_ir::OpKind::ConstBool
+            | molt_ir::OpKind::ConstNone
+            | molt_ir::OpKind::ConstBytes
+            | molt_ir::OpKind::ConstBigint
+            | molt_ir::OpKind::ConstEllipsis
+            | molt_ir::OpKind::Missing
+            | molt_ir::OpKind::Copy
+            | molt_ir::OpKind::CopyVar
+            | molt_ir::OpKind::LoadVar
+            | molt_ir::OpKind::Add
+            | molt_ir::OpKind::Sub
+            | molt_ir::OpKind::Mul
+            | molt_ir::OpKind::InplaceAdd
+            | molt_ir::OpKind::InplaceSub
+            | molt_ir::OpKind::InplaceMul
+            | molt_ir::OpKind::Neg
+            | molt_ir::OpKind::Pos
+            | molt_ir::OpKind::BitAnd
+            | molt_ir::OpKind::BitOr
+            | molt_ir::OpKind::BitXor
+            | molt_ir::OpKind::BitNot
+            | molt_ir::OpKind::Shl
+            | molt_ir::OpKind::Shr
+            | molt_ir::OpKind::Lshift
+            | molt_ir::OpKind::Rshift
+            | molt_ir::OpKind::InplaceBitAnd
+            | molt_ir::OpKind::InplaceBitOr
+            | molt_ir::OpKind::InplaceBitXor
+            | molt_ir::OpKind::InplaceLshift
+            | molt_ir::OpKind::InplaceRshift
+            | molt_ir::OpKind::Lt
+            | molt_ir::OpKind::Le
+            | molt_ir::OpKind::Gt
+            | molt_ir::OpKind::Ge
+            | molt_ir::OpKind::Eq
+            | molt_ir::OpKind::Ne
+            | molt_ir::OpKind::Is
+            | molt_ir::OpKind::IsNot
+            | molt_ir::OpKind::ModuleCacheGet
+            | molt_ir::OpKind::ModuleGetAttr
+            | molt_ir::OpKind::Box
+            | molt_ir::OpKind::Unbox
+            | molt_ir::OpKind::Cast
+            | molt_ir::OpKind::Widen
+            | molt_ir::OpKind::IdentityAlias
+            | molt_ir::OpKind::BindingAlias
+            | molt_ir::OpKind::BuildList
+            | molt_ir::OpKind::BuildTuple
+            | molt_ir::OpKind::BuildDict
+            | molt_ir::OpKind::BuildSet
+            | molt_ir::OpKind::BuildSlice
+            | molt_ir::OpKind::TypeGuard
     )
 }
 
@@ -115,8 +109,10 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR, target_info: &TargetInfo) {
                     // Only count as consumed if this is a load/copy-like op
                     // that reads the value. Calls reference functions, not locals.
                     if matches!(
-                        op.kind.as_str(),
-                        "copy_var" | "load_var" | "load_fast" | "store_var"
+                        op.kind,
+                        molt_ir::OpKind::CopyVar
+                            | molt_ir::OpKind::LoadVar
+                            | molt_ir::OpKind::StoreVar
                     ) {
                         consumed.insert(sv.clone());
                     }
@@ -153,7 +149,7 @@ pub fn eliminate_dead_ops(ir: &mut SimpleIR, target_info: &TargetInfo) {
                 }
 
                 // Keep nops (they're just markers, trivial to keep).
-                if op.kind == "nop" {
+                if op.kind == molt_ir::OpKind::Nop {
                     return true;
                 }
 

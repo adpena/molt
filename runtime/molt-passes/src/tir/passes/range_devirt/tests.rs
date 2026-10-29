@@ -8,6 +8,7 @@ use super::run;
 
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -20,10 +21,9 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
 fn make_call_builtin(name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("name".to_string(), AttrValue::Str(name.to_string()));
-    if name == "range" {
-        attrs.insert("_original_kind".into(), AttrValue::Str("range_new".into()));
-    }
+    if name == "range" {}
     TirOp {
+        origin: Some(molt_ir::OpKind::RangeNew),
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands,
@@ -242,7 +242,7 @@ fn generic_range_lookup_is_not_the_range_new_primitive() {
             .iter_mut()
             .find(|op| op.opcode == OpCode::CallBuiltin)
             .unwrap();
-        call.attrs.remove("_original_kind");
+        call.origin = None;
         call.attrs
             .insert("name".into(), AttrValue::Str(name.into()));
         run(&mut func);
@@ -406,6 +406,7 @@ fn no_devirt_without_a_nonzero_constant_step() {
         if op.results == [step] {
             op.opcode = OpCode::Copy;
             op.attrs.clear();
+            op.origin = None;
         }
     }
     let stats = run(&mut dynamic);

@@ -21,13 +21,14 @@ pub(super) fn check_label(op: &TirOp) -> Option<i64> {
     }
 }
 
-pub(super) const FINALLY_PENDING_OBSERVER: &str = "exception_finally_pending_observer";
+pub(super) const FINALLY_PENDING_OBSERVER: molt_ir::OpKind =
+    molt_ir::OpKind::ExceptionFinallyPendingObserver;
 
 pub(super) fn is_deferred_finally_observer(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy
         && matches!(
-            op.attrs.get("_original_kind"),
-            Some(AttrValue::Str(kind)) if kind == FINALLY_PENDING_OBSERVER
+            op.origin,
+            Some(kind) if kind == FINALLY_PENDING_OBSERVER
         )
 }
 

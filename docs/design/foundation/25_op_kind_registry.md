@@ -1,8 +1,8 @@
-<!-- Design doc (task #57). Audit anchors refreshed against the current worktree 2026-06-13. The op-kind registry source is live; this doc tracks the remaining dangerous-cell burndown. -->
+<!-- Design doc (task #57). Rust wire contract updated for step 4a, 2026-10-29. Historical audit observations are explicitly labeled below. -->
 
 # Op-Kind Single-Source-of-Truth Registry
 
-**Status:** Registry source + generated sync are live; dangerous-cell burndown remains active. The machine-generated enumeration lives in `tools/audit_op_kinds.py` + `tools/op_kinds_baseline.json`.
+**Status:** The registry generates the closed Rust wire type and exhaustive facts. Python producer and serializer census checks remain in `tools/op_kinds/census.py` and `tools/audit_op_kinds.py`; normalized runtime ABI checks remain independent. Python `Literal` types belong to step 4b. Current V1 qualification and burndown belong to [the V1 ledger](../../agent/V1_HANDOFF_FINDINGS.md).
 
 **Bug class killed:** cross-component op-"kind"-string drift — molt's most prolific silent-miscompile family (5 proven instances; see "Motivation").
 
@@ -101,7 +101,11 @@ Python builds `MoltOp(kind=...)` with `kind: str` (`src/molt/frontend/_types.py`
   `_ =>` arm, so a new kind forces a decision in every fact family.
 - **TIR keeps the type.** The `_original_kind` string attribute becomes a typed
   field on the TIR operation (`origin: Option<OpKind>`), and `kind_to_opcode`
-  takes `OpKind`.
+  takes `OpKind`. The reverse opcode projection returns `Option<OpKind>`:
+  structured TIR operations without a wire representation have no wire kind.
+  Analysis preserves that absence; wire emission must diagnose it rather than
+  invent a kind. The TIR cache format records the typed origin (format v4),
+  and both deserialization and verification reject the retired attribute key.
 - **Backends match variants.** Native (Cranelift and LLVM), WASM, the JIT, Luau,
   Rust and MLIR match `OpKind` variants. A backend's top-level lowering `match`
   has no wildcard arm: a kind it does not lower maps to a typed refusal with a
@@ -112,6 +116,13 @@ Python builds `MoltOp(kind=...)` with `kind: str` (`src/molt/frontend/_types.py`
   `MoltOp.kind` is a `FrontendOpKind`, and the JSON mapper returns `WireOpKind`.
 - **Delete what the types replace** (step 5): the `&str` predicates and the
   scraper checks in `tools/audit_op_kinds.py` that rustc and `ty` now enforce.
+
+The Rust migration is step 4a; the Python `Literal` migration is step 4b.
+Rust type closure replaces registration probes inside typed consumers; the
+wire decoder still rejects unknown spellings and preserves retired-kind
+diagnostics. Private-owner, shape, payload, symbol and target-support admission
+remain separate obligations. The producer census remains authoritative for
+proving that registrations have producers.
 
 Cost: decoding matches a short string against a generated table and allocates
 nothing, where the `String` field allocated per operation; each `OpIR` loses a
@@ -153,8 +164,8 @@ Frontend serialization validates all input kinds before optimization can discard
 them, rejects registered operations without a serializer, and validates emitted
 wire kinds. SimpleIR admission validates every function body before target
 selection, pruning, or lowering, through the shared contract used by JSON,
-NDJSON, MessagePack, and binary document readers. Direct SSA lifting shares the
-registered-kind validator while allowing the internal private vocabulary.
+NDJSON, MessagePack, and binary document readers. Direct SSA lifting receives the
+closed kind type while allowing the internal private vocabulary.
 Unregistered operations report the kind and function instead of
 being dropped or acquiring the preserved `Copy` carrier. Registered preserved
 operations retain their existing lowering and target-specific admission.
@@ -264,13 +275,13 @@ surrogatepass strings still expose the missing Python string representation.
 
 ## 1. Motivation — the bug class (5 proven instances)
 
-A `MoltOp` produced by the frontend visitors is serialized to a JSON op whose `"kind"` string is the **wire contract** between the Python frontend and the Rust backend. Five independent components must agree on that vocabulary, and each keeps its **own private copy** of the table:
+A `MoltOp` produced by the frontend visitors is serialized to a JSON op whose `"kind"` spelling is the **wire contract** between the Python frontend and the Rust backend. Five components consume the registry's generated contract:
 
-1. **Frontend emitter** — `src/molt/frontend/lowering/serialization.py` plus the extracted `serialization_*_ops.py` handler modules. `map_ops_to_json` dispatches to the handlers, which emit the JSON `"kind"` string (lowercase). **This is the authoritative wire vocabulary** (see §3).
-2. **TIR SSA mapper and reverse backend spelling** — `kind_to_opcode` in `runtime/molt-ir/src/tir/ssa.rs:1902`, backed by `op_kinds_generated.rs:20`, maps a kind string → `OpCode`. `opcode_canonical_kind_table` is the generated reverse authority for backend op-name tails such as MLIR opaque lowering. Unknown input kinds deliberately fall back to `OpCode::Copy`, stashing the spelling in `_original_kind`, as the runtime backstop behind the generated registry.
-3. **LLVM lowering** — `lower_preserved_simpleir_op` (`runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs`) dispatches through handler-owned `HANDLED_KINDS` slices in `preserved_ops/{direct_ops,callable_ops,container_ops}.rs`, plus the ABI-exact `molt_<kind>` runtime fallback `try_lower_preserved_runtime_call` (`lowering/runtime_helpers.rs`), guarded by a **terminal fail-loud** state in `lowering/op_dispatch.rs`.
-4. **RC/alias classifier** — `classify_copy_kind` / `copy_kind_mints_owned_value` / `copy_kind_is_explicit_no_heap_move` in `runtime/molt-passes/src/tir/passes/alias_analysis.rs:535/496/645`. **Its `_ => CopyLowering::TransparentAlias` default (alias_analysis.rs:564) is the UAF-escalation precondition.**
-5. **Native + WASM SimpleIR dispatch** — extracted native `function_compiler/fc/*` handler slices plus the WASM facade/child modules, reached via the `lower_to_simple` `_original_kind` restoration (`runtime/molt-passes/src/tir/lower_to_simple/op_lowering.rs`).
+1. **Frontend emitter** — `src/molt/frontend/lowering/serialization.py` and extracted handlers emit registered wire spellings. Producer and serializer census checks detect unresolved expressions and unregistered output.
+2. **TIR SSA mapper and reverse wire projection** — `kind_to_opcode` consumes `OpKind`. Registered operations without a first-class opcode use `OpCode::Copy` with typed `origin`; unknown spellings fail at decoding. The reverse projection returns `Option<OpKind>` because structured operations need no wire representation.
+3. **LLVM lowering** — preserved-operation dispatch matches typed variants and normalized runtime ABI contracts, with a terminal diagnostic when no lowering applies.
+4. **RC/alias classifier** — generated exhaustive facts distinguish ownership, binding views and explicit transparent aliases. The historical silent transparent-alias default is retired.
+5. **Native + WASM SimpleIR dispatch** — exhaustive typed dispatch reaches handlers or an explicit refusal. `lower_to_simple` restores typed `origin` without an attribute spelling channel.
 
 The proven failures:
 
@@ -284,9 +295,23 @@ The structural cause is identical in every case: **N copies of one table, no com
 
 ---
 
-## 2. The phase-1 enumeration (machine-generated)
+## 2. Current checks and historical phase-1 enumeration
 
-`tools/audit_op_kinds.py` extracts each component's table **directly from source** (never hand-copied) and prints the drift matrix. Extraction methods:
+The current `tools/audit_op_kinds.py --check` checks resolved Python serializer
+output against the wire registry and validates normalized boxed runtime ABI
+contracts against exports. Unresolved computed Python output remains a hard
+error. Its version-2 baseline contains only these two obligations, both empty;
+the CLI refuses findings rather than accepting baseline waivers.
+
+Rust kind membership, exhaustive facts and backend routing now compile against
+`OpKind`; the old Rust string/slice scraper checks and their baseline categories
+are retired. The structural audit still checks dynamic admission and refusal
+behavior, which exhaustiveness cannot prove. The producer census is retained
+because type closure does not prove that a variant has a live producer.
+
+### Historical extraction and snapshot (June 2026)
+
+The phase-1 audit extracted each component's table **directly from source** (never hand-copied) and printed the drift matrix. Its former extraction methods were:
 
 - **Frontend (Python):** `ast`-based over `serialization.py` and extracted `serialization_*_ops.py` handler modules. Constant `"kind": "literal"` dict-value literals plus computed sites are resolved structurally:
   - `serialization.py:635` `op.kind.lower()` under `op.kind in ("ADD","SUB","MUL")` → `{add,sub,mul}`.
@@ -335,7 +360,7 @@ Phase 2's table is therefore **keyed by the emitted JSON kind**. (The MoltOp→J
 
 ---
 
-## 4. The drift matrix — dangerous-cell findings
+## 4. Historical drift matrix — June 2026 dangerous-cell findings
 
 The audit records drift observations and bug preconditions. Each finding is limited by its source authority: frontend dormancy does not establish whole-pipeline deadness, and an owned boxed return does not establish heap allocation. Emitted-but-unmapped is intentional for preserved `Copy{_original_kind}` operations with valid lowering.
 

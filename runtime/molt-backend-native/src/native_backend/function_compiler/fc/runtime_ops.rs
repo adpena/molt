@@ -1,16 +1,17 @@
 use super::super::*;
+use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-/// Single-source kind authority for [`handle_runtime_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_runtime_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "exception_pending",
-    "function_defaults_version",
-    "print",
-    "warn_stderr",
-    "print_newline",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::ExceptionPending,
+    OpKind::FunctionDefaultsVersion,
+    OpKind::Print,
+    OpKind::WarnStderr,
+    OpKind::PrintNewline,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for residual runtime probe/call shims. These ops
@@ -59,8 +60,8 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
         )
     };
 
-    match op.kind.as_str() {
-        "exception_pending" => {
+    match op.kind {
+        OpKind::ExceptionPending => {
             // Read the runtime exception-pending flag as a boolean value:
             // `molt_exception_pending_fast() != 0`. Produced by the TIR
             // `ExceptionPending` op and consumed by loop-exit branches.
@@ -82,7 +83,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 );
             }
         }
-        "function_defaults_version" => {
+        OpKind::FunctionDefaultsVersion => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let func_boxed = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -114,7 +115,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
                 }
             }
         }
-        "print" => {
+        OpKind::Print => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = if let Some(val) = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -141,7 +142,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[val]);
         }
-        "warn_stderr" => {
+        OpKind::WarnStderr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             if backend_env::var(BackendEnv::MOLT_DEBUG_WARN_BACKEND).is_ok() {
                 eprintln!(
@@ -170,7 +171,7 @@ pub(in crate::native_backend::function_compiler) fn handle_runtime_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[*val]);
         }
-        "print_newline" => {
+        OpKind::PrintNewline => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,

@@ -1,22 +1,23 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_set_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_set_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "set_new",
-    "frozenset_new",
-    "set_add",
-    "set_add_probe",
-    "frozenset_add",
-    "set_discard",
-    "set_remove",
-    "set_pop",
-    "set_update",
-    "set_intersection_update",
-    "set_difference_update",
-    "set_symdiff_update",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::SetNew,
+    OpKind::FrozensetNew,
+    OpKind::SetAdd,
+    OpKind::SetAddProbe,
+    OpKind::FrozensetAdd,
+    OpKind::SetDiscard,
+    OpKind::SetRemove,
+    OpKind::SetPop,
+    OpKind::SetUpdate,
+    OpKind::SetIntersectionUpdate,
+    OpKind::SetDifferenceUpdate,
+    OpKind::SetSymdiffUpdate,
+);
 use super::OpFlow;
 
 /// Hash-container operations share operand ownership, first-error cleanup,
@@ -36,8 +37,8 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
-    let symbol = match op.kind.as_str() {
-        "set_new" | "frozenset_new" => {
+    let symbol = match op.kind {
+        OpKind::SetNew | OpKind::FrozensetNew => {
             emit_hash_container_constructor(
                 op,
                 module,
@@ -53,16 +54,16 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
             );
             return OpFlow::Proceed;
         }
-        "set_add" => "molt_set_add",
-        "set_add_probe" => "molt_set_add_probe",
-        "frozenset_add" => "molt_frozenset_add",
-        "set_discard" => "molt_set_discard",
-        "set_remove" => "molt_set_remove",
-        "set_pop" => "molt_set_pop",
-        "set_update" => "molt_set_update",
-        "set_intersection_update" => "molt_set_intersection_update",
-        "set_difference_update" => "molt_set_difference_update",
-        "set_symdiff_update" => "molt_set_symdiff_update",
+        OpKind::SetAdd => "molt_set_add",
+        OpKind::SetAddProbe => "molt_set_add_probe",
+        OpKind::FrozensetAdd => "molt_frozenset_add",
+        OpKind::SetDiscard => "molt_set_discard",
+        OpKind::SetRemove => "molt_set_remove",
+        OpKind::SetPop => "molt_set_pop",
+        OpKind::SetUpdate => "molt_set_update",
+        OpKind::SetIntersectionUpdate => "molt_set_intersection_update",
+        OpKind::SetDifferenceUpdate => "molt_set_difference_update",
+        OpKind::SetSymdiffUpdate => "molt_set_symdiff_update",
         _ => unreachable!("handler invoked with non-matching op.kind"),
     };
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

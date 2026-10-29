@@ -487,7 +487,7 @@ fn local_moved_into_a_handler_argument_is_released_once_at_scope_exit() {
             vec![],
             vec![
                 producer,
-                original_copy_with_operands("store_var", vec![local], vec![]),
+                original_copy_with_operands(molt_ir::OpKind::StoreVar, vec![local], vec![]),
                 observe(47, vec![local]),
             ],
             jump(exit, vec![local]),
@@ -509,7 +509,7 @@ fn local_moved_into_a_handler_argument_is_released_once_at_scope_exit() {
             vec![current],
             vec![
                 marker(),
-                original_copy_with_operands("load_var", vec![current], vec![loaded]),
+                original_copy_with_operands(molt_ir::OpKind::LoadVar, vec![current], vec![loaded]),
                 op(OpCode::DelBoundary, vec![loaded], vec![]),
             ],
             done(),
@@ -552,7 +552,7 @@ fn frame_boundary_of_a_moved_local_releases_it_only_where_it_is_owned() {
             vec![],
             vec![
                 producer,
-                original_copy_with_operands("store_var", vec![local], vec![]),
+                original_copy_with_operands(molt_ir::OpKind::StoreVar, vec![local], vec![]),
                 observe(48, vec![local]),
             ],
             jump(exit, vec![]),

@@ -188,14 +188,14 @@ pub(super) fn is_inline_safe(callee: &TirFunction, call_graph: &CallGraph) -> bo
 }
 
 /// True if `op` is the `string_split_field` field-access (a `Copy`-passthrough
-/// carrying `_original_kind = "string_split_field"`). Its single result is the
+/// carrying `origin = "string_split_field"`). Its single result is the
 /// materialized field - the value whose materialization the deforestation
 /// eliminates when every consumer is bounds-expressible.
 fn is_string_split_field_op(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy
         && matches!(
-            op.attrs.get("_original_kind"),
-            Some(AttrValue::Str(k)) if k == "string_split_field"
+            op.origin,
+            Some(k) if k == molt_ir::OpKind::StringSplitField
         )
 }
 

@@ -9,7 +9,7 @@
 #![no_main]
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
-use molt_backend::{FunctionIR, OpIR, SimpleIR, WasmBackend};
+use molt_backend::{FunctionIR, OpIR, OpKind, SimpleIR, WasmBackend};
 
 /// A constrained IR generator that produces structurally valid IR.
 #[derive(Debug)]
@@ -19,16 +19,16 @@ struct FuzzIR {
 
 /// Registered op kinds that the WASM backend can handle without needing external
 /// imports to resolve (pure computational ops).
-const SAFE_OP_KINDS: &[&str] = &[
-    "const",
-    "const_bool",
-    "const_none",
-    "const_float",
-    "ret",
-    "nop",
-    "label",
-    "jump",
-    "br_if",
+const SAFE_OP_KINDS: &[OpKind] = &[
+    OpKind::Const,
+    OpKind::ConstBool,
+    OpKind::ConstNone,
+    OpKind::ConstFloat,
+    OpKind::Ret,
+    OpKind::Nop,
+    OpKind::Label,
+    OpKind::Jump,
+    OpKind::BrIf,
 ];
 
 impl<'a> Arbitrary<'a> for FuzzIR {
@@ -79,35 +79,31 @@ fn gen_ops(u: &mut Unstructured, vars: &[&str]) -> arbitrary::Result<Vec<OpIR>> 
 
     for _ in 0..num_ops {
         let kind_idx: usize = u.int_in_range(0..=SAFE_OP_KINDS.len() - 1)?;
-        let kind = SAFE_OP_KINDS[kind_idx].to_string();
+        let kind = SAFE_OP_KINDS[kind_idx];
         let out_name = format!("v{next_var}");
         next_var += 1;
 
-        let op = match kind.as_str() {
-            "const" => OpIR {
-                kind,
+        let op = match kind {
+            OpKind::Const => OpIR {
                 value: Some(u.int_in_range(-1000..=1000)?),
                 out: Some(out_name),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
-            "const_bool" => OpIR {
-                kind,
+            OpKind::ConstBool => OpIR {
                 value: Some(if u.arbitrary()? { 1 } else { 0 }),
                 out: Some(out_name),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
-            "const_none" => OpIR {
-                kind,
+            OpKind::ConstNone => OpIR {
                 out: Some(out_name),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
-            "const_float" => OpIR {
-                kind,
+            OpKind::ConstFloat => OpIR {
                 f_value: Some(u.arbitrary::<f64>().unwrap_or(0.0)),
                 out: Some(out_name),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
-            "ret" => {
+            OpKind::Ret => {
                 // Pick a variable to return.
                 let var = if !vars.is_empty() {
                     let idx = u.int_in_range(0..=vars.len() - 1)?;
@@ -116,21 +112,16 @@ fn gen_ops(u: &mut Unstructured, vars: &[&str]) -> arbitrary::Result<Vec<OpIR>> 
                     "__ret".to_string()
                 };
                 OpIR {
-                    kind,
                     args: Some(vec![var]),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 }
             }
-            "nop" => OpIR {
-                kind,
-                ..OpIR::default()
-            },
-            "label" | "jump" => OpIR {
-                kind,
+            OpKind::Nop => OpIR::new(kind),
+            OpKind::Label | OpKind::Jump => OpIR {
                 value: Some(u.int_in_range(0..=10)?),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
-            "br_if" => {
+            OpKind::BrIf => {
                 let cond = if !vars.is_empty() {
                     let idx = u.int_in_range(0..=vars.len() - 1)?;
                     vars[idx].to_string()
@@ -138,25 +129,20 @@ fn gen_ops(u: &mut Unstructured, vars: &[&str]) -> arbitrary::Result<Vec<OpIR>> 
                     "__ret".to_string()
                 };
                 OpIR {
-                    kind,
                     value: Some(u.int_in_range(0..=10)?),
                     args: Some(vec![cond]),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 }
             }
-            _ => OpIR {
-                kind,
-                ..OpIR::default()
-            },
+            _ => unreachable!("safe WASM fuzz palette has no shape for {kind}"),
         };
         ops.push(op);
     }
 
     // Always end with a return.
     ops.push(OpIR {
-        kind: "ret".to_string(),
         args: Some(vec!["__ret".to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Ret)
     });
 
     Ok(ops)
