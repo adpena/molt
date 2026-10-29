@@ -1374,7 +1374,7 @@
           "status": "fail",
           "finding": "HF-559",
           "root_cause": "The binary runs and fails: cannot import name '_get_sourcefile' from importlib._bootstrap_external.",
-          "evidence": "2026-10-29 lane/hf556-env-bytes, lane/hf557-function-imports and lane/hf273-sysconfig (macOS arm64, CPython 3.12.15 sources, run 20261029_121607): the binary runs and fails the same way after HF-557's fix and the sysconfig lowering."
+          "evidence": "2026-10-29 lane/hf556-env-bytes, lane/hf557-function-imports and lane/hf273-sysconfig (macOS arm64, CPython 3.12.15 sources, run 20261029_121607): the binary runs and fails the same way after HF-557's fix and the sysconfig lowering. lane/test-support-import-closure run 20261029_131134: unchanged after HF-566's fix."
         }
       }
     },
