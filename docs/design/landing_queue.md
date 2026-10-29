@@ -410,8 +410,15 @@ One runner owns main. Agents enqueue and continue.
   each findings row by its first cell: a row one side changed or moved takes
   that side's version, a row one side added goes after its predecessor there,
   a row one side deleted stays deleted, and a row both sides changed is a
-  conflict. Prose that both sides changed falls back to `git merge-file`, as
-  does a checkout without the driver.
+  conflict. A family row of the dependency order is keyed by its letter:
+  since every lane that opens or closes a row edits one, its name and cause
+  merge cell by cell and its key list merges as a set. The same driver merges
+  the generated `tests/findings/finding_ids.py` by identity sets, ordered by
+  `finding_status.finding_sort_key`, so the result equals the generator's
+  output for the merged ledger. On 2026-10-29 both families conflicted as
+  text and the queue rejected the graph-selection lane. Prose that both sides
+  changed falls back to `git merge-file`, as does a checkout without the
+  driver.
 - **Cost.** One parse of the three 1.1 MB versions per merged ledger: 70 to
   80 ms through `uv run --no-project --offline`, measured 2026-10-21.
 

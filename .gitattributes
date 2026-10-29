@@ -20,3 +20,4 @@ vendor/rust/zlib-rs/LICENSE whitespace=-blank-at-eof,-blank-at-eol
 # The v1.0 ledger merges findings rows by ID (tools/ledger_merge.py, installed
 # by tools/install_git_hooks.py); without the driver Git merges it as text.
 docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
+tests/findings/finding_ids.py merge=molt-ledger
