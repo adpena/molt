@@ -3,9 +3,13 @@
 ``tools/proof_plan.toml`` declares the always gates and the local rules. A rule
 matches a landing through the paths it globs or, for the plan file itself,
 through the plan entries it claims with ``plan_entities``: an edit to the plan
-selects only the rules that read what it changed (HF-457). ``integrate``, the
-land precheck and the queue select through ``select_landing_gates``, the one
-selection authority.
+selects only the rules that read what it changed (HF-457). Tests are selected
+by what they read: ``tools/test_dependency_graph.py`` derives every test file
+that depends on a changed path, and the test's own ``pre-push`` proof cell
+supplies its targets and toolchains. Rules keep the gates, the curated cohorts
+of files whose cells need builds, and the edges the graph cannot derive.
+``integrate``, the land precheck and the queue select through
+``select_landing_gates``, the one selection authority.
 """
 
 from __future__ import annotations
@@ -25,6 +29,11 @@ from tools.driver_errors import EXIT_USAGE, CandidateFailure, DriverError  # noq
 
 if TYPE_CHECKING:
     from tools.molt_dev import Git
+    from tools.test_dependency_graph import (
+        DependencyGraph,
+        GraphSelection,
+        LandingEnvelope,
+    )
     from tools.proof_plan import (
         LocalGateDeclaration,
         LocalPytestSelection,
@@ -125,18 +134,35 @@ class GateConfig:
     # The proof executor's declared admission: its ceiling and resource classes.
     executor_max_workers: int | None = None
     resource_limits: dict[str, int] = field(default_factory=dict)
+    # The plan's proof commands: each test file's cell and envelope.
+    commands: tuple[Mapping, ...] = ()
+    # The graph that selects tests by what they read. Without one (a driver
+    # test's synthetic policy), rules alone select.
+    dependency_graph: Callable[[], DependencyGraph] | None = None
 
     @staticmethod
     def load(path: Path) -> "GateConfig":
+        """A policy file; a checkout's own plan selects over its working tree.
+
+        The dependency graph belongs to the checkout that owns the plan, at
+        ``tools/proof_plan.toml``. Another manifest file (a driver test's
+        synthetic policy) names no checkout, so its rules alone select.
+        """
         if not path.exists():
             raise DriverError(
                 f"gate manifest missing: {path}. The change-class->gates manifest "
                 "is required for `integrate`.",
                 code=EXIT_USAGE,
             )
-        return GateConfig.parse(
+        config = GateConfig.parse(
             path.read_text(encoding="utf-8"), str(path), root=path.parent.parent
         )
+        root = config.root
+        if path.resolve() == (root / "tools" / GATES_CONFIG_NAME).resolve():
+            from tools.test_dependency_graph import cached_graph
+
+            config.dependency_graph = lambda: cached_graph(root)
+        return config
 
     @staticmethod
     def parse(source: str, label: str, *, root: Path | None = None) -> "GateConfig":
@@ -233,7 +259,16 @@ class GateConfig:
             root=_REPO_ROOT if root is None else root,
             executor_max_workers=ceiling,
             resource_limits=resource_limits,
+            commands=tuple(data.get("command", ())),
         )
+
+    def graph_selection(self, touched: list[str]) -> GraphSelection | None:
+        """The tests that read a touched path, and where each one runs."""
+        if self.dependency_graph is None or not touched:
+            return None
+        from tools.test_dependency_graph import graph_selection
+
+        return graph_selection(self.dependency_graph(), touched, self.commands)
 
     def prepare(
         self,
@@ -410,15 +445,7 @@ class GateConfig:
         def access(identifier: str) -> CargoTargetAccess:
             return self.prerequisites[identifier].cargo_target_access
 
-        if touched:
-            for index, command in enumerate(self.always):
-                add(
-                    command,
-                    tools(f"local.always.{index}"),
-                    concurrent=True,
-                    cargo_target_access=access(f"local.always.{index}"),
-                )
-        for rule in self.rules:
+        def matches(rule: GateRule) -> bool:
             by_path = any(_is_ignored(path, tuple(rule.globs)) for path in touched)
             by_plan = plan_touched and (
                 isinstance(plan_changes, _EveryPlanEntity)
@@ -430,8 +457,44 @@ class GateConfig:
                     )
                 )
             )
-            if not (by_path or by_plan):
-                continue
+            return by_path or by_plan
+
+        rules = [rule for rule in self.rules if matches(rule)]
+        # What matched rules already run of each file: () is the whole file.
+        rule_scopes: dict[str, set[tuple[str, ...]]] = {}
+        for rule in rules:
+            for target in rule.pytest:
+                if "::" not in target:
+                    rule_scopes.setdefault(target, set()).add(())
+            for cohort in rule.pytest_select:
+                for target in cohort.targets:
+                    if "::" not in target:
+                        rule_scopes.setdefault(target, set()).add(cohort.select)
+        # The graph adds each selected file in its cell's envelope unless a
+        # rule already runs the same or a wider scope of it.
+        graph_runs: list[tuple[str, LandingEnvelope]] = []
+        selection = self.graph_selection(touched)
+        for envelope in selection.run.values() if selection else ():
+            for target in envelope.targets:
+                scopes = rule_scopes.get(target.partition("::")[0], set())
+                if () in scopes or envelope.select in scopes:
+                    continue
+                graph_runs.append((target, envelope))
+        # Files the graph runs unfiltered, with the tools their cell declares.
+        graph_whole = {
+            target: envelope.toolchains
+            for target, envelope in graph_runs
+            if "::" not in target and not envelope.select
+        }
+        if touched:
+            for index, command in enumerate(self.always):
+                add(
+                    command,
+                    tools(f"local.always.{index}"),
+                    concurrent=True,
+                    cargo_target_access=access(f"local.always.{index}"),
+                )
+        for rule in rules:
             matched_rules.append(rule)
             owner = f"local.{rule.name}"
             for index, command in enumerate(rule.gates):
@@ -450,10 +513,17 @@ class GateConfig:
                     pytest_access.setdefault(target, []).append(
                         access(f"{owner}.pytest")
                     )
-            for index, selection in enumerate(rule.pytest_select):
+            for index, cohort in enumerate(rule.pytest_select):
+                if cohort.select and all(
+                    target in graph_whole
+                    and set(cohort.toolchains) <= set(graph_whole[target])
+                    for target in cohort.targets
+                ):
+                    # The graph runs these files unfiltered under these tools.
+                    continue
                 command = local_pytest_argv(
-                    selection.targets,
-                    selection.select,
+                    cohort.targets,
+                    cohort.select,
                     memory_units=self.pytest_memory_units,
                 )
                 pytest_commands.add(command_key(command))
@@ -464,7 +534,7 @@ class GateConfig:
                     pytest=True,
                     collection_command=(
                         local_pytest_collection_argv(command)
-                        if any("::" in target for target in selection.targets)
+                        if any("::" in target for target in cohort.targets)
                         else None
                     ),
                 )
@@ -472,6 +542,44 @@ class GateConfig:
                 if target not in seen_pytest:
                     seen_pytest.add(target)
                     pytest_targets.append(target)
+        # Every other test that reads a touched path runs in its cell's
+        # envelope: unfiltered targets join the merged session, and each cell
+        # selector runs as its own cohort.
+        filtered: dict[
+            tuple[tuple[str, ...], tuple[str, ...], CargoTargetAccess], list[str]
+        ] = {}
+        for target, envelope in graph_runs:
+            access = CargoTargetAccess.resolve(envelope.toolchains)
+            if envelope.select:
+                key = (envelope.select, envelope.toolchains, access)
+                filtered.setdefault(key, []).append(target)
+                continue
+            if target in seen_pytest:
+                continue
+            if pytest_index is None:
+                pytest_index = len(selected)
+            seen_pytest.add(target)
+            pytest_targets.append(target)
+            pytest_tools.setdefault(target, {}).update(
+                dict.fromkeys(envelope.toolchains)
+            )
+            pytest_access.setdefault(target, []).append(access)
+        for (select, cohort_tools, cohort_access), targets in filtered.items():
+            command = local_pytest_argv(
+                targets, select, memory_units=self.pytest_memory_units
+            )
+            pytest_commands.add(command_key(command))
+            add(
+                command,
+                cohort_tools,
+                cargo_target_access=cohort_access,
+                pytest=True,
+                collection_command=(
+                    local_pytest_collection_argv(command)
+                    if any("::" in target for target in targets)
+                    else None
+                ),
+            )
         # Extras are raw policy commands, not bound argv or unowned shell text.
         for command in extra or ():
             owners = [
@@ -606,6 +714,10 @@ def select_landing_gates(
         upstream, commit, run_git=lambda arguments: git._run(arguments).stdout
     )
     from tools.proof_plan import PLAN_PATH, bind_local_gate_command
+    from tools.test_dependency_graph import cached_graph
+
+    # The selected commit's tree, read through Git objects: what executes.
+    config.dependency_graph = lambda: cached_graph(repo, commit=commit)
 
     plan_changes = None
     if PLAN_PATH in touched:

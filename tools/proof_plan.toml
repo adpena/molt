@@ -2678,7 +2678,7 @@ timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "-m", "not slow"]
-pytest = ["tests/tools/test_finding_tests.py", "tests/test_gen_exception_kinds.py", "tests/test_runtime_build_python.py", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_changed_clippy.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_triage.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_checkout_maintenance.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_linux_vm.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_gen_token_metadata.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_worker_peaks.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_history.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_pytest_profile.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/tools/test_diff_results.py", "tests/tools/test_build_phase_report.py", "tests/tools/test_regrtest_results.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_native_launch_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/tools/test_toolchain_env.py", "tests/tools/test_cargo_lock_audit.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_orphan_reaper.py", "tests/tools/test_artifact_cleanup.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_queue_run_retention.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py"]
+pytest = ["tests/tools/test_finding_tests.py", "tests/test_gen_exception_kinds.py", "tests/test_runtime_build_python.py", "tests/test_dead_code_allow_ratchet.py", "tests/tools/test_advisory_classifier.py", "tests/tools/test_check_ir_structure.py", "tests/tools/test_profile_python_import_consumer.py", "tests/tools/test_bootstrap_actionlint.py", "tests/tools/test_build_graph_audit.py", "tests/tools/test_build_health_gate.py", "tests/tools/test_canonicalization_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_check_cargo_locks.py", "tests/tools/test_check_codegen_quality_memory_guard.py", "tests/tools/test_check_compile_throughput.py", "tests/tools/test_check_luau_static.py", "tests/tools/test_check_memory_guard_wiring.py", "tests/tools/test_check_runtime_serial_bridge_imports.py", "tests/tools/test_check_runtime_symbol_owners.py", "tests/tools/test_check_rustfmt.py", "tests/tools/test_check_changed_clippy.py", "tests/tools/test_check_stdlib_intrinsic_surface.py", "tests/tools/test_check_type_coverage_todos.py", "tests/tools/test_ci_triage.py", "tests/tools/test_command_execution.py", "tests/tools/test_conformance_guard_scopes.py", "tests/tools/test_core_lane_source_admission.py", "tests/tools/test_cpython_regrtest_sharding.py", "tests/tools/test_cross_run_memory_guard.py", "tests/tools/test_determinism_perf_gate.py", "tests/tools/test_deterministic_runtime_truth.py", "tests/tools/test_dev_py.py", "tests/tools/test_dev_test_runner.py", "tests/tools/test_direct_run_process_custody.py", "tests/tools/test_disk_guard.py", "tests/tools/test_checkout_maintenance.py", "tests/tools/test_drift_harvest.py", "tests/tools/test_encoding_gate.py", "tests/tools/test_linux_vm.py", "tests/tools/test_fact_graph_dump.py", "tests/tools/test_findings_registry.py", "tests/tools/test_formal_correspondence_truth.py", "tests/tools/test_fs_delete.py", "tests/tools/test_fuzz_compiler_cli.py", "tests/tools/test_gen_stdlib_module_union_memory_guard.py", "tests/tools/test_gen_token_metadata.py", "tests/tools/test_generator_io.py", "tests/tools/test_guard_sampling_pacing.py", "tests/tools/test_guarded_exec.py", "tests/tools/test_import_file.py", "tests/tools/test_lane_maturity.py", "tests/tools/test_memory_graph.py", "tests/tools/test_memory_guard_custody.py", "tests/tools/test_memory_guard_worker_peaks.py", "tests/tools/test_memory_guard_spawn_callback.py", "tests/tools/test_memory_guard_stream.py", "tests/tools/test_molt_cache_prune.py", "tests/tools/test_pact_kernel_scaffold.py", "tests/tools/test_pact_parity_engine.py", "tests/tools/test_pact_witness_acceptance.py", "tests/tools/test_pact_witness_receipt.py", "tests/tools/test_parity_gate.py", "tests/tools/test_parity_microscope.py", "tests/tools/test_pass_delta_dashboard.py", "tests/tools/test_perf_board.py", "tests/tools/test_perf_history.py", "tests/tools/test_perf_causality.py", "tests/tools/test_pin_freshness.py", "tests/tools/test_powerplay_acceptance.py", "tests/tools/test_profile_hotspots.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_queue_node_custody.py", "tests/tools/test_provision_binaryen.py", "tests/tools/test_pytest_random_order_plugin.py", "tests/tools/test_pytest_truth_plugin.py", "tests/tools/test_pytest_profile.py", "tests/tools/test_python_custody_bootstrap.py", "tests/tools/test_quint_trace_to_tests_memory_guard.py", "tests/tools/test_release_binary_compatibility.py", "tests/tools/test_release_criterion_receipt.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_native_build.py", "tests/tools/test_representation_report.py", "tests/tools/test_reproducible_build_truth.py", "tests/tools/test_subprocess_guard_coverage.py", "tests/tools/test_throughput_env.py", "tests/tools/test_throughput_matrix.py", "tests/tools/test_throughput_measurement.py", "tests/tools/test_tinygrad_upat_static_exec_registry.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_tree_drift_check.py", "tests/tools/test_uv_project_env.py", "tests/tools/test_venv_exec.py", "tests/tools/test_verified_subset.py", "tests/tools/test_wasm_strip_unused_parsing.py", "tests/tools/test_win_job.py", "tests/tools/test_win_job_contract.py", "tests/tools/test_z3_pass_verify.py", "tests/tools/test_nightly_profile_feedback.py", "tests/tools/test_nightly_shard_profile.py", "tests/tools/test_nightly_sharding.py", "tests/tools/test_diff_results.py", "tests/tools/test_build_phase_report.py", "tests/tools/test_regrtest_results.py", "tests/test_audit_op_kinds.py", "tests/test_gen_codecs.py", "tests/test_gen_host_capabilities.py", "tests/test_gen_native_callable_abi.py", "tests/test_gen_native_launch_abi.py", "tests/test_gen_runtime_profile_schema.py", "tests/test_gen_stringprep_tables.py", "tests/test_proof_plan.py", "tests/tools/test_named_lanes.py", "tests/test_browser_asset_closure.py", "tests/test_l7_numeric_attestation_runner.py", "tests/test_perf_regression.py", "tests/test_profile_tool.py", "tests/test_regrtest_adapter.py", "tests/test_version_compat.py", "tests/tools/test_hosted_ci_env.py", "tests/tools/test_toolchain_env.py", "tests/tools/test_cargo_lock_audit.py", "tests/test_linear_hygiene_tool.py", "tests/tools/test_benchmark_cext_trampoline.py", "tests/tools/test_cold_start_decompose.py", "tests/tools/test_dx_build_timer.py", "tests/tools/test_frontend_hot_pass_profile.py", "tests/tools/test_guard_marker_consumers.py", "tests/tools/test_output_startup_size_audit.py", "tests/tools/test_process_sentinel.py", "tests/tools/test_orphan_reaper.py", "tests/tools/test_artifact_cleanup.py", "tests/tools/test_proof_command_semantics.py", "tests/tools/test_proof_queue_cargo_reclamation.py", "tests/tools/test_proof_queue_lane_maturity.py", "tests/tools/test_proof_queue_live_transcripts.py", "tests/tools/test_proof_queue_output_lifetime.py", "tests/tools/test_proof_queue_run_retention.py", "tests/tools/test_proof_wrapper_transparency.py", "tests/tools/test_release_exit_gate.py", "tests/tools/test_runtime_wasm_final_preflight.py", "tests/tools/test_source_extension_proof_family.py", "tests/tools/test_startup_bench.py", "tests/tools/test_legacy_default_cleanup.py", "tests/tools/test_wasm_link_fact_provider.py", "tests/tools/test_cargo_test_binary_discovery.py", "tests/test_wasm_profile_tool.py", "tests/tools/test_fuzz_compiler_reporting.py", "tests/tools/test_new_agent_task.py", "tests/tools/test_proof_queue_disk_capacity.py", "tests/test_artifact_poison_gate.py", "tests/tools/test_signed_ratio.py", "tests/tools/test_test_dependency_graph.py"]
 pytest_worker_memory_gb = 0.75
 toolchains = ["python", "uv", "rustc", "cargo", "rustfmt"]
 
@@ -4478,22 +4478,6 @@ gates = [
 ]
 
 # --- Op-kind registry (generated files + emitter/registry drift) ---------
-[[rule]]
-name = "heap-kind-lifetime-authority"
-toolchains = ["python", "rustfmt"]
-description = "Heap-kind IDs and lifetime descriptors stay synchronized across runtime, codegen ABI, runtime-core, and Python consumers."
-globs = [
-  "tools/gen_heap_kinds.py",
-  "runtime/heap_kinds.toml",
-  "runtime/molt-codegen-abi/src/heap_kinds_generated.rs",
-  "runtime/molt-runtime-core/src/heap_kinds_generated.rs",
-  "runtime/molt-runtime/src/object/heap_kinds_generated.rs",
-  "tests/test_gen_heap_kinds.py",
-]
-gates = []
-pytest = [
-  "tests/test_gen_heap_kinds.py",
-]
 
 [[rule]]
 name = "host-capability-authority"
@@ -4574,49 +4558,6 @@ pytest = [
   "tests/test_gen_op_kinds.py",
 ]
 
-# --- Frontend diagnostic authority --------------------------------------
-[[rule]]
-name = "frontend-diagnostics"
-toolchains = ["python"]
-description = "Typed frontend rejection codes, generated metadata, and structural no-stub invariant."
-globs = [
-  "tools/gen_frontend_diagnostics.py",
-  "src/molt/frontend/frontend_diagnostics.toml",
-  "src/molt/frontend/frontend_diagnostics_generated.py",
-  "src/molt/frontend/diagnostics.py",
-  "src/molt/frontend/**/*.py",
-  "tests/test_frontend_diagnostics.py",
-]
-gates = []
-pytest = [
-  "tests/test_frontend_diagnostics.py",
-]
-
-# --- WASM ABI registry (generated import/export surface authority) -------
-[[rule]]
-name = "wasm-abi-registry"
-toolchains = ["python", "rustfmt"]
-description = "WASM ABI registry: manifest-owned imports, export policy, runtime-surface matchers, and generated sync."
-globs = [
-  "tools/gen_wasm_abi.py",
-  "tools/wasm_allowed_imports.txt",
-  "tools/wasm_strip_unused.py",
-  "tools/wasm_link_format.py",
-  "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml",
-  "runtime/molt-backend-wasm/src/wasm_abi.rs",
-  "runtime/molt-backend-wasm/src/wasm_abi_generated/*.rs",
-  "runtime/molt-backend-wasm/src/wasm/module_abi/**/*.rs",
-  "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs",
-  "src/molt/_wasm_abi_generated.py",
-  "runtime/wasm_table_layout.inc",
-  "runtime/molt-runtime/src/intrinsics/manifest.pyi",
-  "tests/test_gen_wasm_abi.py",
-]
-gates = []
-pytest = [
-  "tests/test_gen_wasm_abi.py",
-]
-
 # --- tinygrad GPU op-contract fact (pin + generated op_contract.toml) -----
 [[rule]]
 name = "tinygrad-op-contract"
@@ -4674,41 +4615,6 @@ pytest = [
   "tests/cli/test_required_features_reachability.py",
   "tests/cli/test_wasm_runtime_exports.py",
   "tests/cli/test_cli_lowering_cache_tooling_scope.py::test_unkeyed_edits_keep_the_key_and_keyed_edits_change_it",
-]
-
-# --- Codec generated tables ----------------------------------------------
-[[rule]]
-name = "codec-tables"
-toolchains = ["python", "uv", "rustfmt"]
-description = "Text codec registry and generated single-byte charmap tables."
-globs = [
-  "tools/gen_codecs.py",
-  "config/codec_aliases.toml",
-  "runtime/molt-runtime/src/object/ops_encoding.rs",
-  "runtime/molt-stdlib-text/src/codec_registry.rs",
-  "runtime/molt-stdlib-text/src/charmap_codecs_generated.rs",
-  "runtime/molt-stdlib-text/src/codec_aliases_generated.rs",
-  "src/molt/stdlib/encodings/*.py",
-  "tests/test_gen_codecs.py",
-]
-gates = []
-pytest = [
-  "tests/test_gen_codecs.py",
-]
-
-# --- StringPrep generated tables -----------------------------------------
-[[rule]]
-name = "stringprep-tables"
-toolchains = ["python", "rustfmt"]
-description = "StringPrep generated Rust tables: generated-file sync."
-globs = [
-  "tools/gen_stringprep_tables.py",
-  "runtime/molt-runtime-stringprep/src/tables.rs",
-  "tests/test_gen_stringprep_tables.py",
-]
-gates = []
-pytest = [
-  "tests/test_gen_stringprep_tables.py",
 ]
 
 # --- LLVM runtime ABI authority ------------------------------------------
@@ -4892,16 +4798,6 @@ pytest = [
   "tests/tools/test_scientific_stack_versions.py",
 ]
 
-# The benchmark tool consumes both extension production and proof policy;
-# changing its test alone does not change either producer's inputs.
-[[rule]]
-name = "native-link-benchmark-tests"
-toolchains = ["python", "uv"]
-description = "Native-link benchmark fixture and admission oracles without unrelated extension production."
-globs = ["tests/tools/test_native_link_benchmark.py"]
-gates = []
-pytest = ["tests/tools/test_native_link_benchmark.py"]
-
 # --- Differential / suite-honesty surface --------------------------------
 [[rule]]
 name = "suite-honesty"
@@ -4931,20 +4827,6 @@ globs = [
 ]
 gates = [
   "python tools/check_ecosystem_compat.py",
-]
-
-# --- tinygrad static exec registry ---------------------------------------
-[[rule]]
-name = "tinygrad-upat-static-exec-registry"
-toolchains = ["python", "uv"]
-description = "tinygrad UPat matcher static exec registry: fail-closed generated factory contract."
-globs = [
-  "tools/tinygrad_upat_static_exec_registry.py",
-  "tests/tools/test_tinygrad_upat_static_exec_registry.py",
-]
-gates = []
-pytest = [
-  "tests/tools/test_tinygrad_upat_static_exec_registry.py",
 ]
 
 # --- Docs architecture / generated status blocks -------------------------
@@ -5067,27 +4949,6 @@ pytest = [
 ]
 
 # --- Cargo dependency selection and source-identity owners --------------
-# Leaf edits run their owners. Shared authorities select these consumers as
-# well as their existing owners; they do not join unrelated driver simulations.
-[[rule]]
-name = "changed-clippy-selection"
-toolchains = ["python", "uv"]
-description = "Changed-package Clippy selection and its shared authority consumers."
-globs = [
-  "tools/check_changed_clippy.py",
-  "tests/tools/test_check_changed_clippy.py",
-  "src/molt/cargo_workspace.py",
-  "src/molt/cargo_execution_policy.py",
-  "src/molt/cli/cargo_source_closure.py",
-  "config/ci_resource_policy.toml",
-  "tools/git_identity.py",
-  "tools/command_execution.py",
-  "tools/proof_plan.py",
-  "tools/toolchain_env.py",
-  "tools/import_file.py",
-]
-gates = []
-pytest = ["tests/tools/test_check_changed_clippy.py"]
 
 [[rule]]
 name = "cargo-source-closure"
@@ -5287,22 +5148,6 @@ pytest_select = [
   { k = "base_env_forces_repo_roots or run_k6_uses_live_tree_guard or k6_failure_retains_full_diagnostic or scenario_routes_its_summary_through_k6 or main_wraps_scenarios_in_repo_sentinel or db_stub_finds_the_worker", targets = ["tests/test_demo_bench_memory_guard.py"] },
 ]
 
-# --- Build-control diagnostic paths ------------------------------------
-[[rule]]
-name = "build-control-paths"
-toolchains = ["python"]
-description = "Build-control and guard path producers select their real consumer contract."
-globs = [
-  "tools/build_control_path.py",
-  "tools/harness_memory_guard.py",
-  "src/molt/build_state_layout.py",
-  "src/molt/memory_guard_paths.py",
-  "src/molt/dx.py",
-  "tests/test_build_state_layout.py",
-]
-gates = []
-pytest = ["tests/test_build_state_layout.py"]
-
 # --- Repository scan records -------------------------------------------
 # Shared producers select every consumer. Leaf tools and tests select their
 # own semantic controls; a test change does not invalidate sibling scanners.
@@ -5330,14 +5175,6 @@ pytest = [
 ]
 
 [[rule]]
-name = "subprocess-guard-coverage"
-toolchains = ["python"]
-description = "Subprocess guard coverage diagnostics and their semantic controls."
-globs = ["tools/check_subprocess_guard_coverage.py", "tests/tools/test_subprocess_guard_coverage.py"]
-gates = []
-pytest = ["tests/tools/test_subprocess_guard_coverage.py"]
-
-[[rule]]
 name = "guard-wiring-source-observation"
 toolchains = ["python"]
 description = "Shared raw-source observation changes select guard-wiring consumers; leaf scanner tests stay local."
@@ -5351,47 +5188,6 @@ pytest = [
   "tests/tools/test_check_memory_guard_wiring.py",
   "tests/test_memory_guard_wiring.py::test_minimal_guard_environment_audit_has_teeth",
 ]
-
-[[rule]]
-name = "environment-registry-audit"
-toolchains = ["python"]
-description = "Environment registry audit and its semantic controls."
-globs = ["tools/check_environment_registry.py", "tests/tools/test_check_environment_registry.py"]
-gates = []
-pytest = ["tests/tools/test_check_environment_registry.py"]
-
-[[rule]]
-name = "cpython-coverage-generation"
-toolchains = ["python"]
-description = "CPython coverage generation and scan-record replay controls."
-globs = ["tools/gen_cpython_coverage.py", "tests/tools/test_gen_cpython_coverage.py"]
-gates = []
-pytest = ["tests/tools/test_gen_cpython_coverage.py"]
-
-[[rule]]
-name = "unicode-source-facts"
-toolchains = ["python"]
-description = "Pinned source Unicode facts, schema refusal, and independent emitted-table oracle."
-globs = ["tools/gen_unicode_width.py"]
-gates = []
-pytest = ["tests/test_runtime_build_python.py"]
-
-[[rule]]
-name = "structural-audit"
-toolchains = ["python"]
-description = "Structural audit parser, inventory, policy and regression controls."
-globs = [
-  "tools/structural_audit.py",
-  "tools/structural_audit_rust.py",
-  "tools/structural_audit_rust_admission.py",
-  "tools/structural_audit_rust_domains.py",
-  "src/molt/rust_source_scan.py",
-  "tools/structural_audit_baseline.json",
-  "tools/generator_manifest.toml",
-  "tests/test_structural_audit.py",
-]
-gates = []
-pytest = ["tests/test_structural_audit.py"]
 
 # The structural audit parsers and the shared Rust lexer also feed the lexer
 # tests and the Luau support-matrix generator; a test edit selects only itself.
@@ -5408,56 +5204,6 @@ globs = [
 ]
 gates = []
 pytest = ["tests/test_rust_source_scan.py", "tests/tools/test_gen_luau_support_matrix.py"]
-
-[[rule]]
-name = "rust-source-scan"
-toolchains = ["python"]
-description = "Shared Rust lexical scanner: comment, string and token ranges."
-globs = ["tests/test_rust_source_scan.py"]
-gates = []
-pytest = ["tests/test_rust_source_scan.py"]
-
-[[rule]]
-name = "structural-audit-records"
-toolchains = ["python"]
-description = "Structural audit scan-record replay matches freshly computed results."
-globs = [
-  "tools/structural_audit.py",
-  "tools/structural_audit_rust.py",
-  "tools/structural_audit_rust_admission.py",
-  "tools/structural_audit_rust_domains.py",
-  "src/molt/rust_source_scan.py",
-  "tests/tools/test_structural_audit_records.py",
-]
-gates = []
-pytest = ["tests/tools/test_structural_audit_records.py"]
-
-[[rule]]
-name = "generator-manifest"
-toolchains = ["python"]
-description = "Generator manifest ownership, shared structural parsing and replay controls."
-globs = [
-  "tools/check_generator_manifest.py",
-  "tools/generator_manifest.toml",
-  "tools/generator_manifest_baseline.json",
-  "tools/structural_audit.py",
-  "tools/structural_audit_rust.py",
-  "tools/structural_audit_rust_admission.py",
-  "tools/structural_audit_rust_domains.py",
-  "src/molt/rust_source_scan.py",
-  "tests/test_generator_manifest.py",
-]
-gates = []
-pytest = ["tests/test_generator_manifest.py"]
-
-# Default test custody protects every imported host-fact selector.
-[[rule]]
-name = "host-fact-test-isolation"
-toolchains = ["python"]
-description = "Private default host facts, process memo lifetime and explicit shared-store ownership."
-globs = ["tests/conftest.py", "tests/test_toolchain_facts.py"]
-gates = []
-pytest = ["tests/test_toolchain_facts.py::test_default_fact_store_cannot_pollute_the_host_namespace"]
 
 # --- Backend daemon custody --------------------------------------------
 [[rule]]
@@ -5484,17 +5230,6 @@ pytest = [
   "tests/test_backend_daemon_suite_custody.py",
   "tests/test_molt_diff_daemon_pruning.py",
   "tests/test_bench_individual_tool.py",
-]
-
-# --- Encoding gate diagnostics -----------------------------------------
-[[rule]]
-name = "encoding-diagnostics"
-toolchains = ["python"]
-description = "Encoding regression diagnostics preserve counts and every affected location."
-globs = ["tools/encoding_gate.py", "tests/tools/test_encoding_gate.py"]
-gates = []
-pytest = [
-  "tests/tools/test_encoding_gate.py",
 ]
 
 # Build-record and default-output admission run before compiler provisioning.
@@ -5614,22 +5349,6 @@ pytest_select = [
   ] },
 ]
 
-# Native compile/run diagnostics own a Python-only seam proof. The LLVM matrix
-# remains in its existing execution family; local witness changes need no LLVM.
-[[rule]]
-name = "native-test-failure-diagnostics"
-toolchains = ["python"]
-description = "Native compile/run failure retention, byte identity and original failure preservation."
-globs = [
-  "tests/native_process_guard.py",
-  "tests/test_native_process_guard.py",
-  "tests/test_native_lir_loop_join_semantics.py",
-  "tools/prepare_compiled_contracts.py",
-  "tests/wasm_runtime_heavy_witnesses.py",
-]
-gates = []
-pytest = ["tests/test_native_process_guard.py"]
-
 # --- Rust toolchain authority -------------------------------------------
 [[rule]]
 name = "rust-toolchain"
@@ -5725,22 +5444,6 @@ pytest = [
   "tests/cli/test_source_extension_producer.py",
 ]
 
-# --- APPARATUS A4 findings registry + memo lint --------------------------
-[[rule]]
-name = "findings-registry"
-toolchains = ["python"]
-description = "Findings registry / memo lint / seeded ledger (A4): run the teeth tests."
-globs = [
-  "tools/findings_registry.py",
-  "tools/findings_memo_lint.py",
-  "tests/tools/test_findings_registry.py",
-  ".molt/state/findings_registry.jsonl",
-]
-gates = []
-pytest = [
-  "tests/tools/test_findings_registry.py",
-]
-
 # --- APPARATUS A10 memory graph + integrity + recall consumers -----------
 [[rule]]
 name = "memory-graph"
@@ -5754,9 +5457,6 @@ globs = [
 ]
 gates = [
   "python tools/check_memory_graph.py --check",
-]
-pytest = [
-  "tests/tools/test_memory_graph.py",
 ]
 
 # Native transfer and its Nightly transport share the production admission
@@ -5959,16 +5659,6 @@ pytest = [
   "tests/tools/test_memory_graph.py",
 ]
 
-# The always gate audits live sources; its parser and complexity controls are
-# needed only when that authority or its owning tests change.
-[[rule]]
-name = "timing-ratio-authority"
-toolchains = ["python"]
-description = "Timing-ratio diagnostics retain parsed Python semantics and linear operand analysis."
-globs = ["tools/check_ratio_direction.py", "tests/tools/test_signed_ratio.py"]
-gates = []
-pytest = ["tests/tools/test_signed_ratio.py"]
-
 # Measurement producers and their receivers migrate as one boundary.
 [[rule]]
 name = "performance-measurement"
@@ -6080,19 +5770,6 @@ pytest = [
   "tests/tools/test_drift_harvest.py",
 ]
 
-# --- Linux VM apparatus (HF-463) ------------------------------------------
-[[rule]]
-name = "linux-vm-apparatus"
-toolchains = ["python"]
-description = "Molt's Lima VMs render from one definition that mounts no host path; check reports drift, push sends commits over Lima's SSH, release frees the host files a mounting VM pins (drop, 64 forgets, drop), apply restarts only an idle guest and restores a config that fails to start; lane retirement releases before removal."
-globs = [
-  "tools/linux_vm.py",
-  "tools/linux_vm.toml",
-  "tests/tools/test_linux_vm.py",
-]
-gates = []
-pytest = ["tests/tools/test_linux_vm.py"]
-
 # --- Static first-party from-import symbol resolution ---------------------
 [[rule]]
 name = "import-symbol-gate"
@@ -6104,9 +5781,6 @@ globs = [
 ]
 gates = [
   "python tools/import_symbol_gate.py",
-]
-pytest = [
-  "tests/tools/test_import_symbol_gate.py",
 ]
 
 # --- Century-plan phase exits + legacy inventory ---------------------------
@@ -6130,15 +5804,6 @@ pytest = [
   "tests/tools/test_phase_exit_manifest.py",
   "tests/tools/test_legacy_inventory.py",
 ]
-
-# Shared Git environment/configuration rules serve transfer and source readers.
-[[rule]]
-name = "git-process-policy"
-toolchains = ["python"]
-description = "Git process settings retain inherited configuration and native failure semantics."
-globs = ["tools/git_identity.py", "tools/git_transfer.py", "tests/tools/test_command_execution.py"]
-gates = []
-pytest = ["tests/tools/test_command_execution.py"]
 
 # --- v1 public stable contract ------------------------------------------------
 [[rule]]
