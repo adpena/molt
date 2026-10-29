@@ -175,3 +175,11 @@ shared user-home default. They are not currently typed Molt storage classes.
 The integrator must decide whether these remain external owner-managed tool
 inputs or whether HF-582 expands to migrate those input authorities. They must
 not be silently redirected, adopted or pruned as output directories.
+
+A failed scratch generation publishes a blocked state before its payload move
+and remains blocked through archival. Only a durable verified archive grants
+retained/reclaimed state, while the parent still holds the lifetime lease.
+Older collectors therefore cannot retire newly produced unarchived failures.
+Interrupted transitions and absent-target diagnostic records use the same
+publication gate. An archive failure leaves blocked evidence for reconciliation;
+ordinary retention verifies and reuses the archive before removing raw bytes.
