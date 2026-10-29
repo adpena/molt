@@ -9639,6 +9639,75 @@ def _storage_legacy_roots(tmp_path, monkeypatch):
 
 @pytest.mark.usefixtures("developer_host_context", "_storage_legacy_roots")
 class TestStorageAuthority:
+    def test_unbound_sdk_cache_and_typed_location_share_one_selector(self, tmp_path):
+        from molt.default_paths import _default_molt_cache
+        from molt.dx import storage_location
+
+        repo, home = tmp_path / "source", tmp_path / "user"
+        repo.mkdir()
+        _storage_git(repo, "init", "-q")
+        environment = {"HOME": str(home), "USERPROFILE": str(home)}
+        selected = storage_location(repo, "compile-cache", environment)
+        assert selected.rule.volume == "checkout"
+        assert selected.path == _default_molt_cache(environ=environment, cwd=repo)
+        assert not selected.path.exists()
+
+    def test_artifact_binding_changes_cache_without_moving_installation_home(
+        self, tmp_path
+    ):
+        from molt.default_paths import _default_molt_cache, _default_molt_home
+        from molt.dx import set_artifact_root_binding, storage_location
+
+        repo, artifact = tmp_path / "source", tmp_path / "data"
+        repo.mkdir()
+        artifact.mkdir()
+        _storage_git(repo, "init", "-q")
+        environment = {
+            "HOME": str(tmp_path / "user"),
+            "USERPROFILE": str(tmp_path / "user"),
+        }
+        home = _default_molt_home(environ=environment, cwd=repo)
+        home.mkdir(parents=True)
+        (home / "installed-signal").write_bytes(b"existing installation")
+        set_artifact_root_binding(repo, artifact, environment)
+        selected = storage_location(repo, "compile-cache", environment)
+        assert selected.rule.volume == "artifact"
+        assert selected.path == artifact / ".molt_cache"
+        assert selected.path == _default_molt_cache(environ=environment, cwd=repo)
+        assert _default_molt_home(environ=environment, cwd=repo) == home
+        assert storage_path(repo, "installation", environment) == home
+        assert (home / "installed-signal").read_bytes() == b"existing installation"
+
+    def test_materialization_uses_admitted_snapshot_and_preserves_image(
+        self, tmp_path, monkeypatch
+    ):
+        from molt.dx import RunContext
+
+        repo, artifact, image = (
+            tmp_path / "source",
+            tmp_path / "data",
+            tmp_path / "image",
+        )
+        for root in (repo, artifact, image):
+            root.mkdir()
+        context = RunContext(repo)
+        selected = dict(
+            context.canonical_env({"MOLT_EXT_ROOT": str(artifact)}, create_dirs=False)
+        )
+        selected["UV_PROJECT_ENVIRONMENT"] = str(image)
+        selected["PYTHONPYCACHEPREFIX"] = str(image / "bytecode")
+        before = dict(selected)
+        monkeypatch.setattr(
+            RunContext,
+            "canonical_env",
+            lambda *_a, **_k: pytest.fail("reselected admitted context"),
+        )
+        context.materialize_environment(selected, protected_python_root=image)
+        assert selected == before
+        assert Path(selected["CARGO_TARGET_DIR"]).is_dir()
+        assert Path(selected["RUFF_CACHE_DIR"]).is_dir()
+        assert not (image / "bytecode").exists()
+
     @pytest.mark.skipif(os.name == "nt", reason="Unix startup socket capacity")
     def test_deep_sccache_clients_publish_one_placement(
         self, tmp_path, short_cargo_cache
@@ -10141,9 +10210,9 @@ class TestStorageAuthority:
         )
         # A missing selected volume fails instead of redirecting new writes home.
         artifact.rmdir()
-        from molt.default_paths import _default_molt_cache_cached
+        from molt.default_paths import _default_user_state_cached
 
-        _default_molt_cache_cached.cache_clear()
+        _default_user_state_cached.cache_clear()
         with pytest.raises(DxConfigError, match="artifact"):
             _default_molt_cache(environ=env, cwd=repo / "src")
 

@@ -478,7 +478,7 @@ def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
             )
         ),
     )
-    DEFAULT_PATHS._default_molt_cache_cached.cache_clear()
+    DEFAULT_PATHS._default_user_state_cached.cache_clear()
     DEFAULT_PATHS._default_molt_home_cached.cache_clear()
     DEFAULT_PATHS._default_molt_bin_cached.cache_clear()
     cli_build_output_layout._default_build_base_cached.cache_clear()
@@ -2603,9 +2603,9 @@ def test_default_cache_does_not_expand_unused_platform_root(
         "HOME": "~",
         "USERPROFILE": "~",
     }
-    assert DEFAULT_PATHS._default_molt_cache(environ=env) == tmp_path / "cache" / (
-        "Molt" if windows else "molt"
-    )
+    assert DEFAULT_PATHS._default_molt_cache(
+        environ=env, cwd=tmp_path
+    ) == tmp_path / "cache" / ("Molt" if windows else "molt")
 
 
 @pytest.mark.long_pole

@@ -327,7 +327,7 @@ def _fake_backend_ensure_success(backend_bin: Path, *args: object, **kwargs: obj
 
 
 def _clear_molt_home_caches() -> None:
-    molt_default_paths._default_molt_cache_cached.cache_clear()
+    molt_default_paths._default_user_state_cached.cache_clear()
     molt_default_paths._default_molt_home_cached.cache_clear()
     molt_default_paths._default_molt_bin_cached.cache_clear()
     cli_json_cache._PERSISTED_JSON_OBJECT_CACHE.clear()
@@ -15643,13 +15643,13 @@ def test_resolve_env_path_is_cached(
 def test_default_molt_cache_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    molt_default_paths._default_molt_cache_cached.cache_clear()
+    molt_default_paths._default_user_state_cached.cache_clear()
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache-root"))
 
     first = molt_default_paths._default_molt_cache()
     second = molt_default_paths._default_molt_cache()
 
-    info = molt_default_paths._default_molt_cache_cached.cache_info()
+    info = molt_default_paths._default_user_state_cached.cache_info()
     assert first == second == (tmp_path / "cache-root")
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -32134,7 +32134,7 @@ def test_shared_cache_lock_is_cache_rooted_and_session_independent(
     explicit_cache_root = tmp_path / "explicit-cache"
     env_cache_root = tmp_path / "env-cache"
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    molt_default_paths._default_molt_cache_cached.cache_clear()
+    molt_default_paths._default_user_state_cached.cache_clear()
     from molt.file_locks import _shared_cache_lock
 
     monkeypatch.setenv("MOLT_SESSION_ID", "session-a")
@@ -32149,7 +32149,7 @@ def test_shared_cache_lock_is_cache_rooted_and_session_independent(
     assert not (cache_root / "locks" / "compile.abc123.session-b.lock").exists()
 
     monkeypatch.setenv("MOLT_CACHE", str(env_cache_root))
-    molt_default_paths._default_molt_cache_cached.cache_clear()
+    molt_default_paths._default_user_state_cached.cache_clear()
     with _shared_cache_lock("compile.explicit", cache_root=explicit_cache_root):
         assert (explicit_cache_root / "locks" / "compile.explicit.lock").exists()
     assert not (env_cache_root / "locks" / "compile.explicit.lock").exists()

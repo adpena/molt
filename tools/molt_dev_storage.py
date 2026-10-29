@@ -38,7 +38,7 @@ from molt.custody_layout import (
     storage_rule,
     PackageEnvironmentKind,
 )
-from molt.dx import artifact_root, storage_path
+from molt.dx import artifact_root, storage_path, storage_location
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from molt.file_publication import resolve_owned_path
 from tools.driver_errors import DriverError
@@ -65,8 +65,8 @@ def allocated_bytes(root: Path) -> int:
 def inventory(repo: Path, environment: Mapping[str, str]) -> list[dict[str, object]]:
     rows = []
     for kind in storage_classes():
-        rule = storage_rule(kind)
-        path = storage_path(repo, kind, environment)
+        selected = storage_location(repo, kind, environment)
+        rule, path = selected.rule, selected.path
         row: dict[str, object] = {
             "class": kind,
             "path": str(path),

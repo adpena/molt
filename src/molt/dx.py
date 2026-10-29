@@ -367,9 +367,9 @@ def set_artifact_root_binding(
     # their snapshot; the next process observes the new durable generation.
     with _ARTIFACT_BINDING_CACHE_LOCK:
         _ARTIFACT_BINDING_CACHE.pop(record, None)
-    from molt.default_paths import _default_molt_cache_cached
+    from molt.default_paths import _default_user_state_cached
 
-    _default_molt_cache_cached.cache_clear()
+    _default_user_state_cached.cache_clear()
     return record
 
 
@@ -1480,9 +1480,27 @@ def storage_path(
     common_dir: Path | None = None,
 ) -> Path:
     """Select through DX and expose the admitted typed root to write checks."""
-    return _storage_projection(
+    return storage_location(repo_root, kind, env, common_dir=common_dir).path
+
+
+def storage_location(
+    repo_root: Path,
+    kind: custody_layout.StorageClass,
+    env: Mapping[str, str] | None = None,
+    *,
+    common_dir: Path | None = None,
+) -> custody_layout.StorageLocation:
+    """Resolve the class and volume through its existing producer selector."""
+    if kind in {"compile-cache", "installation"}:
+        from molt.default_paths import user_state_location
+
+        selected = user_state_location(kind, environ=env, cwd=repo_root)
+        _storage_projection(kind, selected.path)
+        return selected
+    path = _storage_projection(
         kind, _storage_path_selection(repo_root, kind, env, common_dir=common_dir)
     )
+    return custody_layout.StorageLocation(kind, path, custody_layout.storage_rule(kind))
 
 
 def _storage_path_selection(
@@ -1497,18 +1515,13 @@ def _storage_path_selection(
     This grants placement, never deletion. Repository-shared payload uses the
     common Git identity; checkout state retains its existing owner addressing.
     """
-    from molt.default_paths import _default_molt_home
-
     view = os.environ if env is None else env
     rule = custody_layout.storage_rule(kind)
     if kind == "toolchains":
         return canonical_toolchain_root(repo_root, view, require_exists=False)
-    if kind == "installation":
-        return _default_molt_home(environ=view, cwd=repo_root)
     if kind == "backend-sockets":
         return backend_daemon_socket_dir(repo_root, view)
     cache_key = {
-        "compile-cache": "MOLT_CACHE",
         "uv-cache": "UV_CACHE_DIR",
         "pip-cache": "PIP_CACHE_DIR",
         "ruff-cache": "RUFF_CACHE_DIR",
@@ -1687,7 +1700,13 @@ _STORAGE_AUDIT_INSTALLED = False
 def _storage_projection(kind: custody_layout.StorageClass, path: Path) -> Path:
     """Observe an admitted typed selector, including captured child overrides."""
     if _STORAGE_WRITE_CHECKS:
-        selected = path.absolute().resolve(strict=False)
+        raw = path.absolute()
+        if all(
+            any(raw == claim.path for claim in check.claims)
+            for check in _STORAGE_WRITE_CHECKS
+        ):
+            return path
+        selected = raw.resolve(strict=False)
         for check in _STORAGE_WRITE_CHECKS:
             if not any(
                 selected == claim.path
@@ -2491,51 +2510,68 @@ class RunContext:
                 )
 
         if create_dirs:
-            # A selected scratch namespace is materialized only by its owner
-            # constructor, before any purpose directory or child TMPDIR use.
-            if any(
-                run_scratch == Path(value) or run_scratch in Path(value).parents
-                for key in root_keys
-                if (value := env.get(key))
-            ):
-                from molt.checkout_state import scratch_state_root
-
-                scratch_state_root(run_scratch.parent, owner=self.root)
-            for key in root_keys:
-                if key == "UV_PROJECT_ENVIRONMENT" or (
-                    key == "PYTHONPYCACHEPREFIX" and managed_python
-                ):
-                    continue  # Only the immutable image publisher creates it.
-                value = env.get(key)
-                if value:
-                    if key in {"PIP_CACHE_DIR", "RUFF_CACHE_DIR"}:
-                        from molt.checkout_state import materialize_provider_cache
-
-                        materialize_provider_cache(
-                            Path(value).expanduser(),
-                            kind="pip-cache"
-                            if key == "PIP_CACHE_DIR"
-                            else "ruff-cache",
-                        )
-                        continue
-                    from molt.checkout_state import checkout_state_use
-
-                    with checkout_state_use(((Path(value).expanduser(), None),)):
-                        Path(value).expanduser().mkdir(parents=True, exist_ok=True)
-            # Record this checkout as the owner and a user of its state under
-            # a shared root, and a pinned session as a user of the target it
-            # selects. Global collection belongs after result publication.
-            from molt.checkout_state import (
-                record_checkout_target_use,
-                stamp_checkout_state,
+            self.materialize_environment(
+                env,
+                protected_python_root=selected_environment,
+                admit_toolchain_root=admit_toolchain_root,
             )
-
-            if target_session_id is not None:
-                record_checkout_target_use(
-                    Path(env["CARGO_TARGET_DIR"]), checkout=self.root
-                )
-            stamp_checkout_state(self.root, env)
         return ProcessEnvironment(env)
+
+    def materialize_environment(
+        self,
+        env: Mapping[str, str],
+        *,
+        protected_python_root: Path | None = None,
+        admit_toolchain_root: bool = True,
+    ) -> None:
+        """Materialize captured selections after admission, without reselecting.
+
+        A prepared image belongs to its publisher. Gate preparation may select
+        a different image without changing this run's cache/scratch placement.
+        """
+        root_keys = tuple(
+            key
+            for key in CANONICAL_ROOT_ENV_KEYS
+            if admit_toolchain_root or key != "MOLT_TARGET_ROOT"
+        )
+        run_scratch = _scratch_root_for(Path(env[ARTIFACT_ROOT_ENV]), self.root, env)
+        # A selected scratch namespace is materialized only by its owner
+        # constructor, before any purpose directory or child TMPDIR use.
+        if any(
+            run_scratch == Path(value) or run_scratch in Path(value).parents
+            for key in root_keys
+            if (value := env.get(key))
+        ):
+            from molt.checkout_state import scratch_state_root
+
+            scratch_state_root(run_scratch.parent, owner=self.root)
+        for key in root_keys:
+            if key == "UV_PROJECT_ENVIRONMENT" or (
+                key == "PYTHONPYCACHEPREFIX"
+                and protected_python_root is not None
+                and Path(env.get(key, "")).is_relative_to(protected_python_root)
+            ):
+                continue  # Only the immutable image publisher creates it.
+            value = env.get(key)
+            if value:
+                if key in {"PIP_CACHE_DIR", "RUFF_CACHE_DIR"}:
+                    from molt.checkout_state import materialize_provider_cache
+
+                    materialize_provider_cache(
+                        Path(value).expanduser(),
+                        kind="pip-cache" if key == "PIP_CACHE_DIR" else "ruff-cache",
+                    )
+                    continue
+                from molt.checkout_state import checkout_state_use
+
+                with checkout_state_use(((Path(value).expanduser(), None),)):
+                    Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+        # Record this checkout as the owner and a user of its state under
+        # a shared root, and a pinned session as a user of the target it
+        # selects. Global collection belongs after result publication.
+        from molt.checkout_state import stamp_checkout_state
+
+        stamp_checkout_state(self.root, env)
 
     def root_env(self, base: Mapping[str, str] | None = None) -> ProcessEnvironment:
         """Return ``base`` with this context's Molt roots; create nothing.
