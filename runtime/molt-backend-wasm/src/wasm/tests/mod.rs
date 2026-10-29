@@ -4,6 +4,7 @@ mod anchor_storage;
 mod async_work_poll;
 mod call_indirect_table;
 mod container_scalar;
+mod control_nesting;
 mod dispatch_edges;
 mod exception_eh;
 mod execution_context_split;

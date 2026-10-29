@@ -53,6 +53,7 @@ from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
     assert_execution_context_rejects_substitutions,
     capability_aware_proof_execution,
+    create_minor_version_link_venv,
     proof_queue_execution_capability as proof_queue_execution_capability,
     synthetic_live_custody as _synthetic_live_custody,
     synthetic_python_toolchain,
@@ -4715,6 +4716,13 @@ def custody_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return create_test_venv(tmp_path_factory.mktemp("proof-custody-python") / "venv")
 
 
+@pytest.fixture(scope="module")
+def minor_link_custody_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return create_minor_version_link_venv(
+        tmp_path_factory.mktemp("proof-minor-link-python")
+    )
+
+
 @dataclass
 class GuardedExecutionAuthorities:
     """One Python identity captured per module and re-proved before every reuse.
@@ -6431,7 +6439,11 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     provision_target = Path(
         context["process_supervisor"]["provision_telemetry"]["build_target_dir"]
     )
-    assert provision_target.parent.parent == artifact_root / "proof-supervisor"
+    # A declared Cargo output root (the CI portability cells declare one) owns
+    # the supervisor store; otherwise the artifact root does (HF-521).
+    declared = _real_cargo_output_root()
+    store_root = artifact_root if declared is None else Path(declared)
+    assert provision_target.parent.parent == store_root / "proof-supervisor"
     assert not provision_target.is_relative_to(repo)
     assert "tools/proof_supervisor/target" not in provision_target.as_posix()
     roots = {
@@ -7987,6 +7999,60 @@ def test_proof_queue_exec_records_passed_run(
     assert "changed queue smoke to verify note capture" in notebook_text
     assert '"note_kind_counts": {' in notebook_text
     assert '"submission": 1' in notebook_text
+
+
+@capability_aware_proof_execution
+def test_proof_queue_exec_admits_base_selected_through_uv_minor_version_link(
+    tmp_path: Path, minor_link_custody_python: Path
+) -> None:
+    # HF-541: hosted jobs select uv's Python through its minor-version link.
+    # The base selector and its interpreter-alias image keep the link
+    # spelling; live watch roots are canonical directories.
+    db = tmp_path / "proof_queue.sqlite3"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
+    rc = cli.main(
+        [
+            "--db",
+            str(db),
+            "--logs-root",
+            str(tmp_path / "runs"),
+            "--notebooks-root",
+            str(tmp_path / "notebooks"),
+            "--repo-root",
+            str(repo),
+            "exec",
+            *_real_queue_output_arguments(),
+            "--id",
+            "minor-link",
+            "--reason",
+            "admit a base interpreter selected through a minor-version link",
+            "--resource-family",
+            "python",
+            "--contention-key",
+            "python:minor-link",
+            "--timeout",
+            _REAL_EXECUTION_TIMEOUT,
+            "--",
+            str(minor_link_custody_python),
+            "-c",
+            "print('minor-link-ok')",
+        ]
+    )
+
+    rows = _rows(db)
+    assert len(rows) == 1
+    log_text = Path(rows[0]["log_path"]).read_text(encoding="utf-8")
+    assert rc == 0, log_text
+    assert rows[0]["status"] == "passed"
+    assert "minor-link-ok" in log_text
+    receipt_context = json.loads(rows[0]["receipt_context_json"])
+    selector = receipt_context["toolchains"]["python"]["location"][
+        "base_executable_selector"
+    ]
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    link = minor_link_custody_python.parents[2] / "python" / f"cpython-{version}-host"
+    assert os.path.normcase(selector).startswith(os.path.normcase(str(link)) + os.sep)
 
 
 @capability_aware_proof_execution

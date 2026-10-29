@@ -9,6 +9,7 @@ import ast
 import hashlib
 import json
 import sys
+import types
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -1633,6 +1634,7 @@ def test_materialized_namespace_package_identity_matches_cpython(
         "importlib/__init__.py",
         "importlib/util.py",
         "importlib/machinery.py",
+        "_warnings.py",
     ):
         _source(tmp_path / "stdlib" / name, "pass\n")
     roots = [tmp_path / "first", tmp_path / "second"]
@@ -1704,13 +1706,15 @@ def test_materialized_namespace_package_identity_matches_cpython(
             "import entry,hf226_namespace; "
             "print(json.dumps([list(hf226_namespace.__path__), "
             "list(hf226_namespace.__spec__.submodule_search_locations), "
+            "hf226_namespace.__path__ is "
+            "hf226_namespace.__spec__.submodule_search_locations, "
             "getattr(hf226_namespace, 'marker', False)]))",
             json.dumps([str(tmp_path), *(str(p) for p in roots)]),
         ],
         timeout=30,
         check=True,
     )
-    paths, spec_paths, marker = json.loads(reference.stdout)
+    paths, spec_paths, shared_locations, marker = json.loads(reference.stdout)
     assert marker is namespace_writer
     owner = plan.scan_authority.by_module["hf226_namespace"]
     assert owner.is_package
@@ -1726,9 +1730,13 @@ def test_materialized_namespace_package_identity_matches_cpython(
     metadata = plan.module_graph_metadata
     assert metadata.module_is_package_by_module["hf226_namespace"]
     assert metadata.module_is_namespace_by_module["hf226_namespace"]
-    namespace = {}
+    spec = types.SimpleNamespace(submodule_search_locations=None)
+    namespace = {"__spec__": spec}
     exec(owner.source_path.read_bytes(), namespace)
     assert namespace["__path__"] == paths
+    # CPython's namespace module and spec share one locations object.
+    assert shared_locations is True
+    assert spec.submodule_search_locations is namespace["__path__"]
     assert (
         metadata.logical_source_path_by_module["hf226_namespace"]
         == "/__molt_generated__/hf226_namespace.py"

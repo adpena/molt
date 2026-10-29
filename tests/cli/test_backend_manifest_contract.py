@@ -263,7 +263,7 @@ def test_profile_children_have_no_mirrored_inherited_settings() -> None:
                 )
 
 
-def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
+def test_shipping_profiles_use_measured_target_codegen_policy() -> None:
     manifest = _load_workspace_manifest()
     profiles = manifest["profile"]
 
@@ -284,11 +284,18 @@ def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
         "panic": "abort",
         "strip": "symbols",
     }
-    for profile_name in ("release-output", "release-size", "wasm-release"):
+    for profile_name in ("release-output", "release-size"):
         shipping_profile = _effective_profile(profiles, profile_name)
         assert {
             key: shipping_profile[key] for key in shipping_policy
         } == shipping_policy
+
+    wasm_policy = _effective_profile(profiles, "wasm-release")
+    assert {key: wasm_policy[key] for key in shipping_policy} == {
+        **shipping_policy,
+        "lto": "fat",
+        "codegen-units": 1,
+    }
 
     assert "wasm-release-fallback" not in profiles
 
@@ -311,10 +318,13 @@ def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
         ("dev-release", 3),
         ("release-output", 3),
         ("release-size", "s"),
-        ("wasm-release", "s"),
     ):
         packages = _effective_profile(profiles, name)["package"]
         assert all(packages[crate]["opt-level"] == level for crate in hot_crates)
+
+    assert all(
+        wasm_policy["package"][crate]["opt-level"] == "s" for crate in hot_crates
+    )
 
     dev_release = _effective_profile(profiles, "dev-release")
     assert dev_release["debug"] == 1

@@ -1055,8 +1055,80 @@ class LiveCustodyMonitor:
                 core_foundation.CFRelease(value)
 
 
+class WatchCoordinates:
+    """Project lexical paths onto the canonical entries that live watches own.
+
+    Watch roots are canonical directories, and every watcher reports events
+    beneath them: inotify and ReadDirectoryChangesW under the registered root,
+    FSEvents under real paths. A lexical spelling through a symlink or
+    junction, such as uv's minor-version installation link (the
+    ``cpython-<major>.<minor>-<platform>`` entry that points at its patch
+    release directory), lies beneath no root. It selects its input through entries named inside their
+    canonical parents: every alias on the path (a retarget changes the
+    selection), the path's own entry, and the entry's resolved target (whose
+    bytes are the input). Watch selection and the armed-coverage check use
+    this one projection, so a watch selects exactly the entries it can own.
+
+    One instance serves one consumer pass. It memoizes each directory, so a
+    manifest of many rows in few directories costs one ``lstat`` per distinct
+    directory component plus one per row.
+    """
+
+    def __init__(self) -> None:
+        self._directories: dict[str, tuple[Path, tuple[Path, ...]]] = {}
+
+    def _directory(self, directory: Path) -> tuple[Path, tuple[Path, ...]]:
+        """The canonical directory and the alias entries that select it."""
+        key = str(directory)
+        known = self._directories.get(key)
+        if known is not None:
+            return known
+        if directory.parent == directory:
+            projected: tuple[Path, tuple[Path, ...]] = (directory, ())
+        else:
+            parent, aliases = self._directory(directory.parent)
+            entry = parent / directory.name
+            if entry.is_symlink() or entry.is_junction():
+                projected = (entry.resolve(strict=False), (*aliases, entry))
+            else:
+                projected = (entry, aliases)
+        self._directories[key] = projected
+        return projected
+
+    def of(self, path: Path, *, strict: bool = False) -> tuple[Path, ...]:
+        """Every canonical entry that must be armed for ``path`` to be armed.
+
+        ``strict`` requires the selected input to exist. Absent startup
+        selectors are not strict: their entry still needs creation events.
+        """
+        if not path.is_absolute():
+            raise ValueError(f"watch custody requires an absolute path: {path}")
+        process_image_capture.require_custody_coordinate(path)
+        parent, aliases = self._directory(path.parent)
+        entry = parent / path.name
+        if strict or entry.is_symlink() or entry.is_junction():
+            resolved = entry.resolve(strict=strict)
+        else:
+            resolved = entry
+        return (*aliases, entry) if resolved == entry else (*aliases, entry, resolved)
+
+
+def unarmed_paths(specs: Sequence[WatchSpec], paths: Iterable[Path]) -> list[str]:
+    """The paths that some entry selecting them leaves outside every live watch."""
+    coordinates = WatchCoordinates()
+    return [
+        str(path)
+        for path in paths
+        if not all(
+            any(spec.owns(coordinate) for spec in specs)
+            for coordinate in coordinates.of(path)
+        )
+    ]
+
+
 def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> list[Path]:
     paths: list[Path] = []
+    coordinates = WatchCoordinates()
     broad = tuple(_norm(root.resolve(strict=True)) for root in broad_roots)
     path_keys = {
         "path",
@@ -1129,15 +1201,10 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
                 pass
 
     def add_path(candidate: Path, *, selected: bool) -> None:
-        paths.append(candidate)
-        resolved = candidate.resolve(strict=not selected)
-        if _event_key(resolved) != _event_key(candidate):
-            paths.append(resolved)
-        # Keep every retargetable lexical ancestor, as well as the content
-        # coordinate. Absent startup selectors also need creation events.
-        for entry in (candidate, *candidate.parents):
-            if entry.is_symlink() or entry.is_junction():
-                paths.append(entry)
+        # Keep every retargetable alias entry, the selected entry and its
+        # content coordinate. Absent startup selectors also need creation
+        # events.
+        paths.extend(coordinates.of(candidate, strict=not selected))
 
     visit(payload)
     return list({_event_key(path): path for path in paths}.values())

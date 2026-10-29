@@ -786,3 +786,111 @@ print('child-ready', _molt_catalog_pkg.child.value == 298)
         "invalidation-errors True",
         "import-root-cases 8" if sys.platform == "win32" else "import-root-cases 4",
     ]
+
+
+def test_native_file_loader_exec_module_keeps_loader_owned_metadata(
+    tmp_path: Path,
+) -> None:
+    # Pinned CPython 3.12.15 prints this transcript: _init_module_attrs binds
+    # the metadata, and SourceFileLoader.exec_module sets none of it nor
+    # mutates the spec. A module that never went through module_from_spec
+    # keeps exactly what it had (HF-539). The literal find_spec admits the
+    # compiled body.
+    source = """import importlib.machinery
+import importlib.util
+import sys
+import types
+
+entry = sys.argv[1]
+name = '_molt_hf534_file_pkg'
+spec = importlib.machinery.PathFinder.find_spec(name, [entry])
+module = importlib.util.module_from_spec(spec)
+print('module-from-spec', module.__path__ is spec.submodule_search_locations)
+spec.loader.exec_module(module)
+print('file-loader', type(spec.loader).__name__,
+      module.__path__ is spec.submodule_search_locations,
+      module.__spec__ is spec, module.body_path_is_spec_locations)
+
+spec = importlib.machinery.PathFinder.find_spec(name, [entry])
+module = importlib.util.module_from_spec(spec)
+cached = getattr(module, '__cached__', 'absent')
+loader_marker = object()
+module.__loader__ = loader_marker
+module.__file__ = 'caller-file'
+module.__package__ = 'caller-package'
+spec.origin = 'caller-origin'
+spec.loader.exec_module(module)
+print('caller-metadata', module.__loader__ is loader_marker, module.__file__,
+      module.__package__, spec.origin,
+      getattr(module, '__cached__', 'absent') == cached)
+print('catalog', importlib.util.find_spec(name) is not None)
+
+names = ('__spec__', '__loader__', '__file__', '__cached__', '__package__', '__path__')
+
+
+def metadata(module):
+    return [type(module.__dict__[key]).__name__ if key in module.__dict__ else 'absent'
+            for key in names]
+
+
+# Literal lookups also admit both compiled bodies into the binary.
+print('admitted', importlib.util.find_spec('_molt_hf539_plain') is not None,
+      importlib.util.find_spec('_molt_hf539_pkg') is not None)
+plain_spec = importlib.machinery.PathFinder.find_spec('_molt_hf539_plain', [entry])
+bare = types.ModuleType('_molt_hf539_plain')
+plain_spec.loader.exec_module(bare)
+print('bare-module', metadata(bare), bare.value)
+package_spec = importlib.machinery.PathFinder.find_spec('_molt_hf539_pkg', [entry])
+loose = types.ModuleType('_molt_hf539_pkg')
+loose.__path__ = [entry]
+del loose.__spec__
+package_spec.loader.exec_module(loose)
+print('path-without-spec', metadata(loose), loose.value)
+"""
+    manifest = tmp_path / "file-loader-policy.toml"
+    manifest.write_text(
+        '[manifest]\nversion = "2.0"\n[capabilities]\nallow = ["fs.read"]\n',
+        encoding="utf-8",
+    )
+    binary, env = _build_native_binary_with_env(
+        tmp_path,
+        source,
+        native_executable_name("importlib_file_loader_package_path"),
+        source_relpath="importlib_file_loader_package_path.py",
+        session_id=_HELPERS.NATIVE_BOOTSTRAP_SESSION_ID,
+        cache_dir=ARTIFACT_ROOT / ".molt_cache",
+        backend="cranelift",
+        extra_files={
+            "_molt_hf534_file_pkg/__init__.py": (
+                "body_path_is_spec_locations = "
+                "__path__ is __spec__.submodule_search_locations\n"
+            ),
+            "_molt_hf539_plain.py": "value = 539\n",
+            "_molt_hf539_pkg/__init__.py": "value = 5390\n",
+        },
+        extra_env={"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""},
+        extra_build_args=["--no-trusted", "--capability-manifest", str(manifest)],
+    )
+    empty_path = tmp_path / "no-python-on-path"
+    empty_path.mkdir()
+    env.update(PATH=str(empty_path), PYTHONPATH="", PYTHONHOME="")
+    run = run_native_test_process(
+        [str(binary), str(tmp_path)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.splitlines() == [
+        "module-from-spec True",
+        "file-loader SourceFileLoader True True True",
+        "caller-metadata True caller-file caller-package caller-origin True",
+        "catalog True",
+        "admitted True True",
+        "bare-module ['NoneType', 'NoneType', 'absent', 'absent', 'NoneType', "
+        "'absent'] 539",
+        "path-without-spec ['absent', 'NoneType', 'absent', 'absent', 'NoneType', "
+        "'list'] 5390",
+    ]

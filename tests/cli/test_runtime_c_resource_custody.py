@@ -18,11 +18,11 @@ from molt.cargo_execution_policy import (
     cargo_c_tool_words,
     validate_sccache_epoch_environment,
 )
-from molt.cli.runtime_cargo_plan import (
+from molt.cli.runtime_c_resources import (
     _resolve_c_build_resources,
     runtime_c_flag_environment_names,
-    resolve_runtime_cargo_plan,
 )
+from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.cli.cargo_execution import _run_resolved_cargo_plan
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 from tests.rust.process_guard import run_rust_test_process

@@ -207,6 +207,13 @@ impl WasmFunctionFramePlan {
             &mut local_types,
             &mut local_count,
         );
+        let route_local = locals.allocate_route_local(
+            control_plan
+                .as_ref()
+                .is_some_and(NonLinearControlPlan::needs_route_local),
+            &mut local_types,
+            &mut local_count,
+        );
         let (const_seed_locals, const_anchors, const_anchor_by_op_index) =
             seed_plan.into_frame_plans(stateful || jumpful);
 
@@ -244,6 +251,7 @@ impl WasmFunctionFramePlan {
                 frame_homes,
                 python_eh_boundary: false,
                 dispatch_locals,
+                route_local,
                 const_cache,
                 const_seed_locals,
                 const_anchors,

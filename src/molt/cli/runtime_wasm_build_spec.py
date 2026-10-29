@@ -176,10 +176,19 @@ def _resolve_runtime_wasm_cargo_specs(
         raise ValueError(
             "runtime WASM members disagree on execution policy or target custody"
         )
+    # A resolved spec can re-enter after a profile override. Derive our link
+    # policy again rather than carrying compression into a debug-preserving link.
+    link_args = wasm_link_args_from_rust_flag_tokens(shared.link_flags)
+    if "--compress-relocations" in link_args:
+        link_args = tuple(arg for arg in link_args if arg != "--compress-relocations")
+        shared = shared._replace(
+            link_flags=tuple(
+                token for arg in link_args for token in ("-C", f"link-arg={arg}")
+            )
+        )
     env = shared.env.updated({"CARGO_TARGET_DIR": str(shared.target_root)})
     command = _runtime_wasm_combined_cargo_command(shared)
     command[0] = env.get("CARGO", command[0])
-    link_args = wasm_link_args_from_rust_flag_tokens(shared.link_flags)
     if link_args:
         response = write_wasm_link_args_response_file(
             _build_state_root(root) / "wasm_link_args",
@@ -198,6 +207,28 @@ def _resolve_runtime_wasm_cargo_specs(
             freestanding=freestanding,
         ),
     )
+    if plan.strips_debug_for_profile(
+        shared.cargo_profile,
+        package_name="molt-runtime",
+        workspace_package=True,
+    ):
+        # wasm-ld leaves padded call/offset LEBs unless explicitly compressed.
+        # Compression changes encoding, not instructions or table slots. It is
+        # incompatible with retained DWARF, so use the actual final-link strip
+        # policy, including package/config/environment overrides.
+        if "link-arg=--compress-relocations" not in shared.link_flags:
+            shared = shared._replace(
+                link_flags=(*shared.link_flags, "-C", "link-arg=--compress-relocations")
+            )
+            compressed_response = write_wasm_link_args_response_file(
+                _build_state_root(root) / "wasm_link_args",
+                label=f"runtime.{shared.cargo_profile}.combined",
+                link_args=wasm_link_args_from_rust_flag_tokens(shared.link_flags),
+            )
+            plan = plan.with_final_link_response(
+                compressed_response,
+                previous=response if link_args else None,
+            )
     return shared.with_cargo_plan(plan), reloc.with_cargo_plan(plan)
 
 

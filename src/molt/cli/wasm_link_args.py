@@ -40,6 +40,7 @@ _RUNTIME_LINK_SWITCHES = frozenset(
         "--gc-sections",
         "--no-gc-sections",
         "--export-dynamic",
+        "--compress-relocations",
     }
 )
 

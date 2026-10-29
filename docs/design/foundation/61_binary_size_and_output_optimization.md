@@ -84,7 +84,7 @@ the tree at HEAD (2026-06-24):
 
 | Asset | Path | What it already does | Gap this arc fills |
 |---|---|---|---|
-| **Tuned Cargo profiles** | `Cargo.toml` shipping profiles | `release-output`/`release-size`/`wasm-release` share measured ThinLTO, cgu=16, debug=0, panic=abort, strip; package overrides own only hot-crate opt levels. `dev-release` is the sole symbol-bearing release profile. | **No `-Z share-generics`/polymorphize**; output still needs the Size-board projection below |
+| **Tuned Cargo profiles** | `Cargo.toml` shipping profiles | `release-output`/`release-size` retain native ThinLTO/16; `wasm-release` follows the [measured WASM policy](../../spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md). All use debug=0, panic=abort, strip; package overrides own only hot-crate opt levels. `dev-release` is the sole symbol-bearing release profile. | **No `-Z share-generics`/polymorphize**; output still needs the Size-board projection below |
 | Native size analyser | `tools/binary_size_analysis.py` | Compiler inspector section/symbol facts, disjoint file-byte attribution, explicit unknown naming, `--compare` deltas, `--budget`, JSON | Budgets are **per-invocation magic constants** (35MB native / 20MB wasm, lines 107-108); **no history, no gate wiring, no per-tier budget, no compressed size, no cause attribution** |
 | WASM size auditor | `tools/wasm_size_audit.py` | per-section LEB128 parse, code/data split, `--budget 16MB`/`--budget-code 10MB` gate (V8 OOM headroom) | Standalone; **not a board projection**; budgets are V8-OOM-driven not the 3MB Workers contract; no compressed size; no history |
 | Output+startup+size matrix | `tools/output_startup_size_audit.py` (1239 ln) | builds hello-world across `native/wasm/luau/mlir × dev/release × auto/llvm × stdlib-{micro,full}`; records artifact bytes, cold-first-sighting + page-cache-cold + same-path startup, CPython + C baselines, `--max-artifact-mb`/`--max-fresh-start-ms` budget checks | The right *matrix shape* but **budgets are opt-in CLI flags (default None → never gates)**; writes a timestamped JSON, **no history index, no regression gate, not a doc-64 projection, no cause attribution, stripped-only (no gzip/brotli)** |
@@ -358,7 +358,7 @@ shared crossover). **Class retired:** "linkage chosen by default, never measured
 
 > Build/test discipline (CLAUDE.md): `export MOLT_SESSION_ID=size-<phase>` before any
 > build; size builds use the **size profiles** (`release-output`/`release-size`/
-> `wasm-release`) — these use the bounded ThinLTO/16-CGU shipping authority, so cache aggressively and never
+> `wasm-release`) — these use the measured target policies in `Cargo.toml`, so cache aggressively and never
 > `cargo clean`; max 2 build-triggering agents; route any raw-binary run through
 > `tools/safe_run.py`. Phases 0,1,2,5(measurement),6,7 are **host tooling** (Python, no
 > Rust rebuild on the critical path); Phase 3c and Phase 4 (if product-wired) touch Rust.
