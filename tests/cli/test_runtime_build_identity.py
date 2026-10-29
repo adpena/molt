@@ -48,6 +48,7 @@ from molt.llvm_toolchain import (
     WasiSdkInstallation,
 )
 from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+from molt.cli import runtime_c_resources as c_resources
 from molt.cli import runtime_cargo_plan as cargo_plans
 from molt.cli import rustc_probes
 from molt.cli import runtime_identity_schema as schema
@@ -154,10 +155,10 @@ def _resolve(
     # Xcode shells export SDKROOT) would enter every identity resolved here.
     # Each test supplies the exact C environment it asserts through extra_env.
     for name in (
-        *cargo_plans.runtime_c_flag_environment_names(
+        *c_resources.runtime_c_flag_environment_names(
             target or _TEST_HOST_TARGET, _TEST_HOST_TARGET
         ),
-        *cargo_plans._C_SEARCH_ENVIRONMENTS,
+        *c_resources._C_SEARCH_ENVIRONMENTS,
     ):
         ambient.pop(name, None)
     env = dict(ambient)

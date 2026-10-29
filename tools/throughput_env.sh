@@ -45,7 +45,7 @@ _apply() {
 
   if [[ "${MOLT_CACHE_PRUNE:-1}" != "0" ]]; then
     PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" UV_NO_SYNC=1 \
-      "$PYTHON" "$ROOT/tools/molt_cache_prune.py" \
+      "$PYTHON" -B "$ROOT/tools/molt_cache_prune.py" \
       --cache-dir "$MOLT_CACHE" \
       --max-gb "$MOLT_CACHE_MAX_GB" \
       --max-age-days "$MOLT_CACHE_MAX_AGE_DAYS"

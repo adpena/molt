@@ -1206,6 +1206,9 @@ tests/differential/stdlib/importlib_import_module_helper_submodule.py
 tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py
 tests/differential/stdlib/importlib_invalidate_caches.py
 tests/differential/stdlib/importlib_load_module_transaction.py
+tests/differential/stdlib/importlib_loader_exec_metadata_pkg/__init__.py
+tests/differential/stdlib/importlib_loader_exec_metadata_pkg/plain.py
+tests/differential/stdlib/importlib_loader_exec_module_metadata.py
 tests/differential/stdlib/importlib_loader_exec_module_transaction.py
 tests/differential/stdlib/importlib_loader_name_identity.py
 tests/differential/stdlib/importlib_metadata_basic.py
@@ -1222,6 +1225,7 @@ tests/differential/stdlib/importlib_missing_module_shape.py
 tests/differential/stdlib/importlib_module_from_spec.py
 tests/differential/stdlib/importlib_module_reload.py
 tests/differential/stdlib/importlib_module_spec.py
+tests/differential/stdlib/importlib_namespace_path_protocol.py
 tests/differential/stdlib/importlib_optional_import_intrinsic.py
 tests/differential/stdlib/importlib_package_path_identity.py
 tests/differential/stdlib/importlib_path_identity_ns/child.py
@@ -2017,6 +2021,7 @@ tests/differential/stdlib/warnings_location.py
 tests/differential/stdlib/warnings_location_source_line.py
 tests/differential/stdlib/warnings_location_support/__init__.py
 tests/differential/stdlib/warnings_native_display.py
+tests/differential/stdlib/warnings_provider_direction.py
 tests/differential/stdlib/warnings_resetwarnings.py
 tests/differential/stdlib/warnings_showwarning.py
 tests/differential/stdlib/warnings_simplefilter.py

@@ -129,7 +129,9 @@ def test_compile_slot_releases_after_exception(tmp_path, monkeypatch) -> None:
     lease.release()  # Terminal release is idempotent.
 
 
-def test_guard_root_defaults_to_repo_target_state(monkeypatch) -> None:
+def test_guard_root_defaults_to_repo_target_state(
+    monkeypatch, unbound_checkout_family
+) -> None:
     for key in ("MOLT_COMPILE_GUARD_DIR", "CARGO_TARGET_DIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 

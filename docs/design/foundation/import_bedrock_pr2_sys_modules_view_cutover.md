@@ -120,6 +120,15 @@ would duplicate those obligations without demonstrated benefit.
   initialization, arbitrary fresh spec loads and existing-target `_exec`; the
   row/spec/snapshot owner retains only registered initializer namespace custody.
   Direct `exec_module` owns neither an import row nor a name execution lease.
+  As in CPython, `exec_module` sets no module metadata: the file, zip,
+  extension, sourceless and compiled loaders only run the body, and
+  [`module_from_spec`](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap.py#L806)
+  is the one `_init_module_attrs` site. A compiled body executed into a
+  loader's module keeps each prologue value (`__file__`, `__package__`,
+  `__path__`, `__spec__`) the module already has and stores none it lacks;
+  spec admission ends that prologue window, so later stores are the body's own.
+  One divergence remains open: a module without a `str` `__name__` gets one from
+  its spec or loader, where CPython's file loaders raise (`_check_name`).
   Typed initializer admission owns once-only execution, so publication installs
   the exact supplied namespace instead of retaining a different first winner.
 - The compiled Python importlib facade owns the complete outer reload protocol:
@@ -148,8 +157,15 @@ would duplicate those obligations without demonstrated benefit.
   `spec.loader`, and assigning file None under its separate error policy.
   The existing class has one `_path` owner; implicit construction keeps the
   supplied locations identity, while its public constructor retains its
-  existing path conversion. Dynamic namespace-path recomputation is a separate
-  importlib capability, not an alternate store introduced by this migration.
+  existing path conversion. `importlib.machinery` ports CPython 3.12
+  [`_NamespacePath`](https://github.com/python/cpython/blob/v3.12.15/Lib/importlib/_bootstrap_external.py#L1325)
+  and `NamespaceLoader(name, path, path_finder)`: `PathFinder.find_spec` returns
+  a namespace spec with origin None whose locations are
+  `_NamespacePath(name, portions, PathFinder._get_spec)`, which recomputes its
+  portions when the parent path changes or `invalidate_caches` advances its
+  epoch. Compiled namespace packages are still generated source stubs (a list
+  `__path__`, the stub origin and the compiled loader); their parity needs a
+  typed namespace row that carries the portions in the module registry.
   `ModuleSpec` starts with `has_location=False` even for a descriptive origin.
   File-location factories and compiler source SSA explicitly set the fact;
   catalog entries require it from the producer, encode flag `0x08`, and include
@@ -261,9 +277,17 @@ rebinding, noncallable values and callback errors. Acquisition reuses the existi
 support loader. The compiler carries `_warnings` as a runtime-import support root
 (`_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES`), and the `_warnings` body bootstraps its
 own imports as the `importlib` bodies do, so the warning loads with an empty
-`sys.meta_path`. Nothing loads `_warnings` at startup. Molt's `_warnings` facade
-still imports `warnings`, the reverse of CPython, so the first empty-path warning
-also loads `warnings`; that provider direction is a separate open finding.
+`sys.meta_path`. Nothing loads `_warnings` at startup. `_warnings` is the
+provider and `warnings` its consumer, as in CPython 3.12: `Python/_warnings.c`
+defines `filters`, `_defaultaction`, `_onceregistry`, `_filters_mutated`, `warn`
+and `warn_explicit` and never imports `warnings`, and
+[`Lib/warnings.py`](https://github.com/python/cpython/blob/v3.12.15/Lib/warnings.py#L566)
+imports them from `_warnings`. Molt's `_warnings` binds the runtime engine's
+objects (`builtins/warnings_ext.rs`) and defines `warn` and `warn_explicit` over
+the engine and its location authority, so an empty-path warning does not load
+`warnings`. Until `warnings` is loaded, the engine applies its own filters and
+writes to the `sys.stderr` object, as CPython's `get_warnings_attr(..., 0)` and
+`show_warning` do.
 
 Completed cache hits add no finder, bootstrap, lock-map or filesystem work. A cold
 finder traversal owns its three arguments, iterator and current observations;

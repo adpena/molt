@@ -793,10 +793,13 @@ def test_native_file_loader_exec_module_keeps_loader_owned_metadata(
 ) -> None:
     # Pinned CPython 3.12.15 prints this transcript: _init_module_attrs binds
     # the metadata, and SourceFileLoader.exec_module sets none of it nor
-    # mutates the spec. The literal find_spec admits the compiled body.
+    # mutates the spec. A module that never went through module_from_spec
+    # keeps exactly what it had (HF-539). The literal find_spec admits the
+    # compiled body.
     source = """import importlib.machinery
 import importlib.util
 import sys
+import types
 
 entry = sys.argv[1]
 name = '_molt_hf534_file_pkg'
@@ -821,6 +824,28 @@ print('caller-metadata', module.__loader__ is loader_marker, module.__file__,
       module.__package__, spec.origin,
       getattr(module, '__cached__', 'absent') == cached)
 print('catalog', importlib.util.find_spec(name) is not None)
+
+names = ('__spec__', '__loader__', '__file__', '__cached__', '__package__', '__path__')
+
+
+def metadata(module):
+    return [type(module.__dict__[key]).__name__ if key in module.__dict__ else 'absent'
+            for key in names]
+
+
+# Literal lookups also admit both compiled bodies into the binary.
+print('admitted', importlib.util.find_spec('_molt_hf539_plain') is not None,
+      importlib.util.find_spec('_molt_hf539_pkg') is not None)
+plain_spec = importlib.machinery.PathFinder.find_spec('_molt_hf539_plain', [entry])
+bare = types.ModuleType('_molt_hf539_plain')
+plain_spec.loader.exec_module(bare)
+print('bare-module', metadata(bare), bare.value)
+package_spec = importlib.machinery.PathFinder.find_spec('_molt_hf539_pkg', [entry])
+loose = types.ModuleType('_molt_hf539_pkg')
+loose.__path__ = [entry]
+del loose.__spec__
+package_spec.loader.exec_module(loose)
+print('path-without-spec', metadata(loose), loose.value)
 """
     manifest = tmp_path / "file-loader-policy.toml"
     manifest.write_text(
@@ -840,6 +865,8 @@ print('catalog', importlib.util.find_spec(name) is not None)
                 "body_path_is_spec_locations = "
                 "__path__ is __spec__.submodule_search_locations\n"
             ),
+            "_molt_hf539_plain.py": "value = 539\n",
+            "_molt_hf539_pkg/__init__.py": "value = 5390\n",
         },
         extra_env={"MOLT_CAPABILITY_TIER": "none", "MOLT_CAPABILITIES": ""},
         extra_build_args=["--no-trusted", "--capability-manifest", str(manifest)],
@@ -861,4 +888,9 @@ print('catalog', importlib.util.find_spec(name) is not None)
         "file-loader SourceFileLoader True True True",
         "caller-metadata True caller-file caller-package caller-origin True",
         "catalog True",
+        "admitted True True",
+        "bare-module ['NoneType', 'NoneType', 'absent', 'absent', 'NoneType', "
+        "'absent'] 539",
+        "path-without-spec ['absent', 'NoneType', 'absent', 'absent', 'NoneType', "
+        "'list'] 5390",
     ]
