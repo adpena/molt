@@ -101,3 +101,14 @@ frontend and backend compilation. HF-126 measured eager admission of
 - `tests/test_frontend_class_imports.py` pins the dynamic call for generator,
   coroutine, function and guarded-global bindings and the relative-import
   origin (`pkg.helper`, or none without an anchor).
+- Graph admission does not change. Module graphs on macOS arm64, before and
+  after, with the same module sets: a hello program 7 and 7 modules,
+  `import unittest` 117 and 117, `import asyncio` 96 and 96. Six
+  function-level relative imports exist in Molt's stdlib (`importlib.machinery`,
+  `unittest`, `unittest.case`, `test.support.warnings_helper`); each now costs
+  one more resolution over states that the module flow already holds.
+- CPython's `test.support` now compiles. In `regrtest.import-system.native`,
+  `test_pkgutil` and `test_zipimport` run and stop at `sysconfig`, a generated
+  stub (HF-273). `test_importlib` still lacks `test.support` because the
+  regrtest shim exposes CPython's `test` package as an external root; with
+  `MOLT_EXTERNAL_STATIC_PACKAGES=test` it reaches the same `sysconfig` stub.
