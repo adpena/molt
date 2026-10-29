@@ -1,3 +1,4 @@
+from tests.wasm_execution_manifest import wasm_execution_launch
 import base64
 import json
 import os
@@ -48,12 +49,12 @@ WebAssembly.instantiate = async () => {
 };
 let cases = 0;
 for (const mode of ['linked', 'split-runtime']) {
-  for (const version of [undefined, null, 0, 1, 2, 4, 99, true, false, '3', 3.5]) {
+  for (const version of [undefined, null, 0, 1, 2, 3, 99, true, false, '4', 4.5]) {
     const descriptor = {path: 'must-not-fetch.wasm', size: 8, sha256: '0'.repeat(64)};
     const manifest = {version, mode, abi: {runtime_imports: {names: []}},
       modules: mode === 'linked' ? {linked: descriptor} : {app: descriptor, runtime: descriptor}};
     const manifestUrl = 'https://example.invalid/manifest.json';
-    const expected = /Molt deployment manifest version must be 3/;
+    const expected = /Molt deployment manifest version must be 4/;
     assert.throws(() => resolveMoltWasmUrls(manifest, manifestUrl), expected);
     await assert.rejects(() => loadMoltWasm({manifest, manifestUrl}), expected);
     await assert.rejects(() => loadMoltBrowserEmbed({manifest,
@@ -298,6 +299,7 @@ await rejected(
 
 const linkedManifest = {{
   version: {WASM_EXECUTION_MANIFEST_VERSION},
+  launch: {json.dumps(wasm_execution_launch())},
   mode: 'linked',
   abi: {{ runtime_imports: {{ names: [] }} }},
   modules: {{ linked: descriptor }},
@@ -325,6 +327,7 @@ await rejected(
 );
 const splitManifest = {{
   version: {WASM_EXECUTION_MANIFEST_VERSION},
+  launch: {json.dumps(wasm_execution_launch())},
   mode: 'split-runtime',
   abi: {{ runtime_imports: {{ names: [] }} }},
   modules: {{ app: descriptor, runtime: descriptor }},
@@ -1359,6 +1362,8 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
             "molt.cli",
             "build",
             str(src),
+            "--capabilities",
+            "time.wall",
             "--build-profile",
             "dev",
             "--profile",
@@ -1384,7 +1389,6 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
     assert manifest_path.exists()
 
     run_env = os.environ.copy()
-    run_env["MOLT_CAPABILITY_TIER"] = "full"
     run = _run_wasm_test_process(
         ["node", str(root / "wasm" / "run_wasm.js"), str(manifest_path)],
         role="guest-host",
@@ -1963,6 +1967,7 @@ import {{ resolveMoltWasmUrls }} from '{browser_host_uri}';
 
 const split = resolveMoltWasmUrls({{
   version: {WASM_EXECUTION_MANIFEST_VERSION},
+  launch: {json.dumps(wasm_execution_launch())},
   mode: 'split-runtime',
   modules: {{
     app: {{ path: 'modules/app-prod.wasm' }},
@@ -1971,6 +1976,7 @@ const split = resolveMoltWasmUrls({{
 }}, 'https://example.com/releases/v9/manifest.json');
 const linked = resolveMoltWasmUrls({{
   version: {WASM_EXECUTION_MANIFEST_VERSION},
+  launch: {json.dumps(wasm_execution_launch())},
   mode: 'linked',
   modules: {{ linked: {{ path: 'artifacts/program.wasm' }} }},
 }}, 'https://example.com/releases/v9/manifest.json');

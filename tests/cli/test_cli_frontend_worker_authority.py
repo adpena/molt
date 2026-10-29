@@ -103,12 +103,11 @@ def test_serial_lowering_mutation_does_not_change_discovery_tree(
             module_source_catalog=_ModuleSourceCatalog(
                 {"app": _ModuleSourceLease.path_backed(path)}
             ),
-            generated_module_source_paths={},
             target_python=TargetPythonVersion(3, 12, 0),
         ),
     )
     tree = frontend_worker._resolve_tree_for_serial_frontend_module(
-        "app", path, lowering_context=context
+        "app", path, lowering_context=context, logical_source_path=str(path)
     )
     gen = SimpleTIRGenerator(module_source_role="user")
     gen.visit(tree)
@@ -144,13 +143,12 @@ def test_serial_lowering_keeps_source_lease_and_target_refusal(
         SimpleNamespace(
             syntax_error_modules={},
             module_source_catalog=_ModuleSourceCatalog({"app": lease}),
-            generated_module_source_paths={},
             target_python=target,
         ),
     )
     with pytest.raises(frontend_worker._ModuleLowerError, match=message):
         frontend_worker._resolve_tree_for_serial_frontend_module(
-            "app", path, lowering_context=context
+            "app", path, lowering_context=context, logical_source_path=str(path)
         )
 
 
@@ -161,7 +159,6 @@ def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:
         logical_source_path=str(path),
         source_lease=lease,
         type_hint_policy="ignore",
-        module_is_namespace=False,
         module_execution_kind="imported",
         type_facts=None,
         enable_phi=True,
@@ -216,7 +213,6 @@ def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
     context = _SerialFrontendLoweringContext(
         syntax_error_modules={},
         module_source_catalog=_ModuleSourceCatalog({"app": lease}),
-        generated_module_source_paths={},
         project_root=tmp_path,
         type_hint_policy="ignore",
         type_facts=None,
@@ -242,10 +238,9 @@ def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
         module_graph_metadata=_build_module_graph_metadata(
             {"app": path},
             stdlib_root=tmp_path / "stdlib",
-            generated_module_source_paths={},
             entry_module="app",
             entry_execution_kind="script",
-            namespace_module_names=set(),
+            namespace_portions_by_module={},
         ),
         known_classes={},
         frontend_phase_timeout=None,
@@ -315,13 +310,12 @@ def test_lowering_rejects_same_size_restored_mtime_generation(
             SimpleNamespace(
                 syntax_error_modules=syntax_errors,
                 module_source_catalog=_ModuleSourceCatalog({"app": lease}),
-                generated_module_source_paths={},
                 target_python=TargetPythonVersion(3, 12, 0),
             ),
         )
         with pytest.raises(frontend_worker._ModuleLowerError, match="changed"):
             frontend_worker._resolve_tree_for_serial_frontend_module(
-                "app", path, lowering_context=context
+                "app", path, lowering_context=context, logical_source_path=str(path)
             )
 
 
@@ -623,6 +617,7 @@ def test_serial_module_error_uses_captured_payload_without_source_read(
         "broken",
         path,
         lowering_context=context,
+        logical_source_path="logical/invalid.py",
     )
     expression = tree.body[0].exc
     assert expression.exception_name == "IndentationError"

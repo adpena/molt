@@ -37,7 +37,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {resolveWasmPaths} = require('./wasm/run_wasm.js');
-const invalid = [undefined, null, 0, 1, 2, 4, 99, true, false, '3', 3.5];
+const invalid = [undefined, null, 0, 1, 2, 3, 99, true, false, '4', 4.5];
 const originalRead = fs.readFileSync;
 let cases = 0;
 for (const mode of ['linked', 'split-runtime']) {
@@ -56,7 +56,7 @@ for (const mode of ['linked', 'split-runtime']) {
     };
     try {
       assert.throws(() => resolveWasmPaths({manifestPath}),
-        /Molt deployment manifest version must be 3/);
+        /Molt deployment manifest version must be 4/);
       assert.equal(moduleReads, 0);
       cases++;
     } finally { fs.readFileSync = originalRead; }
@@ -2022,3 +2022,219 @@ const host = loaded.exports.socket;
         {"status": 0, "length": 1, "bytes": [104, 165, 165, 165]},
         {"status": 0, "length": 4, "bytes": [104, 0, 0, 0]},
     ]
+
+
+def test_deployment_launch_transport_and_overlay_use_one_host_contract():
+    from copy import deepcopy
+    from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+    from molt.wasm_artifact import require_current_wasm_execution_manifest
+
+    environment = {
+        "MOLT_CAPABILITIES": "fs.read",
+        "MOLT_CAPABILITY_TIER": "none",
+        "MOLT_CAPABILITY_POLICY_DIGEST": "sha256:" + "a" * 64,
+        "MOLT_RESOURCE_MAX_DURATION_MS": "23",
+        "__proto__": "ordinary environment value",
+    }
+    valid = {
+        "version": WASM_EXECUTION_MANIFEST_VERSION,
+        "launch": {"environment": environment},
+    }
+    invalid_launches = [
+        None,
+        [],
+        {},
+        {"environment": []},
+        {"environment": environment, "fallback": True},
+    ]
+    for name in (
+        "MOLT_CAPABILITIES",
+        "MOLT_CAPABILITY_TIER",
+        "MOLT_CAPABILITY_POLICY_DIGEST",
+    ):
+        missing = dict(environment)
+        del missing[name]
+        invalid_launches.append({"environment": missing})
+    for name, value in (
+        ("", "v"),
+        ("bad=name", "v"),
+        ("bad\0name", "v"),
+        ("EXTRA", None),
+        ("EXTRA", 1),
+        ("EXTRA", "bad\0value"),
+    ):
+        invalid_launches.append({"environment": {**environment, name: value}})
+    for launch in invalid_launches:
+        with pytest.raises(ValueError, match="launch|environment"):
+            require_current_wasm_execution_manifest({**valid, "launch": launch})
+    before = deepcopy(valid)
+    assert require_current_wasm_execution_manifest(valid) is valid
+    assert valid == before
+    script = (
+        "const valid = JSON.parse("
+        + json.dumps(json.dumps(valid))
+        + ");\nconst invalid = JSON.parse("
+        + json.dumps(json.dumps(invalid_launches))
+        + r""");
+const assert = require('node:assert/strict');
+const {requireMoltDeploymentManifest, deploymentLaunchEnvironment} = require('./wasm/loader_bridge.js');
+for (const launch of invalid) {
+  assert.throws(() => requireMoltDeploymentManifest({...valid, launch}), /launch|environment/);
+}
+const ambient = {MOLT_CAPABILITIES: '', MOLT_CAPABILITY_TIER: 'full',
+  MOLT_RESOURCE_MAX_MEMORY: '17', MOLT_RESOURCE_MAX_DURATION_MS: '99',
+  MOLT_EXECUTION_TARGET: 'forged', UNRELATED: 'preserved'};
+const before = JSON.stringify(ambient);
+const env = deploymentLaunchEnvironment(valid, ambient);
+assert.equal(env.MOLT_CAPABILITIES, 'fs.read');
+assert.equal(env.MOLT_CAPABILITY_TIER, 'none');
+assert.equal(env.MOLT_RESOURCE_MAX_DURATION_MS, '23');
+assert.equal(env.MOLT_RESOURCE_MAX_MEMORY, '17');
+assert.equal(env.UNRELATED, 'preserved');
+assert.equal(env.__proto__, 'ordinary environment value');
+assert.equal(Object.getPrototypeOf(env), null);
+assert.equal(JSON.stringify(ambient), before);
+console.log('policy overlay and refusals passed');
+"""
+    )
+    result = _run_wasm_test_process(
+        ["node", "-e", script], role="tool", cwd=ROOT, env=os.environ, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "policy overlay and refusals passed"
+
+
+@pytest.mark.parametrize("capabilities", ["", "fs.read"])
+def test_public_node_and_browser_deliver_declared_policy_to_wasi(
+    tmp_path, capabilities
+):
+    from molt.capability_manifest import resolve_runtime_policy_from_env
+
+    wasm_tools = shutil.which("wasm-tools")
+    if wasm_tools is None:
+        pytest.skip("wasm-tools is required for the WASI environment fixture")
+    wat = tmp_path / "environment.wat"
+    wasm = tmp_path / "environment.wasm"
+    wat.write_text(
+        r"""
+(module
+  (import "wasi_snapshot_preview1" "environ_sizes_get" (func $sizes (param i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "environ_get" (func $get (param i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "fd_write" (func $write (param i32 i32 i32 i32) (result i32)))
+  (memory (export "molt_memory") 2)
+  (table (export "molt_table") 1 funcref)
+  (func (export "molt_runtime_execution_enter") (result i64) i64.const 1)
+  (func (export "molt_runtime_execution_leave") (param i64))
+  (func (export "molt_runtime_shutdown") (result i64) i64.const 1)
+  (func (export "molt_exception_pending") (result i64) i64.const 0)
+  (func (export "molt_main_exit_status") (result i64) i64.const 0)
+  (func (export "molt_main")
+    i32.const 0 i32.const 4 call $sizes if unreachable end
+    i32.const 1024 i32.const 8192 call $get if unreachable end
+    i32.const 512 i32.const 8192 i32.store
+    i32.const 516 i32.const 4 i32.load i32.store
+    i32.const 1 i32.const 512 i32.const 1 i32.const 520 call $write if unreachable end))
+""",
+        encoding="utf-8",
+    )
+    parsed = _run_wasm_test_process(
+        [wasm_tools, "parse", str(wat), "-o", str(wasm)],
+        role="tool",
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert parsed.returncode == 0, parsed.stderr
+    _attest_empty_callable_table(wasm)
+    policy = resolve_runtime_policy_from_env(
+        {
+            "MOLT_CAPABILITIES": capabilities,
+            "MOLT_CAPABILITY_TIER": "none",
+        }
+    )
+    manifest = write_wasm_execution_manifest(tmp_path, linked=wasm, policy=policy)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["abi"] = {
+        "linked_self_imports": [],
+        "runtime_imports": {
+            "names": [
+                "runtime_execution_enter",
+                "runtime_execution_leave",
+                "runtime_shutdown",
+            ],
+            "export_names": {
+                "runtime_execution_enter": "molt_runtime_execution_enter",
+                "runtime_execution_leave": "molt_runtime_execution_leave",
+                "runtime_shutdown": "molt_runtime_shutdown",
+            },
+        },
+    }
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    ambient = {
+        **{
+            key: os.environ[key]
+            for key in (
+                "PATH",
+                "MOLT_EXT_ROOT",
+                "MOLT_TARGET_ROOT",
+                "MOLT_NODE_BIN",
+                "CARGO_TARGET_DIR",
+                "TMPDIR",
+            )
+            if key in os.environ
+        },
+        "MOLT_CAPABILITY_TIER": "full",
+        "MOLT_CAPABILITIES": "env.read",
+        "MOLT_RESOURCE_MAX_MEMORY": "17000000",
+        "MOLT_EXECUTION_TARGET": "forged",
+    }
+    direct = _run_wasm_test_process(
+        ["node", "wasm/run_wasm.js", str(manifest)],
+        role="guest-host",
+        cwd=ROOT,
+        env=ambient,
+        timeout=30,
+    )
+    assert direct.returncode == 0, direct.stderr
+    entries = direct.stdout.split("\0")
+    assert f"MOLT_CAPABILITIES={capabilities}" in entries
+    assert "MOLT_CAPABILITY_TIER=none" in entries
+    assert "MOLT_RESOURCE_MAX_MEMORY=17000000" in entries
+    assert "MOLT_EXECUTION_TARGET=wasi" in entries
+    assert "MOLT_CAPABILITIES=env.read" not in entries
+    script = (
+        "const manifestPath = "
+        + json.dumps(str(manifest))
+        + r""";
+(async () => {
+  const fs = require('node:fs');
+  const {pathToFileURL, fileURLToPath} = require('node:url');
+  globalThis.fetch = async url => new Response(fs.readFileSync(fileURLToPath(url)));
+  const {loadMoltWasm} = await import(pathToFileURL(require('node:path').resolve('wasm/browser_host.js')).href);
+  const instance = await loadMoltWasm({manifestUrl: pathToFileURL(manifestPath).href, vfs: {},
+    env: {MOLT_CAPABILITY_TIER: 'full', MOLT_CAPABILITIES: 'env.read',
+      MOLT_RESOURCE_MAX_MEMORY: '17000000', MOLT_EXECUTION_TARGET: 'forged'}});
+  try {
+    instance.run();
+    const memory = instance.memory.buffer;
+    const size = new DataView(memory).getUint32(4, true);
+    const entries = new TextDecoder().decode(new Uint8Array(memory, 8192, size)).split('\0');
+    console.log(JSON.stringify(entries));
+  } finally { instance.dispose(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    browser = _run_wasm_test_process(
+        ["node", "-e", script],
+        role="tool",
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert browser.returncode == 0, browser.stderr
+    entries = json.loads(browser.stdout.strip().splitlines()[-1])
+    assert f"MOLT_CAPABILITIES={capabilities}" in entries
+    assert "MOLT_CAPABILITY_TIER=none" in entries
+    assert "MOLT_RESOURCE_MAX_MEMORY=17000000" in entries
+    assert "MOLT_EXECUTION_TARGET=browser" in entries
+    assert "MOLT_CAPABILITIES=env.read" not in entries

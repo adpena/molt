@@ -294,6 +294,8 @@ def run_single_test(
     name = script.name
     if suite == "bench" and workload is None:
         raise ValueError("benchmark execution requires an admitted workload")
+    if suite == "bench":
+        molt_cmd = [*molt_cmd, *bench_suites.molt_args_for_benchmark(script)]
     if workload is not None:
         if script.expanduser().absolute() != workload.script:
             raise ValueError("benchmark source differs from admitted workload")
@@ -841,7 +843,10 @@ def _main(workload_custody: ExitStack):
                         script,
                         project_root=REPO_ROOT,
                         run_args=bench_suites.application_run_args(script),
-                        molt_args=molt_cmd[1:],
+                        molt_args=[
+                            *molt_cmd[1:],
+                            *bench_suites.molt_args_for_benchmark(script),
+                        ],
                     )
                 )
                 for script in scripts

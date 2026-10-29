@@ -321,7 +321,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
-        module_is_namespace_by_module={name: False for name in module_graph},
+        namespace_portions_by_module={},
         known_modules=set(modules),
         stdlib_allowlist=set(),
         integration_state=state,

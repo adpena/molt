@@ -116,7 +116,7 @@ def test_effective_cpu_features_separate_all_outer_native_cache_keys(
     )
     metadata = _ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,

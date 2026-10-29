@@ -3950,3 +3950,31 @@ def test_raw_wasi_ingress_has_complete_typed_coverage_and_explicit_dispositions(
         "windows_socket_code" not in row and "windows_crt" not in row
         for row in data["synthetic_errno"]
     )
+
+
+def test_deployment_launch_required_names_have_one_generated_authority():
+    from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT
+
+    data = gen_wasm_abi.load_manifest()
+    expected = (
+        "MOLT_CAPABILITIES",
+        "MOLT_CAPABILITY_TIER",
+        "MOLT_CAPABILITY_POLICY_DIGEST",
+    )
+    assert (
+        tuple(data["deployment_manifest"]["launch_environment_required_names"])
+        == expected
+    )
+    assert WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT == expected
+    projected = json.loads(gen_wasm_abi.render_js_abi(data))
+    assert tuple(projected["execution_manifest_required_environment"]) == expected
+
+
+@pytest.mark.parametrize(
+    "names", [None, [], [False], [""], ["BAD=NAME"], ["BAD\0NAME"], ["SAME", "SAME"]]
+)
+def test_deployment_launch_declaration_rejects_invalid_required_names(names):
+    raw = _raw_manifest()
+    raw["deployment_manifest"]["launch_environment_required_names"] = names
+    with pytest.raises(manifest.WasmAbiManifestError, match="launch environment names"):
+        manifest.validate_loaded_manifest(raw)

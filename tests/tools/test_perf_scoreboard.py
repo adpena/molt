@@ -14,6 +14,7 @@ from tests.tools.perf_scoreboard_fixtures import (
 )
 
 from dataclasses import asdict
+import hashlib
 import json
 import os
 import re
@@ -3044,12 +3045,15 @@ def sealed_scoreboard_workload(monkeypatch, tmp_path):
         yield workload
 
 
-@pytest.mark.parametrize("wrong_output", [False, True])
+@pytest.mark.parametrize(
+    ("wrong_output", "guest_failure"), [(False, False), (True, False), (False, True)]
+)
 def test_sealed_scoreboard_runs_admitted_inputs_and_rejects_wrong_reference(
     monkeypatch,
     tmp_path,
     sealed_scoreboard_workload,
     wrong_output,
+    guest_failure,
 ):
     """Real guarded reference children exercise cwd, imports, data and the oracle.
 
@@ -3067,6 +3071,31 @@ def test_sealed_scoreboard_runs_admitted_inputs_and_rejects_wrong_reference(
     owner = OwnedTemporaryDirectory(dir=tmp_path)
     artifact = Path(owner.name) / "synthetic"
     artifact.write_bytes(b"synthetic build artifact")
+    guest_capture = Path(owner.name) / "guest-stderr"
+    guest_stdout = b"partial guest output\r\n\xfe"
+    guest_stderr = b"discarded prefix\n" * 400 + b"guest failure \xff\r\n"
+    host_warning = "independent host warning"
+    if guest_failure:
+        guest_capture.write_bytes(b"")
+        guest_command = (
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import os, pathlib, sys; "
+            f"pathlib.Path(sys.argv[1]).write_bytes({guest_stderr!r}); "
+            f"os.write(1, {guest_stdout!r}); os.write(2, {host_warning.encode()!r}); "
+            "raise SystemExit(7)",
+            str(guest_capture),
+        )
+    else:
+        guest_command = (
+            sys.executable,
+            "-P",
+            "-S",
+            "-B",
+            str(workload.execution_script),
+        )
     builds = []
 
     def build(
@@ -3106,8 +3135,9 @@ def test_sealed_scoreboard_runs_admitted_inputs_and_rejects_wrong_reference(
         measure.bench,
         "molt_binary_invocation",
         lambda binary, env, *, execution_host: measure.bench.MoltInvocation(
-            (sys.executable, "-P", "-S", "-B", str(workload.execution_script)),
+            guest_command,
             env,
+            guest_capture if guest_failure else None,
         ),
     )
     actual_run = measure._run_measured_command
@@ -3147,6 +3177,32 @@ def test_sealed_scoreboard_runs_admitted_inputs_and_rejects_wrong_reference(
         with pytest.raises(ValueError, match="sealed semantic oracle"):
             measure.measure_cell(**kwargs)
         assert len(labels) == 2
+    elif guest_failure:
+        cell = measure.measure_cell(**kwargs)
+        assert not Path(owner.name).exists()
+        # Serialize only after cleanup: the cell and existing log must retain
+        # the real failed child, independent of its now-retired capture file.
+        published = json.loads(json.dumps(asdict(cell)))
+        failure = published["molt_failure"]
+        assert failure["returncode"] == failure["child_returncode"] == 7
+        assert failure["infrastructure_failure"] is None
+        for name, original in (("stdout", guest_stdout), ("stderr", guest_stderr)):
+            assert failure[f"{name}_identity"] == {
+                "byte_length": len(original),
+                "sha256": hashlib.sha256(original).hexdigest(),
+            }
+        retained = failure["stderr_tail"].encode("utf-8", "surrogateescape")
+        assert retained.endswith(guest_stderr[-4000:])
+        assert len(retained) < 4100
+        assert "truncated" in failure["stderr_tail"]
+        assert host_warning not in failure["message"]
+        text = (tmp_path / cell.log_artifact).read_text(encoding="utf-8")
+        evidence = next(
+            line for line in text.splitlines() if line.startswith("MOLT RUN FAILURE: ")
+        )
+        assert json.loads(evidence.removeprefix("MOLT RUN FAILURE: ")) == failure
+        assert "HOST STDERR" in text and host_warning in text
+        assert not cell.molt_ok and cell.cpython_ok
     else:
         cell = measure.measure_cell(**kwargs)
         assert cell.output_parity["ok"] is True

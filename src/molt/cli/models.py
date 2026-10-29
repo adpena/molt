@@ -478,7 +478,7 @@ class _ScopedLoweringInputView:
 @dataclass(frozen=True)
 class _ModuleGraphMetadata:
     logical_source_path_by_module: Mapping[str, str]
-    module_is_namespace_by_module: Mapping[str, bool]
+    namespace_portions_by_module: Mapping[str, tuple[str, ...]]
     module_is_package_by_module: Mapping[str, bool]
     module_execution_kind_by_module: Mapping[str, ModuleExecutionKind]
     module_source_role_by_module: Mapping[str, ModuleSourceRole]
@@ -617,7 +617,6 @@ class _FrontendLayerPlan:
 class _SerialFrontendLoweringContext:
     syntax_error_modules: Mapping[str, "ModuleSyntaxErrorInfo"]
     module_source_catalog: _ModuleSourceCatalog
-    generated_module_source_paths: Mapping[str, str]
     project_root: Path | None
     type_hint_policy: "TypeHintPolicy"
     type_facts: TypeFacts | None
@@ -1688,8 +1687,7 @@ class _ImportPlan:
     stub_parents: frozenset[str]
     spawn_enabled: bool
     runtime_import_support_policy: _RuntimeImportSupportPolicy
-    namespace_module_names: frozenset[str]
-    generated_module_source_paths: Mapping[str, str]
+    namespace_portions_by_module: Mapping[str, tuple[str, ...]]
     known_modules: frozenset[str]
     direct_call_modules: frozenset[str]
     declared_root_modules: frozenset[str]
@@ -1706,6 +1704,10 @@ class _ImportPlan:
         default_factory=dict
     )
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
+
+    @property
+    def namespace_module_names(self) -> frozenset[str]:
+        return frozenset(self.namespace_portions_by_module)
 
     def with_compile_modules(self, compile_modules: Collection[str]) -> "_ImportPlan":
         compile_set = frozenset(compile_modules)
@@ -1730,8 +1732,7 @@ class _ImportPlan:
             spawn_enabled=self.spawn_enabled,
             runtime_import_support_policy=self.runtime_import_support_policy,
             runtime_import_scan_custody=self.runtime_import_scan_custody,
-            namespace_module_names=self.namespace_module_names,
-            generated_module_source_paths=self.generated_module_source_paths,
+            namespace_portions_by_module=self.namespace_portions_by_module,
             known_modules=self.known_modules,
             direct_call_modules=frozenset(
                 name for name in compile_set if name in self.direct_call_modules
@@ -1767,7 +1768,10 @@ class _ImportPlan:
                 self.module_graph_metadata.logical_source_path_by_module
             ),
             "stub_parents": sorted(self.stub_parents),
-            "namespace_module_names": sorted(self.namespace_module_names),
+            "namespace_portions_by_module": {
+                name: list(self.namespace_portions_by_module[name])
+                for name in sorted(self.namespace_portions_by_module)
+            },
             "spawn_enabled": self.spawn_enabled,
             "runtime_import_support": {
                 "scan_owner_ast_digests": (

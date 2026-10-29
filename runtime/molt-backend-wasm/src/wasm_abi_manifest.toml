@@ -8923,4 +8923,7 @@ ENOTCAPABLE = "EACCES"
 
 # Semantic host/runtime ABI of linked and split deployment manifests.
 [deployment_manifest]
-version = 3
+version = 4
+# Always emitted by ResolvedRuntimePolicy.to_env_vars; hosts transport these
+# values without reimplementing capability or resource policy resolution.
+launch_environment_required_names = ["MOLT_CAPABILITIES", "MOLT_CAPABILITY_TIER", "MOLT_CAPABILITY_POLICY_DIGEST"]

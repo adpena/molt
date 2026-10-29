@@ -368,10 +368,9 @@ def test_native_object_publication_is_one_admitted_transaction(
     module_graph = {"app": source}
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
-        generated_module_source_paths={},
         entry_module="app",
         entry_execution_kind="direct_main",
-        namespace_module_names=(),
+        namespace_portions_by_module={},
         stdlib_root=tmp_path / "stdlib",
     )
     bundle = NS(

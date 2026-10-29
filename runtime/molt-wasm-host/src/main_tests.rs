@@ -59,6 +59,7 @@ fn execute_test_guest(
         runtime,
         LoadedGuestOptions {
             kind,
+            launch_environment: &[],
             vfs_envs: &[],
             guest_args,
             wasm_table_base,
@@ -97,13 +98,26 @@ fn runtime_manifest_fixture(label: &str, module_bytes: &[u8], digest: &str) -> t
     fs::write(root.path().join("program.wasm"), module_bytes).expect("write module fixture");
     fs::write(
         root.path().join("manifest.json"),
-        format!(
-            r#"{{"version":{WASM_EXECUTION_MANIFEST_VERSION},"mode":"linked","modules":{{"linked":{{"path":"program.wasm","size":{},"sha256":"{digest}"}}}}}}"#,
-            module_bytes.len()
-        ),
+        serde_json::to_vec(&serde_json::json!({
+            "version": WASM_EXECUTION_MANIFEST_VERSION,
+            "mode": "linked",
+            "modules": {"linked": {
+                "path": "program.wasm", "size": module_bytes.len(), "sha256": digest
+            }},
+            "launch": {"environment": fixture_launch_environment()},
+        }))
+        .unwrap(),
     )
     .expect("write manifest fixture");
     root
+}
+
+fn fixture_launch_environment() -> serde_json::Value {
+    serde_json::json!({
+        "MOLT_CAPABILITIES": "",
+        "MOLT_CAPABILITY_TIER": "none",
+        "MOLT_CAPABILITY_POLICY_DIGEST": format!("sha256:{}", "1".repeat(64)),
+    })
 }
 
 #[test]
@@ -119,6 +133,13 @@ fn runtime_manifest_resolves_and_verifies_linked_module() {
     assert_eq!(resolved.main.bytes(), bytes);
     assert!(resolved.runtime.is_none());
     assert!(resolved.linked);
+    assert_eq!(
+        resolved
+            .launch_environment
+            .iter()
+            .find(|(name, _)| name == "MOLT_CAPABILITIES"),
+        Some(&("MOLT_CAPABILITIES".to_string(), String::new())),
+    );
 }
 
 #[test]
@@ -132,11 +153,15 @@ fn runtime_manifest_resolves_and_verifies_split_modules() {
     let runtime_digest = sha256_hex(runtime_bytes);
     fs::write(
         root.path().join("manifest.json"),
-        format!(
-            r#"{{"version":{WASM_EXECUTION_MANIFEST_VERSION},"mode":"split-runtime","modules":{{"app":{{"path":"program.wasm","size":{},"sha256":"{app_digest}"}},"runtime":{{"path":"runtime.wasm","size":{},"sha256":"{runtime_digest}"}}}}}}"#,
-            app_bytes.len(),
-            runtime_bytes.len(),
-        ),
+        serde_json::to_vec(&serde_json::json!({
+            "version": WASM_EXECUTION_MANIFEST_VERSION,
+            "mode": "split-runtime",
+            "modules": {
+                "app": {"path": "program.wasm", "size": app_bytes.len(), "sha256": app_digest},
+                "runtime": {"path": "runtime.wasm", "size": runtime_bytes.len(), "sha256": runtime_digest},
+            },
+            "launch": {"environment": fixture_launch_environment()},
+        })).unwrap(),
     )
     .expect("write split manifest");
     let resolved = resolve_execution_modules(Some(
@@ -208,12 +233,16 @@ fn runtime_manifest_rejects_version_and_nonportable_asset_paths() {
         Some(serde_json::json!(0)),
         Some(serde_json::json!(1)),
         Some(serde_json::json!(2)),
-        Some(serde_json::json!(4)),
+        Some(serde_json::json!(3)),
         Some(serde_json::json!(99)),
         Some(serde_json::json!(true)),
         Some(serde_json::json!(false)),
-        Some(serde_json::json!("3")),
-        Some(serde_json::json!(3.0)),
+        Some(serde_json::json!(
+            WASM_EXECUTION_MANIFEST_VERSION.to_string()
+        )),
+        Some(serde_json::json!(f64::from(
+            WASM_EXECUTION_MANIFEST_VERSION
+        ))),
     ] {
         let mut manifest = original.clone();
         match version {
@@ -226,7 +255,9 @@ fn runtime_manifest_rejects_version_and_nonportable_asset_paths() {
         let error =
             resolve_execution_modules(Some(path.to_string_lossy().into_owned())).unwrap_err();
         assert!(
-            format!("{error:#}").contains("Molt deployment manifest version must be 3"),
+            format!("{error:#}").contains(&format!(
+                "Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}"
+            )),
             "{error:#}",
         );
     }
@@ -246,6 +277,206 @@ fn runtime_manifest_rejects_version_and_nonportable_asset_paths() {
             resolve_execution_modules(Some(path.to_string_lossy().into_owned())).unwrap_err();
         assert!(error.to_string().contains("adjacent file"), "{error:#}");
     }
+}
+
+#[test]
+fn runtime_manifest_rejects_invalid_launch_before_reading_module() {
+    let bytes = b"module fixture";
+    let root = runtime_manifest_fixture("launch-admission", bytes, &sha256_hex(bytes));
+    let path = root.path().join("manifest.json");
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    fs::remove_file(root.path().join("program.wasm")).unwrap();
+    let mut invalid = vec![
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!([])),
+        Some(serde_json::json!([fixture_launch_environment()])),
+        Some(serde_json::json!({})),
+        Some(serde_json::json!({"environment": null})),
+        Some(serde_json::json!({"environment": []})),
+        Some(serde_json::json!({"environment": fixture_launch_environment(), "fallback": {}})),
+    ];
+    for name in [
+        "MOLT_CAPABILITIES",
+        "MOLT_CAPABILITY_TIER",
+        "MOLT_CAPABILITY_POLICY_DIGEST",
+    ] {
+        let mut environment = fixture_launch_environment();
+        environment.as_object_mut().unwrap().remove(name);
+        invalid.push(Some(serde_json::json!({"environment": environment})));
+    }
+    for (name, value) in [
+        ("", serde_json::json!("x")),
+        ("BAD=NAME", serde_json::json!("x")),
+        ("BAD\0NAME", serde_json::json!("x")),
+        ("EXTRA", serde_json::json!("bad\0value")),
+        ("EXTRA", serde_json::json!(false)),
+        ("EXTRA", serde_json::json!(1)),
+        ("EXTRA", serde_json::Value::Null),
+    ] {
+        let mut environment = fixture_launch_environment();
+        environment[name] = value;
+        invalid.push(Some(serde_json::json!({"environment": environment})));
+    }
+    for launch in invalid {
+        let mut manifest = original.clone();
+        match launch {
+            Some(value) => manifest["launch"] = value,
+            None => {
+                manifest.as_object_mut().unwrap().remove("launch");
+            }
+        }
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let error =
+            resolve_execution_modules(Some(path.to_string_lossy().into_owned())).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(
+            detail.contains("launch") || detail.contains("decode runtime manifest fields"),
+            "{detail}"
+        );
+        assert!(
+            !detail.contains("module fixture") && !detail.contains("inspect linked module"),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn deployment_environment_overwrites_once_and_preserves_omitted_optional_policy() {
+    let entries = |pairs: &[(&str, &str)]| {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let ambient = entries(&[
+        ("Z_UNRELATED", "first"),
+        ("MOLT_CAPABILITIES", "net.connect"),
+        ("MOLT_CAPABILITY_TIER", "full"),
+        ("A_UNRELATED", "later"),
+        ("MOLT_CAPABILITIES", "net.listen"),
+        ("MOLT_CAPABILITY_POLICY_DIGEST", "ambient"),
+        ("MOLT_RESOURCE_MAX_MEMORY", "1024"),
+        ("MOLT_AUDIT_ENABLED", "1"),
+        ("MOLT_IO_MODE", "virtual"),
+        ("MOLT_EXECUTION_TARGET", "native"),
+        ("USER_VALUE", "unchanged"),
+    ]);
+    let launch = entries(&[
+        ("MOLT_CAPABILITIES", "fs.read"),
+        ("MOLT_CAPABILITY_TIER", "none"),
+        ("MOLT_CAPABILITY_POLICY_DIGEST", "producer"),
+        ("MOLT_IO_MODE", "callback"),
+        ("MOLT_EXECUTION_TARGET", "browser"),
+    ]);
+    let environment = super::wasi_environment(ambient.clone(), &launch, &[], Some("wasi"));
+    let expected = entries(&[
+        ("Z_UNRELATED", "first"),
+        ("MOLT_CAPABILITIES", "fs.read"),
+        ("MOLT_CAPABILITY_TIER", "none"),
+        ("A_UNRELATED", "later"),
+        ("MOLT_CAPABILITY_POLICY_DIGEST", "producer"),
+        ("MOLT_RESOURCE_MAX_MEMORY", "1024"),
+        ("MOLT_AUDIT_ENABLED", "1"),
+        ("MOLT_IO_MODE", "callback"),
+        ("MOLT_EXECUTION_TARGET", "wasi"),
+        ("USER_VALUE", "unchanged"),
+    ]);
+    assert_eq!(environment, expected);
+    let extra = entries(&[("MOLT_CAPABILITY_TIER", "extra"), ("NEW_VALUE", "last")]);
+    let raw_expected = entries(&[
+        ("Z_UNRELATED", "first"),
+        ("MOLT_CAPABILITIES", "net.connect"),
+        ("MOLT_CAPABILITY_TIER", "full"),
+        ("A_UNRELATED", "later"),
+        ("MOLT_CAPABILITIES", "net.listen"),
+        ("MOLT_CAPABILITY_POLICY_DIGEST", "ambient"),
+        ("MOLT_RESOURCE_MAX_MEMORY", "1024"),
+        ("MOLT_AUDIT_ENABLED", "1"),
+        ("MOLT_IO_MODE", "virtual"),
+        ("MOLT_EXECUTION_TARGET", "native"),
+        ("USER_VALUE", "unchanged"),
+        ("MOLT_CAPABILITY_TIER", "extra"),
+        ("NEW_VALUE", "last"),
+    ]);
+    assert_eq!(
+        super::wasi_environment(ambient, &launch, &extra, None),
+        raw_expected
+    );
+    let empty_grants = entries(&[("MOLT_CAPABILITIES", ""), ("MOLT_CAPABILITY_TIER", "none")]);
+    let restricted = super::wasi_environment(launch, &empty_grants, &[], Some("wasi"));
+    assert!(restricted.contains(&("MOLT_CAPABILITIES".into(), String::new())));
+    assert!(restricted.contains(&("MOLT_CAPABILITY_TIER".into(), "none".into())));
+}
+
+#[test]
+fn manifest_bound_command_receives_admitted_launch_environment() {
+    let source = br#"(module
+        (import "wasi_snapshot_preview1" "environ_sizes_get"
+            (func $sizes (param i32 i32) (result i32)))
+        (import "wasi_snapshot_preview1" "environ_get"
+            (func $environ (param i32 i32) (result i32)))
+        (memory (export "memory") 4)
+        (data (i32.const 32768) "MOLT_CAPABILITIES=fs.read\00")
+        (data (i32.const 33024) "MOLT_EXECUTION_TARGET=wasi\00")
+        (func $expect (param $wanted i32) (param $length i32)
+            (local $index i32) (local $offset i32) (local $entry i32)
+            (block $missing
+                (loop $entries
+                    local.get $index i32.const 0 i32.load i32.ge_u br_if $missing
+                    local.get $index i32.const 4 i32.mul i32.const 8 i32.add i32.load
+                    local.set $entry
+                    i32.const 0 local.set $offset
+                    (block $next
+                        (loop $bytes
+                            local.get $entry local.get $offset i32.add i32.load8_u
+                            local.get $wanted local.get $offset i32.add i32.load8_u
+                            i32.ne br_if $next
+                            local.get $offset i32.const 1 i32.add local.tee $offset
+                            local.get $length i32.lt_u br_if $bytes)
+                        return)
+                    local.get $index i32.const 1 i32.add local.set $index
+                    br $entries))
+            unreachable)
+        (func (export "_start")
+            i32.const 0 i32.const 4 call $sizes if unreachable end
+            i32.const 8 i32.const 65536 call $environ if unreachable end
+            i32.const 32768 i32.const 26 call $expect
+            i32.const 33024 i32.const 27 call $expect))"#;
+    let root = runtime_manifest_fixture("command-launch", source, &sha256_hex(source));
+    let path = root.path().join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest["entry"] = serde_json::json!({"module": "linked", "function": "_start"});
+    manifest["launch"]["environment"]["MOLT_CAPABILITIES"] = "fs.read".into();
+    // The host's actual execution target must win over every incoming layer.
+    manifest["launch"]["environment"]["MOLT_EXECUTION_TARGET"] = "browser".into();
+    fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let resolved = resolve_execution(ExecutionRequest::WasiCommandManifest {
+        manifest: path.to_string_lossy().into_owned(),
+    })
+    .unwrap();
+    let ResolvedExecution::WasiCommandManifest(command) = resolved else {
+        panic!("manifest command changed execution mode");
+    };
+    let engine = build_engine().unwrap();
+    let command = command.load(&engine).unwrap();
+    assert_eq!(
+        execute_loaded_guest(
+            &engine,
+            command.module(),
+            None,
+            LoadedGuestOptions {
+                kind: LoadedGuestKind::WasiCommandManifest(&command),
+                launch_environment: command.launch_environment(),
+                vfs_envs: &[],
+                guest_args: &[],
+                wasm_table_base: None,
+            },
+        )
+        .unwrap(),
+        GuestTermination::Returned
+    );
 }
 
 #[test]

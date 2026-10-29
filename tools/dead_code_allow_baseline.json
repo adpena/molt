@@ -1,5 +1,5 @@
 {
-  "baseline_total": 62,
+  "baseline_total": 61,
   "entries": [
     {
       "id": "runtime/build_support/variadic_exports.rs::allow_dead_code::fn:render_rust_anchors",
@@ -173,11 +173,6 @@
     },
     {
       "id": "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::const:MODULE_KIND_NAMESPACE_PARENT",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },

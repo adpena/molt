@@ -179,7 +179,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     )
     metadata = _ModuleGraphMetadata(
         logical_source_path_by_module={},
-        module_is_namespace_by_module={},
+        namespace_portions_by_module={},
         module_is_package_by_module={},
         module_execution_kind_by_module={},
         frontend_module_costs=None,

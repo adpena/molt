@@ -5,7 +5,9 @@ mod model;
 mod publication;
 mod scan;
 
-pub use callable_table_generated::WASM_EXECUTION_MANIFEST_VERSION;
+pub use callable_table_generated::{
+    WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT, WASM_EXECUTION_MANIFEST_VERSION,
+};
 
 use callable_table_generated::{
     CALLABLE_TABLE_LAYOUT_SECTION_NAME, CALLABLE_TABLE_LAYOUT_VERSION, CALLABLE_TABLE_SECTION_NAME,

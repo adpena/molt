@@ -61,6 +61,7 @@ impl BlobBuilder {
         blob.extend_from_slice(&[0x47u8; 16]); // digest: synthetic
         blob.extend_from_slice(&(names.len() as u64).to_le_bytes());
         blob.extend_from_slice(&0u64.to_le_bytes());
+        blob.extend_from_slice(&0u64.to_le_bytes());
         assert_eq!(blob.len(), MODULE_REGISTRY_HEADER_BYTES);
         for ((_, init_ptr, parent, alias, kind, flags), (off, len)) in self.rows.iter().zip(&spans)
         {
@@ -72,6 +73,8 @@ impl BlobBuilder {
             blob.push(*kind);
             blob.push(*flags);
             blob.extend_from_slice(&0u16.to_le_bytes());
+            blob.extend_from_slice(&0u32.to_le_bytes());
+            blob.extend_from_slice(&0u32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
@@ -3361,6 +3364,7 @@ fn g4_registry_blob_shape_is_validated() {
     }
     blob.extend_from_slice(&(names.len() as u64).to_le_bytes());
     blob.extend_from_slice(&0u64.to_le_bytes());
+    blob.extend_from_slice(&0u64.to_le_bytes());
     for (off, len) in &spans {
         blob.extend_from_slice(&off.to_le_bytes());
         blob.extend_from_slice(&len.to_le_bytes());
@@ -3370,6 +3374,8 @@ fn g4_registry_blob_shape_is_validated() {
         blob.push(MODULE_KIND_SOURCE);
         blob.push(0);
         blob.extend_from_slice(&0u16.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());

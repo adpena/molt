@@ -22,15 +22,10 @@ from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     wasm_loader_asset_closure,
 )
-from molt.capability_manifest import CapabilityManifest
-
-
-def _default_runtime_policy():
-    return CapabilityManifest().resolve()
 
 
 @pytest.mark.parametrize(
-    "version", ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0]
+    "version", ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0]
 )
 def test_worker_generators_reject_incompatible_receiver_before_module_read(
     tmp_path: Path, version: object
@@ -44,14 +39,13 @@ def test_worker_generators_reject_incompatible_receiver_before_module_read(
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     output = tmp_path / "worker.js"
-    with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
-        generate_worker(output, [], manifest=path)
+    with pytest.raises(ValueError, match="Molt deployment manifest version must be 4"):
+        generate_worker(output, manifest=path)
     assert not output.exists()
     manifest["mode"] = "split-runtime"
-    with pytest.raises(ValueError, match="Molt deployment manifest version must be 3"):
+    with pytest.raises(ValueError, match="Molt deployment manifest version must be 4"):
         _generate_split_worker_js(
             deployment_manifest=manifest,
-            resolved_capability_policy=_default_runtime_policy(),
             shared_memory_initial_pages=1,
             shared_table_initial=1,
             shared_table_base=None,
@@ -87,7 +81,7 @@ def test_generate_worker_produces_valid_js(tmp_path):
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=32)
+    generate_worker(output, tmp_quota_mb=32)
     content = output.read_text(encoding="utf-8")
     assert "fetch" in content
     assert "WebAssembly" in content
@@ -100,11 +94,50 @@ def test_generate_worker_contains_tmpfs(tmp_path):
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, ["fs.tmp.read", "fs.tmp.write"], tmp_quota_mb=64)
+    generate_worker(output, tmp_quota_mb=64)
     content = output.read_text(encoding="utf-8")
     assert "class TmpFs" in content
     assert "TMP_QUOTA_MB = 64" in content
     assert "ENOSPC: quota exceeded" in content
+
+
+@pytest.mark.parametrize("debug_stderr", [False, True])
+def test_generate_worker_debug_stderr_is_explicit_deployment_option(
+    tmp_path, debug_stderr
+):
+    from tools.generate_worker import generate_worker
+
+    module = tmp_path / "worker_linked.wasm"
+    module.write_bytes(EMPTY_WASM_MODULE)
+    write_wasm_execution_manifest(tmp_path, linked=module)
+    output = tmp_path / "worker.js"
+    generate_worker(output, debug_stderr=debug_stderr)
+    source = output.read_text(encoding="utf-8")
+    assert f"const DEBUG_STDERR = {str(debug_stderr).lower()};" in source
+    assert "CAPABILITIES.includes('debug')" not in source
+
+
+def test_generate_worker_cli_uses_debug_option_and_rejects_retired_capabilities(
+    tmp_path, monkeypatch
+):
+    import sys
+    from tools import generate_worker
+
+    module = tmp_path / "worker_linked.wasm"
+    module.write_bytes(EMPTY_WASM_MODULE)
+    write_wasm_execution_manifest(tmp_path, linked=module)
+    output = tmp_path / "worker.js"
+    monkeypatch.setattr(
+        sys, "argv", ["generate_worker.py", "-o", str(output), "--debug-stderr"]
+    )
+    assert generate_worker.main() == 0
+    assert "const DEBUG_STDERR = true;" in output.read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        sys, "argv", ["generate_worker.py", "--capabilities", "fs.read"]
+    )
+    with pytest.raises(SystemExit) as error:
+        generate_worker.main()
+    assert error.value.code == 2
 
 
 def test_generate_worker_contains_host_imports(tmp_path):
@@ -114,7 +147,7 @@ def test_generate_worker_contains_host_imports(tmp_path):
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=16)
+    generate_worker(output, tmp_quota_mb=16)
     content = output.read_text(encoding="utf-8")
     assert "createHostImports" in content
     assert "molt_vfs_read" in content
@@ -129,7 +162,7 @@ def test_generate_worker_contains_fetch_handler(tmp_path):
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, ["http.fetch"])
+    generate_worker(output)
     content = output.read_text(encoding="utf-8")
     assert "async fetch(request, env, ctx)" in content
     assert "export default" in content
@@ -143,7 +176,7 @@ def test_generate_worker_contains_wasi_shim(tmp_path):
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, [])
+    generate_worker(output)
     content = output.read_text(encoding="utf-8")
     assert "buildWasiShim" in content
     assert "wasi_snapshot_preview1" in content
@@ -153,18 +186,21 @@ def test_generate_worker_contains_wasi_shim(tmp_path):
     assert "clock_time_get" in content
 
 
-def test_generate_worker_capabilities_substituted(tmp_path):
+def test_generate_worker_preserves_policy_and_substitutes_template_tokens(tmp_path):
     from tools.generate_worker import generate_worker
+    from molt.capability_manifest import CapabilityManifest
 
     output = tmp_path / "worker.js"
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
-    write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, ["fs.bundle.read", "http.fetch"], tmp_quota_mb=32)
+    manifest = write_wasm_execution_manifest(
+        tmp_path, linked=module, policy=CapabilityManifest(allow=["fs.read"]).resolve()
+    )
+    generate_worker(output, tmp_quota_mb=32)
     content = output.read_text(encoding="utf-8")
-    assert '"fs.bundle.read"' in content
-    assert '"http.fetch"' in content
-    assert "{{CAPABILITIES}}" not in content
+    deployment = json.loads(manifest.read_text(encoding="utf-8"))
+    assert json.dumps(json.dumps(deployment, sort_keys=True)) in content
+    assert "{{DEBUG_STDERR}}" not in content
     assert "{{TMP_QUOTA_MB}}" not in content
     assert "{{WASM_FILENAME}}" not in content
     assert "{{SYNTHETIC_ERRNO}}" not in content
@@ -178,7 +214,7 @@ def test_generate_worker_custom_wasm_filename(tmp_path):
     module = tmp_path / "custom.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, [], wasm_filename="custom.wasm")
+    generate_worker(output, wasm_filename="custom.wasm")
     content = output.read_text(encoding="utf-8")
     assert "custom.wasm" in content
     assert "worker_linked.wasm" not in content
@@ -191,7 +227,7 @@ def test_generate_worker_no_scaffold_warning(tmp_path):
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, [])
+    generate_worker(output)
     content = output.read_text(encoding="utf-8")
     assert "SCAFFOLD" not in content
     assert "NOT PRODUCTION READY" not in content
@@ -204,7 +240,7 @@ def test_generate_worker_stdio_capture(tmp_path):
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, [])
+    generate_worker(output)
     content = output.read_text(encoding="utf-8")
     assert "class StdioCapture" in content
     assert "writeStdout" in content
@@ -219,7 +255,6 @@ def test_generate_split_worker_bootstrap_import_surface() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -239,7 +274,6 @@ def test_generate_split_worker_contains_vfs_adapter_import() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -256,7 +290,6 @@ def test_generate_split_worker_contains_vfs_host_imports() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -275,7 +308,6 @@ def test_generate_split_worker_uses_worker_env_for_static_assets() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -292,7 +324,6 @@ def test_generate_split_worker_defines_utf8_decoder_for_vfs_paths() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -310,7 +341,6 @@ def test_generate_split_worker_defines_wasi_vfs_errno_and_preopen_state() -> Non
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -335,7 +365,6 @@ def test_generate_split_worker_replaces_path_stubs_with_vfs_backed_wasi_ops() ->
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
@@ -380,7 +409,6 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -399,7 +427,6 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
         in content
     )
     assert "molt_table_init" not in content
-    assert "? [`MOLT_WASM_TABLE_BASE=${32}`]" in content
     assert "installTableRefs" not in content
     assert "__molt_table_ref_" not in content
 
@@ -412,7 +439,6 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -638,7 +664,6 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=32,
@@ -1280,7 +1305,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
         shared_table_base=None,
@@ -1298,7 +1322,6 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=_default_runtime_policy(),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
         shared_table_base=None,
@@ -1444,6 +1467,223 @@ def _worker_errno_fixture_wasm() -> bytes:
     )
 
 
+def _worker_environment_fixture_wasm() -> bytes:
+    """WASM calls preview1 and exports the actual memory written by the host."""
+    import molt.wasm_artifact as wasm_artifact
+
+    bodies = [
+        b"\x00\x41\x00\x41\x04\x10\x00\x0b",
+        b"\x00\x41\x10\x41\x80\x20\x10\x01\x0b",
+    ]
+    return wasm_artifact._build_wasm_sections(
+        [
+            (
+                1,
+                _wasm_vec(
+                    [
+                        _wasm_function_type([0x7F, 0x7F], [0x7F]),
+                        _wasm_function_type([], [0x7F]),
+                    ]
+                ),
+            ),
+            (
+                2,
+                _wasm_vec(
+                    [
+                        _wasm_function_import(
+                            "wasi_snapshot_preview1", "environ_sizes_get", 0
+                        ),
+                        _wasm_function_import(
+                            "wasi_snapshot_preview1", "environ_get", 0
+                        ),
+                        wasm_artifact._write_wasm_string("env")
+                        + wasm_artifact._write_wasm_string("memory")
+                        + b"\x02\x00\x01",
+                    ]
+                ),
+            ),
+            (3, _wasm_vec([b"\x01", b"\x01"])),
+            (
+                7,
+                _wasm_vec(
+                    [
+                        _wasm_function_export("sizes", 2),
+                        _wasm_function_export("environment", 3),
+                        wasm_artifact._write_wasm_string("memory") + b"\x02\x00",
+                    ]
+                ),
+            ),
+            (
+                10,
+                _wasm_vec(
+                    [
+                        wasm_artifact._write_wasm_varuint(len(body)) + body
+                        for body in bodies
+                    ]
+                ),
+            ),
+        ]
+    )
+
+
+def _observe_generated_worker_environment(tmp_path, source, *, mode, deployment):
+    """Execute real generated WASI imports through a real guest module."""
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+
+    if shutil.which("node") is None:
+        pytest.skip("Node is required for generated-worker WASI environment")
+    root = Path(__file__).resolve().parents[1]
+    module = tmp_path / "environment.wasm"
+    module.write_bytes(_worker_environment_fixture_wasm())
+    empty = tmp_path / "empty.wasm"
+    empty.write_bytes(attested_empty_callable_table(EMPTY_WASM_MODULE))
+    manifest = tmp_path / "probe-manifest.json"
+    manifest.write_text(json.dumps(deployment), encoding="utf-8")
+    worker = tmp_path / "probe-worker.js"
+    worker.write_text(source, encoding="utf-8")
+    script = tmp_path / "worker-environment.cjs"
+    script.write_text(
+        r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const [workerPath, modulePath, manifestPath, mode, root, emptyPath] = process.argv.slice(2);
+let source = fs.readFileSync(workerPath, 'utf8');
+const bridge = require(path.join(root, 'wasm/loader_bridge.js'));
+const lifetime = require(path.join(root, 'wasm/runtime_lifecycle.js'));
+const {MoltVfs} = require(path.join(root, 'wasm/molt_vfs_browser.js'));
+const empty = new WebAssembly.Module(fs.readFileSync(emptyPath));
+const context = vm.createContext({WebAssembly, TextEncoder, TextDecoder, console,
+  URL, Response, performance, MoltWasmLoaderBridge: bridge,
+  MoltRuntimeLifecycle: lifetime, MoltVfs, runtimeModule: empty, appModule: empty});
+(async () => {
+  let probe;
+  if (mode === 'static') {
+    const boundary = source.indexOf('export default {');
+    assert.ok(boundary > 0);
+    vm.runInContext(source.slice(0, boundary) + `
+      const state = {memory: new WebAssembly.Memory({initial:1})};
+      globalThis.probe = {memory:state.memory, wasi:buildWasiShim(state,new StdioCapture()),
+        admitted:deploymentManifest};`, context);
+    probe = context.probe;
+  } else {
+    const boundary = '    // Shared table for indirect calls';
+    assert.ok(source.includes(boundary));
+    source = source.replace(/^import .*;$/gm, '')
+      .replace('export default {', 'globalThis.worker = {')
+      .replace(boundary, '    return {wasi, memory:wasmMemory, admitted:deploymentManifest};\n' + boundary);
+    vm.runInContext(source, context);
+    probe = await context.worker.fetch({url:'https://worker.example/'}, {SECRET_BINDING:'never guest env'}, {});
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(probe.admitted)),
+    JSON.parse(fs.readFileSync(manifestPath, 'utf8')));
+  const wasmModule = new WebAssembly.Module(fs.readFileSync(modulePath));
+  const instance = new WebAssembly.Instance(wasmModule, {
+    env:{memory:probe.memory}, wasi_snapshot_preview1:probe.wasi});
+  assert.equal(instance.exports.sizes(), 0);
+  assert.equal(instance.exports.environment(), 0);
+  const view = new DataView(instance.exports.memory.buffer);
+  const count = view.getUint32(0, true), size = view.getUint32(4, true);
+  const entries = [];
+  let observedSize = 0;
+  for (let i = 0; i < count; i++) {
+    const pointer = view.getUint32(16 + i * 4, true);
+    assert.equal(pointer, 4096 + observedSize, 'preview1 environment pointer');
+    const bytes = new Uint8Array(instance.exports.memory.buffer, pointer);
+    const end = bytes.indexOf(0);
+    assert.ok(end >= 0, 'environment entry is NUL terminated');
+    entries.push(new TextDecoder().decode(bytes.subarray(0, end)));
+    observedSize += end + 1;
+  }
+  assert.equal(size, observedSize, 'preview1 reports UTF-8 bytes including NULs');
+  const pairs = entries.map(entry => {
+    const separator = entry.indexOf('=');
+    assert.ok(separator > 0);
+    return [entry.slice(0,separator), entry.slice(separator+1)];
+  });
+  assert.equal(new Set(pairs.map(pair => pair[0])).size, count, 'environment names are unique');
+  console.log(JSON.stringify(Object.fromEntries(pairs)));
+})().catch(error => { console.error(error); process.exitCode=1; });
+""",
+        encoding="utf-8",
+    )
+    result = run_guarded_test_process(
+        [
+            "node",
+            str(script),
+            str(worker),
+            str(module),
+            str(manifest),
+            mode,
+            str(root),
+            str(empty),
+        ],
+        cwd=tmp_path,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.descendants_closed
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("mode", ["static", "split"])
+@pytest.mark.parametrize("grant", ["", "fs.read"])
+def test_generated_worker_delivers_manifest_policy_through_real_wasi(
+    tmp_path, grant, mode
+):
+    from molt.capability_manifest import CapabilityManifest
+    from molt.cli.wasm import _generate_split_worker_js
+    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tools.generate_worker import generate_worker
+
+    module = tmp_path / "environment.wasm"
+    module.write_bytes(_worker_environment_fixture_wasm())
+    policy = CapabilityManifest(allow=[grant] if grant else []).resolve()
+    if mode == "static":
+        manifest = write_wasm_execution_manifest(tmp_path, linked=module, policy=policy)
+        deployment = json.loads(manifest.read_text(encoding="utf-8"))
+    else:
+        empty = attested_empty_callable_table(EMPTY_WASM_MODULE)
+        deployment = split_wasm_execution_manifest(empty, empty, policy=policy)
+    deployment["fixture_metadata"] = {
+        "future_field": "{{TMP_QUOTA_MB}} __MOLT_SHARED_TABLE_BASE__"
+    }
+    deployment["launch"]["environment"]["FIXTURE_UNICODE"] = "héllo=世界"
+    deployment["launch"]["environment"]["FIXTURE_TOKEN"] = (
+        "{{WASM_FILENAME}} __MOLT_SHARED_TABLE_BASE__"
+    )
+    deployment["launch"]["environment"]["__proto__"] = "ordinary data"
+    deployment["launch"]["environment"]["MOLT_EXECUTION_TARGET"] = "native"
+    if mode == "static":
+        manifest.write_text(json.dumps(deployment), encoding="utf-8")
+        worker = tmp_path / "worker.js"
+        generate_worker(worker)
+        source = worker.read_text(encoding="utf-8")
+    else:
+        source = _generate_split_worker_js(
+            deployment_manifest=deployment,
+            shared_memory_initial_pages=1,
+            shared_table_initial=1,
+            shared_table_base=32,
+        )
+    observed = _observe_generated_worker_environment(
+        tmp_path, source, mode=mode, deployment=deployment
+    )
+    expected = {
+        "FIXTURE_TOKEN": "{{WASM_FILENAME}} __MOLT_SHARED_TABLE_BASE__",
+        "FIXTURE_UNICODE": "héllo=世界",
+        "MOLT_CAPABILITIES": grant,
+        "MOLT_CAPABILITY_POLICY_DIGEST": policy.digest(),
+        "MOLT_CAPABILITY_TIER": "none",
+        "MOLT_EXECUTION_TARGET": "cloudflare",
+        "__proto__": "ordinary data",
+    }
+    if mode == "split":
+        expected["MOLT_WASM_TABLE_BASE"] = "32"
+    assert observed == expected
+
+
 def _worker_fetch_fixture_wasm() -> bytes:
     """Real guest startup and shutdown write an ordered trace through fd_write."""
     import molt.wasm_artifact as wasm_artifact
@@ -1541,7 +1781,7 @@ def test_generated_worker_fetch_uses_real_module_instance_and_cleans_up(
     module.write_bytes(_worker_fetch_fixture_wasm())
     write_wasm_execution_manifest(tmp_path, linked=module)
     output = tmp_path / "worker.js"
-    generate_worker(output, [])
+    generate_worker(output)
     source = output.read_text(encoding="utf-8")
     assert source.count("export default {") == 1
     script = tmp_path / "worker-fetch.cjs"
@@ -1622,14 +1862,13 @@ def test_generated_workers_keep_actual_wasi_and_molt_error_imports_separate(
     empty.write_bytes(attested_empty_callable_table(EMPTY_WASM_MODULE))
     write_wasm_execution_manifest(tmp_path, linked=fixture)
     static = tmp_path / "static-worker.js"
-    generate_worker(static, [])
+    generate_worker(static)
     split = tmp_path / "split-worker.js"
     split.write_text(
         _generate_split_worker_js(
             deployment_manifest=split_wasm_execution_manifest(
                 empty.read_bytes(), empty.read_bytes()
             ),
-            resolved_capability_policy=_default_runtime_policy(),
             shared_memory_initial_pages=8,
             shared_table_initial=16,
             shared_table_base=None,

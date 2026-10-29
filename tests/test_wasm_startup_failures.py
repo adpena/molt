@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from tests.wasm_execution_manifest import write_wasm_execution_manifest
+from tests.wasm_execution_manifest import (
+    write_wasm_execution_manifest,
+    wasm_execution_launch,
+)
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 
 from tests.wasm_execution_manifest import (
     EMPTY_WASM_MODULE,
@@ -395,6 +399,14 @@ def test_node_runner_rejects_startup_error_before_host_exports(tmp_path: Path) -
         + "const lifecyclePath = "
         + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
         + ";\n"
+        + "const executionManifest = "
+        + json.dumps(
+            {
+                "version": WASM_EXECUTION_MANIFEST_VERSION,
+                "launch": wasm_execution_launch(),
+            }
+        )
+        + ";\n"
         + r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -412,7 +424,7 @@ async function exercise(primary, split, fails, cleanupErrors = [], status = 0) {
     initWasmAssets(manifestPath) { assert.equal(manifestPath, 'manifest.json'); },
     formatTraceError,
     wasmBuffer: {}, linkedBuffer: split ? null : {}, runtimeBuffer: {},
-    runtimeManifest: {version: 3, mode: split ? 'split-runtime' : 'linked'},
+    runtimeManifest: {...executionManifest, mode: split ? 'split-runtime' : 'linked'},
     outputImports: null, inputHasRuntimeImports: false, runtimeImportsDesc: null,
     runtimeCallIndirectNames: [], runtimeExportSignatures: {}, canDirectLink: false,
     loadRuntimeAssets() {},
@@ -1535,7 +1547,7 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
     module = tmp_path / "worker_linked.wasm"
     module.write_bytes(EMPTY_WASM_MODULE)
     write_wasm_execution_manifest(tmp_path, linked=module)
-    generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=32)
+    generate_worker(output, tmp_quota_mb=32)
     source = output.read_text(encoding="utf-8")
     assert source.count("export default {") == 1
     source = source.replace("export default {", "globalThis.worker = {", 1)
@@ -2059,13 +2071,11 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
     tmp_path: Path,
 ) -> None:
     from molt.cli.wasm import _generate_split_worker_js
-    from molt.capability_manifest import CapabilityManifest
 
     source = _generate_split_worker_js(
         deployment_manifest=split_wasm_execution_manifest(
             EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
         ),
-        resolved_capability_policy=CapabilityManifest().resolve(),
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         shared_table_base=None,
