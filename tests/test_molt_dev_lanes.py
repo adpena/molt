@@ -2029,8 +2029,13 @@ def test_candidate_runner_launch_uses_its_immutable_committed_source(
     )
     observed = []
     synced = []
+    for cache_key in ("UV_CACHE_DIR", "PIP_CACHE_DIR", "RUFF_CACHE_DIR", "SCCACHE_DIR"):
+        monkeypatch.delenv(cache_key, raising=False)
 
-    def sync_environment(root):
+    def sync_environment(root, *, environment):
+        assert Path(environment["UV_CACHE_DIR"]).is_relative_to(
+            Path(environment["MOLT_EXT_ROOT"])
+        )
         assert (
             _try_acquire_file_lock(
                 root.parent.parent / "controller-use" / f"{root.name}.lock"

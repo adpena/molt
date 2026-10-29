@@ -32,6 +32,7 @@ from typing import Literal, assert_never, get_args
 from molt import python_environment_contract as _contract
 from molt import process_guard
 from molt.custody_layout import git_directories
+from molt.custody_layout import storage_rule
 from molt.exact_json import (
     ExactJsonError,
     canonical_json_sha256,
@@ -67,8 +68,8 @@ DEFAULT_CHECKOUT_INPUT_NAMES: tuple[CheckoutInputName, ...] = (
 InputScope = Literal["checkout", "repository"]
 InputState = Literal["current", "stale", "absent"]
 
-ACORN_ROOT = "tools/browser_asset_graph"
-EDGEBOX_ROOT = "examples/edgebox/packages/edgebox-cloudflare"
+ACORN_ROOT = "/".join(storage_rule("browser-environment").relative[:-1])
+EDGEBOX_ROOT = "/".join(storage_rule("edgebox-environment").relative[:-1])
 HOOK_INSTALLER = "tools/install_git_hooks.py"
 
 
@@ -734,64 +735,72 @@ def _with_caller_choices(
 
 def _provision_locked(spec: LockedTree) -> bool:
     """Make ``spec`` current; True when this call ran its provisioner."""
-    if _locked_state(spec) == "current":
-        return False
-    with _ProvisioningLock(spec):
-        locks = _lock_digests(spec)
-        digest = _action_digest(spec, locks)
-        if _locked_state(spec, digest) == "current":
-            return False  # Another process provisioned it while we waited.
-        _require_package_manager(spec)
-        launch = spec.command()
-        if launch is None:
-            raise ProvisioningError(
-                f"{spec.name}: `{spec.tool}` is not on PATH; it builds "
-                f"{spec.tree} from {', '.join(spec.lock_files)}"
+    from molt.checkout_state import checkout_state_use, record_package_environment_use
+
+    with checkout_state_use(((spec.tree, None),)):
+        if _locked_state(spec) == "current":
+            record_package_environment_use(spec.tree)
+            return False
+        with _ProvisioningLock(spec):
+            locks = _lock_digests(spec)
+            digest = _action_digest(spec, locks)
+            if _locked_state(spec, digest) == "current":
+                record_package_environment_use(spec.tree)
+                return False  # Another process provisioned it while we waited.
+            _require_package_manager(spec)
+            launch = spec.command()
+            if launch is None:
+                raise ProvisioningError(
+                    f"{spec.name}: `{spec.tool}` is not on PATH; it builds "
+                    f"{spec.tree} from {', '.join(spec.lock_files)}"
+                )
+            command, tool_environment = launch
+            environment = _with_caller_choices(spec, command, tool_environment)
+            spec.stamp.unlink(missing_ok=True)
+            argv = [*command, *spec.arguments]
+            started = time.monotonic()
+            command_cwd = spec.checkout / spec.command_cwd
+            result = _run(
+                spec.name,
+                argv,
+                cwd=command_cwd,
+                environment=environment,
+                guarded=True,
+                guard_source_root=spec.guard_source_root,
             )
-        command, tool_environment = launch
-        environment = _with_caller_choices(spec, command, tool_environment)
-        spec.stamp.unlink(missing_ok=True)
-        argv = [*command, *spec.arguments]
-        started = time.monotonic()
-        command_cwd = spec.checkout / spec.command_cwd
-        result = _run(
-            spec.name,
-            argv,
-            cwd=command_cwd,
-            environment=environment,
-            guarded=True,
-            guard_source_root=spec.guard_source_root,
-        )
-        seconds = time.monotonic() - started
-        if result.returncode != 0:
-            raise _failure(spec.name, argv, command_cwd, result)
-        if not (spec.tree / spec.sentinel).is_file():
-            raise ProvisioningError(
-                f"{spec.name}: `{_command_text(argv)}` exited 0 but "
-                f"{spec.tree / spec.sentinel} does not exist"
-            )
-        if _lock_digests(spec) != locks:
-            raise ProvisioningError(
-                f"{spec.name}: {', '.join(spec.lock_files)} changed while "
-                f"`{_command_text(argv)}` ran; the tree was not stamped"
-            )
-        write_exact(
-            spec.stamp,
-            {
-                "schema": SCHEMA,
-                "input": spec.name,
-                "digest": digest,
-                "locks": locks,
-                "tool": {
-                    "name": spec.tool,
-                    "command": list(command),
-                    "version": _tool_version(spec, command, tool_environment),
+            seconds = time.monotonic() - started
+            if result.returncode != 0:
+                raise _failure(spec.name, argv, command_cwd, result)
+            if not (spec.tree / spec.sentinel).is_file():
+                raise ProvisioningError(
+                    f"{spec.name}: `{_command_text(argv)}` exited 0 but "
+                    f"{spec.tree / spec.sentinel} does not exist"
+                )
+            if _lock_digests(spec) != locks:
+                raise ProvisioningError(
+                    f"{spec.name}: {', '.join(spec.lock_files)} changed while "
+                    f"`{_command_text(argv)}` ran; the tree was not stamped"
+                )
+            write_exact(
+                spec.stamp,
+                {
+                    "schema": SCHEMA,
+                    "input": spec.name,
+                    "digest": digest,
+                    "locks": locks,
+                    "tool": {
+                        "name": spec.tool,
+                        "command": list(command),
+                        "version": _tool_version(spec, command, tool_environment),
+                    },
+                    "provisioned_at_utc": datetime.now(UTC).isoformat(
+                        timespec="seconds"
+                    ),
+                    "seconds": round(seconds, 3),
                 },
-                "provisioned_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-                "seconds": round(seconds, 3),
-            },
-        )
-    return True
+            )
+        record_package_environment_use(spec.tree)
+        return True
 
 
 def _owner_argv(spec: OwnedInstallation, *arguments: str) -> list[str]:

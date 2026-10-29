@@ -2762,6 +2762,7 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
 
 def test_developer_host_default_cache_uses_a_per_test_user_cache_base(
     tmp_path_factory: pytest.TempPathFactory,
+    unbound_checkout_family: None,
 ) -> None:
     """Without MOLT_CACHE a developer host's Molt cache is the user cache base;
     the fixture gives each test its own, so no test writes the real home cache

@@ -285,6 +285,42 @@ def test_a_lock_change_reprovisions(checkout: Path) -> None:
     assert cp.input_state(spec) == "current"
 
 
+def test_package_environment_use_is_published_by_the_real_locked_producer(
+    checkout: Path,
+):
+    from molt.checkout_state import (
+        read_checkout_owner,
+        checkout_state_retirement,
+        checkout_state_use,
+        checkout_state_command_roots,
+    )
+    from molt.custody_layout import storage_rule
+
+    tree = checkout.joinpath(*storage_rule("browser-environment").relative)
+    tree.parent.mkdir(parents=True)
+    (checkout / "provision.py").write_text(
+        _PROVISIONER.replace(
+            'Path("tree")', 'Path("tools/browser_asset_graph/node_modules")'
+        )
+    )
+    spec = dataclasses.replace(_tree(checkout), tree=tree)
+    assert read_checkout_owner(tree) is None
+    cp.ensure_input(spec)
+    owner = read_checkout_owner(tree)
+    assert (
+        owner is not None
+        and owner.path == checkout
+        and owner.kind == "browser-environment"
+    )
+    roots = checkout_state_command_roots(checkout, {}, (sys.executable,), cwd=checkout)
+    assert (tree, owner) in roots
+    with checkout_state_use(roots):
+        with checkout_state_retirement(tree) as admitted:
+            assert not admitted
+    with checkout_state_retirement(tree) as admitted:
+        assert admitted
+
+
 def test_a_deleted_tree_takes_its_stamp_with_it(checkout: Path) -> None:
     spec = _tree(checkout)
     cp.ensure_input(spec)

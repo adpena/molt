@@ -968,10 +968,10 @@ def _gate_runtime(
             raise DriverError("integration source HEAD changed")
         return {"commit": selected_commit, "tree": tree}
 
-    # Beside the integration lock, shared by every worktree, never inside one.
+    from molt.dx import storage_path
+
     receipt_path = (
-        _integration_lock_path(repo).with_name("molt-integrate")
-        / "receipts"
+        storage_path(repo, "integration-receipts")
         / f"{selected_commit}.{receipt_kind}.json"
     )
     return GateRuntime(
@@ -1065,11 +1065,13 @@ def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilde
     from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
 
     env = immutable_git_environment(os.environ)
-    from molt.dx import checkout_state_maintenance_environment
+    from molt.dx import RunContext
 
-    selected = checkout_state_maintenance_environment(repo, env)
-    if selected is not None:
-        env.update(selected)
+    # Gates receive the same caches, scratch and toolchain selection as every
+    # DX child, including shells without a lane env.sh.
+    env = ProcessEnvironmentBuilder(
+        RunContext(repo).canonical_env(env, create_dirs=False)
+    )
     # Gates are proof executions: bytecode a gate writes under src/ changes the
     # checkout's import topology while later gates read it (a fresh worktree's
     # first landing failed that way). The canonical environment forbids writes;
@@ -2221,6 +2223,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_cl.set_defaults(func=molt_dev_retire.cmd_cleanup)
 
     # lane: orchestrator-owned lane worktrees (tools/molt_dev_lanes.py)
+    from tools.molt_dev_storage import add_arguments as add_storage_arguments
+
+    add_storage_arguments(sub)
     p_ln = sub.add_parser("lane", help="start, retire or list lane/<slug> worktrees")
     add_lane_arguments(
         p_ln, add_repo_arg=_add_repo_arg, add_remote_branch=_add_remote_branch

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import tomllib
 import uuid
+import contextlib
 from collections.abc import Collection, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,7 +150,10 @@ TOOLCHAINS_DIRNAME = "toolchains"
 # that produce artifacts default their output roots to it, so a proof never
 # writes into the watched source checkout.
 PROOF_SCRATCH_ROOT_ENV = "MOLT_PROOF_SCRATCH_ROOT"
-DEFAULT_SCCACHE_CACHE_SIZE = "10G"
+_SCCACHE_RETENTION = custody_layout.storage_rule("sccache").retention
+assert isinstance(_SCCACHE_RETENTION, custody_layout.Regenerable)
+assert _SCCACHE_RETENTION.max_bytes is not None
+DEFAULT_SCCACHE_CACHE_SIZE = f"{int(_SCCACHE_RETENTION.max_bytes / 1024**3)}G"
 REQUIRE_EXTERNAL_ARTIFACTS_ENV = "MOLT_REQUIRE_EXTERNAL_ARTIFACTS"
 PREFER_EXTERNAL_ARTIFACTS_ENV = "MOLT_PREFER_EXTERNAL_ARTIFACTS"
 EXTERNAL_ARTIFACT_ROOTS_ENV = "MOLT_EXTERNAL_ARTIFACT_ROOTS"
@@ -202,9 +206,15 @@ _ARTIFACT_BINDING_CACHE: dict[Path, _ArtifactRootBinding | str | None] = {}
 _ARTIFACT_BINDING_CACHE_LOCK = RLock()
 
 
-def artifact_root_binding_path(repo_root: Path) -> Path | None:
+def artifact_root_binding_path(
+    repo_root: Path, *, common_dir: Path | None = None
+) -> Path | None:
     try:
-        state = custody_layout.checkout_family_state_root(repo_root.resolve())
+        state = (
+            common_dir / "molt"
+            if common_dir is not None
+            else custody_layout.checkout_family_state_root(repo_root.resolve())
+        )
     except (OSError, ValueError, RuntimeError) as exc:
         raise DxConfigError(str(exc)) from exc
     return None if state is None else state / "artifact-root.json"
@@ -356,6 +366,9 @@ def set_artifact_root_binding(
     # their snapshot; the next process observes the new durable generation.
     with _ARTIFACT_BINDING_CACHE_LOCK:
         _ARTIFACT_BINDING_CACHE.pop(record, None)
+    from molt.default_paths import _default_molt_cache_cached
+
+    _default_molt_cache_cached.cache_clear()
     return record
 
 
@@ -1366,15 +1379,22 @@ def configured_artifact_root(
 
 
 def _configured_artifact_selection(
-    env: Mapping[str, str], *, relative_to: Path
+    env: Mapping[str, str],
+    *,
+    relative_to: Path,
+    common_dir: Path | None = None,
 ) -> ArtifactRootSelection | None:
     raw = env.get(ARTIFACT_ROOT_ENV, "").strip()
     if raw:
-        path = Path(raw).expanduser()
+        path = expand_user_path(raw, environment=env)
         if not path.is_absolute():
             path = relative_to / path
         return ArtifactRootSelection(path.resolve(), "explicit-env")
-    record = artifact_root_binding_path(relative_to)
+    record = (
+        artifact_root_binding_path(relative_to)
+        if common_dir is None
+        else artifact_root_binding_path(relative_to, common_dir=common_dir)
+    )
     if record is None:
         return None
     binding = _read_artifact_root_binding(record)
@@ -1449,6 +1469,263 @@ def artifact_root(
     """
 
     return artifact_root_selection(repo_root, env, prefer_external=prefer_external).root
+
+
+def storage_path(
+    repo_root: Path,
+    kind: custody_layout.StorageClass,
+    env: Mapping[str, str] | None = None,
+    *,
+    common_dir: Path | None = None,
+) -> Path:
+    """Project a typed state class through DX's selected volume.
+
+    This grants placement, never deletion. Repository-shared payload uses the
+    common Git identity; checkout state retains its existing owner addressing.
+    """
+    from molt.default_paths import _default_molt_home
+
+    view = os.environ if env is None else env
+    rule = custody_layout.storage_rule(kind)
+    if kind == "toolchains":
+        return canonical_toolchain_root(repo_root, view, require_exists=False)
+    if kind == "installation":
+        return _default_molt_home(environ=view, cwd=repo_root)
+    if kind == "backend-sockets":
+        return backend_daemon_socket_dir(repo_root, view)
+    cache_key = {
+        "compile-cache": "MOLT_CACHE",
+        "uv-cache": "UV_CACHE_DIR",
+        "pip-cache": "PIP_CACHE_DIR",
+        "ruff-cache": "RUFF_CACHE_DIR",
+        "sccache": "SCCACHE_DIR",
+    }.get(kind)
+    if cache_key and (raw := view.get(cache_key, "").strip()):
+        cache = expand_user_path(raw, environment=view)
+        return (cache if cache.is_absolute() else repo_root / cache).resolve()
+    if rule.volume == "checkout":
+        return repo_root.joinpath(*rule.relative)
+    if kind in ("scratch", "temporary"):
+        return scratch_root(repo_root, view)
+    bound = _configured_artifact_selection(
+        view, relative_to=repo_root, common_dir=common_dir
+    )
+    selected = bound.root if bound is not None else artifact_root(repo_root, view)
+    if kind == "controllers" and custody_layout.enclosing_checkouts(selected):
+        raise DxConfigError(
+            "controller storage needs an artifact root outside source checkouts; bind one with the DX artifact-root selector"
+        )
+    if kind in (
+        "controllers",
+        "landing-sandbox",
+        "lane-evidence",
+        "integration-receipts",
+    ):
+        if not selected.is_dir():
+            raise DxConfigError(
+                f"selected artifact root is unavailable: {selected}; restore the selected volume before writing {kind}"
+            )
+        directories = custody_layout.git_directories(repo_root)
+        common = common_dir or (
+            directories[1] if directories is not None else repo_root
+        )
+        key = custody_layout.repository_storage_key(common)
+        if kind == "landing-sandbox":
+            return custody_layout.landing_sandbox_path(common, artifact=selected)
+        return selected.joinpath(*rule.relative, key)
+    if kind == "cargo-target":
+        return project_cargo_target_dir(repo_root, view)
+    if kind == "products":
+        return product_store_dir(repo_root, view)
+    return selected.joinpath(*rule.relative)
+
+
+@dataclass(frozen=True)
+class StorageWriteClaim:
+    kind: custody_layout.StorageClass
+    path: Path
+    exact: bool = False
+
+
+class StorageWriteError(RuntimeError):
+    """A Molt writer tried to bypass its declared storage volume/class."""
+
+
+@dataclass(frozen=True)
+class _StorageWriteCheck:
+    claims: tuple[StorageWriteClaim, ...]
+    source_prefixes: tuple[str, ...]
+    test_prefix: str
+    molt_only: bool
+
+
+_STORAGE_WRITE_CHECKS: list[_StorageWriteCheck] = []
+_STORAGE_AUDIT_INSTALLED = False
+
+
+def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
+    if not _STORAGE_WRITE_CHECKS:
+        return
+    paths: tuple[tuple[object, object], ...]
+    if event == "open":
+        mode, flags = args[1:3]
+        writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+            isinstance(flags, int)
+            and bool(
+                flags
+                & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+            )
+        )
+        if not writes:
+            return
+        paths = ((args[0], None),)
+    elif event in (
+        "os.mkdir",
+        "os.remove",
+        "os.rmdir",
+        "os.truncate",
+        "os.chmod",
+        "os.utime",
+    ):
+        directory = (
+            args[2]
+            if event in {"os.mkdir", "os.chmod"}
+            else args[3]
+            if event == "os.utime"
+            else args[1]
+            if event in {"os.remove", "os.rmdir"}
+            else None
+        )
+        paths = ((args[0], directory),)
+    elif event in ("os.rename", "os.link"):
+        paths = ((args[0], args[2]), (args[1], args[3]))
+    elif event == "os.symlink":
+        paths = ((args[1], args[2]),)
+    else:
+        return
+    for check in tuple(_STORAGE_WRITE_CHECKS):
+        if check.molt_only:
+            frame = sys._getframe(1)
+            while frame is not None and not frame.f_code.co_filename.startswith(
+                check.source_prefixes
+            ):
+                if frame.f_code.co_filename.startswith(check.test_prefix):
+                    frame = None
+                    break
+                frame = frame.f_back
+            if frame is None:
+                continue
+        for raw, directory in paths:
+            if isinstance(raw, int):
+                continue  # An already-open fd carries its original admission.
+            if not isinstance(raw, (str, bytes, os.PathLike)):
+                continue
+            spelling = os.fsdecode(raw)
+            if os.path.normcase(spelling) == os.path.normcase(os.devnull) or (
+                os.name == "posix" and spelling == os.ctermid()
+            ):
+                continue  # OS stdio endpoint; it stores no Molt state.
+            path = Path(spelling)
+            if not path.is_absolute() and isinstance(directory, int) and directory >= 0:
+                if sys.platform == "darwin":
+                    import fcntl
+
+                    base = os.fsdecode(
+                        fcntl.fcntl(directory, fcntl.F_GETPATH, bytes(1024)).split(
+                            b"\0", 1
+                        )[0]
+                    )
+                elif sys.platform.startswith("linux"):
+                    base = os.readlink(f"/proc/self/fd/{directory}")
+                else:
+                    raise StorageWriteError(
+                        f"storage write check cannot resolve directory fd on {sys.platform}"
+                    )
+                path = Path(base) / path
+            path = path.absolute().resolve(strict=False)
+            if path == Path(os.devnull):
+                continue  # OS sink, not persistent Molt state.
+            if not any(
+                path == claim.path or (not claim.exact and claim.path in path.parents)
+                for claim in check.claims
+            ):
+                raise StorageWriteError(
+                    f"{event} writes state outside the storage authority: {path}; select a StorageClass through molt.dx"
+                )
+
+
+@contextlib.contextmanager
+def storage_write_check(
+    repo: Path,
+    environment: Mapping[str, str],
+    *,
+    outputs: Sequence[StorageWriteClaim] = (),
+    molt_only: bool = True,
+):
+    """Check actual Python writes, including writers bypassing the typed API.
+
+    Proofs may grant explicit user-output or temporary-fixture claims. Claims
+    still carry the closed class type. This is a development check, not an OS
+    sandbox for emitted user programs or external native tools.
+    """
+    artifact = artifact_root(repo, environment)
+    claims = [
+        StorageWriteClaim(kind, storage_path(repo, kind, environment))
+        for kind in custody_layout.storage_classes()
+    ]
+    # A class's container also holds its producer's shared locks/indices.
+    claims.extend(
+        StorageWriteClaim(
+            kind, artifact.joinpath(*custody_layout.storage_rule(kind).relative)
+        )
+        for kind in custody_layout.storage_classes()
+        if custody_layout.storage_rule(kind).volume == "artifact"
+        and kind not in {"scratch", "temporary", "landing-sandbox"}
+    )
+    claims.append(StorageWriteClaim("cargo-target", artifact / "target"))
+    claims.append(StorageWriteClaim("coordination", artifact / _ARTIFACT_ROOT_MARKER))
+    claims.append(StorageWriteClaim("coordination", artifact / ".sccache-server.sock"))
+    if directories := custody_layout.git_directories(repo):
+        common = directories[1]
+        claims.extend(
+            StorageWriteClaim("coordination", path)
+            for path in (
+                common / "molt",
+                common / "molt-integrate.lock",
+                common / "hooks",
+            )
+        )
+    claims.extend(outputs)
+    for claim in tuple(claims):
+        claims.extend(
+            StorageWriteClaim(claim.kind, parent, exact=True)
+            for parent in claim.path.parents
+            if parent == artifact or artifact in parent.parents
+        )
+    from molt.cargo_execution_policy import sccache_server_temp_dir
+
+    if server_temp := sccache_server_temp_dir(environment):
+        claims.append(StorageWriteClaim("sccache", server_temp))
+    check = _StorageWriteCheck(
+        tuple(
+            StorageWriteClaim(claim.kind, claim.path.resolve(strict=False), claim.exact)
+            for claim in claims
+        ),
+        (str(repo / "src/molt") + os.sep, str(repo / "tools") + os.sep),
+        str(repo / "tests") + os.sep,
+        molt_only,
+    )
+    global _STORAGE_AUDIT_INSTALLED
+    if not _STORAGE_AUDIT_INSTALLED:
+        sys.addaudithook(_storage_write_audit)
+        _STORAGE_AUDIT_INSTALLED = True
+    _STORAGE_WRITE_CHECKS.append(check)
+    try:
+        yield
+    finally:
+        _STORAGE_WRITE_CHECKS[:] = [
+            candidate for candidate in _STORAGE_WRITE_CHECKS if candidate is not check
+        ]
 
 
 def project_cargo_target_dir(
@@ -1988,16 +2265,28 @@ class RunContext:
         # CARGO_INCREMENTAL stays unset: the Cargo profile decides (dev and
         # dev-fast build workspace crates incrementally against the persistent
         # per-checkout target above), and sccache caches registry crates.
-        install_default("MOLT_CACHE", ext_root / ".molt_cache")
+        install_default(
+            "MOLT_CACHE",
+            ext_root.joinpath(*custody_layout.storage_rule("compile-cache").relative),
+        )
         run_scratch = _scratch_root_for(ext_root, self.root, env)
         install_default("MOLT_DIFF_ROOT", run_scratch / "diff")
         install_default("MOLT_DIFF_TMPDIR", run_scratch)
-        install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
+        install_default(
+            "UV_CACHE_DIR",
+            ext_root.joinpath(*custody_layout.storage_rule("uv-cache").relative),
+        )
         selected_environment = selected_uv_project_environment(env, self.root)
         if selected_environment is not None:
             install_default("UV_PROJECT_ENVIRONMENT", selected_environment)
-        install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
-        install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
+        install_default(
+            "PIP_CACHE_DIR",
+            ext_root.joinpath(*custody_layout.storage_rule("pip-cache").relative),
+        )
+        install_default(
+            "RUFF_CACHE_DIR",
+            ext_root.joinpath(*custody_layout.storage_rule("ruff-cache").relative),
+        )
         # MOLT_TARGET_ROOT is durable toolchain state, not scratch capacity. The
         # same selector serves direct discovery, provisioning and DX children.
         env["MOLT_TARGET_ROOT"] = str(selected_toolchain_root)
@@ -2061,6 +2350,16 @@ class RunContext:
                     continue  # Only the immutable image publisher creates it.
                 value = env.get(key)
                 if value:
+                    if key in {"PIP_CACHE_DIR", "RUFF_CACHE_DIR"}:
+                        from molt.checkout_state import materialize_provider_cache
+
+                        materialize_provider_cache(
+                            Path(value).expanduser(),
+                            kind="pip-cache"
+                            if key == "PIP_CACHE_DIR"
+                            else "ruff-cache",
+                        )
+                        continue
                     from molt.checkout_state import checkout_state_use
 
                     with checkout_state_use(((Path(value).expanduser(), None),)):
