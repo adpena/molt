@@ -1478,6 +1478,19 @@ def storage_path(
     *,
     common_dir: Path | None = None,
 ) -> Path:
+    """Select through DX and expose the admitted typed root to write checks."""
+    return _storage_projection(
+        kind, _storage_path_selection(repo_root, kind, env, common_dir=common_dir)
+    )
+
+
+def _storage_path_selection(
+    repo_root: Path,
+    kind: custody_layout.StorageClass,
+    env: Mapping[str, str] | None = None,
+    *,
+    common_dir: Path | None = None,
+) -> Path:
     """Project a typed state class through DX's selected volume.
 
     This grants placement, never deletion. Repository-shared payload uses the
@@ -1553,14 +1566,34 @@ class StorageWriteError(RuntimeError):
 
 @dataclass(frozen=True)
 class _StorageWriteCheck:
-    claims: tuple[StorageWriteClaim, ...]
+    claims: list[StorageWriteClaim]
     source_prefixes: tuple[str, ...]
     test_prefix: str
     molt_only: bool
+    violations: list[str]
 
 
 _STORAGE_WRITE_CHECKS: list[_StorageWriteCheck] = []
 _STORAGE_AUDIT_INSTALLED = False
+
+
+def _storage_projection(kind: custody_layout.StorageClass, path: Path) -> Path:
+    """Observe an admitted typed selector, including captured child overrides."""
+    if _STORAGE_WRITE_CHECKS:
+        selected = path.absolute().resolve(strict=False)
+        for check in _STORAGE_WRITE_CHECKS:
+            if not any(
+                selected == claim.path
+                or (not claim.exact and claim.path in selected.parents)
+                for claim in check.claims
+            ):
+                check.claims.append(StorageWriteClaim(kind, selected))
+                check.claims.extend(
+                    StorageWriteClaim(kind, parent, exact=True)
+                    for parent in selected.parents
+                    if parent != Path(parent.anchor)
+                )
+    return path
 
 
 def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
@@ -1649,9 +1682,10 @@ def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
                 path == claim.path or (not claim.exact and claim.path in path.parents)
                 for claim in check.claims
             ):
-                raise StorageWriteError(
-                    f"{event} writes state outside the storage authority: {path}; select a StorageClass through molt.dx"
-                )
+                message = f"{event} writes state outside the storage authority: {path}; select a StorageClass through molt.dx"
+                if not check.violations:
+                    check.violations.append(message)
+                raise StorageWriteError(message)
 
 
 @contextlib.contextmanager
@@ -1695,6 +1729,12 @@ def storage_write_check(
                 common / "hooks",
             )
         )
+        from molt.checkout_state import checkout_state_lock_paths
+
+        claims.extend(
+            StorageWriteClaim("coordination", path.parent)
+            for path in checkout_state_lock_paths(repo / "logs/agents")
+        )
     claims.extend(outputs)
     for claim in tuple(claims):
         claims.extend(
@@ -1707,25 +1747,34 @@ def storage_write_check(
     if server_temp := sccache_server_temp_dir(environment):
         claims.append(StorageWriteClaim("sccache", server_temp))
     check = _StorageWriteCheck(
-        tuple(
+        [
             StorageWriteClaim(claim.kind, claim.path.resolve(strict=False), claim.exact)
             for claim in claims
-        ),
+        ],
         (str(repo / "src/molt") + os.sep, str(repo / "tools") + os.sep),
         str(repo / "tests") + os.sep,
         molt_only,
+        [],
     )
     global _STORAGE_AUDIT_INSTALLED
     if not _STORAGE_AUDIT_INSTALLED:
         sys.addaudithook(_storage_write_audit)
         _STORAGE_AUDIT_INSTALLED = True
     _STORAGE_WRITE_CHECKS.append(check)
+    error: BaseException | None = None
     try:
         yield
+    except BaseException as failure:
+        error = failure
+        if check.violations:
+            failure.add_note(check.violations[0])
+        raise
     finally:
         _STORAGE_WRITE_CHECKS[:] = [
             candidate for candidate in _STORAGE_WRITE_CHECKS if candidate is not check
         ]
+        if check.violations and error is None:
+            raise StorageWriteError(check.violations[0])
 
 
 def project_cargo_target_dir(
@@ -1974,10 +2023,12 @@ def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
         _backend_daemon_socket_root(env) / f"molt-backend-{root_hash}"
     ).resolve()
     if env.get("MOLT_BACKEND_DAEMON_SOCKET_ROOT", "").strip():
-        return directory
+        return _storage_projection("backend-sockets", directory)
     from molt.backend_daemon_paths import _short_backend_daemon_socket_dir
 
-    return _short_backend_daemon_socket_dir(directory)
+    return _storage_projection(
+        "backend-sockets", _short_backend_daemon_socket_dir(directory)
+    )
 
 
 # The sccache release is pinned in config/tool_releases.toml. Molt never

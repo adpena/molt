@@ -9699,27 +9699,32 @@ class TestStorageAuthority:
         repo, artifact = tmp_path / "repo", tmp_path / "data"
         repo.mkdir()
         artifact.mkdir()
-        with storage_write_check(
-            repo, {"MOLT_EXT_ROOT": str(artifact)}, molt_only=False
-        ):
-            storage_path(
-                repo, "compile-cache", {"MOLT_EXT_ROOT": str(artifact)}
-            ).mkdir()
-            with pytest.raises(
-                StorageWriteError, match="outside the storage authority"
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, {"MOLT_EXT_ROOT": str(artifact)}, molt_only=False
             ):
+                storage_path(
+                    repo, "compile-cache", {"MOLT_EXT_ROOT": str(artifact)}
+                ).mkdir()
                 (artifact / "new-private-cache").mkdir()
         assert not (artifact / "new-private-cache").exists()
         from molt.exact_json import write_exact
 
-        # Exercise the default Molt-frame check through a real producer too.
-        with storage_write_check(REPO_ROOT, {"MOLT_EXT_ROOT": str(artifact)}):
-            with pytest.raises(
-                StorageWriteError, match="outside the storage authority"
-            ):
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(REPO_ROOT, {"MOLT_EXT_ROOT": str(artifact)}):
                 write_exact(
                     artifact / "new-private-cache" / "value.json", {"new": "state"}
                 )
+        # Optional cache handlers cannot swallow a violation and make the gate
+        # pass: the bounded first violation also fails at scope closure.
+        with pytest.raises(StorageWriteError, match="outside the storage authority"):
+            with storage_write_check(
+                repo, {"MOLT_EXT_ROOT": str(artifact)}, molt_only=False
+            ):
+                try:
+                    (artifact / "new-private-cache").mkdir()
+                except StorageWriteError:
+                    pass
         assert not (artifact / "new-private-cache").exists()
 
     def test_heavy_repository_state_projects_to_artifact_volume(self, tmp_path):
@@ -10036,7 +10041,14 @@ class TestStorageAuthority:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
         expected = RunContext(repo).canonical_env(os.environ, create_dirs=False)
+        dry = molt_dev.gate_environment(
+            repo, session_id="storage-proof", create_dirs=False
+        )
+        assert not Path(dry["RUFF_CACHE_DIR"]).exists()
         actual = molt_dev.gate_environment(repo, session_id="storage-proof")
+        from molt.checkout_state import read_checkout_owner
+
+        assert read_checkout_owner(Path(actual["RUFF_CACHE_DIR"])).kind == "ruff-cache"
         for key in (
             "UV_CACHE_DIR",
             "MOLT_CACHE",

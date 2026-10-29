@@ -772,3 +772,12 @@ def workload_collection_problems(cells: Sequence[Mapping[str, object]]) -> list[
             problems.append(f"duplicate benchmark cell: {key}")
         keys.add(key)
     return problems
+
+
+def benchmark_evidence_root(
+    repo: Path, environment: Mapping[str, str] | None = None
+) -> Path:
+    """One storage class for untracked benchmark reports; reference inputs stay source."""
+    from molt.dx import storage_path
+
+    return storage_path(repo, "benchmark-evidence", environment)

@@ -1060,7 +1060,9 @@ def _restore_unpublished_citations(repo: Path, progress: _IntegrationProgress) -
     _warn(f"landing failed: restored {git.short(original)} with its change citations")
 
 
-def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilder:
+def gate_environment(
+    repo: Path, *, session_id: str, create_dirs: bool = True
+) -> ProcessEnvironmentBuilder:
     """The one baseline environment every landing gate projects from."""
     from tools.proof_queue_pkg.command_identity import CANONICAL_EXECUTION_ENV
 
@@ -1070,7 +1072,7 @@ def gate_environment(repo: Path, *, session_id: str) -> ProcessEnvironmentBuilde
     # Gates receive the same caches, scratch and toolchain selection as every
     # DX child, including shells without a lane env.sh.
     env = ProcessEnvironmentBuilder(
-        RunContext(repo).canonical_env(env, create_dirs=False)
+        RunContext(repo).canonical_env(env, create_dirs=create_dirs)
     )
     # Gates are proof executions: bytecode a gate writes under src/ changes the
     # checkout's import topology while later gates read it (a fresh worktree's
@@ -1343,7 +1345,7 @@ def _integrate_exclusive(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
-    env = gate_environment(repo, session_id=args.session_id)
+    env = gate_environment(repo, session_id=args.session_id, create_dirs=not dry)
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
