@@ -7,7 +7,9 @@ block, the CPython test cases Molt is known to fail; each `fail` dimension
 run's per-test outcomes (`tools/compat/regrtest_results.py`) with those
 entries, with strict semantics in both directions:
 
-* a failure with an entry is expected, owned by its finding;
+* a failure with an entry is expected, owned by its finding, only when the
+  run reports exactly the entry's `failure` reason; any other failure of an
+  owned test is a new defect;
 * a failure without one is a new defect and fails the run;
 * a pass with an entry is an unexpected pass and fails the run until the entry
   and its ledger row close together;
@@ -117,6 +119,10 @@ def classify(
         elif outcome.status == "failed":
             if entry is None:
                 report.unexpected_failures[key] = detail
+            elif detail != entry.get("failure"):
+                report.unexpected_failures[key] = (
+                    f"{detail} ({entry.get('finding')} owns: {entry.get('failure')})"
+                )
             else:
                 report.expected[key] = str(entry.get("finding"))
         elif outcome.status == "passed" and entry is not None:
