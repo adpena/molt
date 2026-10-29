@@ -13,10 +13,19 @@
 //! analysis manager drops the cached tree with every other CFG-sensitive
 //! analysis.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::indexed::RpoDominatorTree;
 use crate::tir::blocks::BlockId;
+
+/// The block graph consumed by the shared dominator core. The graph owns its
+/// edge policy (including exception edges); construction and queries do not.
+/// Missing blocks return false. Successor order is preserved by the traversal.
+pub trait DominanceGraph {
+    fn entry_block(&self) -> BlockId;
+    fn block_count(&self) -> usize;
+    fn append_successors(&self, block: BlockId, output: &mut Vec<BlockId>) -> bool;
+}
 
 /// Immediate dominators of the blocks reachable under one edge policy, with a
 /// pre/post numbering for constant-time dominance.
@@ -30,6 +39,41 @@ pub struct DominatorTree {
 }
 
 impl DominatorTree {
+    /// Construct dominance for a block graph without a second solver or a
+    /// representation-specific numbering pass. Dangling edges are excluded;
+    /// structural verification remains responsible for diagnosing them.
+    pub fn compute(graph: &impl DominanceGraph) -> Self {
+        let mut visited = HashSet::with_capacity(graph.block_count());
+        let blocks = crate::tir::traversal::reverse_postorder_by(
+            [graph.entry_block()],
+            graph.block_count(),
+            |block, output| {
+                if !visited.insert(block) || !graph.append_successors(block, output) {
+                    return false;
+                }
+                output.retain(|next| !visited.contains(next));
+                true
+            },
+        );
+        let positions: HashMap<_, _> = blocks
+            .iter()
+            .enumerate()
+            .map(|(position, &block)| (block, position))
+            .collect();
+        let mut predecessors = vec![Vec::new(); blocks.len()];
+        let mut successors = Vec::new();
+        for (position, &block) in blocks.iter().enumerate() {
+            successors.clear();
+            graph.append_successors(block, &mut successors);
+            for next in &successors {
+                if let Some(&next) = positions.get(next) {
+                    predecessors[next].push(position);
+                }
+            }
+        }
+        Self::from_reverse_postorder(blocks, positions, &predecessors)
+    }
+
     /// `blocks` are the reachable blocks in reverse postorder and
     /// `predecessors[position]` their reachable predecessor positions.
     pub(super) fn from_reverse_postorder(
@@ -293,3 +337,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tree/graph_tests.rs"]
+mod graph_tests;

@@ -5,7 +5,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
 
-use super::source::{infer_list_container_type, is_list_source};
+use super::source::infer_list_container_type;
 
 /// Describes a recognized list-loop pattern ready for devirtualization.
 pub(super) struct ListLoopCandidate {
@@ -87,15 +87,12 @@ pub(super) fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
             // Check if source is known to be a list from typed facts or a
             // structural list producer. Transport-only container metadata is
             // intentionally ignored.
-            if !is_list_source(func, source_val, &block_ids) {
+            let container_type = infer_list_container_type(func, source_val, &block_ids);
+            if container_type.is_none() {
                 // Not a list — skip. This avoids transforming dict/set/generator
                 // iteration which has different semantics.
                 continue;
             }
-
-            // Determine the container_type for the synthesized Index op from
-            // the same typed/structural proof used for devirtualization.
-            let container_type = infer_list_container_type(func, source_val, &block_ids);
 
             // Reject if source_val is defined INSIDE the loop (mutation risk).
             // The list must be defined before the loop header.

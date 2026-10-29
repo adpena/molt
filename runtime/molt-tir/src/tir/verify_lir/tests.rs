@@ -2,6 +2,8 @@
 //!
 //! Moved move-only from the monolithic `verify_lir.rs`; no logic changes.
 
+use std::collections::HashMap;
+
 use super::*;
 use crate::tir::blocks::BlockId;
 use crate::tir::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator};
@@ -470,4 +472,91 @@ fn branch_args_enforce_user_class_identity_when_boxed() {
             .any(|err| err.message.contains("branch type mismatch")),
         "expected branch type mismatch, got {errors:?}"
     );
+}
+
+/// Exception-only handlers participate in the same shared dominance relation;
+/// structural TryEnd labels do not create executable block-control-flow edges.
+#[test]
+fn shared_dominance_follows_exception_transfers_and_excludes_try_end() {
+    use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::function::TirFunction;
+    let mut tir = TirFunction::new(
+        "handler_dominance".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let handler = tir.fresh_block();
+    let unreachable = tir.fresh_block();
+    for block in [handler, unreachable] {
+        tir.blocks.insert(
+            block,
+            TirBlock {
+                id: block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    tir.label_id_map.insert(handler.0, 90);
+    let result = tir.fresh_value();
+    let entry = tir.blocks.get_mut(&tir.entry_block).unwrap();
+    entry.ops = vec![
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![result],
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(7))]),
+            source_span: None,
+        },
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(90))]),
+            source_span: None,
+        },
+    ];
+    entry.terminator = Terminator::Return { values: vec![] };
+    tir.blocks.get_mut(&handler).unwrap().ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Add,
+        operands: vec![result, result],
+        results: vec![ValueId(1000)],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    // Lower once with a real transfer so the lowering phase retains the handler.
+    // Mutate the LIR edge itself: pruning unreachable TIR blocks must not erase
+    // the cross-block use that this verifier test is intended to check.
+    let mut lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
+    assert!(!lir.blocks[&handler].ops.is_empty());
+    for transfer in [OpCode::CheckException, OpCode::TryStart, OpCode::TryEnd] {
+        let edge = lir
+            .blocks
+            .get_mut(&lir.entry_block)
+            .unwrap()
+            .ops
+            .iter_mut()
+            .find(|op| op.tir_op.attrs.get("value") == Some(&AttrValue::Int(90)))
+            .unwrap();
+        edge.tir_op.opcode = transfer;
+        let tree = super::dom::compute_dominator_tree(&lir);
+        let is_transfer = transfer != OpCode::TryEnd;
+        assert_eq!(tree.contains(handler), is_transfer);
+        assert_eq!(tree.dominates(lir.entry_block, handler), is_transfer);
+        assert_eq!(tree.idom(handler), is_transfer.then_some(lir.entry_block));
+        assert!(!tree.contains(unreachable));
+        if is_transfer {
+            verify_lir_function(&lir).expect("entry definition dominates handler use");
+        } else {
+            assert!(
+                verify_lir_function(&lir).is_err(),
+                "TryEnd does not dominate a handler use"
+            );
+        }
+    }
 }
