@@ -662,7 +662,9 @@ def test_runtime_boxed_abi_uses_existing_normalized_contracts(authority: str) ->
                 "boxed_call": True,
             }
         ]
-        data["op_loop_runtime_call"] = manifest._expand_op_loop_runtime_calls(data)
+        # This fixture's ABI contains only example, so its op-call authority
+        # has no staged runtime-call rows. Expansion must not read another tree.
+        data["op_loop_runtime_call"] = manifest._expand_op_loop_runtime_calls(data, [])
     before = copy.deepcopy(data)
     assert manifest.runtime_boxed_call_specs(data) == [
         {"runtime_name": "molt_example", "arity": 1, "result": "i64"}
@@ -918,7 +920,7 @@ def test_op_loop_cannot_redeclare_return_sink_policy(section: str) -> None:
     if section.endswith("group"):
         row.update(kinds=["example"], arg_count=1)
     with pytest.raises(manifest.WasmAbiManifestError, match="sink policy is derived"):
-        manifest._expand_op_loop_runtime_calls({section: [row]})
+        manifest._expand_op_loop_runtime_calls({section: [row]}, [])
 
 
 def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_projection() -> (
