@@ -224,6 +224,7 @@ def trim(
                 env=environment,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
             if proc.returncode:
                 raise DriverError(proc.stderr)
@@ -418,6 +419,7 @@ def _move_sandbox(
             cwd=repo,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         return status.returncode == 0 and not status.stdout.strip()
 
@@ -444,6 +446,7 @@ def _move_sandbox(
             cwd=repo,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
         if moved.returncode:
             raise DriverError(moved.stderr)
@@ -468,6 +471,7 @@ def _move_sandbox(
         cwd=repo,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if (
         repair.returncode

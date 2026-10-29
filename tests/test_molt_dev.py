@@ -4525,9 +4525,13 @@ def test_controller_source_use_excludes_aged_retirement_and_staging(
         controller_source.STAGING_PREFIX + selected.key + "-owned"
     )
     owned_staging.mkdir()
-    marker = json.loads((selected.root / controller_source.RECORD_NAME).read_text())
+    marker = json.loads(
+        (selected.root / controller_source.RECORD_NAME).read_text(encoding="utf-8")
+    )
     marker["state"] = "preparing"
-    (owned_staging / controller_source.RECORD_NAME).write_text(json.dumps(marker))
+    (owned_staging / controller_source.RECORD_NAME).write_text(
+        json.dumps(marker), encoding="utf-8"
+    )
     monkeypatch.setattr(controller, "KEEP", 1)
     now = time.time()
     old = now - 2 * controller.IDLE_S
@@ -9670,7 +9674,9 @@ class TestStorageAuthority:
             finish()
         index = next((main / ".git/molt/retired-evidence").glob("*.json"))
         manifest = json.loads(
-            Path(json.loads(index.read_text())["archive_index"]).read_text()
+            Path(
+                json.loads(index.read_text(encoding="utf-8"))["archive_index"]
+            ).read_text(encoding="utf-8")
         )
         with tarfile.open(manifest["archive"]) as archive:
             assert archive.extractfile("logs/storage/proof.bin").read() == payload
@@ -9758,16 +9764,18 @@ class TestStorageAuthority:
         source.mkdir(parents=True)
         payload = bytes(range(256)) * 8192
         (source / "binary.bin").write_bytes(payload)
-        (source / "coordination.json").write_text('{"status":"done"}')
+        (source / "coordination.json").write_text('{"status":"done"}', encoding="utf-8")
         archive = compact_evidence(
             source,
             tmp_path / "data" / "evidence",
             kind="lane-evidence",
             keep=[Path("coordination.json")],
         )
-        assert (source / "coordination.json").read_text() == '{"status":"done"}'
+        assert (source / "coordination.json").read_text(
+            encoding="utf-8"
+        ) == '{"status":"done"}'
         assert not (source / "binary.bin").exists()
-        index = json.loads((source / "storage-index.json").read_text())
+        index = json.loads((source / "storage-index.json").read_text(encoding="utf-8"))
         assert (
             index["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
         )
@@ -9778,7 +9786,9 @@ class TestStorageAuthority:
         newer = compact_evidence(
             source, tmp_path / "data/evidence", kind="lane-evidence"
         )
-        latest = json.loads(newer.with_suffix(".index.json").read_text())
+        latest = json.loads(
+            newer.with_suffix(".index.json").read_text(encoding="utf-8")
+        )
         assert latest["previous_index"] == str(archive.with_suffix(".index.json"))
         with tarfile.open(archive) as stream:
             assert stream.extractfile("binary.bin").read() == payload
@@ -9909,14 +9919,16 @@ class TestStorageAuthority:
         assert str(destination) in _storage_git(repo, "worktree", "list", "--porcelain")
         if cross_volume:
             index = json.loads(
-                source.with_name(source.name + ".storage-index.json").read_text()
+                source.with_name(source.name + ".storage-index.json").read_text(
+                    encoding="utf-8"
+                )
             )
             assert index["files"]["tracked"][2] == hashlib.sha256(payload).hexdigest()
 
     def test_uv_use_metadata_does_not_modify_provider_cache(self, tmp_path):
         root = tmp_path / ".uv-cache"
         root.mkdir()
-        (root / "CACHEDIR.TAG").write_text("provider-owned")
+        (root / "CACHEDIR.TAG").write_text("provider-owned", encoding="utf-8")
         before = {path.name: path.read_bytes() for path in root.iterdir()}
         with checkout_state_use(((root, None),)):
             pass
