@@ -1374,7 +1374,7 @@
           "status": "fail",
           "finding": "HF-559",
           "root_cause": "The binary runs and fails: cannot import name '_get_sourcefile' from importlib._bootstrap_external.",
-          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+          "evidence": "2026-10-29 lane/hf556-env-bytes and lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources): the binary runs and fails the same way after HF-557's fix."
         }
       }
     },
@@ -1383,8 +1383,8 @@
         "native@3.12": {
           "status": "fail",
           "finding": "HF-557",
-          "root_cause": "The binary runs but test.support has no compiler-emitted body: the package reaches it only from a function body.",
-          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+          "root_cause": "The binary runs but test.support has no compiler-emitted body. test_importlib/__init__.py imports test.support at module level; the shim exposes CPython's test package through MOLT_MODULE_ROOTS, an external root, and only the entry's direct imports from external roots are admitted. Not a function-level import: needs its own owner before HF-557 closes.",
+          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources, run 20261029_105241): unchanged by HF-557's fix. Run 20261029_110027 with MOLT_EXTERNAL_STATIC_PACKAGES=test compiles test.support and fails at the sysconfig stub, as test_pkgutil does (HF-273)."
         }
       }
     },
@@ -1392,9 +1392,9 @@
       "dimensions": {
         "native@3.12": {
           "status": "fail",
-          "finding": "HF-557",
-          "root_cause": "The build refuses test.support: MOLT_COMPAT_ERROR call to non-allowlisted function 'temp_cwd' (Lib/test/support/__init__.py:2315).",
-          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+          "finding": "HF-273",
+          "root_cause": "The binary runs: test.support calls check_sanitizer() at import, which reads sysconfig.get_config_var (Lib/test/support/__init__.py:405), and Molt's sysconfig is a generated stub that raises RuntimeError.",
+          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources, run 20261029_105241): after HF-557's fix, test.support compiles."
         }
       }
     },
@@ -1402,9 +1402,9 @@
       "dimensions": {
         "native@3.12": {
           "status": "fail",
-          "finding": "HF-557",
-          "root_cause": "The build refuses test.support: MOLT_COMPAT_ERROR call to non-allowlisted function 'temp_cwd' (Lib/test/support/__init__.py:2315).",
-          "evidence": "2026-10-29 lane/hf556-env-bytes (macOS arm64, CPython 3.12.15 sources): after HF-556's fix, regrtest.import-system.native builds past compiler identity."
+          "finding": "HF-273",
+          "root_cause": "The binary runs: test.support calls check_sanitizer() at import, which reads sysconfig.get_config_var (Lib/test/support/__init__.py:405), and Molt's sysconfig is a generated stub that raises RuntimeError.",
+          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources, run 20261029_105241): after HF-557's fix, test.support compiles."
         }
       }
     }
