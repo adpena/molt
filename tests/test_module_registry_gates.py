@@ -300,7 +300,8 @@ def test_module_registry_blob_layout_matches_schema() -> None:
         authority.MODULE_REGISTRY_HEADER_BYTES
         + count * authority.MODULE_REGISTRY_ROW_BYTES
     )
-    assert len(blob) == rows_end + names_len + origins_len
+    (portions_len,) = struct.unpack_from("<Q", blob, 48)
+    assert len(blob) == rows_end + names_len + origins_len + portions_len
     # Name table is the sorted id-order concatenation (binary-search contract).
     names = blob[rows_end : rows_end + names_len].decode("utf-8")
     offset = 0
@@ -324,7 +325,9 @@ def test_module_registry_blob_layout_matches_schema() -> None:
             == row.name
         )
         offset += len(row.name)
-    origins = blob[rows_end + names_len :].decode("utf-8")
+    origins = blob[rows_end + names_len : rows_end + names_len + origins_len].decode(
+        "utf-8"
+    )
     offset = 0
     for row in registry.rows:
         assert origins[offset : offset + len(row.origin)] == row.origin
@@ -353,6 +356,59 @@ def test_module_registry_blob_layout_matches_schema() -> None:
     assert set(payload["init_symbols"]) == reloc_symbols
 
 
+def test_namespace_registry_portions_are_ordered_typed_digest_and_wire_facts() -> None:
+    def registry(portions):
+        return build_module_registry(
+            [
+                ModuleRegistryEntry(
+                    name="pkg",
+                    kind="namespace_parent",
+                    has_location=False,
+                    is_stdlib_provider=False,
+                    is_package=True,
+                    portions=portions,
+                ),
+            ]
+        )
+
+    first = registry(("/a/pkg", "/b/pkg"))
+    reverse = registry(("/b/pkg", "/a/pkg"))
+    assert first.digest != reverse.digest
+    payload = first.registry_json_payload()
+    assert check_registry_json_payload(payload) == []
+    assert payload["rows"][0]["portions"] == ["/a/pkg", "/b/pkg"]
+    blob, relocs = first._blob_and_relocs()
+    assert not relocs
+    # Independent wire oracle: ordered length-prefixed directories, no origin.
+    assert blob[-20:] == b"\x06\x00\x00\x00/a/pkg\x06\x00\x00\x00/b/pkg"
+    assert struct.unpack_from("<Q", blob, 40) == (0,)
+    assert struct.unpack_from("<II", blob, 56 + 36) == (0, 20)
+    payload["rows"][0]["portions"].reverse()
+    assert any(
+        "registry_digest mismatch" in problem
+        for problem in check_registry_json_payload(payload)
+    )
+    for changes in (
+        {"kind": "source"},
+        {"init_symbol": "molt_init_pkg"},
+        {"origin": "/a/pkg"},
+        {"has_location": True},
+        {"is_package": False},
+        {"portions": ()},
+    ):
+        fields = dict(
+            name="pkg",
+            kind="namespace_parent",
+            has_location=False,
+            is_stdlib_provider=False,
+            is_package=True,
+            portions=("/a/pkg",),
+        )
+        fields.update(changes)
+        with pytest.raises(ValueError):
+            ModuleRegistryEntry(**fields)
+
+
 # ─── G7: one writer, one reader — constants synchronized ────────────────────
 
 
@@ -369,9 +425,9 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
     )
     assert (
         _rust_const(reader, "MODULE_REGISTRY_MAGIC")
-        == 'u64::from_le_bytes(*b"MOLTMOD4")'
+        == 'u64::from_le_bytes(*b"MOLTMOD5")'
     )
-    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD4", "little")
+    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD5", "little")
     assert _rust_const(reader, "MODULE_REGISTRY_HEADER_BYTES") == str(
         authority.MODULE_REGISTRY_HEADER_BYTES
     )
@@ -405,7 +461,6 @@ def test_module_registry_file_provenance_uses_existing_namespace_plan() -> None:
     # namespace fact is the same admitted input consumed by the frontend.
     graph = {
         "entry": Path("/virtual/entry.py"),
-        "namespace": Path("/virtual/namespace.py"),
         "sys": Path("/virtual/sys.py"),
     }
     registry = backend_ir._build_module_registry(
@@ -413,10 +468,8 @@ def test_module_registry_file_provenance_uses_existing_namespace_plan() -> None:
         module_graph=graph,
         logical_source_path_by_module={name: str(path) for name, path in graph.items()},
         module_source_role_by_module={name: "user" for name in graph},
-        module_is_namespace_by_module={
-            "entry": False,
-            "namespace": True,
-            "sys": False,
+        namespace_portions_by_module={
+            "namespace": ("/virtual/namespace", "/other/namespace")
         },
         module_order=list(graph),
         runtime_import_dispatch_roots=set(graph),
@@ -426,7 +479,12 @@ def test_module_registry_file_provenance_uses_existing_namespace_plan() -> None:
     )
     for name in ("entry", "__main__", "sys"):
         assert registry.row_of(name).flags & authority.MODULE_FLAG_HAS_LOCATION
-    assert not registry.row_of("namespace").flags & authority.MODULE_FLAG_HAS_LOCATION
+    namespace = registry.row_of("namespace")
+    assert namespace.kind == "namespace_parent"
+    assert namespace.flags == authority.MODULE_FLAG_PACKAGE
+    assert namespace.origin == namespace.init_symbol == ""
+    assert namespace.portions == ("/virtual/namespace", "/other/namespace")
+    assert registry.ensure_lane_id("namespace") is None
 
 
 def test_registry_provider_role_comes_from_resolved_source_not_module_or_path_spelling(
@@ -445,17 +503,16 @@ def test_registry_provider_role_comes_from_resolved_source_not_module_or_path_sp
         metadata = module_graph._build_module_graph_metadata(
             graph,
             stdlib_root=root,
-            generated_module_source_paths={},
             entry_module="msilib",
             entry_execution_kind="script",
-            namespace_module_names=(),
+            namespace_portions_by_module={},
         )
         registry = backend_ir._build_module_registry(
             entry_module="msilib",
             module_graph=graph,
             logical_source_path_by_module=metadata.logical_source_path_by_module,
             module_source_role_by_module=metadata.module_source_role_by_module,
-            module_is_namespace_by_module=metadata.module_is_namespace_by_module,
+            namespace_portions_by_module=metadata.namespace_portions_by_module,
             module_order=list(graph),
             runtime_import_dispatch_roots=set(graph),
             native_module_init_specs=(),
@@ -570,7 +627,7 @@ def _prepare_binary_ir(
         logical_source_path_by_module={
             name: str(path) for name, path in module_graph.items()
         },
-        module_is_namespace_by_module={name: False for name in module_graph},
+        namespace_portions_by_module={},
         module_source_role_by_module={name: "user" for name in module_graph},
         known_modules=set(module_graph),
         stdlib_allowlist=set(module_graph),

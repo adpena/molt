@@ -409,7 +409,6 @@ _LOWERING_CTX = dict(
     known_func_defaults={},
     known_func_kinds={},
     module_deps={"m": set()},
-    module_is_namespace=False,
     module_chunking=False,
     module_chunk_max_ops=0,
     optimization_profile="dev",

@@ -13,7 +13,6 @@ from collections.abc import Collection, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
-from molt.cli.atomic_io import _write_text_if_changed
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli import module_dependencies as _module_dependency_authority
 from molt.cli import module_graph_discovery as _graph_discovery
@@ -39,7 +38,6 @@ from molt.cli.models import (
     _RuntimeImportScanCustody,
 )
 from molt.cli.output import CliFailure as _CliFailure
-from molt.logical_source_paths import generated_module_logical_path
 from molt.cli.output import fail as _fail
 from molt.cli.source_extension_input_custody import (
     resolve_source_extension_manifest_input,
@@ -58,13 +56,6 @@ from molt.compiler_analysis.python_imports import (
     plan_static_import_request,
     require_static_import_modules,
 )
-
-
-@dataclass(frozen=True)
-class _SupportModuleAugmentation:
-    namespace_module_names: frozenset[str]
-    generated_module_source_paths: dict[str, str]
-    explicit_imports: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -91,24 +82,6 @@ class _NativeSupportSourceSlice:
     @property
     def imports(self) -> tuple[str, ...]:
         return self.scan.scan.imports
-
-
-def _write_generated_module_source(
-    module_name: str,
-    source: str,
-    output_dir: Path,
-) -> Path:
-    """An emitted generation is immutable; its Python identity stays explicit."""
-    safe = re.sub(r"[^0-9A-Za-z_]+", "_", module_name).strip("_") or "module"
-    digest = hashlib.sha256(
-        json.dumps(
-            (module_name, source), ensure_ascii=True, separators=(",", ":")
-        ).encode("utf-8")
-    ).hexdigest()
-    path = output_dir / f"_molt_generated_{safe[:48]}.{digest}.py"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _write_text_if_changed(path, source)
-    return path
 
 
 def _collect_namespace_parents(
@@ -150,40 +123,36 @@ def _collect_namespace_parents(
     return namespace_parents
 
 
-def _namespace_paths(
-    name: str,
+def _collect_namespace_portions(
+    module_graph: Mapping[str, Path],
     roots: list[Path],
     stdlib_root: Path,
     stdlib_allowlist: set[str],
-    resolver_cache: "_module_resolution._ModuleResolutionCache",
-) -> list[str]:
-    return [
-        str(path)
-        for path in resolver_cache.package_locations(
+    explicit_imports: Collection[str],
+    *,
+    stub_parents: Collection[str],
+    resolver_cache: _module_resolution._ModuleResolutionCache,
+) -> dict[str, tuple[str, ...]]:
+    """Describe source-less packages without admitting a source body."""
+    portions: dict[str, tuple[str, ...]] = {}
+    for name in sorted(
+        _collect_namespace_parents(
+            module_graph,
+            roots,
+            stdlib_root,
+            stdlib_allowlist,
+            explicit_imports,
+            resolver_cache=resolver_cache,
+        )
+    ):
+        if name in stub_parents:
+            continue
+        paths = resolver_cache.package_locations(
             name, roots, stdlib_root, stdlib_allowlist
         )
-    ]
-
-
-def _write_namespace_module(name: str, paths: list[str], output_dir: Path) -> Path:
-    lines = [
-        '"""Auto-generated namespace package stub for Molt."""',
-        "",
-        f"__package__ = {name!r}",
-        f"__path__ = {paths!r}",
-        "try:",
-        "    spec = __spec__",
-        "except NameError:",
-        "    spec = None",
-        # CPython's namespace module and spec share one locations object.
-        "if spec is not None:",
-        "    try:",
-        "        spec.submodule_search_locations = __path__",
-        "    except Exception:",
-        "        pass",
-        "",
-    ]
-    return _write_generated_module_source(name, "\n".join(lines), output_dir)
+        if paths:
+            portions[name] = tuple(str(path) for path in paths)
+    return portions
 
 
 def _collect_package_parents(
@@ -232,32 +201,23 @@ def _collect_package_parents(
 def _build_module_lowering_metadata(
     module_graph: Mapping[str, Path],
     *,
-    generated_module_source_paths: Mapping[str, str],
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
-    namespace_module_names: Collection[str],
 ) -> tuple[
     dict[str, str],
-    dict[str, bool],
     dict[str, bool],
     dict[str, ModuleExecutionKind],
 ]:
     logical_source_path_by_module: dict[str, str] = {}
-    module_is_namespace_by_module: dict[str, bool] = {}
     module_is_package_by_module: dict[str, bool] = {}
     module_execution_kind_by_module: dict[str, ModuleExecutionKind] = {}
-    namespace_modules = set(namespace_module_names)
     toolchain_root = _module_resolution._toolchain_package_root()
     for module_name in sorted(module_graph):
         module_path = module_graph[module_name]
         # The one path the module's compiled code reports (HF-372).
-        generated_path = generated_module_source_paths.get(module_name)
-        logical_source_path_by_module[module_name] = (
-            generated_path
-            if generated_path is not None
-            else toolchain_root.logical_source_path(module_path)
+        logical_source_path_by_module[module_name] = toolchain_root.logical_source_path(
+            module_path
         )
-        module_is_namespace_by_module[module_name] = module_name in namespace_modules
         module_is_package_by_module[module_name] = module_path.name == "__init__.py"
         # Only the entry runs as __main__. Its kind is the one fact lowering
         # reads for __main__ semantics, so imported modules never carry the
@@ -267,7 +227,6 @@ def _build_module_lowering_metadata(
         )
     return (
         logical_source_path_by_module,
-        module_is_namespace_by_module,
         module_is_package_by_module,
         module_execution_kind_by_module,
     )
@@ -302,25 +261,21 @@ def _build_module_graph_metadata(
     module_graph: Mapping[str, Path],
     *,
     stdlib_root: Path,
-    generated_module_source_paths: Mapping[str, str],
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
-    namespace_module_names: Collection[str],
+    namespace_portions_by_module: Mapping[str, tuple[str, ...]],
     module_sources: Mapping[str, str] | None = None,
     module_source_catalog: _module_source._ModuleSourceCatalog | None = None,
     module_deps: Mapping[str, set[str]] | None = None,
 ) -> _ModuleGraphMetadata:
     (
         logical_source_path_by_module,
-        module_is_namespace_by_module,
         module_is_package_by_module,
         module_execution_kind_by_module,
     ) = _build_module_lowering_metadata(
         module_graph,
-        generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
         entry_execution_kind=entry_execution_kind,
-        namespace_module_names=namespace_module_names,
     )
     frontend_module_costs = None
     if module_deps is not None and (
@@ -349,7 +304,9 @@ def _build_module_graph_metadata(
     return _ModuleGraphMetadata(
         module_source_role_by_module=MappingProxyType(source_roles),
         logical_source_path_by_module=MappingProxyType(logical_source_path_by_module),
-        module_is_namespace_by_module=MappingProxyType(module_is_namespace_by_module),
+        namespace_portions_by_module=MappingProxyType(
+            dict(namespace_portions_by_module)
+        ),
         module_is_package_by_module=MappingProxyType(module_is_package_by_module),
         module_execution_kind_by_module=MappingProxyType(
             module_execution_kind_by_module
@@ -380,127 +337,10 @@ def _requires_spawn_entry_override(
     return False
 
 
-def _augment_support_modules(
-    *,
-    discovery: "_graph_discovery._ModuleGraphDiscovery",
-    module_graph: MutableMapping[str, Path],
-    scan_authorities: MutableMapping[str, _ModuleSourceScanAuthority],
-    module_reasons: MutableMapping[str, set[str]],
-    roots: list[Path],
-    stdlib_root: Path,
-    stdlib_allowlist: set[str],
-    explicit_imports: Collection[str],
-    resolver_cache: "_module_resolution._ModuleResolutionCache",
-    artifacts_root: Path,
-    stub_parents: Collection[str],
-    entry_module: str,
-    diagnostics_enabled: bool,
-    import_admission_policy: _ImportAdmissionPolicy | None,
-) -> _SupportModuleAugmentation:
-    namespace_parents = _collect_namespace_parents(
-        module_graph,
-        roots,
-        stdlib_root,
-        stdlib_allowlist,
-        explicit_imports,
-        resolver_cache=resolver_cache,
-    )
-    namespace_sources: set[str] = set()
-    generated_scans: dict[Path, _PrecomputedModuleImportScan] = {}
-
-    def capture_generated(
-        name: str, path: Path, *, package_paths: tuple[Path, ...] = ()
-    ) -> None:
-        snapshot = _module_source.PythonSourceSnapshot.capture(path)
-        loaded = _graph_discovery._load_module_import_scan(
-            path,
-            module_name=name,
-            is_package=bool(package_paths),
-            import_scan_mode="module_init",
-            resolution_cache=resolver_cache,
-            project_root=None,
-            roots=roots,
-            stdlib_root=stdlib_root,
-            stdlib_allowlist=stdlib_allowlist,
-            source_snapshot=snapshot,
-            target_python=discovery.target_python,
-            retain_source=False,
-            retain_tree=False,
-        )
-        generated_scans[path.resolve()] = (
-            _graph_discovery._bind_precomputed_module_import_scan(
-                path,
-                module_name=name,
-                import_scan_mode="module_init",
-                is_package=bool(package_paths),
-                package_paths=package_paths,
-                scan=loaded.scan,
-                snapshot=snapshot,
-                target_python=discovery.target_python,
-            )
-        )
-
-    for name in sorted(namespace_parents):
-        if name != entry_module and name in stub_parents:
-            continue
-        paths = _namespace_paths(
-            name,
-            roots,
-            stdlib_root,
-            stdlib_allowlist,
-            resolver_cache,
-        )
-        if not paths:
-            continue
-        stub_path = _write_namespace_module(name, paths, artifacts_root)
-        capture_generated(
-            name, stub_path, package_paths=tuple(Path(path) for path in paths)
-        )
-        namespace_sources.add(name)
-    generated_imports = frozenset()
-    if generated_scans:
-        closure = _graph_discovery._discover_module_graph_from_paths(
-            tuple(generated_scans),
-            roots,
-            [root for root in roots if root != stdlib_root],
-            stdlib_root,
-            project_root=None,
-            stdlib_allowlist=stdlib_allowlist,
-            full_scan_roots=False,
-            stub_parents=set(stub_parents),
-            resolver_cache=resolver_cache,
-            discovery=discovery,
-            precomputed_scans_by_path=generated_scans,
-            import_admission_policy=import_admission_policy,
-            target_python=discovery.target_python,
-        )
-        _graph_discovery._merge_discovered_module_graph(
-            module_graph, scan_authorities, closure
-        )
-        generated_imports = frozenset(closure.explicit_imports)
-        for name in closure.graph:
-            reason = (
-                "namespace_stub"
-                if name in namespace_sources
-                else "package_parent_closure"
-            )
-            _graph_discovery._record_module_reason(module_reasons, name, reason)
-    generated_module_source_paths = {
-        name: generated_module_logical_path(name) for name in namespace_sources
-    }
-    return _SupportModuleAugmentation(
-        namespace_module_names=frozenset(namespace_sources),
-        generated_module_source_paths=generated_module_source_paths,
-        explicit_imports=generated_imports,
-    )
-
-
 _ENTRY_REACHABLE_REASONS = frozenset({"entry_closure"})
 _RUNTIME_SUPPORT_REASONS = frozenset({"runtime_import_support", "spawn_closure"})
 _STDLIB_SUPPORT_REASONS = frozenset({"core_required", "core_closure"})
-_PACKAGE_PARENT_REASONS = frozenset(
-    {"package_parent", "package_parent_closure", "namespace_stub"}
-)
+_PACKAGE_PARENT_REASONS = frozenset({"package_parent", "package_parent_closure"})
 
 
 def _modules_with_any_reason(
@@ -1488,8 +1328,6 @@ def _materialize_import_plan(
     stdlib_allowlist = set(prepared_module_graph.stdlib_allowlist)
     stub_parents = set(prepared_module_graph.stub_parents)
     support_explicit_imports: set[str] = set()
-    namespace_module_names: set[str] = set()
-    generated_module_source_paths: dict[str, str] = {}
     module_graph_operation_counts = {
         "native_support_iterations": 0,
         "native_support_slice_requests": 0,
@@ -1579,31 +1417,6 @@ def _materialize_import_plan(
             ),
             previous_custody=runtime_closure.custody,
         )
-        iteration_support = _augment_support_modules(
-            discovery=discovery,
-            module_graph=module_graph,
-            scan_authorities=scan_authorities,
-            module_reasons=module_reasons,
-            roots=list(prepared_module_graph.roots),
-            stdlib_root=stdlib_root,
-            stdlib_allowlist=stdlib_allowlist,
-            explicit_imports=set(prepared_module_graph.explicit_imports)
-            | support_explicit_imports,
-            resolver_cache=prepared_module_graph.module_resolution_cache,
-            artifacts_root=artifacts_root,
-            stub_parents=stub_parents,
-            entry_module=entry_module,
-            import_admission_policy=_native_support_source_admission_policy(
-                next_native_artifact_plan
-            ),
-            diagnostics_enabled=True,
-        )
-        support_explicit_imports.update(iteration_support.explicit_imports)
-        namespace_module_names.update(iteration_support.namespace_module_names)
-        namespace_module_names.intersection_update(module_graph)
-        generated_module_source_paths.update(
-            iteration_support.generated_module_source_paths
-        )
         if (
             next_native_artifact_plan == native_artifact_plan
             and runtime_closure == before_runtime
@@ -1638,6 +1451,15 @@ def _materialize_import_plan(
                 native_artifact_manifests=native_artifact_manifests,
             )
         )
+    namespace_portions_by_module = _collect_namespace_portions(
+        module_graph,
+        list(prepared_module_graph.roots),
+        stdlib_root,
+        stdlib_allowlist,
+        set(prepared_module_graph.explicit_imports) | support_explicit_imports,
+        stub_parents=stub_parents,
+        resolver_cache=prepared_module_graph.module_resolution_cache,
+    )
     source_modules = frozenset(module_graph)
     native_artifact_modules = native_artifact_plan.native_module_names()
     native_support_function_roots_by_module = {
@@ -1645,16 +1467,19 @@ def _materialize_import_plan(
         for source in final_scan_authority.sources
         if source.body_selection.kind == "native_support"
     }
-    known_modules = source_modules | native_artifact_modules
+    known_modules = (
+        source_modules
+        | native_artifact_modules
+        | frozenset(namespace_portions_by_module)
+    )
     stdlib_allowlist.update(stub_parents)
     stdlib_allowlist.add("molt.stdlib")
     module_graph_metadata = _build_module_graph_metadata(
         module_graph,
         stdlib_root=stdlib_root,
-        generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
         entry_execution_kind=prepared_module_graph.image_scope.entry_execution_kind,
-        namespace_module_names=set(namespace_module_names),
+        namespace_portions_by_module=namespace_portions_by_module,
     )
     # Native semantic views retain their original package execution identity.
     package_flags = dict(module_graph_metadata.module_is_package_by_module)
@@ -1712,8 +1537,7 @@ def _materialize_import_plan(
         spawn_enabled=prepared_module_graph.spawn_enabled,
         runtime_import_support_policy=runtime_closure.policy,
         runtime_import_scan_custody=runtime_closure.custody,
-        namespace_module_names=frozenset(namespace_module_names),
-        generated_module_source_paths=MappingProxyType(generated_module_source_paths),
+        namespace_portions_by_module=MappingProxyType(namespace_portions_by_module),
         known_modules=known_modules,
         direct_call_modules=source_modules,
         declared_root_modules=frozenset(

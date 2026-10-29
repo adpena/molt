@@ -17,7 +17,8 @@ This spec defines:
 
 Source implementation: project-root/package builds, relative imports (explicit and
 implicit) with deterministic package resolution for the currently lowered
-paths, `__init__` handling, covered namespace-package stubs/basics, a Rust
+paths, `__init__` handling, compiled namespace packages described by typed
+registry rows carrying their ordered directory portions, a Rust
 import transaction for the active importlib/`builtins.__import__` runtime paths,
 ordinary source import payload lowering for the focused active paths,
 transaction-owned graph-proven `fromlist` child auto-import/binding for the
@@ -43,6 +44,12 @@ on the final joined source and generated consumers. Earlier donor source or
 static controls do not establish those results. Luau import capability remains
 an explicit gap; the catalog and shared source lowering do not imply target
 support. The release ledger retains these open obligations.
+
+On catalog targets, namespace discovery returns a loader-less spec with origin
+`None` and the existing `_NamespacePath`; module-from-spec binds
+`NamespaceLoader` and shares the locations object with `__path__`. Namespace
+packages have no generated source or initializer. Source emitters that do not
+ship the module catalog ABI do not inherit this namespace execution capability.
 
 Compiler and tooling dependencies use the actual frontend interpreter's import
 semantics; compiled program dependencies use the selected target version.

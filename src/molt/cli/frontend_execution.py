@@ -165,7 +165,6 @@ def _prepare_frontend_execution(
     frontend_module_costs: Mapping[str, float],
     stdlib_like_by_module: Mapping[str, bool],
     known_classes: dict[ClassId, ClassInfo],
-    generated_module_source_paths: Mapping[str, str],
     frontend_phase_timeout: float | None,
     record_frontend_timing: Callable[..., None],
     fail: Callable[..., int],
@@ -222,7 +221,6 @@ def _prepare_frontend_execution(
     serial_frontend_lowering_context = _SerialFrontendLoweringContext(
         syntax_error_modules=syntax_error_modules,
         module_source_catalog=module_source_catalog,
-        generated_module_source_paths=generated_module_source_paths,
         project_root=project_root,
         type_hint_policy=type_hint_policy,
         type_facts=type_facts,

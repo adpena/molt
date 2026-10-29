@@ -709,7 +709,7 @@ def test_a_refused_runner_stops_the_jit_build_before_any_runtime_work(
             frontend_layer_execution_context=SimpleNamespace(
                 module_graph_metadata=SimpleNamespace(
                     logical_source_path_by_module={},
-                    module_is_namespace_by_module={},
+                    namespace_portions_by_module={},
                     module_source_role_by_module={},
                 )
             )
@@ -965,7 +965,7 @@ def test_jit_publication_binds_selected_scratch_before_the_runner_can_write(
             frontend_layer_execution_context=SimpleNamespace(
                 module_graph_metadata=SimpleNamespace(
                     logical_source_path_by_module={},
-                    module_is_namespace_by_module={},
+                    namespace_portions_by_module={},
                     module_source_role_by_module={},
                 )
             )

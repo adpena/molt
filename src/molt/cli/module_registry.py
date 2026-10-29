@@ -20,14 +20,15 @@ same arc for any layout change.
 
 Blob layout (little-endian, 8-byte aligned):
 
-    header (HEADER_BYTES = 48):
-        0..8    magic       u64  = b"MOLTMOD4"
+    header (HEADER_BYTES = 56):
+        0..8    magic       u64  = b"MOLTMOD5"
         8..12   schema      u32
         12..16  count       u32
         16..32  digest      [u8; 16]  (first 16 bytes of the registry sha256)
         32..40  names_len   u64
         40..48  origins_len u64
-    rows (count * ROW_BYTES = 40 each):
+        48..56  portions_len u64
+    rows (count * ROW_BYTES = 48 each):
         0..4    name_off    u32   (byte offset into the names blob)
         4..8    name_len    u32
         8..16   init_ptr    u64   (function-address relocation; 0 = no init lane)
@@ -38,9 +39,13 @@ Blob layout (little-endian, 8-byte aligned):
         26..28  reserved    u16 = 0
         28..32  origin_off  u32   (byte offset into the origins blob)
         32..36  origin_len  u32
-        36..40  reserved    u32 = 0
+        36..40  portions_off u32  (byte offset into the portions blob)
+        40..44  portions_len u32
+        44..48  reserved    u32 = 0
     names: concatenated UTF-8 module names in id (sorted-name) order
     origins: concatenated UTF-8 canonical source origins in id order
+    portions: ordered namespace directories, each a u32 byte length followed
+              by UTF-8 bytes; each namespace row owns one contiguous span
 
 Row ``id`` assignment is the sorted order of canonical dotted names, so the
 names blob is itself sorted and the runtime resolves name→id with a plain
@@ -55,12 +60,13 @@ import json
 import struct
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
-MODULE_REGISTRY_SCHEMA_VERSION = 4
+MODULE_REGISTRY_SCHEMA_VERSION = 5
 MODULE_REGISTRY_BLOB_SYMBOL = "molt_module_registry_blob"
-MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD4", "little")
-MODULE_REGISTRY_HEADER_BYTES = 48
-MODULE_REGISTRY_ROW_BYTES = 40
+MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD5", "little")
+MODULE_REGISTRY_HEADER_BYTES = 56
+MODULE_REGISTRY_ROW_BYTES = 48
 MODULE_REGISTRY_ROW_INIT_PTR_OFFSET = 8
 NO_MODULE_ID = 0xFFFF_FFFF
 
@@ -70,7 +76,11 @@ MODULE_KIND_ALIAS = 2
 MODULE_KIND_NAMESPACE_PARENT = 3
 MODULE_KIND_RUNTIME_BUILTIN = 4
 
-_KIND_CODES: Mapping[str, int] = {
+ModuleRegistryKind = Literal[
+    "source", "extension", "alias", "namespace_parent", "runtime_builtin"
+]
+
+_KIND_CODES: Mapping[ModuleRegistryKind, int] = {
     "source": MODULE_KIND_SOURCE,
     "extension": MODULE_KIND_EXTENSION,
     "alias": MODULE_KIND_ALIAS,
@@ -132,7 +142,7 @@ class ModuleRegistryEntry:
     """One module admitted to the binary image closure."""
 
     name: str
-    kind: str
+    kind: ModuleRegistryKind
     has_location: bool
     is_stdlib_provider: bool
     init_symbol: str = ""
@@ -140,6 +150,7 @@ class ModuleRegistryEntry:
     deps: tuple[str, ...] = ()
     is_package: bool = False
     origin: str = ""
+    portions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in _KIND_CODES:
@@ -150,6 +161,27 @@ class ModuleRegistryEntry:
             raise TypeError("module registry has_location must be bool")
         if not isinstance(self.is_stdlib_provider, bool):
             raise TypeError("module registry is_stdlib_provider must be bool")
+        if self.kind == "namespace_parent":
+            if (
+                not isinstance(self.portions, tuple)
+                or not self.portions
+                or any(
+                    not isinstance(portion, str) or not portion
+                    for portion in self.portions
+                )
+                or not self.is_package
+                or self.has_location
+                or self.origin
+                or self.init_symbol
+                or self.is_stdlib_provider
+            ):
+                raise ValueError(
+                    f"namespace registry entry '{self.name}' requires portions and a package with no origin, location or body"
+                )
+        elif self.portions:
+            raise ValueError(
+                f"non-namespace registry entry '{self.name}' carries portions"
+            )
         if self.kind == "runtime_builtin" and not self.init_symbol:
             raise ValueError(
                 f"runtime builtin registry entry '{self.name}' requires init_symbol"
@@ -175,7 +207,7 @@ class ModuleRegistryEntry:
 class ModuleRegistryRow:
     id: int
     name: str
-    kind: str
+    kind: ModuleRegistryKind
     kind_code: int
     parent: int | None
     alias_target: int | None
@@ -183,6 +215,7 @@ class ModuleRegistryRow:
     flags: int
     deps: tuple[str, ...] = ()
     origin: str = ""
+    portions: tuple[str, ...] = ()
 
     @property
     def leaf_attr(self) -> str:
@@ -242,6 +275,7 @@ class ModuleRegistry:
                     "flags": row.flags,
                     "deps": list(row.deps),
                     "origin": row.origin,
+                    "portions": list(row.portions),
                 }
                 for row in self.rows
             ],
@@ -271,8 +305,10 @@ class ModuleRegistry:
     def _blob_and_relocs(self) -> tuple[bytes, tuple[tuple[int, str], ...]]:
         names_blob = bytearray()
         origins_blob = bytearray()
+        portions_blob = bytearray()
         name_spans: list[tuple[int, int]] = []
         origin_spans: list[tuple[int, int]] = []
+        portion_spans: list[tuple[int, int]] = []
         for row in self.rows:
             encoded = row.name.encode("utf-8")
             name_spans.append((len(names_blob), len(encoded)))
@@ -280,28 +316,36 @@ class ModuleRegistry:
             encoded_origin = row.origin.encode("utf-8")
             origin_spans.append((len(origins_blob), len(encoded_origin)))
             origins_blob.extend(encoded_origin)
+            start = len(portions_blob)
+            for portion in row.portions:
+                encoded_portion = portion.encode("utf-8")
+                portions_blob.extend(struct.pack("<I", len(encoded_portion)))
+                portions_blob.extend(encoded_portion)
+            portion_spans.append((start, len(portions_blob) - start))
         header = struct.pack(
-            "<QII16sQQ",
+            "<QII16sQQQ",
             MODULE_REGISTRY_MAGIC,
             self.schema,
             len(self.rows),
             bytes.fromhex(self.digest16_hex),
             len(names_blob),
             len(origins_blob),
+            len(portions_blob),
         )
         assert len(header) == MODULE_REGISTRY_HEADER_BYTES
         rows_blob = bytearray()
         relocs: list[tuple[int, str]] = []
-        for row, (name_off, name_len), (origin_off, origin_len) in zip(
-            self.rows, name_spans, origin_spans
-        ):
+        for row, (name_off, name_len), (origin_off, origin_len), (
+            portions_off,
+            portions_len,
+        ) in zip(self.rows, name_spans, origin_spans, portion_spans):
             row_base = MODULE_REGISTRY_HEADER_BYTES + len(rows_blob)
             if row.init_symbol:
                 relocs.append(
                     (row_base + MODULE_REGISTRY_ROW_INIT_PTR_OFFSET, row.init_symbol)
                 )
             packed = struct.pack(
-                "<IIQIIBBHIII",
+                "<IIQIIBBHIIIII",
                 name_off,
                 name_len,
                 0,  # init_ptr: relocation-filled
@@ -312,12 +356,18 @@ class ModuleRegistry:
                 0,
                 origin_off,
                 origin_len,
+                portions_off,
+                portions_len,
                 0,
             )
             assert len(packed) == MODULE_REGISTRY_ROW_BYTES
             rows_blob.extend(packed)
         blob = (
-            bytes(header) + bytes(rows_blob) + bytes(names_blob) + bytes(origins_blob)
+            bytes(header)
+            + bytes(rows_blob)
+            + bytes(names_blob)
+            + bytes(origins_blob)
+            + bytes(portions_blob)
         )
         return blob, tuple(relocs)
 
@@ -341,6 +391,7 @@ def registry_digest_for_rows(
             "flags": row["flags"],
             "deps": list(_row_deps(row.get("deps", ()))),
             "origin": row.get("origin", ""),
+            "portions": list(_row_deps(row.get("portions", ()))),
         }
         for row in rows
     ]
@@ -433,6 +484,7 @@ def build_module_registry(
                 flags=flags,
                 deps=tuple(sorted(set(entry.deps))),
                 origin=entry.origin,
+                portions=entry.portions,
             )
         )
     digest = registry_digest_for_rows(
@@ -448,6 +500,7 @@ def build_module_registry(
                 "flags": row.flags,
                 "deps": row.deps,
                 "origin": row.origin,
+                "portions": row.portions,
             }
             for row in rows
         ),
@@ -461,7 +514,7 @@ def build_module_registry(
     )
 
 
-def runtime_builtin_kind(name: str) -> str:
+def runtime_builtin_kind(name: str) -> ModuleRegistryKind:
     return "runtime_builtin" if name in _RUNTIME_BUILTIN_MODULES else "source"
 
 
@@ -501,6 +554,25 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
         row_name = row.get("name")
         init_symbol = row.get("init_symbol", "")
         flags = row.get("flags")
+        portions = row.get("portions")
+        if not isinstance(portions, list) or any(
+            not isinstance(portion, str) or not portion for portion in portions
+        ):
+            problems.append(
+                f"row {row_name!r} portions must be a required list of nonempty strings"
+            )
+        if row.get("kind") == "namespace_parent":
+            if (
+                not portions
+                or init_symbol
+                or row.get("origin")
+                or flags != MODULE_FLAG_PACKAGE
+            ):
+                problems.append(
+                    f"namespace registry row {row_name!r} requires portions and no origin, location or body"
+                )
+        elif portions:
+            problems.append(f"non-namespace registry row {row_name!r} carries portions")
         valid_flags = (
             type(flags) is int
             and 0 <= flags <= 0xFF
@@ -544,6 +616,7 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
                 "flags": flags,
                 "deps": _row_deps(row.get("deps", ())),
                 "origin": row.get("origin", ""),
+                "portions": _row_deps(portions),
             }
         )
         expected_parent = (

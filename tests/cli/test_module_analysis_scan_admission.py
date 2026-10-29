@@ -230,10 +230,9 @@ def test_frontend_analysis_uses_admitted_native_selection(
         scan_authority=authority,
         module_graph_metadata=module_graph._build_module_graph_metadata(
             graph,
-            generated_module_source_paths={},
             entry_module="app",
             entry_execution_kind="script",
-            namespace_module_names=set(),
+            namespace_portions_by_module={},
             stdlib_root=path.parent / "stdlib",
         ),
         module_resolution_cache=_ModuleResolutionCache(),

@@ -190,12 +190,21 @@ public finder semantics.
 
 ## 3. Compile-time artifacts (the single authority)
 
-The current wire authority is schema 4, magic `MOLTMOD4`, with required
+The current wire authority is schema 5, magic `MOLTMOD5`, with required
 stdlib-provider provenance (`0x10`) alongside file-location provenance (`0x08`).
 The metadata producer, frontend bootstrap role, worker/cache identity and catalog
 consume the same source-role fact. This does not encode a compiler filesystem
-root as target-runtime authority. The physical layout retains its existing
-48-byte header and 40-byte rows. Required typed entry field `has_location`
+root as target-runtime authority. The physical layout has a 56-byte header and
+48-byte rows. Namespace-parent rows carry an ordered span of length-prefixed
+UTF-8 directory portions in a separate blob table. They have the package flag,
+no initializer, no file location and an empty serialized origin. Other kinds
+cannot carry portions. The producer, JSON/digest projections and runtime parser
+validate this boundary. Namespace identity comes only from the row kind.
+The compiled finder returns a loader-less spec with origin `None` and the
+existing machinery `_NamespacePath(name, portions, PathFinder._get_spec)`;
+module-from-spec binds `NamespaceLoader` and shares the exact locations object
+with `__path__`. Namespace packages contribute no generated source, scan, cache
+entry or compiled body. Required typed entry field `has_location`
 projects into flag `0x08` and participates in the same JSON/digest/blob
 projections. Only actual source-file producers and file-location factories
 admit this fact; a descriptive origin or generated native source-kind row
@@ -217,7 +226,7 @@ registry.rows[i] = {
   parent:        ModuleId|NONE  # package parent ("a" for "a.b")
   leaf_attr:     &'static str   # "b" for "a.b" (parent-binding attr)
   kind:          Source | Extension { init_symbol, phase } |
-                 Alias { target: ModuleId } | NamespaceParent |
+                 Alias { target: ModuleId } | NamespaceParent { portions } |
                  RuntimeBuiltin (sys, builtins)
   init:          table index into MODULE_INIT_TABLE (fn() published per target)
   deps:          &'static [ModuleId]   # E-edges incl. C-scan dynamic deps
