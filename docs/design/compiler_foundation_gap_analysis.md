@@ -240,8 +240,9 @@ Adopt, in order of expected gain:
    manifest.
 7. Runtime hot helpers shipped as bitcode for ThinLTO (W4), so LLVM can inline tag checks, field
    access, reference counting and the pending-exception check.
-8. Typed op identity: TIR folds about 20 spellings into one `OpCode` and keeps the spelling only as
-   the `_original_kind` string, so every backend re-matches strings for the same decision.
+8. Typed op identity: TIR folds about 20 spellings into one `OpCode` and kept the spelling only as
+   the `_original_kind` string, so every backend re-matched strings for the same decision. HF-197
+   step 4a replaced it with a typed `origin: Option<OpKind>` (design 25).
 
 Reject, because Molt keeps CPython semantics: wrapping 64-bit `int`, fixed fields with compile
 errors for unknown attributes, compile-time-only `__getattr__`, Boehm GC (`__del__` and weakref

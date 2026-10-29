@@ -54,6 +54,7 @@ mod tests {
         func.loop_break_kinds
             .insert(BlockId(4), LoopBreakKind::BreakIfFalse);
         func.blocks.get_mut(&BlockId(3)).unwrap().ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryEnd,
             operands: vec![],
@@ -67,6 +68,7 @@ mod tests {
             args: vec![],
         };
         func.blocks.get_mut(&BlockId(6)).unwrap().ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -109,6 +111,7 @@ mod tests {
             // Force SCCP's branch-fold cleanup, while keeping all structural roots.
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstBool,
                 operands: vec![],

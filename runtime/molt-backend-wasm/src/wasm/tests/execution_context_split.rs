@@ -485,38 +485,33 @@ console.log('split-frame execution: checked/failed entry, actual chunks, normal/
 fn split_frame_fixture(name: &str) -> (FunctionIR, Vec<FunctionIR>) {
     let mut ops = vec![
         OpIR {
-            kind: "trace_enter_slot".into(),
             s_value: Some(name.into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
         },
         OpIR {
-            kind: "check_exception".into(),
             value: Some(0),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
     ];
     for line in 1..=6 {
         ops.push(OpIR {
-            kind: "line".into(),
             value: Some(line),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Line)
         });
         ops.push(OpIR {
-            kind: "const_none".into(),
             out: Some(format!("v{line}")),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstNone)
         });
     }
     ops.extend([
-        wasm_test_op("trace_exit", None, vec![]),
-        wasm_test_op("ret_void", None, vec![]),
+        wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         OpIR {
-            kind: "label".into(),
             value: Some(0),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
-        wasm_test_op("trace_exit", None, vec![]),
-        wasm_test_op("ret_void", None, vec![]),
+        wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
     ]);
     let original = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -531,18 +526,22 @@ fn split_frame_fixture(name: &str) -> (FunctionIR, Vec<FunctionIR>) {
 
 fn chunk_case(chunk: &FunctionIR) -> serde_json::Value {
     assert_eq!(chunk.execution_context, ExecutionContextPolicy::Inherited);
-    let returned = chunk.ops.iter().find(|op| op.kind == "ret").unwrap();
+    let returned = chunk
+        .ops
+        .iter()
+        .find(|op| op.kind == molt_ir::OpKind::Ret)
+        .unwrap();
     let returned_name = &returned.args.as_ref().unwrap()[0];
     let producer = chunk
         .ops
         .iter()
         .find(|op| op.out.as_ref() == Some(returned_name))
         .unwrap();
-    assert_eq!(producer.kind, "const_bool");
+    assert_eq!(producer.kind, molt_ir::OpKind::ConstBool);
     json!({
         "name": chunk.name,
         "continues": producer.value == Some(1),
-        "lines": chunk.ops.iter().filter(|op| op.kind == "line")
+        "lines": chunk.ops.iter().filter(|op| op.kind == molt_ir::OpKind::Line)
             .map(|op| op.value.unwrap()).collect::<Vec<_>>(),
     })
 }
@@ -605,12 +604,11 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         None,
         vec![
             OpIR {
-                kind: "trace_enter_slot".into(),
                 s_value: Some("probe____molt_globals_builtin__owned".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
             },
-            wasm_test_op("trace_exit", None, vec![]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
     local_fast_candidate.execution_context = ExecutionContextPolicy::Local;
@@ -651,7 +649,7 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         assert_eq!(chunks.len(), chunk_count);
         for (index, chunk) in chunks.iter_mut().enumerate() {
             for op in &mut chunk.ops {
-                if op.kind == "const_bool"
+                if op.kind == molt_ir::OpKind::ConstBool
                     && op
                         .out
                         .as_deref()
@@ -745,27 +743,27 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         for payload in [false, true] {
             let mut ops = Vec::new();
             if mode == "dispatch" {
-                ops.extend(["jump", "label"].map(|kind| OpIR {
-                    kind: kind.into(),
-                    value: Some(7),
-                    ..OpIR::default()
-                }));
+                ops.extend(
+                    [molt_ir::OpKind::Jump, molt_ir::OpKind::Label].map(|kind| OpIR {
+                        value: Some(7),
+                        ..OpIR::new(kind)
+                    }),
+                );
             } else if mode == "stateful" {
                 ops.push(OpIR {
                     state_targets: Some(vec![]),
-                    ..wasm_test_op("state_switch", None, vec![])
+                    ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
                 });
             }
             if payload {
                 ops.push(OpIR {
-                    kind: "const_bool".into(),
                     value: Some(1),
                     out: Some("result".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 });
-                ops.push(wasm_test_op("ret", None, vec!["result"]));
+                ops.push(wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"]));
             } else {
-                ops.push(wasm_test_op("ret_void", None, vec![]));
+                ops.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
             }
             let params = if mode == "stateful" {
                 vec!["task"]
@@ -811,13 +809,16 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
                 return_abi,
                 ops: vec![
                     OpIR {
-                        kind: "const".into(),
                         value: Some(42),
                         out: Some("result".into()),
-                        ..Default::default()
+                        ..OpIR::new(molt_ir::OpKind::Const)
                     },
                     wasm_test_op(
-                        if returns_value { "ret" } else { "ret_void" },
+                        if returns_value {
+                            molt_ir::OpKind::Ret
+                        } else {
+                            molt_ir::OpKind::RetVoid
+                        },
                         None,
                         if returns_value {
                             vec!["result"]
@@ -862,18 +863,18 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         vec![
             OpIR {
                 s_value: Some("molt_main".into()),
-                ..wasm_test_op("trace_enter_slot", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::TraceEnterSlot, None, vec![])
             },
             OpIR {
                 value: Some(1_i64 << 62),
-                ..wasm_test_op("const", Some("wide"), vec![])
+                ..wasm_test_op(molt_ir::OpKind::Const, Some("wide"), vec![])
             },
             OpIR {
                 value: Some(1),
-                ..wasm_test_op("frame_home_store", Some("view"), vec!["wide"])
+                ..wasm_test_op(molt_ir::OpKind::FrameHomeStore, Some("view"), vec!["wide"])
             },
-            wasm_test_op("trace_exit", None, vec![]),
-            wasm_test_op("ret", None, vec!["view"]),
+            wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["view"]),
         ],
     );
     let mut mixed_source = mixed_source;
@@ -981,46 +982,42 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
     for mode in ["ordinary", "dispatch", "stateful", "yield", "await"] {
         let stateful = matches!(mode, "stateful" | "yield" | "await");
         let mut ops = vec![OpIR {
-            kind: "trace_enter_slot".into(),
             s_value: Some("molt_main".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
         }];
         if stateful {
             ops.push(OpIR {
                 state_targets: (mode == "stateful").then(Vec::new),
-                ..wasm_test_op("state_switch", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
             });
         } else if mode == "dispatch" {
-            ops.extend(["jump", "label"].map(|kind| OpIR {
-                kind: kind.into(),
-                value: Some(7),
-                ..OpIR::default()
-            }));
+            ops.extend(
+                [molt_ir::OpKind::Jump, molt_ir::OpKind::Label].map(|kind| OpIR {
+                    value: Some(7),
+                    ..OpIR::new(kind)
+                }),
+            );
         }
         ops.push(OpIR {
-            kind: "line".into(),
             value: Some(1),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Line)
         });
         let mut expected = Vec::new();
         if mode == "yield" {
             ops.extend([
                 OpIR {
-                    kind: "const_bool".into(),
                     value: Some(1),
                     out: Some("yielded".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "state_yield".into(),
                     value: Some(1),
                     args: Some(vec!["yielded".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StateYield)
                 },
                 OpIR {
-                    kind: "line".into(),
                     value: Some(2),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Line)
                 },
             ]);
             expected.push(molt_codegen_abi::box_bool_bits(1).to_string());
@@ -1028,35 +1025,31 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         if mode == "await" {
             ops.extend([
                 OpIR {
-                    kind: "state_label".into(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StateLabel)
                 },
-                wasm_test_op("const_none", Some("future"), vec![]),
+                wasm_test_op(molt_ir::OpKind::ConstNone, Some("future"), vec![]),
                 OpIR {
-                    kind: "const".into(),
                     value: Some(1),
                     out: Some("resume".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "state_transition".into(),
                     value: Some(1),
                     args: Some(vec!["future".into(), "resume".into()]),
                     out: Some("awaited".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StateTransition)
                 },
                 OpIR {
-                    kind: "line".into(),
                     value: Some(2),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Line)
                 },
             ]);
             expected.push(molt_codegen_abi::box_pending_bits().to_string());
         }
         ops.extend([
-            wasm_test_op("trace_exit", None, vec![]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ]);
         expected.push(molt_codegen_abi::box_none_bits().to_string());
         let mut function = wasm_test_function(
@@ -1104,56 +1097,56 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
     }
     let mut home_modules = Vec::new();
     for (stateful, anchor) in [(false, false), (true, false), (false, true), (true, true)] {
-        let marked = |kind: &str, value| OpIR {
+        let marked = |kind: molt_ir::OpKind, value| OpIR {
             value: Some(value),
             ..wasm_test_op(kind, None, vec![])
         };
         let mut ops = vec![
             OpIR {
                 s_value: Some("molt_main".into()),
-                ..wasm_test_op("trace_enter_slot", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::TraceEnterSlot, None, vec![])
             },
-            marked("check_exception", 90),
+            marked(molt_ir::OpKind::CheckException, 90),
         ];
         if stateful {
             ops.push(OpIR {
                 state_targets: Some(vec![(5, 50)]),
-                ..wasm_test_op("state_switch", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
             });
         } else {
-            ops.push(marked("label", 0));
+            ops.push(marked(molt_ir::OpKind::Label, 0));
         }
         for (line, result) in [(1, "initial_home"), (2, "resumed_home")] {
             if line == 2 {
                 if !stateful {
                     break;
                 }
-                ops.push(marked("state_label", 50));
+                ops.push(marked(molt_ir::OpKind::StateLabel, 50));
             }
-            ops.push(marked("line", line));
+            ops.push(marked(molt_ir::OpKind::Line, line));
             if anchor {
                 ops.push(OpIR {
                     s_value: Some("home-anchor-β\0雪".into()),
-                    ..wasm_test_op("const_str", Some("unused_anchor"), vec![])
+                    ..wasm_test_op(molt_ir::OpKind::ConstStr, Some("unused_anchor"), vec![])
                 });
             }
             ops.extend([
                 OpIR {
                     value: Some(1),
-                    ..wasm_test_op("frame_home_load", Some(result), vec![])
+                    ..wasm_test_op(molt_ir::OpKind::FrameHomeLoad, Some(result), vec![])
                 },
-                marked("check_exception", 90),
+                marked(molt_ir::OpKind::CheckException, 90),
                 // Final ownership IR makes the escaping result an owner. The
                 // borrowed load itself must emit no retain or release.
-                wasm_test_op("inc_ref", None, vec![result]),
-                wasm_test_op("trace_exit", None, vec![]),
-                wasm_test_op("ret", None, vec![result]),
+                wasm_test_op(molt_ir::OpKind::IncRef, None, vec![result]),
+                wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec![result]),
             ]);
         }
         ops.extend([
-            marked("label", 90),
-            wasm_test_op("trace_exit", None, vec![]),
-            wasm_test_op("ret_void", None, vec![]),
+            marked(molt_ir::OpKind::Label, 90),
+            wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ]);
         let mut function = wasm_test_function(
             "molt_main",
@@ -1201,19 +1194,17 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         None,
         vec![
             OpIR {
-                kind: "trace_enter_slot".into(),
                 s_value: Some("molt_main".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
             },
             OpIR {
-                kind: "call_internal".into(),
                 s_value: Some("throwing_callee".into()),
                 args: Some(vec![]),
                 passes_execution_context: true,
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
-            wasm_test_op("trace_exit", None, vec![]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
     unwind_owner.execution_context = ExecutionContextPolicy::Local;
@@ -1223,13 +1214,12 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
         None,
         vec![
             OpIR {
-                kind: "const_bool".into(),
                 value: Some(1),
                 out: Some("exception".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstBool)
             },
-            wasm_test_op("raise", None, vec!["exception"]),
-            wasm_test_op("unreachable", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::Raise, None, vec!["exception"]),
+            wasm_test_op(molt_ir::OpKind::Unreachable, None, vec![]),
         ],
     );
     throwing_callee.execution_context = ExecutionContextPolicy::Inherited;
@@ -1345,14 +1335,14 @@ fn symbolic_code_slots_emit_program_bound_immediates() {
         vec![
             OpIR {
                 s_value: Some("molt_main".into()),
-                ..wasm_test_op("code_slot_set", None, vec!["code", "globals"])
+                ..wasm_test_op(molt_ir::OpKind::CodeSlotSet, None, vec!["code", "globals"])
             },
             OpIR {
                 s_value: Some("molt_main".into()),
-                ..wasm_test_op("trace_enter_slot", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::TraceEnterSlot, None, vec![])
             },
-            wasm_test_op("trace_exit", None, vec![]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::TraceExit, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
     function.execution_context = ExecutionContextPolicy::Local;
@@ -1401,16 +1391,16 @@ fn symbolic_module_slots_bind_in_generic_and_lir_final_emission() {
             vec![
                 OpIR {
                     s_value: Some("sys".into()),
-                    ..wasm_test_op("module_slot", Some("slot"), vec![])
+                    ..wasm_test_op(molt_ir::OpKind::ModuleSlot, Some("slot"), vec![])
                 },
-                wasm_test_op("ret", None, vec!["slot"]),
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["slot"]),
             ],
         );
         let main = wasm_test_function(
             "molt_main",
             vec![],
             None,
-            vec![wasm_test_op("ret_void", None, vec![])],
+            vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
         );
         let ir = SimpleIR {
             functions: vec![main, function],

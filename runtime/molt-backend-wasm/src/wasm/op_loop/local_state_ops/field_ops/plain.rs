@@ -15,9 +15,9 @@ pub(super) fn emit_plain_field_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    match op.kind.as_str() {
-        "store" => emit_store(context, func, op),
-        "load" | "guarded_load" => emit_load(context, func, op),
+    match op.kind {
+        molt_ir::OpKind::Store => emit_store(context, func, op),
+        molt_ir::OpKind::Load | molt_ir::OpKind::GuardedLoad => emit_load(context, func, op),
         _ => return false,
     }
     true

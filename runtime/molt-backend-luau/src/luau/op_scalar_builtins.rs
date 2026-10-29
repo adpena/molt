@@ -2,11 +2,11 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_scalar_builtin_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
+        match op.kind {
             // ================================================================
             // Len / type introspection
             // ================================================================
-            "len" => {
+            molt_ir::OpKind::Len => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
@@ -24,21 +24,21 @@ impl LuauBackend {
                     }
                 }
             }
-            "id" => {
+            molt_ir::OpKind::Id => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
                     self.emit_line(&format!("local {out} = tostring({})", sanitize_ident(obj)));
                 }
             }
-            "ord" => {
+            molt_ir::OpKind::Ord => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("local {out} = molt_ord({})", sanitize_ident(val)));
                 }
             }
-            "ord_at" => {
+            molt_ir::OpKind::OrdAt => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -47,7 +47,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_ord_at({container}, {key})"));
                 }
             }
-            "chr" => {
+            molt_ir::OpKind::Chr => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -57,7 +57,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "type_of" => {
+            molt_ir::OpKind::TypeOf => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
@@ -67,13 +67,13 @@ impl LuauBackend {
                     ));
                 }
             }
-            "isinstance" | "issubclass" => {
+            molt_ir::OpKind::Isinstance | molt_ir::OpKind::Issubclass => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let cls = sanitize_ident(&args[1]);
-                    let helper = if op.kind == "isinstance" {
+                    let helper = if op.kind == molt_ir::OpKind::Isinstance {
                         "molt_isinstance"
                     } else {
                         "molt_issubclass"
@@ -87,14 +87,14 @@ impl LuauBackend {
             // ================================================================
             // Type casting
             // ================================================================
-            "int_from_obj" => {
+            molt_ir::OpKind::IntFromObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("local {out} = molt_int({})", sanitize_ident(val)));
                 }
             }
-            "int_from_str_of_obj" => {
+            molt_ir::OpKind::IntFromStrOfObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
@@ -106,7 +106,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "float_from_obj" => {
+            molt_ir::OpKind::FloatFromObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -116,21 +116,21 @@ impl LuauBackend {
                     ));
                 }
             }
-            "str_from_obj" | "ascii_from_obj" => {
+            molt_ir::OpKind::StrFromObj | molt_ir::OpKind::AsciiFromObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("local {out} = molt_str({})", sanitize_ident(val)));
                 }
             }
-            "repr_from_obj" => {
+            molt_ir::OpKind::ReprFromObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("local {out} = molt_repr({})", sanitize_ident(val)));
                 }
             }
-            "bytes_from_obj" | "bytes_from_str" => {
+            molt_ir::OpKind::BytesFromObj | molt_ir::OpKind::BytesFromStr => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -140,7 +140,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "bytearray_from_str" => {
+            molt_ir::OpKind::BytearrayFromStr => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -150,7 +150,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "bytearray_from_obj" => {
+            molt_ir::OpKind::BytearrayFromObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -162,7 +162,7 @@ impl LuauBackend {
             // ================================================================
             // Print
             // ================================================================
-            "print" => {
+            molt_ir::OpKind::Print => {
                 let call_args = op
                     .args
                     .as_deref()
@@ -173,14 +173,17 @@ impl LuauBackend {
                     .join(", ");
                 self.emit_line(&format!("molt_print({call_args})"));
             }
-            "print_newline" => {
+            molt_ir::OpKind::PrintNewline => {
                 self.emit_line("molt_print()");
             }
 
             // ================================================================
             // Representation bridge (Luau already uses VM value carriers).
             // ================================================================
-            "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
+            molt_ir::OpKind::Box
+            | molt_ir::OpKind::BoxFromRawInt
+            | molt_ir::OpKind::Unbox
+            | molt_ir::OpKind::UnboxToRawInt => {
                 let Some([source]) = op.args.as_deref() else {
                     self.emit_unsupported_op_with_reason(
                         op,

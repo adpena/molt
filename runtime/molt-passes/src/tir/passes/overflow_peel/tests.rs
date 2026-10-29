@@ -53,6 +53,7 @@ fn live_shape_function() -> TirFunction {
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(value));
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -62,6 +63,7 @@ fn live_shape_function() -> TirFunction {
         }
     };
     let op = |opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>| TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -305,6 +307,7 @@ fn exception_handler_function_refuses() {
         .unwrap()
         .ops
         .push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -329,6 +332,7 @@ fn impure_body_refuses() {
             && block.ops.iter().any(|o| o.opcode == OpCode::Add)
         {
             block.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -501,23 +505,20 @@ fn dynamic_arithmetic_cannot_enter_checked_replay_even_with_integer_annotations(
 }
 
 #[test]
-fn opaque_copy_fallbacks_are_not_replay_safe_markers() {
+fn preserved_mapping_mutation_is_not_a_replay_safe_marker() {
     let mut func = live_shape_function();
     let header = *func.loop_pairs.keys().next().unwrap();
     let guard = func.loop_cond_blocks[&header];
-    let mut attrs = AttrDict::new();
-    attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("opaque_callback".into()),
-    );
+    let mapping = func.blocks[&func.entry_block].args[0].id;
     func.blocks.get_mut(&guard).unwrap().ops.insert(
         0,
         TirOp {
+            origin: Some(molt_ir::OpKind::DictUpdateMissing),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
-            operands: vec![],
+            operands: vec![mapping, mapping],
             results: vec![],
-            attrs,
+            attrs: AttrDict::new(),
             source_span: None,
         },
     );

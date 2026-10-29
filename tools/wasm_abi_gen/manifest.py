@@ -121,10 +121,7 @@ CONTAINER_RUNTIME_SELECTOR_FACTS = {
     "str",
     "tuple",
 }
-WASM_BULK_MEMORY_INSTRUCTIONS = {
-    "memory_copy": "Copy",
-    "memory_fill": "Fill",
-}
+
 NUMERIC_OP_LOOP_VARIANTS = (
     "Add",
     "Sub",
@@ -2715,32 +2712,12 @@ def validate_loaded_manifest(
         # TrackedImportIds access, not a speculative per-op dependency list.
 
     bulk_memory_ops = data.get("wasm_bulk_memory_op", [])
-    if not isinstance(bulk_memory_ops, list) or not bulk_memory_ops:
-        raise WasmAbiManifestError("manifest must define wasm_bulk_memory_op entries")
-    seen_bulk_memory_kinds: set[str] = set()
-    for idx, entry in enumerate(bulk_memory_ops):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"wasm_bulk_memory_op entry {idx} must be a table"
-            )
-        kind = entry.get("kind")
-        if not isinstance(kind, str) or not kind:
-            raise WasmAbiManifestError(
-                f"wasm_bulk_memory_op entry {idx} has invalid kind"
-            )
-        if kind in seen_bulk_memory_kinds:
-            raise WasmAbiManifestError(f"duplicate wasm_bulk_memory_op kind {kind!r}")
-        seen_bulk_memory_kinds.add(kind)
-        instruction = entry.get("instruction")
-        if instruction not in WASM_BULK_MEMORY_INSTRUCTIONS:
-            raise WasmAbiManifestError(
-                f"wasm_bulk_memory_op {kind!r} has invalid instruction {instruction!r}"
-            )
-        arg_count = entry.get("arg_count")
-        if not isinstance(arg_count, int) or arg_count != 3:
-            raise WasmAbiManifestError(
-                f"wasm_bulk_memory_op {kind!r} must use arg_count = 3"
-            )
+    if not isinstance(bulk_memory_ops, list):
+        raise WasmAbiManifestError("wasm_bulk_memory_op must be a list of tables")
+    if bulk_memory_ops:
+        raise WasmAbiManifestError(
+            "wasm_bulk_memory_op is retired: no registered wire producer"
+        )
 
     container_runtime_selectors = data.get("container_runtime_selector", [])
     if not isinstance(container_runtime_selectors, list):

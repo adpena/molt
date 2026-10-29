@@ -31,12 +31,12 @@ pub(crate) struct WasmContainerRuntimeSelection {
 }
 
 #[inline]
-pub(crate) fn wasm_container_runtime_op(kind: &str) -> Option<WasmContainerRuntimeOp> {
+pub(crate) fn wasm_container_runtime_op(kind: molt_ir::OpKind) -> Option<WasmContainerRuntimeOp> {
     match kind {
-        "contains" => Some(WasmContainerRuntimeOp::Contains),
-        "index" => Some(WasmContainerRuntimeOp::Index),
-        "len" => Some(WasmContainerRuntimeOp::Len),
-        "store_index" => Some(WasmContainerRuntimeOp::StoreIndex),
+        molt_ir::OpKind::Contains => Some(WasmContainerRuntimeOp::Contains),
+        molt_ir::OpKind::Index => Some(WasmContainerRuntimeOp::Index),
+        molt_ir::OpKind::Len => Some(WasmContainerRuntimeOp::Len),
+        molt_ir::OpKind::StoreIndex => Some(WasmContainerRuntimeOp::StoreIndex),
         _ => None,
     }
 }

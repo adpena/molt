@@ -297,11 +297,11 @@ fn report_memgvn_producer_effect(module: &TirModule) {
                     if op.opcode != OpCode::LoadAttr {
                         continue;
                     }
-                    let kind = match op.attrs.get("_original_kind") {
-                        Some(AttrValue::Str(s)) => s.as_str(),
-                        _ => "",
-                    };
-                    if !matches!(kind, "load" | "guarded_field_get") {
+                    let Some(kind) = op.origin else { continue };
+                    if !matches!(
+                        kind,
+                        molt_ir::OpKind::Load | molt_ir::OpKind::GuardedFieldGet
+                    ) {
                         continue;
                     }
                     raw_loads += 1;
@@ -423,6 +423,7 @@ mod tests {
             let mut attrs = AttrDict::new();
             attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
             block.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -458,6 +459,7 @@ mod tests {
         let bentry = b.entry_block;
         let v = b.fresh_value();
         b.blocks.get_mut(&bentry).unwrap().ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],

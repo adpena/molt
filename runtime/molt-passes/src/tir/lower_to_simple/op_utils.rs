@@ -81,8 +81,11 @@ pub(super) fn annotate_lowered_op(
     {
         opir.defines_del = Some(true);
     }
-    if (molt_ir::tir::op_kinds_generated::simpleir_kind_is_exception_check(opir.kind.as_str())
-        || matches!(opir.kind.as_str(), "try_start" | "try_end"))
+    if (opir.kind.is_exception_check()
+        || matches!(
+            opir.kind,
+            molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd
+        ))
         && let Some(orig_id) = opir.value
         && let Some(&new_id) = original_to_new_label.get(&orig_id)
     {
@@ -94,21 +97,21 @@ pub(super) fn annotate_lowered_op(
 // Helper utilities
 // ---------------------------------------------------------------------------
 
-pub(super) fn binary_op(kind: &str, op: &TirOp, out: Option<String>) -> OpIR {
+pub(super) fn binary_op(kind: molt_ir::OpKind, op: &TirOp, out: Option<String>) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(operand_args(op)),
         out,
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
-pub(super) fn unary_op(kind: &str, op: &TirOp, out: Option<String>) -> OpIR {
+pub(super) fn unary_op(kind: molt_ir::OpKind, op: &TirOp, out: Option<String>) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(operand_args(op)),
         out,
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 

@@ -27,14 +27,14 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
         std::collections::BTreeMap::new();
 
     for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "if" => if_stack.push((idx, None)),
-            "else" => {
+        match op.kind {
+            molt_ir::OpKind::If => if_stack.push((idx, None)),
+            molt_ir::OpKind::Else => {
                 if let Some(top) = if_stack.last_mut() {
                     top.1 = Some(idx);
                 }
             }
-            "end_if" => {
+            molt_ir::OpKind::EndIf => {
                 if let Some((if_idx, else_idx)) = if_stack.pop() {
                     if_to_end_if.insert(if_idx, idx);
                     if let Some(ei) = else_idx {
@@ -63,7 +63,7 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
 
     for (&if_idx, &end_if_idx) in &if_to_end_if {
         let mut scan = end_if_idx + 1;
-        while scan < ops.len() && ops[scan].kind == "phi" {
+        while scan < ops.len() && ops[scan].kind == molt_ir::OpKind::Phi {
             let phi_op = &ops[scan];
             if let (Some(out), Some(args)) = (&phi_op.out, &phi_op.args)
                 && args.len() == 2
@@ -109,10 +109,10 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
     for rewrite in &rewrites {
         // Replace phi with load_var.
         ops[rewrite.phi_idx] = OpIR {
-            kind: "load_var".to_string(),
+            kind: molt_ir::OpKind::LoadVar,
             var: Some(format!("_phi_{}", rewrite.phi_out)),
             out: Some(rewrite.phi_out.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::LoadVar)
         };
     }
 
@@ -123,20 +123,20 @@ pub fn rewrite_phi_to_store_load(ops: &mut Vec<OpIR>) {
         insertions.push((
             rewrite.else_insert_idx,
             OpIR {
-                kind: "store_var".to_string(),
+                kind: molt_ir::OpKind::StoreVar,
                 var: Some(format!("_phi_{}", rewrite.phi_out)),
                 args: Some(vec![rewrite.else_arg.clone()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
         ));
         // Store for then-path (insert before else or end_if).
         insertions.push((
             rewrite.then_insert_idx,
             OpIR {
-                kind: "store_var".to_string(),
+                kind: molt_ir::OpKind::StoreVar,
                 var: Some(format!("_phi_{}", rewrite.phi_out)),
                 args: Some(vec![rewrite.then_arg.clone()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
         ));
     }
@@ -200,7 +200,7 @@ fn elide_useless_try_blocks_inner(
 ) {
     let mut i = 0;
     while i < ops.len() {
-        if ops[i].kind != "exception_push" {
+        if ops[i].kind != molt_ir::OpKind::ExceptionPush {
             i += 1;
             continue;
         }
@@ -210,9 +210,9 @@ fn elide_useless_try_blocks_inner(
         let mut pop_idx: Option<usize> = None;
         let mut j = i + 1;
         while j < ops.len() {
-            match ops[j].kind.as_str() {
-                "exception_push" => depth += 1,
-                "exception_pop" => {
+            match ops[j].kind {
+                molt_ir::OpKind::ExceptionPush => depth += 1,
+                molt_ir::OpKind::ExceptionPop => {
                     depth -= 1;
                     if depth == 0 {
                         pop_idx = Some(j);
@@ -233,9 +233,10 @@ fn elide_useless_try_blocks_inner(
         // Find try_start within (push_idx, pop_idx).  The frontend
         // always emits try_start as the first op after exception_push,
         // but tolerate intervening line/check_exception markers.
-        let try_start_idx = (push_idx + 1..pop_idx).find(|&k| ops[k].kind == "try_start");
+        let try_start_idx =
+            (push_idx + 1..pop_idx).find(|&k| ops[k].kind == molt_ir::OpKind::TryStart);
         let try_end_idx = match try_start_idx {
-            Some(ts) => (ts + 1..pop_idx).find(|&k| ops[k].kind == "try_end"),
+            Some(ts) => (ts + 1..pop_idx).find(|&k| ops[k].kind == molt_ir::OpKind::TryEnd),
             None => None,
         };
         let (Some(ts_idx), Some(te_idx)) = (try_start_idx, try_end_idx) else {
@@ -261,7 +262,7 @@ fn elide_useless_try_blocks_inner(
         for op in &ops[body_range.clone()] {
             // Don't recurse into nested try blocks at this pass — the
             // outer iteration will revisit the spliced ops afterwards.
-            if op.kind == "exception_push" || op.kind == "try_start" {
+            if op.kind == molt_ir::OpKind::ExceptionPush || op.kind == molt_ir::OpKind::TryStart {
                 safe = false;
                 break;
             }
@@ -286,7 +287,7 @@ fn elide_useless_try_blocks_inner(
         let body: Vec<OpIR> = ops[body_range]
             .iter()
             .filter(|op| {
-                !(op.kind == "check_exception"
+                !(op.kind == molt_ir::OpKind::CheckException
                     && op
                         .value
                         .is_some_and(|label| removed_labels.contains(&label)))
@@ -310,9 +311,12 @@ fn removed_try_wrapper_labels(
         .filter(|idx| !body_range.contains(idx))
         .filter_map(|idx| {
             let op = &ops[idx];
-            matches!(op.kind.as_str(), "label" | "state_label")
-                .then_some(op.value)
-                .flatten()
+            matches!(
+                op.kind,
+                molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+            )
+            .then_some(op.value)
+            .flatten()
         })
         .collect()
 }
@@ -324,8 +328,12 @@ fn body_branches_to_removed_wrapper_label(
 ) -> bool {
     ops[body_range].iter().any(|op| {
         matches!(
-            op.kind.as_str(),
-            "jump" | "goto" | "br_if" | "loop_break_if_true" | "loop_break_if_false"
+            op.kind,
+            molt_ir::OpKind::Jump
+                | molt_ir::OpKind::Goto
+                | molt_ir::OpKind::BrIf
+                | molt_ir::OpKind::LoopBreakIfTrue
+                | molt_ir::OpKind::LoopBreakIfFalse
         ) && op
             .value
             .is_some_and(|label| removed_labels.contains(&label))
@@ -340,23 +348,33 @@ fn try_wrapper_has_except_dispatch(
     handler_label: i64,
 ) -> bool {
     let mut cursor = try_end_idx + 1;
-    while cursor < pop_idx && matches!(ops[cursor].kind.as_str(), "line" | "nop") {
+    while cursor < pop_idx
+        && matches!(
+            ops[cursor].kind,
+            molt_ir::OpKind::Line | molt_ir::OpKind::Nop
+        )
+    {
         cursor += 1;
     }
     let Some(done_label) = ops.get(cursor).and_then(|op| {
-        matches!(op.kind.as_str(), "jump" | "goto")
+        matches!(op.kind, molt_ir::OpKind::Jump | molt_ir::OpKind::Goto)
             .then_some(op.value)
             .flatten()
     }) else {
         return false;
     };
     cursor += 1;
-    while cursor < pop_idx && matches!(ops[cursor].kind.as_str(), "line" | "nop") {
+    while cursor < pop_idx
+        && matches!(
+            ops[cursor].kind,
+            molt_ir::OpKind::Line | molt_ir::OpKind::Nop
+        )
+    {
         cursor += 1;
     }
     if ops
         .get(cursor)
-        .is_none_or(|op| op.kind != "label" || op.value != Some(handler_label))
+        .is_none_or(|op| op.kind != molt_ir::OpKind::Label || op.value != Some(handler_label))
     {
         return false;
     }
@@ -364,10 +382,10 @@ fn try_wrapper_has_except_dispatch(
 
     while cursor < pop_idx {
         let op = &ops[cursor];
-        if op.kind == "label" && op.value == Some(done_label) {
+        if op.kind == molt_ir::OpKind::Label && op.value == Some(done_label) {
             return false;
         }
-        if op.kind == "exception_match_builtin" {
+        if op.kind == molt_ir::OpKind::ExceptionMatchBuiltin {
             return true;
         }
         cursor += 1;

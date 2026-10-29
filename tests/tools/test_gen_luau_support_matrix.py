@@ -12,77 +12,73 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_classifies_luau_op_arms_from_fixture() -> None:
     source = r"""
     fn emit_op(&mut self, op: &OpIR) {
-        match op.kind.as_str() {
-            "add" | "inplace_add" => {
+        match op.kind {
+            molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => {
                 self.emit_line("local out = a + b");
             }
-            "unsupported_fixture_op" => {
-                self.emit_line("local out = nil -- [unsupported op: unsupported_fixture_op]");
+            molt_ir::OpKind::ConstEllipsis => {
+                self.emit_line("local out = nil -- [unsupported op: const_ellipsis]");
             }
-            "call_async" => {
+            molt_ir::OpKind::CallAsync => {
                 self.emit_line("local out = poll_target(payload)");
             }
-            "state_transition" => {
+            molt_ir::OpKind::StateTransition => {
                 self.emit_line("local out = nil -- [async: state_transition]");
             }
-            "br_if" => {
+            molt_ir::OpKind::BrIf => {
                 self.emit_line("if cond then goto label_1 end");
                 self.emit_line("error(\"[unsupported op: br_if cond missing target label]\")");
             }
-            "fixture_runtime_error" => {
+            molt_ir::OpKind::ExceptionNew => {
                 self.emit_line("local out: any = error({__type=\"RuntimeError\", __msg=\"fixture runtime error: \" .. tostring(msg)})");
             }
-            "class_set_definition" => {
+            molt_ir::OpKind::ClassSetDefinition => {
                 self.emit_line("if type(cls) == \"table\" then cls.__molt_class_definition = 1 end");
             }
-            "alloc_class" => {
+            molt_ir::OpKind::AllocClass => {
                 self.emit_line("local out = setmetatable({}, cls)");
             }
-            "object_new_bound" => {
+            molt_ir::OpKind::ObjectNewBound => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
-            "classmethod_new" => {
+            molt_ir::OpKind::ClassmethodNew => {
                 self.emit_line("local out = {__molt_descriptor_kind=\"classmethod\", __func=f}");
             }
-            "staticmethod_new" => {
+            molt_ir::OpKind::StaticmethodNew => {
                 self.emit_line("local out = {__molt_descriptor_kind=\"staticmethod\", __func=f}");
             }
-            "property_new" => {
+            molt_ir::OpKind::PropertyNew => {
                 self.emit_line("local out = {__molt_descriptor_kind=\"property\", __get=g}");
             }
-            "call_internal" => {
+            molt_ir::OpKind::CallInternal => {
                 let mapped = match name {
                     "molt_abs_builtin" => "function(a) return math.abs(a[1]) end",
                     _ => "nil",
                 };
                 self.emit_line(mapped);
             }
-            "call_method" => {
+            molt_ir::OpKind::CallMethod => {
                 self.emit_line("local out; do local __method = molt_get_attr(obj, \"name\"); out = __method() end");
             }
-            "get_attr_generic_obj" | "set_attr_generic_obj" | "del_attr_generic_obj" => {
+            molt_ir::OpKind::GetAttrGenericObj | molt_ir::OpKind::SetAttrGenericObj | molt_ir::OpKind::DelAttrGenericObj => {
                 self.emit_line("molt_get_attr(obj, \"name\")");
             }
-            "has_attr_name" => {
+            molt_ir::OpKind::HasAttrName => {
                 self.emit_line("local out = molt_has_attr(obj, name)");
             }
-            "isinstance" => {
+            molt_ir::OpKind::Isinstance => {
                 self.emit_line("local out = molt_isinstance(obj, cls)");
             }
-            "issubclass" => {
+            molt_ir::OpKind::Issubclass => {
                 self.emit_line("local out = molt_issubclass(sub, cls)");
             }
-            kind if kind.starts_with("vec_sum_")
-                || kind.starts_with("vec_prod_") =>
+            molt_ir::OpKind::VecSum | molt_ir::OpKind::VecProd =>
             {
                 self.emit_line("local out = {acc, false} -- [vectorized: kind]");
             }
-            "is" => {
+            molt_ir::OpKind::Is => {
                 // Python non-None identity maps to equality in Luau.
                 self.emit_line("local out = (a == b)");
-            }
-            "getargv" => {
-                self.emit_line("local out = {}");
             }
         }
     }
@@ -92,12 +88,12 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
 
     assert rows["add"].status == "implemented-target-limited"
     assert rows["inplace_add"].status == "implemented-target-limited"
-    assert rows["unsupported_fixture_op"].status == "not-admitted"
+    assert rows["const_ellipsis"].status == "compile-error"
     assert rows["call_async"].status == "not-admitted"
     assert rows["state_transition"].status == "not-admitted"
     assert rows["br_if"].status == "compile-error"
     assert "Checked Luau emission rejects" in rows["br_if"].note
-    assert rows["fixture_runtime_error"].status == "not-admitted"
+    assert rows["exception_new"].status == "implemented-exact"
     assert rows["class_set_definition"].status == "implemented-exact"
     assert rows["object_new_bound"].status == "not-admitted"
     assert "semantic stub markers" in rows["object_new_bound"].note
@@ -114,10 +110,10 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert "molt_abs_builtin" not in rows
     assert rows["isinstance"].status == "not-admitted"
     assert rows["issubclass"].status == "not-admitted"
-    assert rows["vec_sum_*"].status == "not-admitted"
-    assert rows["vec_prod_*"].status == "not-admitted"
+    assert rows["vec_sum"].status == "not-admitted"
+    assert rows["vec_prod"].status == "not-admitted"
     assert rows["is"].status == "implemented-exact"
-    assert rows["getargv"].status == "not-admitted"
+    assert "getargv" not in rows
 
 
 def test_check_mode_detects_stale_generated_output(
@@ -128,8 +124,8 @@ def test_check_mode_detects_stale_generated_output(
     source.write_text(
         """
         fn emit_op(&mut self, op: &OpIR) {
-            match op.kind.as_str() {
-                "add" => { self.emit_line("local out = a + b"); }
+            match op.kind {
+                molt_ir::OpKind::Add => { self.emit_line("local out = a + b"); }
             }
         }
         """,
@@ -157,8 +153,8 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
         """
         impl LuauBackend {
             pub(super) fn emit_alpha_op(&mut self, op: &OpIR) -> bool {
-                match op.kind.as_str() {
-                    "const_none" => { self.emit_line("local out = nil"); }
+                match op.kind {
+                    molt_ir::OpKind::ConstNone => { self.emit_line("local out = nil"); }
                     _ => return false,
                 }
                 true
@@ -171,11 +167,11 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
         """
         impl LuauBackend {
             pub(super) fn emit_beta_op(&mut self, op: &OpIR) -> bool {
-                match op.kind.as_str() {
-                    "const_bool" => {
+                match op.kind {
+                    molt_ir::OpKind::ConstBool => {
                         self.emit_line("local out = nil -- [unsupported op: const_bool]");
                     }
-                    kind if kind.starts_with("vec_fixture_") => {
+                    molt_ir::OpKind::VecSum => {
                         self.emit_line("local out = {acc, false} -- [vectorized: kind]");
                     }
                     _ => return false,
@@ -192,8 +188,8 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
         """
         impl LuauBackend {
             pub(super) fn emit_ignored_op(&mut self, op: &OpIR) -> bool {
-                match op.kind.as_str() {
-                    "ignored_test_only" => { self.emit_line("local out = 1"); }
+                match op.kind {
+                    molt_ir::OpKind::ConstEllipsis => { self.emit_line("local out = 1"); }
                     _ => return false,
                 }
                 true
@@ -208,19 +204,19 @@ def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) ->
     assert "**Source:**" in output
     assert "`const_none` | `implemented-exact`" in output
     assert "`const_bool` | `compile-error`" in output
-    assert "`vec_fixture_*` | `not-admitted`" in output
-    assert "ignored_test_only" not in output
+    assert "`vec_sum` | `not-admitted`" in output
+    assert "const_ellipsis" not in output
 
 
 def test_execution_frames_are_implemented_but_introspection_is_not_admitted() -> None:
     source = r"""
     fn emit_op(&mut self, op: &OpIR) {
-        match op.kind.as_str() {
-            "trace_enter_slot" => { self.emit_line("molt_frame_enter(code)"); }
-            "trace_exit" => { self.emit_line("molt_frame_exit(cookie)"); }
-            "line" => { self.emit_line("molt_frame_set_line(7)"); }
-            "frame_locals_set" => { self.emit_line("molt_frame_locals_set(locals)"); }
-            "getframe" => {
+        match op.kind {
+            molt_ir::OpKind::TraceEnterSlot => { self.emit_line("molt_frame_enter(code)"); }
+            molt_ir::OpKind::TraceExit => { self.emit_line("molt_frame_exit(cookie)"); }
+            molt_ir::OpKind::Line => { self.emit_line("molt_frame_set_line(7)"); }
+            molt_ir::OpKind::FrameLocalsSet => { self.emit_line("molt_frame_locals_set(locals)"); }
+            molt_ir::OpKind::Getframe => {
                 self.emit_line("local frame = molt_getframe(depth)");
             }
         }
@@ -248,11 +244,11 @@ def test_ordered_mapping_requirement_cannot_be_reported_as_exact() -> None:
 def test_pending_call_poll_requirement_cannot_be_reported_as_exact() -> None:
     source = r"""
     fn emit_op(&mut self, op: &OpIR) {
-        match op.kind.as_str() {
-            "state_yield" => {
+        match op.kind {
+            molt_ir::OpKind::StateYield => {
                 self.emit_line("return yielded");
             }
-            "exception_finally_pending_observer" => {
+            molt_ir::OpKind::ExceptionFinallyPendingObserver => {
                 self.emit_line("local pending = molt_exception_last_pending()");
             }
         }
@@ -276,13 +272,13 @@ def test_pending_call_poll_requirement_cannot_be_reported_as_exact() -> None:
 )
 @pytest.mark.parametrize("kind", ["const_ellipsis", "const_float", "callargs_new"])
 def test_rejection_only_shared_helper_is_never_reported_implemented(helper, kind):
-    body = f'"{kind}" => {{ self.{helper}(op, "reason"); }}'
+    body = f'{{ self.{helper}(op, "reason"); }}'
     assert mod._classify(kind, body).status == "compile-error"
 
 
 @pytest.mark.parametrize("kind", ["func_new_closure", "getframe", "state_yield"])
 def test_pre_source_rejection_remains_primary_over_source_helper(kind):
-    row = mod._classify(kind, f'"{kind}" => {{ self.emit_unsupported_op(op); }}')
+    row = mod._classify(kind, "{ self.emit_unsupported_op(op); }")
     assert row.status == "not-admitted"
     assert "before source generation" in row.note
 
@@ -291,7 +287,7 @@ def test_pre_source_rejection_remains_primary_over_source_helper(kind):
     "kind", ["const_int", "const_bigint", "add", "callargs_expand_kwstar"]
 )
 def test_declared_limits_preserve_their_specific_conditional_contract(kind):
-    body = f'"{kind}" => {{ if admitted {{ self.emit_line("value"); }} else {{ self.emit_unsupported_op(op); }} }}'
+    body = '{ if admitted { self.emit_line("value"); } else { self.emit_unsupported_op(op); } }'
     row = mod._classify(kind, body)
     assert row.status == "implemented-target-limited"
     assert "branch-admitted" not in row.note
@@ -299,7 +295,7 @@ def test_declared_limits_preserve_their_specific_conditional_contract(kind):
 
 @pytest.mark.parametrize("kind", ["const_float", "builtin_func", "callargs_new", "box"])
 def test_conditional_rejection_is_not_universal_rejection_or_exact_support(kind):
-    body = f'"{kind}" => {{ if admitted {{ self.emit_line("value"); }} else {{ self.emit_unsupported_op_with_reason(op, "bad operand"); }} }}'
+    body = '{ if admitted { self.emit_line("value"); } else { self.emit_unsupported_op_with_reason(op, "bad operand"); } }'
     assert mod._unsupported_emission_kind(body) == "conditional"
     row = mod._classify(kind, body)
     if kind in mod._PRE_SOURCE_NOT_ADMITTED:
@@ -324,13 +320,13 @@ def test_conditional_rejection_is_not_universal_rejection_or_exact_support(kind)
     ],
 )
 def test_shared_helper_spelling_in_noncode_does_not_lower_support(noncode):
-    body = f'"const_none" => {{ {noncode} self.emit_line("nil"); }}'
+    body = f'molt_ir::OpKind::ConstNone => {{ {noncode} self.emit_line("nil"); }}'
     assert mod._unsupported_emission_kind(body) is None
     assert mod._classify("const_none", body).status == "implemented-exact"
 
 
 def test_supported_branch_before_late_rejection_is_not_universal_rejection():
-    body = '"const_float" => { if valid { self.emit_line("value"); return true; } self.emit_unsupported_op(op); }'
+    body = '{ if valid { self.emit_line("value"); return true; } self.emit_unsupported_op(op); }'
     assert mod._unsupported_emission_kind(body) == "conditional"
     assert mod._classify("const_float", body).status == "implemented-exact"
 
@@ -359,6 +355,7 @@ def test_every_actual_shared_rejection_arm_has_honest_support_status():
     ellipsis_arms = [
         body
         for match in mod._extract_emit_op_matches(source)
+        if match.function != "emit_op"
         for kinds, body in mod._iter_arms(match)
         if "const_ellipsis" in kinds
     ]
@@ -403,8 +400,8 @@ def test_actual_raw_fallback_report_explicitly_excludes_structured_cfg_acceptanc
         assert f"| `{kind}` | `compile-error` |" in output
     flow = (mod.SOURCE / "flow_dispatch.rs").read_text(encoding="utf-8")
     function = (mod.SOURCE / "function_body.rs").read_text(encoding="utf-8")
-    assert "simpleir_kind_is_exception_check" in flow
-    assert "simpleir_kind_is_structural" in flow
+    assert ".is_exception_check()" in flow
+    assert ".is_structural()" in flow
     assert "emit_logical_flow" in function
 
 
@@ -414,9 +411,100 @@ def test_source_reader_excludes_test_code_even_with_emitter_shaped_text(tmp_path
     production = root / "op_values.rs"
     production.write_text("production", encoding="utf-8")
     (root / "tests.rs").write_text(
-        'fn emit_fake_op() { match op.kind { "const_none" => self.emit_unsupported_op(op), } }',
+        "fn emit_fake_op() { match op.kind { molt_ir::OpKind::ConstNone => self.emit_unsupported_op(op), } }",
         encoding="utf-8",
     )
     (root / "tests").mkdir()
     (root / "tests" / "fake.rs").write_text("test code", encoding="utf-8")
     assert mod._source_files(root) == [production]
+
+
+@pytest.mark.parametrize("fallback_first", [False, True])
+def test_exhaustive_refusal_does_not_override_delegated_lowering(fallback_first):
+    fallback = """
+    fn emit_op(&mut self, op: &OpIR) {
+        if self.emit_value_op(op) { return; }
+        match op.kind {
+            OpKind::ConstNone | OpKind::ConstBool => self.emit_unsupported_op(op),
+        }
+    }
+    """
+    family = """
+    fn emit_value_op(&mut self, op: &OpIR) -> bool {
+        match op.kind {
+            OpKind::ConstNone => { self.emit_line("nil"); }
+            _ => return false,
+        }
+        true
+    }
+    """
+    source = fallback + family if fallback_first else family + fallback
+    rows = {row.op: row for row in mod.collect_rows_from_text(source)}
+    assert rows["const_none"].status == "implemented-exact"
+    assert rows["const_bool"].status == "compile-error"
+    assert "*" not in rows
+
+
+def test_generated_return_shape_dispatch_precedes_exhaustive_refusal():
+    source = """
+    fn emit_op(&mut self, op: &OpIR) {
+        if self.emit_return_op(op) { return; }
+        match op.kind {
+            OpKind::Ret | OpKind::RetVoid | OpKind::Load => self.emit_unsupported_op(op),
+        }
+    }
+    fn emit_return_op(&mut self, op: &OpIR) -> bool {
+        match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind) {
+            SimpleIrReturnShape::Value => { self.emit_line("return value"); }
+            SimpleIrReturnShape::Void => { self.emit_line("return"); }
+            SimpleIrReturnShape::NotReturn => return false,
+        }
+        true
+    }
+    """
+    rows = {row.op: row for row in mod.collect_rows_from_text(source)}
+    assert rows["ret"].status == "implemented-exact"
+    assert rows["ret_void"].status == "implemented-exact"
+    assert rows["load"].status == "compile-error"
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        '"const_none"',
+        "OpKind::UnknownKind",
+        "OpKind::ConstNone if admitted",
+        "_",
+    ],
+)
+def test_unclassified_typed_patterns_fail_closed(pattern):
+    source = f"""
+    fn emit_op(&mut self, op: &OpIR) {{
+        match op.kind {{ {pattern} => {{ self.emit_line("nil"); }} }}
+    }}
+    """
+    with pytest.raises(ValueError, match="unclassified"):
+        mod.collect_rows_from_text(source)
+
+
+def test_wire_names_are_read_from_canonical_enum_serde_names(tmp_path, monkeypatch):
+    generated = tmp_path / "op_kinds_generated.rs"
+    generated.write_text(
+        'pub enum OpKind { #[serde(rename = "const_none")] ArbitraryVariant, }',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "WIRE_SOURCE", generated)
+    source = """
+    fn emit_op(&mut self, op: &OpIR) {
+        match op.kind { OpKind::ArbitraryVariant => { self.emit_line("nil"); } }
+    }
+    """
+    rows = {row.op: row for row in mod.collect_rows_from_text(source)}
+    assert rows["const_none"].status == "implemented-exact"
+    assert "arbitrary_variant" not in rows
+
+
+def test_legacy_string_dispatch_is_not_a_typed_emitter():
+    source = 'fn emit_op(&mut self, op: &OpIR) { match op.kind.as_str() { "const_none" => {} } }'
+    with pytest.raises(ValueError, match="could not find"):
+        mod.collect_rows_from_text(source)

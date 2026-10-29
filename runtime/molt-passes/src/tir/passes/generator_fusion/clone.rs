@@ -25,6 +25,7 @@ pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
     let mut a = AttrDict::new();
     a.insert("value".into(), AttrValue::Int(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -36,6 +37,7 @@ pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
 
 pub(super) fn const_none_op(result: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -69,13 +71,13 @@ pub(super) fn is_bookkeeping_op(op: &TirOp) -> bool {
     matches!(
         attr_original_kind(op),
         Some(
-            "trace_enter_slot"
-                | "trace_exit"
-                | "exception_stack_enter"
-                | "exception_stack_depth"
-                | "exception_stack_exit"
-                | "exception_stack_set_depth"
-                | "line"
+            molt_ir::OpKind::TraceEnterSlot
+                | molt_ir::OpKind::TraceExit
+                | molt_ir::OpKind::ExceptionStackEnter
+                | molt_ir::OpKind::ExceptionStackDepth
+                | molt_ir::OpKind::ExceptionStackExit
+                | molt_ir::OpKind::ExceptionStackSetDepth
+                | molt_ir::OpKind::Line
         )
     )
 }
@@ -97,7 +99,7 @@ pub(super) fn exception_stack_values(poll: &TirFunction) -> HashSet<ValueId> {
         .filter(|op| {
             matches!(
                 attr_original_kind(op),
-                Some("exception_stack_enter" | "exception_stack_depth")
+                Some(molt_ir::OpKind::ExceptionStackEnter | molt_ir::OpKind::ExceptionStackDepth)
             )
         })
         .filter_map(|op| op.results.first().copied())
@@ -111,7 +113,7 @@ pub(super) fn exception_stack_values(poll: &TirFunction) -> HashSet<ValueId> {
         for block in poll.blocks.values() {
             for op in &block.ops {
                 if op.opcode == OpCode::Copy
-                    && !op.attrs.contains_key("_original_kind")
+                    && !op.origin.is_some()
                     && op.operands.iter().any(|v| exc_derived.contains(v))
                     && let Some(&res) = op.results.first()
                     && exc_derived.insert(res)
@@ -333,6 +335,7 @@ pub(super) fn clone_and_rewrite_poll(
                     if let Some(&value) = held.get(&(bid, op_index)) {
                         owners.record_held(value);
                         new_ops.push(TirOp {
+                            origin: None,
                             dialect: op.dialect,
                             opcode: OpCode::Copy,
                             operands: vec![remap(op.operands[1], &value_map)],
@@ -346,6 +349,7 @@ pub(super) fn clone_and_rewrite_poll(
                 if op.opcode == OpCode::ClosureLoad {
                     if let Some(&def) = plan.reads.get(&op.results[0]) {
                         let load = TirOp {
+                            origin: None,
                             dialect: op.dialect,
                             opcode: op.opcode,
                             operands: Vec::new(),
@@ -391,6 +395,7 @@ pub(super) fn clone_and_rewrite_poll(
                 op.operands.iter().map(|v| remap(*v, &value_map)).collect()
             };
             new_ops.push(TirOp {
+                origin: op.origin,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands,

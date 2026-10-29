@@ -34,8 +34,8 @@ pub(super) fn emit_dispatch_op(
     depth: ControlScopeDepth,
     scratch: &mut DispatchOpScratch,
 ) -> bool {
-    match op.kind.as_str() {
-        "state_switch" => {
+    match op.kind {
+        molt_ir::OpKind::StateSwitch => {
             require_stateful(mode, context.func_ir, idx, op);
             let locals = locals.expect("stateful control requires dispatch locals");
             let resume = locals
@@ -46,7 +46,7 @@ pub(super) fn emit_dispatch_op(
             func.instruction(&Instruction::Br(depth.redispatch_depth(0)));
             true
         }
-        "aiter" if mode == DispatchMode::Stateful => {
+        molt_ir::OpKind::Aiter if mode == DispatchMode::Stateful => {
             let args = op.args.as_ref().unwrap();
             func.instruction(&Instruction::LocalGet(context.locals()[&args[0]]));
             emit_call(
@@ -59,7 +59,7 @@ pub(super) fn emit_dispatch_op(
             ));
             false
         }
-        "state_set" | "task_wait" | "is_pending" => {
+        molt_ir::OpKind::StateSet | molt_ir::OpKind::TaskWait | molt_ir::OpKind::IsPending => {
             require_stateful(mode, context.func_ir, idx, op);
             emit_activation_op(
                 func,
@@ -70,16 +70,25 @@ pub(super) fn emit_dispatch_op(
             );
             false
         }
-        "state_transition" | "state_yield" => panic!(
+        molt_ir::OpKind::StateTransition | molt_ir::OpKind::StateYield => panic!(
             "{}: suspension must be normalized by shared terminal ownership before WASM emission",
             context.func_ir.name
         ),
-        "if" => {
+        molt_ir::OpKind::If => {
             emit_dispatch_if(func, context, plan, locals, op, idx, depth);
             true
         }
-        "else" | "end_if" | "loop_start" | "loop_end" | "try_start" | "try_end" | "label"
-        | "state_label" | "loop_break" | "loop_continue" | "jump" => {
+        molt_ir::OpKind::Else
+        | molt_ir::OpKind::EndIf
+        | molt_ir::OpKind::LoopStart
+        | molt_ir::OpKind::LoopEnd
+        | molt_ir::OpKind::TryStart
+        | molt_ir::OpKind::TryEnd
+        | molt_ir::OpKind::Label
+        | molt_ir::OpKind::StateLabel
+        | molt_ir::OpKind::LoopBreak
+        | molt_ir::OpKind::LoopContinue
+        | molt_ir::OpKind::Jump => {
             emit_static_dispatch_edge(
                 func,
                 context,
@@ -92,11 +101,11 @@ pub(super) fn emit_dispatch_op(
             );
             true
         }
-        "loop_break_if_true" | "loop_break_if_false" => {
+        molt_ir::OpKind::LoopBreakIfTrue | molt_ir::OpKind::LoopBreakIfFalse => {
             emit_dispatch_loop_break_cond(func, context, plan, locals, op, idx, depth);
             true
         }
-        "loop_break_if_exception" => {
+        molt_ir::OpKind::LoopBreakIfException => {
             emit_call(
                 func,
                 context.reloc_enabled,
@@ -116,7 +125,7 @@ pub(super) fn emit_dispatch_op(
             );
             true
         }
-        "br_if" => {
+        molt_ir::OpKind::BrIf => {
             let args = op.args.as_ref().unwrap();
             emit_branch_truthiness_i32(
                 func,
@@ -138,7 +147,7 @@ pub(super) fn emit_dispatch_op(
             func.instruction(&Instruction::End);
             false
         }
-        kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
+        kind if kind.is_exception_check() => {
             emit_dispatch_check_exception(func, context, plan, locals, op, idx, depth);
             true
         }
@@ -153,7 +162,7 @@ pub(super) fn emit_dispatch_op(
                 idx,
                 depth.return_depth(0),
             );
-            molt_tir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(&op.kind)
+            op.kind.is_return_terminator()
         }
     }
 }

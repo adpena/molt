@@ -1,8 +1,5 @@
 use crate::FunctionIR;
-use crate::tir::op_kinds_generated::{
-    kind_to_opcode_table, opcode_may_throw_table, simpleir_kind_is_block_ender,
-    simpleir_kind_is_block_leader, simpleir_kind_is_exception_check,
-};
+use crate::tir::op_kinds_generated::{kind_to_opcode_table, opcode_may_throw_table};
 use crate::tir::{IntRange, OpCode};
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
@@ -17,7 +14,7 @@ pub fn elide_safe_exception_checks(func_ir: &mut FunctionIR) {
     let guard_facts = super::guard_elision::RuntimeGuardFacts::for_function(func_ir);
     let mut may_be_pending = true;
     func_ir.ops.retain(|op| {
-        if simpleir_kind_is_exception_check(&op.kind) {
+        if op.kind.is_exception_check() {
             let has_exception_edge = op.value.is_some();
             let unused_result = op.out.as_deref().is_none_or(|name| name == "none");
             let keep = may_be_pending || op.is_async_work_poll() || !unused_result;
@@ -30,12 +27,12 @@ pub fn elide_safe_exception_checks(func_ir: &mut FunctionIR) {
             }
             return keep || !has_exception_edge;
         }
-        if simpleir_kind_is_block_leader(&op.kind) || simpleir_kind_is_block_ender(&op.kind) {
+        if op.kind.is_block_leader() || op.kind.is_block_ender() {
             may_be_pending = true;
         } else if guard_facts.is_nonthrowing(op, None) {
             // A valid tag never traps on source mismatch. Literal transport
             // needs no new owner; preserve the guard's profiling event itself.
-        } else if let Some(opcode) = kind_to_opcode_table(&op.kind) {
+        } else if let Some(opcode) = kind_to_opcode_table(op.kind) {
             // SimpleIR may carry a full-i64 integer in the boxed lane. The TIR
             // ConstInt opcode is raw, but its final boxed transport can allocate.
             let boxed_integer = opcode == OpCode::ConstInt

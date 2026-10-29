@@ -3,12 +3,16 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 #[test]
 fn constant_integer_facts_require_one_canonical_producer() {
-    for kind in ["const", "const_int", "load_const"] {
+    for kind in [
+        molt_ir::OpKind::Const,
+        molt_ir::OpKind::ConstInt,
+        molt_ir::OpKind::LoadConst,
+    ] {
         let constant = |name: &str| OpIR {
-            kind: kind.into(),
+            kind,
             out: Some(name.into()),
             value: Some(7),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         };
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -30,25 +34,25 @@ fn constant_integer_facts_require_one_canonical_producer() {
                 make_store_var("stored", "stable"),
                 constant("deleted"),
                 OpIR {
-                    kind: "delete_var".into(),
+                    kind: molt_ir::OpKind::DeleteVar,
                     var: Some("deleted".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DeleteVar)
                 },
                 constant("checked"),
                 OpIR {
-                    kind: "checked_add".into(),
+                    kind: molt_ir::OpKind::CheckedAdd,
                     var: Some("checked".into()),
                     out: Some("overflow".into()),
                     args: Some(vec!["stable".into(), "stable".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CheckedAdd)
                 },
                 constant("none"),
                 constant(""),
                 OpIR {
-                    kind: "store_index".into(),
+                    kind: molt_ir::OpKind::StoreIndex,
                     out: Some("stable".into()), // Metadata, not a producer.
                     args: Some(vec!["items".into(), "index".into(), "stable".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StoreIndex)
                 },
             ],
         };
@@ -73,9 +77,9 @@ fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
-            make_ref_op("inc_ref", "x"),
-            make_ref_op("dec_ref", "x"),
-            make_op("ret_void"),
+            make_ref_op(molt_ir::OpKind::IncRef, "x"),
+            make_ref_op(molt_ir::OpKind::DecRef, "x"),
+            make_op(molt_ir::OpKind::RetVoid),
         ],
     };
 
@@ -83,7 +87,7 @@ fn rc_coalescing_eliminates_adjacent_inc_dec_pair() {
 
     // Both inc_ref and dec_ref should be eliminated.
     assert_eq!(func.ops.len(), 1);
-    assert_eq!(func.ops[0].kind, "ret_void");
+    assert_eq!(func.ops[0].kind, molt_ir::OpKind::RetVoid);
 }
 
 #[test]
@@ -99,10 +103,10 @@ fn rc_coalescing_preserves_pair_across_control_flow() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
-            make_ref_op("inc_ref", "x"),
-            make_op("if"),
-            make_ref_op("dec_ref", "x"),
-            make_op("ret_void"),
+            make_ref_op(molt_ir::OpKind::IncRef, "x"),
+            make_op(molt_ir::OpKind::If),
+            make_ref_op(molt_ir::OpKind::DecRef, "x"),
+            make_op(molt_ir::OpKind::RetVoid),
         ],
     };
 
@@ -125,16 +129,16 @@ fn rc_coalescing_handles_borrow_release_pair() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
-            make_ref_op("borrow", "y"),
-            make_ref_op("release", "y"),
-            make_op("ret_void"),
+            make_ref_op(molt_ir::OpKind::Borrow, "y"),
+            make_ref_op(molt_ir::OpKind::Release, "y"),
+            make_op(molt_ir::OpKind::RetVoid),
         ],
     };
 
     rc_coalescing(&mut func);
 
     assert_eq!(func.ops.len(), 1);
-    assert_eq!(func.ops[0].kind, "ret_void");
+    assert_eq!(func.ops[0].kind, molt_ir::OpKind::RetVoid);
 }
 
 #[test]
@@ -150,11 +154,11 @@ fn rc_coalescing_preserves_pair_with_intervening_use() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
-            make_ref_op("inc_ref", "x"),
+            make_ref_op(molt_ir::OpKind::IncRef, "x"),
             // An op that uses x as an argument — breaks the window.
-            make_arith("add", &["x", "x"], "y"),
-            make_ref_op("dec_ref", "x"),
-            make_op("ret_void"),
+            make_arith(molt_ir::OpKind::Add, &["x", "x"], "y"),
+            make_ref_op(molt_ir::OpKind::DecRef, "x"),
+            make_op(molt_ir::OpKind::RetVoid),
         ],
     };
 
@@ -177,11 +181,11 @@ fn rc_coalescing_eliminates_different_vars_independently() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
-            make_ref_op("inc_ref", "a"),
-            make_ref_op("inc_ref", "b"),
-            make_ref_op("dec_ref", "a"),
-            make_ref_op("dec_ref", "b"),
-            make_op("ret_void"),
+            make_ref_op(molt_ir::OpKind::IncRef, "a"),
+            make_ref_op(molt_ir::OpKind::IncRef, "b"),
+            make_ref_op(molt_ir::OpKind::DecRef, "a"),
+            make_ref_op(molt_ir::OpKind::DecRef, "b"),
+            make_op(molt_ir::OpKind::RetVoid),
         ],
     };
 
@@ -194,7 +198,7 @@ fn rc_coalescing_eliminates_different_vars_independently() {
     // So indices 0,2 are eliminated. Then inc_ref(b) at 1, looks at 3
     // (dec_ref(b) — match!), indices 1,3 eliminated.
     assert_eq!(func.ops.len(), 1);
-    assert_eq!(func.ops[0].kind, "ret_void");
+    assert_eq!(func.ops[0].kind, molt_ir::OpKind::RetVoid);
 }
 
 #[test]
@@ -216,7 +220,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "entry".to_string(),
                 params: vec![],
-                ops: vec![make_op("ret_void")],
+                ops: vec![make_op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -230,15 +234,15 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 params: vec!["p0".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "call".to_string(),
+                        kind: molt_ir::OpKind::Call,
                         s_value: Some("molt_init_math".to_string()),
                         out: Some("v0".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Call)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
+                        kind: molt_ir::OpKind::Ret,
                         args: Some(vec!["v0".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 param_types: None,
@@ -252,7 +256,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_math".to_string(),
                 params: vec![],
-                ops: vec![make_op("ret_void")],
+                ops: vec![make_op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -291,7 +295,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "entry".to_string(),
                 params: vec![],
-                ops: vec![make_op("ret_void")],
+                ops: vec![make_op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -305,15 +309,15 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 params: vec![],
                 ops: vec![
                     OpIR {
-                        kind: "call".to_string(),
+                        kind: molt_ir::OpKind::Call,
                         s_value: Some("host_init_helper".to_string()),
                         out: Some("v0".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Call)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
+                        kind: molt_ir::OpKind::Ret,
                         args: Some(vec!["v0".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 param_types: None,
@@ -327,7 +331,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "host_init_helper".to_string(),
                 params: vec![],
-                ops: vec![make_op("ret_void")],
+                ops: vec![make_op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -371,7 +375,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "entry".to_string(),
                 params: vec![],
-                ops: vec![make_op("ret_void")],
+                ops: vec![make_op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -384,10 +388,10 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 name: "molt_init_sys".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "call".to_string(),
+                    kind: molt_ir::OpKind::Call,
                     s_value: Some("sys__helper".to_string()),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 }],
                 param_types: None,
                 source_file: None,
@@ -400,7 +404,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "sys__helper".to_string(),
                 params: vec![],
-                ops: vec![make_op("ret_void")],
+                ops: vec![make_op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -412,7 +416,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_json".to_string(),
                 params: vec![],
-                ops: vec![make_op("ret_void")],
+                ops: vec![make_op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -459,14 +463,17 @@ fn generated_function_references_retain_exact_symbols_without_guessed_companions
                     function(
                         "entry",
                         vec![OpIR {
-                            kind: kind.to_string(),
+                            kind,
                             s_value: Some(target.to_string()),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         }],
                     ),
-                    function("opaque_body", vec![make_op("ret_void")]),
-                    function("opaque_body_poll", vec![make_op("ret_void")]),
-                    function("opaque_body_poll_poll", vec![make_op("ret_void")]),
+                    function("opaque_body", vec![make_op(molt_ir::OpKind::RetVoid)]),
+                    function("opaque_body_poll", vec![make_op(molt_ir::OpKind::RetVoid)]),
+                    function(
+                        "opaque_body_poll_poll",
+                        vec![make_op(molt_ir::OpKind::RetVoid)],
+                    ),
                 ],
                 profile: None,
             };
@@ -488,7 +495,8 @@ fn generated_function_references_retain_exact_symbols_without_guessed_companions
 
 #[test]
 fn non_reference_operations_do_not_retain_defined_functions() {
-    for kind in ["generator_create", "coro_create", "const_str"] {
+    {
+        let kind = molt_ir::OpKind::ConstStr;
         let function = |name: &str, ops: Vec<OpIR>| FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.to_string(),
@@ -506,13 +514,13 @@ fn non_reference_operations_do_not_retain_defined_functions() {
                 function(
                     "entry",
                     vec![OpIR {
-                        kind: kind.to_string(),
+                        kind,
                         s_value: Some("opaque_body".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     }],
                 ),
-                function("opaque_body", vec![make_op("ret_void")]),
-                function("opaque_body_poll", vec![make_op("ret_void")]),
+                function("opaque_body", vec![make_op(molt_ir::OpKind::RetVoid)]),
+                function("opaque_body_poll", vec![make_op(molt_ir::OpKind::RetVoid)]),
             ],
             profile: None,
         };

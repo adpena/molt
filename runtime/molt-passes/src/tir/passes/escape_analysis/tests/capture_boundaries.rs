@@ -262,7 +262,9 @@ fn finalizer_obligations_flow_through_cfg_and_retained_fields() {
         AttrDict::from([("defines_del".into(), AttrValue::Bool(true))]),
     ));
     entry.ops.push(make_op(OpCode::Alloc, vec![], vec![child]));
-    entry.ops.push(make_store_attr("store", owner, child));
+    entry
+        .ops
+        .push(make_store_attr(molt_ir::OpKind::Store, owner, child));
     entry.terminator = Terminator::Branch {
         target: destination,
         args: vec![owner],
@@ -316,7 +318,9 @@ fn storing_into_mixed_cfg_owner_does_not_prove_local_containment() {
         id: parameter,
         ty: TirType::DynBox,
     });
-    target.ops.push(make_store_attr("store", parameter, child));
+    target
+        .ops
+        .push(make_store_attr(molt_ir::OpKind::Store, parameter, child));
     target
         .ops
         .push(make_op(OpCode::ConstNone, vec![], vec![none]));

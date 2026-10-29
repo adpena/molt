@@ -9,15 +9,17 @@ pub(super) fn emit_loop_control_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    match op.kind.as_str() {
-        "loop_start" => emit_loop_start(context, func),
-        "loop_index_start" | "loop_index_next" => emit_loop_index_move(context, func, op),
-        "loop_break_if_true" => emit_loop_break_if_truthy(context, func, op, false),
-        "loop_break_if_false" => emit_loop_break_if_truthy(context, func, op, true),
-        "loop_break_if_exception" => emit_loop_break_if_exception(context, func),
-        "loop_break" => emit_loop_break(context, func),
-        "loop_continue" => emit_loop_continue(context, func),
-        "loop_end" => emit_loop_end(context, func),
+    match op.kind {
+        molt_ir::OpKind::LoopStart => emit_loop_start(context, func),
+        molt_ir::OpKind::LoopIndexStart | molt_ir::OpKind::LoopIndexNext => {
+            emit_loop_index_move(context, func, op)
+        }
+        molt_ir::OpKind::LoopBreakIfTrue => emit_loop_break_if_truthy(context, func, op, false),
+        molt_ir::OpKind::LoopBreakIfFalse => emit_loop_break_if_truthy(context, func, op, true),
+        molt_ir::OpKind::LoopBreakIfException => emit_loop_break_if_exception(context, func),
+        molt_ir::OpKind::LoopBreak => emit_loop_break(context, func),
+        molt_ir::OpKind::LoopContinue => emit_loop_continue(context, func),
+        molt_ir::OpKind::LoopEnd => emit_loop_end(context, func),
         _ => return false,
     }
     true
@@ -57,7 +59,7 @@ fn emit_loop_break_if_truthy(
     if invert {
         func.instruction(&Instruction::I32Eqz);
     }
-    emit_loop_break_if(context, func, op.kind.as_str());
+    emit_loop_break_if(context, func, op.kind);
 }
 
 fn emit_loop_break_if_exception(context: &ControlOpContext<'_>, func: &mut Function) {
@@ -68,7 +70,7 @@ fn emit_loop_break_if_exception(context: &ControlOpContext<'_>, func: &mut Funct
     );
     func.instruction(&Instruction::I64Const(0));
     func.instruction(&Instruction::I64Ne);
-    emit_loop_break_if(context, func, "loop_break_if_exception");
+    emit_loop_break_if(context, func, molt_ir::OpKind::LoopBreakIfException);
 }
 
 fn emit_loop_break(context: &ControlOpContext<'_>, func: &mut Function) {
@@ -102,7 +104,7 @@ fn emit_loop_end(context: &mut ControlOpContext<'_>, func: &mut Function) {
     context.control_stack.pop();
 }
 
-fn emit_loop_break_if(context: &ControlOpContext<'_>, func: &mut Function, kind: &str) {
+fn emit_loop_break_if(context: &ControlOpContext<'_>, func: &mut Function, kind: molt_ir::OpKind) {
     let depth = loop_break_depth(context).unwrap_or_else(|| {
         super::dispatch_control_panic(
             &context.func_ir.name,

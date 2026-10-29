@@ -2,13 +2,18 @@ use super::*;
 
 #[test]
 fn preserved_iterator_spelling_requires_the_iterable_protocol() {
-    for kind in ["iter", "get_iter", "iter_next", "iter_next_unboxed"] {
+    for kind in [
+        molt_ir::OpKind::Iter,
+        molt_ir::OpKind::GetIter,
+        molt_ir::OpKind::IterNext,
+        molt_ir::OpKind::IterNextUnboxed,
+    ] {
         let op = OpIR {
-            kind: kind.into(),
+            kind,
             args: Some(vec!["source".into()]),
             out: Some("iterator".into()),
-            var: (kind == "iter_next_unboxed").then(|| "item".into()),
-            ..OpIR::default()
+            var: (kind == molt_ir::OpKind::IterNextUnboxed).then(|| "item".into()),
+            ..OpIR::new(kind)
         };
         assert!(
             op.runtime_requirements()
@@ -22,7 +27,8 @@ fn preserved_iterator_spelling_requires_the_iterable_protocol() {
             TargetInfo::llvm_release_fast(),
             TargetInfo::luau_release_fast(),
         ] {
-            validate_runtime_target_contract(&ir, &target).expect(kind);
+            validate_runtime_target_contract(&ir, &target)
+                .unwrap_or_else(|error| panic!("{kind}: {error}"));
         }
         let error = validate_runtime_target_contract(&ir, &TargetInfo::rust_release_fast())
             .expect_err("a target without the iterable protocol must still reject iterators");
@@ -36,46 +42,46 @@ fn preserved_iterator_spelling_requires_the_iterable_protocol() {
 #[test]
 fn runtime_aliases_and_typed_siblings_cannot_escape_existing_capabilities() {
     for kind in [
-        "load",
-        "guarded_load",
-        "store",
-        "string_eq",
-        "index_set",
-        "del_attr",
-        "build_tuple",
-        "build_set",
-        "build_slice",
-        "object_new_bound",
-        "call_builtin",
-        "load_method",
-        "load_super_method",
-        "call_loaded_method",
-        "yield",
-        "yield_from",
-        "state_set",
-        "state_block_start",
-        "state_block_end",
-        "is_pending",
-        "task_wait",
-        "exception_pending",
-        "function_defaults_version",
-        "get_iter",
-        "for_iter_start",
-        "for_iter_end",
-        "async_for_start",
-        "async_for_end",
-        "free",
-        "del_boundary",
-        "delete_var",
-        "gpu_thread_id",
-        "gpu_barrier",
+        molt_ir::OpKind::Load,
+        molt_ir::OpKind::GuardedLoad,
+        molt_ir::OpKind::Store,
+        molt_ir::OpKind::StringEq,
+        molt_ir::OpKind::IndexSet,
+        molt_ir::OpKind::DelAttr,
+        molt_ir::OpKind::BuildTuple,
+        molt_ir::OpKind::BuildSet,
+        molt_ir::OpKind::BuildSlice,
+        molt_ir::OpKind::ObjectNewBound,
+        molt_ir::OpKind::CallBuiltin,
+        molt_ir::OpKind::LoadMethod,
+        molt_ir::OpKind::LoadSuperMethod,
+        molt_ir::OpKind::CallLoadedMethod,
+        molt_ir::OpKind::Yield,
+        molt_ir::OpKind::YieldFrom,
+        molt_ir::OpKind::StateSet,
+        molt_ir::OpKind::StateBlockStart,
+        molt_ir::OpKind::StateBlockEnd,
+        molt_ir::OpKind::IsPending,
+        molt_ir::OpKind::TaskWait,
+        molt_ir::OpKind::ExceptionPending,
+        molt_ir::OpKind::FunctionDefaultsVersion,
+        molt_ir::OpKind::GetIter,
+        molt_ir::OpKind::ForIterStart,
+        molt_ir::OpKind::ForIterEnd,
+        molt_ir::OpKind::AsyncForStart,
+        molt_ir::OpKind::AsyncForEnd,
+        molt_ir::OpKind::Free,
+        molt_ir::OpKind::DelBoundary,
+        molt_ir::OpKind::DeleteVar,
+        molt_ir::OpKind::GpuThreadId,
+        molt_ir::OpKind::GpuBarrier,
     ] {
         let ir = function_ir(vec![OpIR {
-            kind: kind.into(),
-            ..OpIR::default()
+            kind,
+            ..OpIR::new(kind)
         }]);
-        let error = validate_runtime_target_contract(&ir, &TargetInfo::rust_release_fast())
-            .expect_err(kind);
+        let error =
+            validate_runtime_target_contract(&ir, &TargetInfo::rust_release_fast()).unwrap_err();
         assert!(
             error.contains("before source generation"),
             "{kind}: {error}"
@@ -85,19 +91,24 @@ fn runtime_aliases_and_typed_siblings_cannot_escape_existing_capabilities() {
             TargetInfo::wasm_release_fast(),
             TargetInfo::llvm_release_fast(),
         ] {
-            validate_runtime_target_contract(&ir, &target).expect(kind);
+            validate_runtime_target_contract(&ir, &target)
+                .unwrap_or_else(|error| panic!("{kind}: {error}"));
         }
     }
 }
 
 #[test]
 fn canonical_integer_literal_aliases_share_exact_admission() {
-    for kind in ["const", "const_int", "load_const"] {
+    for kind in [
+        molt_ir::OpKind::Const,
+        molt_ir::OpKind::ConstInt,
+        molt_ir::OpKind::LoadConst,
+    ] {
         let op = OpIR {
-            kind: kind.into(),
+            kind,
             value: Some(-7),
             out: Some("value".into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         };
         assert_eq!(exact_integer_literal_value(&op, 7), Some(-7));
         assert_eq!(exact_integer_literal_value(&op, 6), None);
@@ -106,6 +117,7 @@ fn canonical_integer_literal_aliases_share_exact_admission() {
             validate_numeric_target_contract(&ir, &TargetInfo::rust_release_fast()).is_err(),
             "{kind}"
         );
-        validate_numeric_target_contract(&ir, &TargetInfo::native_release_fast()).expect(kind);
+        validate_numeric_target_contract(&ir, &TargetInfo::native_release_fast())
+            .unwrap_or_else(|error| panic!("{kind}: {error}"));
     }
 }

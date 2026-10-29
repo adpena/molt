@@ -8,6 +8,7 @@ use molt_passes::tir::values::ValueId;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -409,8 +410,7 @@ fn typed_field_initialization_loop() -> TirFunction {
     let mut allocation = op(OpCode::Alloc, vec![], vec![inst]);
     allocation.attrs.insert("value".into(), AttrValue::Int(8));
     let mut fset = op(OpCode::StoreAttr, vec![inst, val], vec![]);
-    fset.attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
+    fset.origin = Some(molt_ir::OpKind::Store);
     fset.attrs.insert("value".into(), AttrValue::Int(0));
     // Every iteration owns fresh storage. The shared exact-site analysis proves
     // this ordinary store release-neutral; no spelling or synthetic class
@@ -507,15 +507,11 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
             "alloc_class" => {
                 body.ops[0].opcode = OpCode::Copy;
                 body.ops[0].operands = vec![class];
-                body.ops[0]
-                    .attrs
-                    .insert("_original_kind".into(), AttrValue::Str(boundary.into()));
+                body.ops[0].origin = Some(molt_ir::OpKind::AllocClass);
             }
             "guarded_field_set" => {
                 let store = &mut body.ops[2];
-                store
-                    .attrs
-                    .insert("_original_kind".into(), AttrValue::Str(boundary.into()));
+                store.origin = Some(molt_ir::OpKind::GuardedFieldSet);
                 store.attrs.insert(
                     "class_definition".into(),
                     AttrValue::Str("class:m:Owner".into()),

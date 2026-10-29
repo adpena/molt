@@ -53,6 +53,7 @@ pub(super) fn wire_fused_loop(
     // Fusion places no reference operation (design 20 §1.2). The consumer body
     // (the caller's body_block) on continue branches to post_block.
     let elem_op = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![clone.yield_value],

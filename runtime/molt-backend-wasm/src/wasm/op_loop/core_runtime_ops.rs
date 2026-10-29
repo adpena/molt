@@ -41,7 +41,7 @@ pub(super) fn emit_core_runtime_op(
         reloc_enabled,
         guard_profile_local,
     };
-    if let Some(call) = op_loop_runtime_call(op.kind.as_str(), op.is_async_work_poll()) {
+    if let Some(call) = op_loop_runtime_call(op.kind, op.is_async_work_poll()) {
         emit_op_loop_runtime_call(&call_context, func, op, call);
         return true;
     }

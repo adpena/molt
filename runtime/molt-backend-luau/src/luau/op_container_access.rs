@@ -2,8 +2,8 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_container_access_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "contains" => {
+        match op.kind {
+            molt_ir::OpKind::Contains => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -45,7 +45,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "get_item" | "subscript" | "index" => {
+            molt_ir::OpKind::GetItem | molt_ir::OpKind::Subscript | molt_ir::OpKind::Index => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -134,7 +134,9 @@ impl LuauBackend {
                     }
                 }
             }
-            "set_item" | "store_subscript" | "store_index" => {
+            molt_ir::OpKind::SetItem
+            | molt_ir::OpKind::StoreSubscript
+            | molt_ir::OpKind::StoreIndex => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let container = sanitize_ident(&args[0]);
@@ -176,7 +178,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "del_index" | "del_item" => {
+            molt_ir::OpKind::DelIndex | molt_ir::OpKind::DelItem => {
                 // Python del lst[i] removes the element and shifts remaining.
                 // Setting to nil creates a hole that breaks # and ipairs.
                 // For integer keys (list deletion), use table.remove with +1 offset.

@@ -441,6 +441,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             .ops
             .iter()
             .map(|op| TirOp {
+                origin: op.origin,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands: op
@@ -570,6 +571,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), crate::tir::ops::AttrValue::Bool(false));
         pre.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,
             operands: vec![],
@@ -622,6 +624,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
     {
         let guard_block = func.blocks.get_mut(&guard).expect("guard exists");
         guard_block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Not,
             operands: vec![of_phi],
@@ -630,6 +633,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             source_span: None,
         });
         guard_block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::And,
             operands: vec![cond, not_of],
@@ -682,6 +686,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             func.next_value += 1;
             func.value_types.insert(folded, TirType::Bool);
             body_block.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Or,
                 operands: vec![of_next, f],
@@ -700,6 +705,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             func.next_value += 1;
             func.value_types.insert(snap, TirType::I64);
             body_block.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![plan.phi],
@@ -855,11 +861,8 @@ fn is_ignorable_marker(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy
         && op.results.is_empty()
         && op.operands.is_empty()
-        && match op.attrs.get("_original_kind") {
+        && match op.origin {
             None => true,
-            Some(crate::tir::ops::AttrValue::Str(kind)) => {
-                crate::tir::op_kinds_generated::copy_kind_is_inert_marker_table(kind)
-            }
-            Some(_) => false,
+            Some(kind) => crate::tir::op_kinds_generated::copy_kind_is_inert_marker_table(kind),
         }
 }

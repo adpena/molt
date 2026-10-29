@@ -7,15 +7,15 @@ pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
         return;
     }
     let mut remove = vec![false; func_ir.ops.len()];
-    let alloc_kinds = ["alloc_class"];
-    let allowed_use_kinds = ["store", "guarded_field_set"];
+    let alloc_kinds = [molt_ir::OpKind::AllocClass];
+    let allowed_use_kinds = [molt_ir::OpKind::Store, molt_ir::OpKind::GuardedFieldSet];
 
-    let mut uses_by_name: BTreeMap<&str, Vec<(usize, usize, &str)>> = BTreeMap::new();
+    let mut uses_by_name: BTreeMap<&str, Vec<(usize, usize, molt_ir::OpKind)>> = BTreeMap::new();
     for (use_idx, use_op) in func_ir.ops.iter().enumerate() {
         let Some(args) = use_op.args.as_ref() else {
             continue;
         };
-        let kind = use_op.kind.as_str();
+        let kind = use_op.kind;
         for (pos, arg) in args.iter().enumerate() {
             uses_by_name
                 .entry(arg.as_str())
@@ -25,7 +25,7 @@ pub fn elide_dead_struct_allocs(func_ir: &mut FunctionIR) {
     }
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
-        if !alloc_kinds.contains(&op.kind.as_str()) {
+        if !alloc_kinds.contains(&op.kind) {
             continue;
         }
         let Some(out_name) = op.out.as_deref() else {

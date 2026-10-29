@@ -13,16 +13,19 @@ use molt_tir::tir::ops::OpCode;
 pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp) {
     let original_kind = original_kind(op);
     match (op.tir_op.opcode, original_kind) {
-        (OpCode::LoadAttr, Some("get_attr_name")) => {
+        (OpCode::LoadAttr, Some(molt_ir::OpKind::GetAttrName)) => {
             emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::GetAttrName)
         }
-        (OpCode::StoreAttr, Some("set_attr_name")) => {
+        (OpCode::StoreAttr, Some(molt_ir::OpKind::SetAttrName)) => {
             emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::SetAttrName)
         }
-        (OpCode::DelAttr, Some("del_attr_name")) => {
+        (OpCode::DelAttr, Some(molt_ir::OpKind::DelAttrName)) => {
             emit_lir_boxed_operands_runtime_call(ctx, op, LirRuntimeCall::DelAttrName)
         }
-        (OpCode::LoadAttr, Some(kind @ ("get_attr_generic_ptr" | "get_attr_generic_obj"))) => {
+        (
+            OpCode::LoadAttr,
+            Some(kind @ (molt_ir::OpKind::GetAttrGenericPtr | molt_ir::OpKind::GetAttrGenericObj)),
+        ) => {
             let obj = required_operand(op, 0, kind);
             let name = required_name_bytes(op, kind);
             let name_len = name.len() as i64;
@@ -30,7 +33,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
             let site_bits = box_int_bits(stable_ic_site_id(
                 ctx.func.name.as_str(),
                 source_op_idx,
-                kind,
+                kind.as_str(),
             ));
             emit_lir_runtime_call_with_args_and_result(
                 ctx,
@@ -44,9 +47,9 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
                 ],
             );
         }
-        (OpCode::LoadAttr, Some("get_attr_special_obj")) => {
-            let obj = required_operand(op, 0, "get_attr_special_obj");
-            let name = required_name_bytes(op, "get_attr_special_obj");
+        (OpCode::LoadAttr, Some(molt_ir::OpKind::GetAttrSpecialObj)) => {
+            let obj = required_operand(op, 0, molt_ir::OpKind::GetAttrSpecialObj);
+            let name = required_name_bytes(op, molt_ir::OpKind::GetAttrSpecialObj);
             let name_len = name.len() as i64;
             emit_lir_runtime_call_with_args_and_result(
                 ctx,
@@ -59,7 +62,10 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
                 ],
             );
         }
-        (OpCode::StoreAttr, Some(kind @ ("set_attr_generic_ptr" | "set_attr_generic_obj"))) => {
+        (
+            OpCode::StoreAttr,
+            Some(kind @ (molt_ir::OpKind::SetAttrGenericPtr | molt_ir::OpKind::SetAttrGenericObj)),
+        ) => {
             let obj = required_operand(op, 0, kind);
             let value = required_operand(op, 1, kind);
             let name = required_name_bytes(op, kind);
@@ -68,7 +74,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
             let site_bits = box_int_bits(stable_ic_site_id(
                 ctx.func.name.as_str(),
                 source_op_idx,
-                kind,
+                kind.as_str(),
             ));
             emit_lir_runtime_call_with_args_and_result(
                 ctx,
@@ -83,7 +89,10 @@ pub(in crate::wasm::lir_fast) fn emit_lir_attr(ctx: &mut LirLowerCtx, op: &LirOp
                 ],
             );
         }
-        (OpCode::DelAttr, Some(kind @ ("del_attr_generic_ptr" | "del_attr_generic_obj"))) => {
+        (
+            OpCode::DelAttr,
+            Some(kind @ (molt_ir::OpKind::DelAttrGenericPtr | molt_ir::OpKind::DelAttrGenericObj)),
+        ) => {
             let obj = required_operand(op, 0, kind);
             let name = required_name_bytes(op, kind);
             let name_len = name.len() as i64;

@@ -5,7 +5,7 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use crate::wasm::body::WasmLirFallbackReason;
-use crate::{FunctionIR, SimpleIR};
+use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::BTreeSet;
 use wasm_encoder::Instruction;
 
@@ -21,6 +21,7 @@ fn const_i64_return_func(value: i64) -> TirFunction {
     attrs.insert("value".into(), AttrValue::Int(value));
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -49,6 +50,7 @@ fn literal_const_return_func(
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![],
@@ -72,6 +74,7 @@ fn add_two_i64_params_func() -> TirFunction {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -101,6 +104,7 @@ fn checked_mul_i64_consts_func() -> TirFunction {
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(value));
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -110,6 +114,7 @@ fn checked_mul_i64_consts_func() -> TirFunction {
         });
     }
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckedMul,
         operands: vec![lhs, rhs],
@@ -327,15 +332,13 @@ fn wasm_final_body_and_facts_follow_typed_custody_through_retention_and_escape()
         return_abi: molt_ir::FunctionReturnAbi::Value,
         ops: vec![
             crate::OpIR {
-                kind: "const_float".into(),
                 out: Some("stale_value".into()),
                 f_value: Some(1.25),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ConstFloat)
             },
             crate::OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["stale_value".into()]),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         ..Default::default()
@@ -380,11 +383,16 @@ fn wasm_final_body_and_facts_follow_typed_custody_through_retention_and_escape()
     );
     let (body, facts) = &rows[0];
     let facts = facts.as_ref().unwrap();
-    assert!(!body.ops.iter().any(|op| op.kind == "const_float"));
+    assert!(
+        !body
+            .ops
+            .iter()
+            .any(|op| op.kind == molt_ir::OpKind::ConstFloat)
+    );
     let literal = body
         .ops
         .iter()
-        .find(|op| op.kind == "const" && op.value == Some(42))
+        .find(|op| op.kind == molt_ir::OpKind::Const && op.value == Some(42))
         .expect("final typed value");
     assert!(
         facts
@@ -408,6 +416,7 @@ fn wasm_terminal_reachability_preserves_unused_import_effects_and_balances_owner
     let imported = function.fresh_value();
     let entry = function.blocks.get_mut(&function.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -416,6 +425,7 @@ fn wasm_terminal_reachability_preserves_unused_import_effects_and_balances_owner
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Import,
         operands: vec![],
@@ -449,7 +459,7 @@ fn wasm_terminal_reachability_preserves_unused_import_effects_and_balances_owner
         "the surviving owned import result needs exactly one release"
     );
     let projected = crate::tir::lower_to_simple::lower_to_simple_ir(&function);
-    assert!(projected.iter().any(|op| op.kind == "import"
+    assert!(projected.iter().any(|op| op.kind == molt_ir::OpKind::Import
         && op.s_value.as_deref() == Some("side_effect_module")
         && op.out.is_some()
         && op.var.is_none()));
@@ -475,15 +485,13 @@ fn wasm_final_owner_consumes_module_and_terminal_cached_pipeline_modes() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 ops: vec![
                     crate::OpIR {
-                        kind: "const".into(),
                         value: Some(7),
                         out: Some("answer".into()),
-                        ..Default::default()
+                        ..OpIR::new(molt_ir::OpKind::Const)
                     },
                     crate::OpIR {
-                        kind: "ret".into(),
                         args: Some(vec!["answer".into()]),
-                        ..Default::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..Default::default()
@@ -509,15 +517,13 @@ fn wasm_final_owner_consumes_module_and_terminal_cached_pipeline_modes() {
         // would emit 900 instead of 7 despite a successful optimization run.
         ir.functions[0].ops = vec![
             crate::OpIR {
-                kind: "const".into(),
                 value: Some(900),
                 out: Some("poison".into()),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             crate::OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["poison".into()]),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ];
         let typed = run_owned_module_pipeline_from_cached_tir(
@@ -538,7 +544,7 @@ fn wasm_final_owner_consumes_module_and_terminal_cached_pipeline_modes() {
         let literal = body
             .ops
             .iter()
-            .find(|op| op.kind == "const" && op.value == Some(7))
+            .find(|op| op.kind == molt_ir::OpKind::Const && op.value == Some(7))
             .expect("retained optimized SSA result");
         assert!(!body.ops.iter().any(|op| op.value == Some(900)));
         assert!(
@@ -550,7 +556,7 @@ fn wasm_final_owner_consumes_module_and_terminal_cached_pipeline_modes() {
         assert_eq!(
             body.ops
                 .iter()
-                .filter(|op| op.kind == "drop_inserted")
+                .filter(|op| op.kind == molt_ir::OpKind::DropInserted)
                 .count(),
             1,
             "{mode:?} must project one terminal ownership cut"

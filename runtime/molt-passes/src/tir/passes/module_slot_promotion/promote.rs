@@ -408,8 +408,8 @@ fn candidate_is_legal(
                 .region_at(&alias, (bid, op_index), op)
                 .may_alias(&MemRegion::ModuleDict)
             {
-                let orig = match op.attrs.get("_original_kind") {
-                    Some(AttrValue::Str(kind)) => format!(" (_original_kind={kind})"),
+                let orig = match op.origin {
+                    Some(kind) => format!(" (origin={kind})"),
                     _ => String::new(),
                 };
                 dbg.note(format!(
@@ -482,6 +482,7 @@ fn apply_promotion(
                 AttrValue::Str(plan.slots[slot_idx].clone()),
             );
             hoist_ops.push(TirOp {
+                origin: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: OpCode::ConstStr,
                 operands: vec![],
@@ -490,6 +491,7 @@ fn apply_promotion(
                 source_span: None,
             });
             hoist_ops.push(TirOp {
+                origin: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: OpCode::ModuleGetAttr,
                 operands: vec![module_root, fresh_name],
@@ -796,6 +798,7 @@ fn alloc_store_back_ops(
         let mut name_attrs = crate::tir::ops::AttrDict::new();
         name_attrs.insert("s_value".into(), AttrValue::Str(slot.clone()));
         ops.push(TirOp {
+            origin: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: OpCode::ConstStr,
             operands: vec![],
@@ -804,6 +807,7 @@ fn alloc_store_back_ops(
             source_span: None,
         });
         ops.push(TirOp {
+            origin: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: OpCode::ModuleSetAttr,
             operands: vec![module_root, name_id, values[i]],

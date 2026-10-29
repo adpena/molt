@@ -23,8 +23,8 @@ pub mod verify;
 /// Returns true for SimpleIR ops that are purely structural control-flow
 /// markers and should be skipped during SSA conversion and type hint
 /// correlation.
-pub(crate) fn is_structural(kind: &str) -> bool {
-    op_kinds_generated::simpleir_kind_is_structural(kind)
+pub(crate) fn is_structural(kind: crate::OpKind) -> bool {
+    kind.is_structural()
 }
 
 // Re-export primary types for convenience.

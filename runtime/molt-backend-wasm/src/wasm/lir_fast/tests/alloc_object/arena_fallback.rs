@@ -13,6 +13,7 @@ fn arena_eligible_alloc_is_rejected_without_owner_lifetime() {
     func.value_types.insert(result_id, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Alloc,
         operands: vec![],

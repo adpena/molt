@@ -23,8 +23,8 @@ pub use molt_ir::tir::{
 };
 
 /// Pass-layer access to the canonical SimpleIR structural classifier.
-pub(crate) fn is_structural(kind: &str) -> bool {
-    op_kinds_generated::simpleir_kind_is_structural(kind)
+pub(crate) fn is_structural(kind: molt_ir::OpKind) -> bool {
+    kind.is_structural()
 }
 
 // Re-export primary IR and pass-layer types for convenience.
@@ -45,7 +45,7 @@ pub use self::fact_graph::{
 };
 pub use self::function::{TirFunction, TirModule};
 pub use self::numeric_facts::{IntRange, ScevExpr, TripCount};
-pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+pub use self::ops::{AttrDict, Dialect, OpCode, TirOp};
 pub use self::target_info::{BuildProfile, ProfileData, SimdCaps, TargetInfo, TargetKind};
 pub use self::types::{FuncSignature, TirType};
 pub use self::value_range::ValueRangeResult;

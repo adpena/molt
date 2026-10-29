@@ -9,6 +9,7 @@ use molt_passes::tir::values::ValueId;
 
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -57,15 +58,20 @@ fn allocate(func: &mut TirFunction) -> ValueId {
     result
 }
 
-fn make_store(object: ValueId, value: ValueId, offset: i64, kind: &str) -> TirOp {
+fn make_store(object: ValueId, value: ValueId, offset: i64, kind: molt_ir::OpKind) -> TirOp {
     let mut op = make_op(OpCode::StoreAttr, vec![object, value], vec![]);
     op.attrs.insert("value".into(), AttrValue::Int(offset));
-    op.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    op.origin = Some(kind);
     op
 }
 
-fn store(func: &mut TirFunction, object: ValueId, value: ValueId, offset: i64, kind: &str) {
+fn store(
+    func: &mut TirFunction,
+    object: ValueId,
+    value: ValueId,
+    offset: i64,
+    kind: molt_ir::OpKind,
+) {
     push(func, make_store(object, value, offset, kind));
 }
 
@@ -80,8 +86,7 @@ fn stores(func: &TirFunction) -> Vec<&TirOp> {
 fn typed_load(func: &mut TirFunction, object: ValueId) -> TirOp {
     let result = func.fresh_value();
     let mut op = make_op(OpCode::LoadAttr, vec![object], vec![result]);
-    op.attrs
-        .insert("_original_kind".into(), AttrValue::Str("load".into()));
+    op.origin = Some(molt_ir::OpKind::Load);
     op.attrs.insert("value".into(), AttrValue::Int(0));
     op
 }
@@ -93,10 +98,10 @@ fn scalar_constructor_chains_preserve_owned_final_stores() {
     let one = integer(&mut func, 1);
     let two = integer(&mut func, 2);
     let object = allocate(&mut func);
-    store(&mut func, object, zero, 0, "store");
-    store(&mut func, object, zero, 8, "store");
-    store(&mut func, object, one, 0, "store");
-    store(&mut func, object, two, 8, "store");
+    store(&mut func, object, zero, 0, molt_ir::OpKind::Store);
+    store(&mut func, object, zero, 8, molt_ir::OpKind::Store);
+    store(&mut func, object, one, 0, molt_ir::OpKind::Store);
+    store(&mut func, object, two, 8, molt_ir::OpKind::Store);
     let stats = run_fresh(&mut func);
     assert_eq!(stats.ops_removed, 2);
     assert_eq!(stores(&func).len(), 2);
@@ -110,7 +115,7 @@ fn triple_store_same_offset_kills_first_two() {
     let value = integer(&mut func, 1);
     let object = allocate(&mut func);
     for _ in 0..3 {
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     }
     assert_eq!(run_fresh(&mut func).ops_removed, 2);
     assert_eq!(stores(&func).len(), 1);
@@ -122,9 +127,9 @@ fn different_offsets_and_objects_are_not_overwrites() {
     let value = integer(&mut func, 1);
     let first = allocate(&mut func);
     let second = allocate(&mut func);
-    store(&mut func, first, value, 0, "store");
-    store(&mut func, first, value, 8, "store");
-    store(&mut func, second, value, 0, "store");
+    store(&mut func, first, value, 0, molt_ir::OpKind::Store);
+    store(&mut func, first, value, 8, molt_ir::OpKind::Store);
+    store(&mut func, second, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(stores(&func).len(), 3);
 }
@@ -135,7 +140,7 @@ fn transparent_aliases_preserve_scalar_store_elimination() {
         let mut func = fixture();
         let value = integer(&mut func, 1);
         let object = allocate(&mut func);
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         let alias = func.fresh_value();
         let args = if duplicate_operand {
             vec![object, object]
@@ -143,7 +148,7 @@ fn transparent_aliases_preserve_scalar_store_elimination() {
             vec![object]
         };
         push(&mut func, make_op(OpCode::Copy, args, vec![alias]));
-        store(&mut func, alias, value, 0, "store");
+        store(&mut func, alias, value, 0, molt_ir::OpKind::Store);
         assert_eq!(run_fresh(&mut func).ops_removed, 1);
         assert_eq!(stores(&func).len(), 1);
     }
@@ -161,7 +166,7 @@ fn read_or_escape_permanently_revokes_pristine_custody() {
         let mut func = fixture();
         let value = integer(&mut func, 1);
         let object = allocate(&mut func);
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         let observer = match observer_kind {
             "load" => typed_load(&mut func, object),
             "call" => make_op(
@@ -170,15 +175,15 @@ fn read_or_escape_permanently_revokes_pristine_custody() {
                 vec![func.fresh_value()],
             ),
             "store_index" => make_op(OpCode::StoreIndex, vec![object, value, value], vec![]),
-            "set_attr_name" => make_store(object, value, 0, "set_attr_name"),
-            "capture_store" => make_store(ValueId(1), object, 0, "store"),
+            "set_attr_name" => make_store(object, value, 0, molt_ir::OpKind::SetAttrName),
+            "capture_store" => make_store(ValueId(1), object, 0, molt_ir::OpKind::Store),
             _ => unreachable!(),
         };
         push(&mut func, observer);
         // A later store cannot regain a pristine-slot fact after the earlier
         // capture or materialized-dict observation. Repeated stores stay live.
-        store(&mut func, object, value, 0, "store");
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         assert_eq!(run_fresh(&mut func).ops_removed, 0, "{observer_kind}");
     }
 }
@@ -198,7 +203,7 @@ fn callback_effects_without_root_operands_block_elim() {
         let mut func = fixture();
         let value = integer(&mut func, 1);
         let object = allocate(&mut func);
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         let callback = if opcode == OpCode::DecRef {
             make_op(opcode, vec![ValueId(1)], vec![])
         } else {
@@ -209,7 +214,7 @@ fn callback_effects_without_root_operands_block_elim() {
             )
         };
         push(&mut func, callback);
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         assert_eq!(run_fresh(&mut func).ops_removed, 0, "{opcode:?}");
         assert_eq!(stores(&func).len(), 2, "{opcode:?}");
     }
@@ -221,11 +226,11 @@ fn exact_integer_add_does_not_block_elim() {
     let one = integer(&mut func, 1);
     let two = integer(&mut func, 2);
     let object = allocate(&mut func);
-    store(&mut func, object, one, 0, "store");
+    store(&mut func, object, one, 0, molt_ir::OpKind::Store);
     let sum = func.fresh_value();
     func.value_types.insert(sum, TirType::I64);
     push(&mut func, make_op(OpCode::Add, vec![one, two], vec![sum]));
-    store(&mut func, object, sum, 0, "store");
+    store(&mut func, object, sum, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 1);
     assert_eq!(stores(&func).len(), 1);
     assert_eq!(stores(&func)[0].operands, vec![object, sum]);
@@ -241,8 +246,8 @@ fn callback_before_a_new_allocation_does_not_poison_its_pristine_history() {
         make_op(OpCode::Call, vec![ValueId(2)], vec![result]),
     );
     let object = allocate(&mut func);
-    store(&mut func, object, value, 0, "store");
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 1);
 }
 
@@ -250,8 +255,8 @@ fn callback_before_a_new_allocation_does_not_poison_its_pristine_history() {
 fn inherited_receivers_never_acquire_fresh_allocation_custody() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
-    store(&mut func, ValueId(0), value, 0, "store");
-    store(&mut func, ValueId(0), value, 0, "store");
+    store(&mut func, ValueId(0), value, 0, molt_ir::OpKind::Store);
+    store(&mut func, ValueId(0), value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(stores(&func).len(), 2);
 }
@@ -261,8 +266,8 @@ fn initialized_candidate_payload_discharge_first_plain_scalar_store_release() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
     let object = allocate(&mut func);
-    store(&mut func, object, value, 0, "store");
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 1);
     assert_eq!(stores(&func).len(), 1);
 }
@@ -280,11 +285,11 @@ fn heap_and_wide_integer_initializers_preserve_retain_and_displaced_release() {
             ValueId(1)
         };
         let object = allocate(&mut func);
-        store(&mut func, object, heap, 0, "store");
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, heap, 0, molt_ir::OpKind::Store);
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         // The preceding old release can reenter and replace the scalar field.
         // It cannot establish neutral contents for this next overwrite.
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         assert_eq!(run_fresh(&mut func).ops_removed, 0);
         assert_eq!(stores(&func).len(), 3);
     }
@@ -295,9 +300,9 @@ fn heap_value_between_neutral_stores_keeps_all_ownership_operations() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
     let object = allocate(&mut func);
-    store(&mut func, object, value, 0, "store");
-    store(&mut func, object, ValueId(1), 0, "store");
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
+    store(&mut func, object, ValueId(1), 0, molt_ir::OpKind::Store);
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(stores(&func).len(), 3);
 }
@@ -309,8 +314,8 @@ fn incoming_type_annotations_are_not_boxed_neutral_proofs() {
         func.value_types.insert(ValueId(1), hint);
         let value = integer(&mut func, 1);
         let object = allocate(&mut func);
-        store(&mut func, object, ValueId(1), 0, "store");
-        store(&mut func, object, value, 0, "store");
+        store(&mut func, object, ValueId(1), 0, molt_ir::OpKind::Store);
+        store(&mut func, object, value, 0, molt_ir::OpKind::Store);
         assert_eq!(run_fresh(&mut func).ops_removed, 0);
     }
 }
@@ -320,11 +325,11 @@ fn unrelated_replacing_store_can_finalize_a_captured_observer() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
     let object = allocate(&mut func);
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     // The old field of this different receiver can finalize an object whose
     // callback observes our pending store, without object in these operands.
-    store(&mut func, ValueId(1), value, 0, "store");
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, ValueId(1), value, 0, molt_ir::OpKind::Store);
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(stores(&func).len(), 3);
 }
@@ -339,7 +344,7 @@ fn captured_class_object_final_initializer_stays_live() {
         &mut func,
         make_op(OpCode::Call, vec![ValueId(2), object], vec![result]),
     );
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(stores(&func).len(), 1);
 }
@@ -349,7 +354,7 @@ fn class_object_returned_from_block_keeps_final_store() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
     let object = allocate(&mut func);
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Return {
         values: vec![object],
     };
@@ -361,8 +366,8 @@ fn class_object_field_read_in_dominated_block_keeps_stores() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
     let object = allocate(&mut func);
-    store(&mut func, object, value, 0, "store");
-    store(&mut func, object, value, 8, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
+    store(&mut func, object, value, 8, molt_ir::OpKind::Store);
     let next_id = BlockId(1);
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
         target: next_id,
@@ -387,7 +392,7 @@ fn unconditional_cross_block_overwrite_consumes_exact_entry_history() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
     let object = allocate(&mut func);
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     let next_id = BlockId(1);
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
         target: next_id,
@@ -398,7 +403,7 @@ fn unconditional_cross_block_overwrite_consumes_exact_entry_history() {
         TirBlock {
             id: next_id,
             args: vec![],
-            ops: vec![make_store(object, value, 0, "store")],
+            ops: vec![make_store(object, value, 0, molt_ir::OpKind::Store)],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -420,7 +425,7 @@ fn finalizer_bearing_class_allocation_does_not_erase_final_fields() {
         .unwrap()
         .attrs
         .insert("defines_del".into(), AttrValue::Bool(true));
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
 }
 
@@ -430,7 +435,7 @@ fn malformed_or_result_producing_store_cannot_orphan_a_definition() {
         let mut func = fixture();
         let value = integer(&mut func, 1);
         let object = allocate(&mut func);
-        let mut op = make_store(object, value, 0, "store");
+        let mut op = make_store(object, value, 0, molt_ir::OpKind::Store);
         match defect {
             "result" => op.results.push(func.fresh_value()),
             "offset" => {
@@ -440,10 +445,7 @@ fn malformed_or_result_producing_store_cannot_orphan_a_definition() {
                 op.operands.pop();
             }
             "variant" => {
-                op.attrs.insert(
-                    "_original_kind".into(),
-                    AttrValue::Str("set_attr_name".into()),
-                );
+                op.origin = Some(molt_ir::OpKind::SetAttrName);
             }
             _ => unreachable!(),
         }
@@ -464,12 +466,12 @@ fn class_layout_allocation_revokes_earlier_root_history() {
     let mut func = fixture();
     let value = integer(&mut func, 1);
     let first = allocate(&mut func);
-    store(&mut func, first, value, 0, "store");
+    store(&mut func, first, value, 0, molt_ir::OpKind::Store);
     // Binding layout metadata can release an old class value and reenter.
     let second = allocate(&mut func);
-    store(&mut func, second, value, 0, "store");
-    store(&mut func, first, value, 0, "store");
-    store(&mut func, second, value, 0, "store");
+    store(&mut func, second, value, 0, molt_ir::OpKind::Store);
+    store(&mut func, first, value, 0, molt_ir::OpKind::Store);
+    store(&mut func, second, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(stores(&func).len(), 4);
 }
@@ -498,8 +500,8 @@ fn known_boxed_bool_float_and_none_values_remain_optimizable() {
         }
         push(&mut func, op);
         let object = allocate(&mut func);
-        store(&mut func, object, result, 0, "store");
-        store(&mut func, object, result, 0, "store");
+        store(&mut func, object, result, 0, molt_ir::OpKind::Store);
+        store(&mut func, object, result, 0, molt_ir::OpKind::Store);
         assert_eq!(run_fresh(&mut func).ops_removed, 1, "{opcode:?}");
         assert_eq!(stores(&func).len(), 1);
     }
@@ -512,13 +514,13 @@ fn observer_through_a_transparent_alias_keeps_original_slot_live() {
     let object = allocate(&mut func);
     let alias = func.fresh_value();
     push(&mut func, make_op(OpCode::Copy, vec![object], vec![alias]));
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     let result = func.fresh_value();
     push(
         &mut func,
         make_op(OpCode::Call, vec![ValueId(2), alias], vec![result]),
     );
-    store(&mut func, object, value, 0, "store");
+    store(&mut func, object, value, 0, molt_ir::OpKind::Store);
     assert_eq!(run_fresh(&mut func).ops_removed, 0);
     assert_eq!(stores(&func).len(), 2);
 }
@@ -540,7 +542,7 @@ fn terminal_fields_survive_unknown_absent_and_positive_finalizer_metadata() {
                     .attrs
                     .insert("defines_del".into(), AttrValue::Bool(finalizer));
             }
-            store(&mut func, object, value, 0, "store");
+            store(&mut func, object, value, 0, molt_ir::OpKind::Store);
             if late_mutation {
                 // The callback can mutate the object's class via a global;
                 // it does not need the instance as an operand.

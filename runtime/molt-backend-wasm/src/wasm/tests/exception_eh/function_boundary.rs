@@ -13,44 +13,48 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
     // uses native EH; the callers must observe its canonical pending state.
     for mode in ["jumpful", "stateful"] {
         for runtime_failure in [false, true] {
-            let labelled = |kind: &str| OpIR {
+            let labelled = |kind: molt_ir::OpKind| OpIR {
                 value: Some(7),
                 ..wasm_test_op(kind, None, vec![])
             };
             let mut ops = vec![OpIR {
                 s_value: Some("molt_main".into()),
-                ..wasm_test_op("trace_enter_slot", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::TraceEnterSlot, None, vec![])
             }];
             if mode == "stateful" {
                 ops.push(OpIR {
                     state_targets: Some(vec![]),
-                    ..wasm_test_op("state_switch", None, vec![])
+                    ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
                 });
             }
             ops.extend([
-                wasm_test_op("exception_push", None, vec![]),
-                labelled("try_start"),
-                wasm_test_op("binding_alias", Some("callee_obj"), vec!["incoming_callee"]),
+                wasm_test_op(molt_ir::OpKind::ExceptionPush, None, vec![]),
+                labelled(molt_ir::OpKind::TryStart),
+                wasm_test_op(
+                    molt_ir::OpKind::BindingAlias,
+                    Some("callee_obj"),
+                    vec!["incoming_callee"],
+                ),
                 OpIR {
                     s_value: Some("callee".into()),
-                    ..wasm_test_op("call_guarded", None, vec!["callee_obj"])
+                    ..wasm_test_op(molt_ir::OpKind::CallGuarded, None, vec!["callee_obj"])
                 },
-                labelled("check_exception"),
+                labelled(molt_ir::OpKind::CheckException),
                 OpIR {
                     value: Some(999),
-                    ..wasm_test_op("line", None, vec![])
+                    ..wasm_test_op(molt_ir::OpKind::Line, None, vec![])
                 },
-                labelled("try_end"),
+                labelled(molt_ir::OpKind::TryEnd),
             ]);
-            ops.push(labelled("label"));
+            ops.push(labelled(molt_ir::OpKind::Label));
             ops.extend([
-                wasm_test_op("dec_ref", None, vec!["callee_obj"]),
-                wasm_test_op("exception_pop", None, vec![]),
+                wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["callee_obj"]),
+                wasm_test_op(molt_ir::OpKind::ExceptionPop, None, vec![]),
                 OpIR {
                     value: Some(3),
-                    ..wasm_test_op("line", None, vec![])
+                    ..wasm_test_op(molt_ir::OpKind::Line, None, vec![])
                 },
-                wasm_test_op("ret_void", None, vec![]),
+                wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
             ]);
             let mut caller = wasm_test_function(
                 "molt_main",
@@ -66,10 +70,10 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
             let raise = if runtime_failure {
                 OpIR {
                     s_value: Some("molt_raise".into()),
-                    ..wasm_test_op("call", None, vec!["exception"])
+                    ..wasm_test_op(molt_ir::OpKind::Call, None, vec!["exception"])
                 }
             } else {
-                wasm_test_op("raise", None, vec!["exception"])
+                wasm_test_op(molt_ir::OpKind::Raise, None, vec!["exception"])
             };
             let mut callee = wasm_test_function(
                 "callee",
@@ -78,10 +82,10 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
                 vec![
                     OpIR {
                         value: Some(1),
-                        ..wasm_test_op("const_bool", Some("exception"), vec![])
+                        ..wasm_test_op(molt_ir::OpKind::ConstBool, Some("exception"), vec![])
                     },
                     raise,
-                    wasm_test_op("ret_void", None, vec![]),
+                    wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
                 ],
             );
             callee.execution_context = ExecutionContextPolicy::Inherited;

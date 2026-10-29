@@ -13,7 +13,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_alloc(ctx: &mut LirLowerCtx, op: &LirO
             crate::tir::target_info::COMPILER_ARENA_PLACEMENT_UNSUPPORTED
         );
     }
-    let size = required_i64_attr(op, "value", "Alloc");
+    let size = required_i64_attr(op, "value", molt_ir::OpKind::Alloc);
     emit_lir_runtime_call_with_args(ctx, LirRuntimeCall::Alloc, &[LirRuntimeArg::I64Const(size)]);
     // Alloc returns an unpublished handle. Its initialized payload must cross
     // the publication boundary before any SSA binding or ordinary RC discard.

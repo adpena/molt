@@ -1,21 +1,22 @@
 use super::super::*;
+use molt_ir::OpKind;
 use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
 
-/// Single-source kind authority for [`handle_call_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_call_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "call",
-    "call_internal",
-    "call_guarded",
-    "call_func",
-    "invoke_ffi",
-    "call_bind",
-    "call_indirect",
-    "call_loaded_method",
-    "call_method",
-    "getframe",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Call,
+    OpKind::CallInternal,
+    OpKind::CallGuarded,
+    OpKind::CallFunc,
+    OpKind::InvokeFfi,
+    OpKind::CallBind,
+    OpKind::CallIndirect,
+    OpKind::CallLoadedMethod,
+    OpKind::CallMethod,
+    OpKind::Getframe,
+);
 
 /// Cranelift codegen handlers for direct calls, guarded calls, Python function
 /// calls, FFI invocation, call binding, method dispatch ICs, and adjacent
@@ -58,7 +59,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
 ) {
     let names = op.args.as_deref().unwrap_or(&[]);
     let mut input_names: Vec<&str> = names.iter().map(String::as_str).collect();
-    if matches!(op.kind.as_str(), "call" | "call_internal")
+    if matches!(op.kind, OpKind::Call | OpKind::CallInternal)
         && let Some(target) = op.s_value.as_deref()
         && closure_functions.contains(target)
         && let Some(environment) = local_closure_envs.get(target)
@@ -83,8 +84,8 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     }
     operands.enter_consumer(builder, block_tracked_obj, block_tracked_ptr);
     operands.commit_call_inputs(op, module, import_ids, builder, import_refs);
-    match op.kind.as_str() {
-        "call" => handle_call_direct_op(
+    match op.kind {
+        OpKind::Call => handle_call_direct_op(
             op,
             &operands,
             op_idx,
@@ -112,7 +113,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *cleanup_roots,
             local_dec_ref_obj,
         ),
-        "call_internal" => handle_call_internal_op(
+        OpKind::CallInternal => handle_call_internal_op(
             op,
             &operands,
             &mut *module,
@@ -128,7 +129,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             function_has_ret,
             defined_functions,
         ),
-        "call_guarded" => handle_call_guarded_op(
+        OpKind::CallGuarded => handle_call_guarded_op(
             op,
             &operands,
             op_idx,
@@ -149,7 +150,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             thread_record_slot
                 .expect("a function with direct Python calls holds its thread record"),
         ),
-        "call_func" => handle_call_func_op(
+        OpKind::CallFunc => handle_call_func_op(
             op,
             &operands,
             op_idx,
@@ -166,7 +167,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
                 .expect("a function with direct Python calls holds its thread record"),
             nbc,
         ),
-        "invoke_ffi" => handle_invoke_ffi_op(
+        OpKind::InvokeFfi => handle_invoke_ffi_op(
             op,
             &operands,
             op_idx,
@@ -180,7 +181,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             nbc,
         ),
-        "call_bind" | "call_indirect" => handle_call_bind_indirect_op(
+        OpKind::CallBind | OpKind::CallIndirect => handle_call_bind_indirect_op(
             op,
             &operands,
             op_idx,
@@ -194,7 +195,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             cleanup_roots,
             nbc,
         ),
-        "call_loaded_method" => handle_call_loaded_method_op(
+        OpKind::CallLoadedMethod => handle_call_loaded_method_op(
             op,
             &operands,
             &mut *module,
@@ -205,7 +206,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             nbc,
         ),
-        "call_method" => handle_call_method_op(
+        OpKind::CallMethod => handle_call_method_op(
             op,
             &operands,
             op_idx,
@@ -218,7 +219,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             representation_plan,
             nbc,
         ),
-        "getframe" => handle_getframe_op(
+        OpKind::Getframe => handle_getframe_op(
             op,
             &operands,
             &mut *module,
@@ -1933,7 +1934,7 @@ fn handle_call_bind_indirect_op(
     // the builder; one owned entry serves both spellings, whose runtime
     // dispatch is the same. An expanded call keeps its callable borrowed.
     let owned_callable = operand_adopted(op, 0);
-    let callee_name = if op.kind == "call_indirect" {
+    let callee_name = if op.kind == OpKind::CallIndirect {
         "molt_call_indirect_ic"
     } else {
         "molt_call_bind_ic"
@@ -1948,7 +1949,7 @@ fn handle_call_bind_indirect_op(
             &[types::I64, types::I64, types::I64],
             &[types::I64],
         )
-    } else if op.kind == "call_bind" {
+    } else if op.kind == OpKind::CallBind {
         import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -1964,7 +1965,7 @@ fn handle_call_bind_indirect_op(
             .unwrap();
         module.declare_func_in_func(callee, builder.func)
     };
-    let call_site_label = if op.kind == "call_indirect" {
+    let call_site_label = if op.kind == OpKind::CallIndirect {
         "call_indirect"
     } else {
         "call_bind"

@@ -16,7 +16,7 @@ pub(super) fn emit_guard_runtime_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    if op.kind != "guard_layout" {
+    if op.kind != molt_ir::OpKind::GuardLayout {
         return false;
     }
 

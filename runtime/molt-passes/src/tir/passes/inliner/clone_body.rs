@@ -63,13 +63,13 @@ fn clone_attrs_for_inlined_body(
     inline_var_namespace: &str,
 ) -> AttrDict {
     let mut cloned = clone_attrs_without_simple_names(&op.attrs);
-    let kind = original_kind(op).unwrap_or_else(|| opcode_canonical_kind_table(op.opcode));
+    let kind = original_kind(op).or_else(|| opcode_canonical_kind_table(op.opcode));
     // A read's value is remapped in operands, at the preserved transport index.
     // Its raw spelling may instead be an unresolved literal/sentinel. Only
     // generated local-storage/metadata roles belong to the inline slot namespace.
     if matches!(
-        simpleir_var_field_role_table(kind),
-        SimpleIrVarFieldRole::Definition | SimpleIrVarFieldRole::MetadataWhenArgs
+        kind.map(simpleir_var_field_role_table),
+        Some(SimpleIrVarFieldRole::Definition | SimpleIrVarFieldRole::MetadataWhenArgs)
     ) && let Some(AttrValue::Str(var)) = cloned.get("_var").cloned()
     {
         let private = private_inline_var_name(&var, var_remap, occupied_vars, inline_var_namespace);
@@ -111,11 +111,8 @@ fn collect_local_var_attrs(func: &TirFunction) -> HashSet<String> {
     vars
 }
 
-fn original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
+fn original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
+    op.origin
 }
 
 fn var_attr(op: &TirOp) -> Option<&str> {
@@ -126,14 +123,14 @@ fn var_attr(op: &TirOp) -> Option<&str> {
 }
 
 fn is_store_var(op: &TirOp) -> bool {
-    original_kind(op) == Some("store_var")
+    original_kind(op) == Some(molt_ir::OpKind::StoreVar)
 }
 
 fn op_reads_var(op: &TirOp, var: &str) -> bool {
     var_attr(op) == Some(var)
         && matches!(
             original_kind(op),
-            Some("load_var" | "copy_var" | "delete_var")
+            Some(molt_ir::OpKind::LoadVar | molt_ir::OpKind::CopyVar | molt_ir::OpKind::DeleteVar)
         )
 }
 
@@ -141,7 +138,7 @@ fn collect_missing_values(block: &TirBlock) -> HashSet<ValueId> {
     block
         .ops
         .iter()
-        .filter(|op| original_kind(op) == Some("missing"))
+        .filter(|op| original_kind(op) == Some(molt_ir::OpKind::Missing))
         .flat_map(|op| op.results.iter().copied())
         .collect()
 }
@@ -356,6 +353,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
                 );
                 remap_exception_label_attr(op.opcode, &mut attrs, &label_remap, &callee.name);
                 Some(TirOp {
+                    origin: op.origin,
                     dialect: op.dialect,
                     opcode: op.opcode,
                     operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
@@ -484,17 +482,34 @@ mod transport_tests {
 
     #[test]
     fn inline_namespace_only_renames_generated_local_storage_roles() {
-        for (kind, raw, expected) in [
-            ("store_var", "local", "inline_local"),
-            ("load_var", "local", "inline_local"),
-            ("transport_probe", "none", "none"),
+        for (opcode, origin, raw, expected) in [
+            (
+                OpCode::Copy,
+                Some(molt_ir::OpKind::StoreVar),
+                "local",
+                "inline_local",
+            ),
+            (
+                OpCode::Copy,
+                Some(molt_ir::OpKind::LoadVar),
+                "local",
+                "inline_local",
+            ),
+            (OpCode::Copy, Some(molt_ir::OpKind::Nop), "none", "none"),
+            (OpCode::ScfFor, None, "metadata", "metadata"),
+            (OpCode::ScfWhile, None, "metadata", "metadata"),
         ] {
             let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+
             attrs.insert("_var".into(), AttrValue::Str(raw.into()));
             let op = TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::Copy,
+                origin,
+                dialect: if matches!(opcode, OpCode::ScfFor | OpCode::ScfWhile) {
+                    Dialect::Scf
+                } else {
+                    Dialect::Molt
+                },
+                opcode,
                 operands: vec![ValueId(0)],
                 results: vec![],
                 attrs,

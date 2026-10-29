@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Field roles come from the generated shared authority; Rust only maps the
 /// canonical names into target identifiers.
 pub(super) fn op_definition_vars(op: &OpIR) -> Vec<String> {
-    if op.kind.starts_with("nop") {
+    if matches!(op.kind, molt_ir::OpKind::Nop) {
         return Vec::new();
     }
     let mut definitions = Vec::new();
@@ -48,10 +48,10 @@ pub(super) fn collect_phi_assignments(
     let mut phi_assignments: BTreeMap<usize, Vec<(String, Vec<String>)>> = BTreeMap::new();
     let mut i = 0;
     while i < ops.len() {
-        if ops[i].kind == "end_if" {
+        if ops[i].kind == molt_ir::OpKind::EndIf {
             let end_if_idx = i;
             let mut j = i + 1;
-            while j < ops.len() && ops[j].kind == "phi" {
+            while j < ops.len() && ops[j].kind == molt_ir::OpKind::Phi {
                 if let Some(ref out_name) = ops[j].out {
                     let phi_var = rust_ident(out_name);
                     let args: Vec<String> = ops[j]
@@ -86,14 +86,14 @@ pub(super) fn build_phi_injection_maps(
     let mut before_end_if: BTreeMap<usize, Vec<(String, String)>> = BTreeMap::new();
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
     for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "if" | "if_not" => if_stack.push((idx, None)),
-            "else" => {
+        match op.kind {
+            molt_ir::OpKind::If | molt_ir::OpKind::IfNot => if_stack.push((idx, None)),
+            molt_ir::OpKind::Else => {
                 if let Some(last) = if_stack.last_mut() {
                     last.1 = Some(idx);
                 }
             }
-            "end_if" => {
+            molt_ir::OpKind::EndIf => {
                 if let Some((_if_idx, else_idx)) = if_stack.pop()
                     && let Some(phis) = phi_assignments.get(&idx)
                 {
@@ -144,9 +144,17 @@ pub(super) fn collect_scope_escapes(
     let param_set: BTreeSet<String> = func.params.iter().map(|p| rust_ident(p)).collect();
 
     for op in ops {
-        match op.kind.as_str() {
-            "if" | "if_not" | "loop_start" | "while_start" | "for_range" | "for_iter" => depth += 1,
-            "end_if" | "loop_end" | "while_end" | "end_for" => depth -= 1,
+        match op.kind {
+            molt_ir::OpKind::If
+            | molt_ir::OpKind::IfNot
+            | molt_ir::OpKind::LoopStart
+            | molt_ir::OpKind::WhileStart
+            | molt_ir::OpKind::ForRange
+            | molt_ir::OpKind::ForIter => depth += 1,
+            molt_ir::OpKind::EndIf
+            | molt_ir::OpKind::LoopEnd
+            | molt_ir::OpKind::WhileEnd
+            | molt_ir::OpKind::EndFor => depth -= 1,
             _ => {}
         }
         let definitions = op_definition_vars(op);
@@ -158,7 +166,7 @@ pub(super) fn collect_scope_escapes(
         // in a lexical block. Its output bindings must therefore already exist
         // in the enclosing function scope, even when their first use is at the
         // same SimpleIR depth.
-        if op.kind == "unpack_sequence" {
+        if op.kind == molt_ir::OpKind::UnpackSequence {
             hoisted_vars.extend(definitions);
         }
 

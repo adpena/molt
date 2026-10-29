@@ -5,6 +5,7 @@ fn allocation(opcode: OpCode, payload: i64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(payload));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(0)],
@@ -120,6 +121,7 @@ use crate::tir::types::TirType;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -137,10 +139,11 @@ fn field(opcode: OpCode, object: ValueId, value: ValueId, offset: i64) -> TirOp 
         op(opcode, vec![object, value], vec![])
     };
     access.attrs.insert("value".into(), AttrValue::Int(offset));
-    access.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str(if load { "load" } else { "store" }.into()),
-    );
+    access.origin = Some(if load {
+        molt_ir::OpKind::Load
+    } else {
+        molt_ir::OpKind::Store
+    });
     access
 }
 
@@ -212,9 +215,7 @@ fn load_admission_distinguishes_zero_missing_presence_and_extent() {
                                 .attrs
                                 .insert("s_value".into(), AttrValue::Str("owned".into()));
                         } else if value_kind == "missing" {
-                            producer
-                                .attrs
-                                .insert("_original_kind".into(), AttrValue::Str("missing".into()));
+                            producer.origin = Some(molt_ir::OpKind::Missing);
                         }
                         append(&mut func, producer);
                         result
@@ -261,13 +262,15 @@ fn proven_reads_preserve_presence_but_never_restore_pristine_writes() {
 
 #[test]
 fn unproved_reads_clobber_other_receivers_without_operand_overlap() {
-    for kind in ["load", "guarded_field_get", "get_attr"] {
+    for kind in [
+        molt_ir::OpKind::Load,
+        molt_ir::OpKind::GuardedFieldGet,
+        molt_ir::OpKind::GetAttr,
+    ] {
         let (mut func, object) = fixture(false);
         let first = read(&mut func, object, 0);
         let unknown = read(&mut func, ValueId(0), 0);
-        func.blocks.get_mut(&unknown.0).unwrap().ops[unknown.1]
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        func.blocks.get_mut(&unknown.0).unwrap().ops[unknown.1].origin = Some(kind);
         let last = read(&mut func, object, 0);
         let facts = plan(&func);
         assert_eq!(facts.loads, BTreeSet::from([first]), "{kind}");

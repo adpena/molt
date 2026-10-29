@@ -177,13 +177,13 @@ impl WasmFunctionFramePlan {
             .iter()
             .filter(|op| {
                 matches!(
-                    op.kind.as_str(),
-                    "frame_home_store"
-                        | "frame_home_cell"
-                        | "frame_home_private_cell"
-                        | "frame_home_load"
-                        | "frame_home_take"
-                        | "frame_home_clear"
+                    op.kind,
+                    molt_ir::OpKind::FrameHomeStore
+                        | molt_ir::OpKind::FrameHomeCell
+                        | molt_ir::OpKind::FrameHomePrivateCell
+                        | molt_ir::OpKind::FrameHomeLoad
+                        | molt_ir::OpKind::FrameHomeTake
+                        | molt_ir::OpKind::FrameHomeClear
                 )
             })
             .filter_map(|op| op.value)
@@ -197,7 +197,10 @@ impl WasmFunctionFramePlan {
                     local,
                     displaced: local + 1,
                     slots: slot + 1,
-                    at_entry: !func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot"),
+                    at_entry: !func_ir
+                        .ops
+                        .iter()
+                        .any(|op| op.kind == molt_ir::OpKind::TraceEnterSlot),
                 }
             });
 
@@ -283,53 +286,46 @@ mod tests {
             params: vec!["source".into()],
             ops: vec![
                 OpIR {
-                    kind: "iter_next_unboxed".into(),
                     var: Some("dead_value".into()),
                     out: Some("live_done".into()),
                     args: Some(vec!["source".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IterNextUnboxed)
                 },
                 OpIR {
-                    kind: "checked_add".into(),
                     var: Some("dead_checked".into()),
                     out: Some("dead_flag".into()),
                     args: Some(vec!["source".into(), "source".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CheckedAdd)
                 },
                 OpIR {
-                    kind: "unpack_sequence".into(),
                     value: Some(2),
                     args: Some(vec![
                         "source".into(),
                         "dead_item".into(),
                         "live_item".into(),
                     ]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::UnpackSequence)
                 },
                 OpIR {
-                    kind: "copy_var".into(),
                     var: Some("transport_only".into()),
                     args: Some(vec!["live_item".into()]),
                     out: Some("dead_copy".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "store_var".into(),
                     var: Some("dead_binding".into()),
                     out: Some("dead_snapshot".into()),
                     args: Some(vec!["source".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "store_index".into(),
                     out: Some("output_metadata".into()),
                     args: Some(vec!["source".into(); 3]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StoreIndex)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["live_done".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -365,23 +361,20 @@ mod tests {
             .map(|index| format!("{}{index}", prefixes[index % prefixes.len()]))
             .collect();
         let mut ops = vec![OpIR {
-            kind: "const".into(),
             out: Some(names[0].clone()),
             value: Some(0),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         }];
         for pair in names.windows(2) {
             ops.push(OpIR {
-                kind: "copy".into(),
                 args: Some(vec![pair[0].clone()]),
                 out: Some(pair[1].clone()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Copy)
             });
         }
         ops.push(OpIR {
-            kind: "ret".into(),
             args: Some(vec![names[names.len() - 1].clone()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         });
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -402,25 +395,21 @@ mod tests {
     #[test]
     fn jumpful_frames_seed_only_values_observable_at_entry() {
         let label = |id| OpIR {
-            kind: "label".into(),
             value: Some(id),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         };
         let jump = |id| OpIR {
-            kind: "jump".into(),
             value: Some(id),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         };
         let constant = |out: &str, value| OpIR {
-            kind: "const".into(),
             out: Some(out.into()),
             value: Some(value),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         };
         let read = |name: &str| OpIR {
-            kind: "ret".into(),
             args: Some(vec![name.into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         };
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -432,10 +421,9 @@ mod tests {
                 read("seeded"),
                 label(1),
                 OpIR {
-                    kind: "store_var".into(),
                     args: Some(vec!["early".into()]),
                     var: Some("bound".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StoreVar)
                 },
                 jump(3),
                 // Never executes: `seeded` is observable only through its seed.

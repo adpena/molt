@@ -12,9 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::{
-    opcode_canonical_kind_table, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
-};
+use crate::tir::op_kinds_generated::opcode_canonical_kind_table;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -40,11 +38,8 @@ pub(super) fn iter_ops(func: &TirFunction) -> Vec<(ExceptionOpPosition, &TirOp)>
     ops
 }
 
-pub(super) fn original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
+pub(super) fn original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
+    op.origin
 }
 
 pub(super) fn label_value(op: &TirOp) -> Option<i64> {
@@ -54,24 +49,24 @@ pub(super) fn label_value(op: &TirOp) -> Option<i64> {
     }
 }
 
-pub(super) fn is_match_ref_source(kind: &str) -> bool {
+pub(super) fn is_match_ref_source(kind: molt_ir::OpKind) -> bool {
     matches!(
         kind,
-        "exception_last"
-            | "exception_last_pending"
-            | "exception_active"
-            | "exception_current"
-            | "exceptiongroup_match"
-            | "exceptiongroup_combine"
+        molt_ir::OpKind::ExceptionLast
+            | molt_ir::OpKind::ExceptionLastPending
+            | molt_ir::OpKind::ExceptionActive
+            | molt_ir::OpKind::ExceptionCurrent
+            | molt_ir::OpKind::ExceptiongroupMatch
+            | molt_ir::OpKind::ExceptiongroupCombine
     )
 }
 
 fn is_exception_pop(op: &TirOp) -> bool {
-    op.opcode == OpCode::Copy && matches!(original_kind(op), Some("exception_pop"))
+    op.opcode == OpCode::Copy && matches!(original_kind(op), Some(molt_ir::OpKind::ExceptionPop))
 }
 
 fn op_clears_pending_exception(op: &TirOp) -> bool {
-    op.opcode == OpCode::Copy && matches!(original_kind(op), Some("exception_clear"))
+    op.opcode == OpCode::Copy && matches!(original_kind(op), Some(molt_ir::OpKind::ExceptionClear))
 }
 
 fn op_normal_fallthrough_reachable(state_before: &ExceptionPathState, op: &TirOp) -> bool {
@@ -272,7 +267,7 @@ fn current_pop_owner(state: &ExceptionPathState) -> Option<ExceptionRegionToken>
 }
 
 pub(super) fn match_ref_release_owner(
-    source_kind: &str,
+    source_kind: molt_ir::OpKind,
     state: &ExceptionPathState,
     owning_tokens: &BTreeSet<ExceptionRegionToken>,
 ) -> Option<ExceptionRegionToken> {
@@ -286,8 +281,10 @@ pub(super) fn match_ref_release_owner(
         .find_map(|region| match region.phase {
             ExceptionRegionPhase::Handler => Some(region.token),
             ExceptionRegionPhase::NormalClosure
-                if matches!(source_kind, "exception_last" | "exception_last_pending")
-                    && owning_tokens.contains(&region.token) =>
+                if matches!(
+                    source_kind,
+                    molt_ir::OpKind::ExceptionLast | molt_ir::OpKind::ExceptionLastPending
+                ) && owning_tokens.contains(&region.token) =>
             {
                 Some(region.token)
             }
@@ -321,14 +318,16 @@ fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Result<Option<i64>
             .ok_or("saved-state value attribute is not an integer");
     }
 
-    let kind = opcode_canonical_kind_table(op.opcode);
-    if !simpleir_kind_is_suspend(kind) {
+    let Some(kind) = opcode_canonical_kind_table(op.opcode) else {
+        return Ok(None);
+    };
+    if !kind.is_suspend() {
         return Ok(None);
     }
     // Membership is generated, as in CFG construction. The saved-state shape
     // is an integer attribute for pure yield and the last operand's direct
     // integer constant for repoll, never the repoll's ready-state attribute.
-    if simpleir_kind_is_repoll(kind) {
+    if kind.is_repoll() {
         op.operands
             .last()
             .and_then(|pending| const_int_values.get(pending))

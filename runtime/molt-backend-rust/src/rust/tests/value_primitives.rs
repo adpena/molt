@@ -2,9 +2,8 @@ use super::*;
 
 fn value_function(name: &str, mut ops: Vec<OpIR>, result: &str) -> FunctionIR {
     ops.push(OpIR {
-        kind: "ret".into(),
         args: Some(vec![result.into()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Ret)
     });
     FunctionIR {
         name: name.into(),
@@ -20,9 +19,8 @@ fn checked_value_literals_preserve_surrogates_float_bits_and_owned_copies() {
         value_function(
             "sentinel",
             vec![OpIR {
-                kind: "const_not_implemented".into(),
                 out: Some("value".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNotImplemented)
             }],
             "value",
         ),
@@ -30,22 +28,19 @@ fn checked_value_literals_preserve_surrogates_float_bits_and_owned_copies() {
             "text",
             vec![
                 OpIR {
-                    kind: "const_str".into(),
                     bytes: Some(vec![b'a', 0, 0xed, 0xa0, 0x80, 0xed, 0xbf, 0xbf]),
                     out: Some("original".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "binding_alias".into(),
                     args: Some(vec!["original".into()]),
                     out: Some("owned".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BindingAlias)
                 },
                 OpIR {
-                    kind: "copy".into(),
                     args: Some(vec!["owned".into()]),
                     out: Some("result".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Copy)
                 },
             ],
             "result",
@@ -53,10 +48,7 @@ fn checked_value_literals_preserve_surrogates_float_bits_and_owned_copies() {
         FunctionIR {
             name: "molt_main".into(),
             return_abi: molt_ir::FunctionReturnAbi::Void,
-            ops: vec![OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             ..FunctionIR::default()
         },
     ];
@@ -69,10 +61,9 @@ fn checked_value_literals_preserve_surrogates_float_bits_and_owned_copies() {
         functions.push(value_function(
             name,
             vec![OpIR {
-                kind: "const_float".into(),
                 f_value: Some(value),
                 out: Some("value".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstFloat)
             }],
             "value",
         ));
@@ -149,15 +140,13 @@ fn admitted_missing_sentinel_lowers_to_a_distinct_truthy_singleton() {
             "sentinel",
             vec![
                 OpIR {
-                    kind: "missing".into(),
                     out: Some("value".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Missing)
                 },
                 OpIR {
-                    kind: "copy".into(),
                     args: Some(vec!["value".into()]),
                     out: Some("result".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Copy)
                 },
             ],
             "result",
@@ -165,10 +154,7 @@ fn admitted_missing_sentinel_lowers_to_a_distinct_truthy_singleton() {
         FunctionIR {
             name: "molt_main".into(),
             return_abi: molt_ir::FunctionReturnAbi::Void,
-            ops: vec![OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             ..FunctionIR::default()
         },
     ];

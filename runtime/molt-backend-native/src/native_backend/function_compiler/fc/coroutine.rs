@@ -1,19 +1,20 @@
 use super::super::*;
 use crate::runtime_import_abi::MOLT_TASK_NEW;
+use molt_ir::OpKind;
 use molt_tir::trampolines::TaskConstructorLayout;
 
-/// Single-source kind authority for [`handle_coroutine_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_coroutine_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "state_switch",
-    "state_transition",
-    "state_yield",
-    "state_set",
-    "is_pending",
-    "task_wait",
-    "call_async",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::StateSwitch,
+    OpKind::StateTransition,
+    OpKind::StateYield,
+    OpKind::StateSet,
+    OpKind::IsPending,
+    OpKind::TaskWait,
+    OpKind::CallAsync,
+);
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -64,8 +65,8 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
         )
     };
 
-    match op.kind.as_str() {
-        "state_switch" => {
+    match op.kind {
+        OpKind::StateSwitch => {
             // Resume state belongs to the poll closure object passed
             // to the native poll function, not to any user-visible
             // local named `self` inside async methods.
@@ -96,10 +97,10 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             switch.emit(&mut *builder, state, fallback_block);
             crate::switch_to_block_tracking(&mut *builder, fallback_block, &mut *is_block_filled);
         }
-        kind @ ("state_transition" | "state_yield") => panic!(
+        kind @ (OpKind::StateTransition | OpKind::StateYield) => panic!(
             "native backend: `{kind}` reached codegen; the shared terminal drop pass must expose it as explicit activation exits"
         ),
-        "state_set" => {
+        OpKind::StateSet => {
             // The state is an attribute of the transition. Saving it through
             // the poll frame neither suspends nor returns. A ready wait saves
             // its running state, which no resume dispatches to.
@@ -117,7 +118,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             );
             builder.ins().call(set_state, &[self_ptr, state_val]);
         }
-        "is_pending" => {
+        OpKind::IsPending => {
             // The scheduler sentinel is one exact word: no truthiness, no
             // callback and no owner.
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -129,7 +130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 vars,
                 representation_plan,
                 poll,
-                "is_pending",
+                OpKind::IsPending,
             );
             let pending_word = builder.ins().iconst(types::I64, pending_bits());
             let pending = builder.ins().icmp(IntCC::Equal, word, pending_word);
@@ -138,7 +139,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 def_raw_bool_value(&mut *builder, vars, representation_plan, out, raw, nbc);
             }
         }
-        "task_wait" => {
+        OpKind::TaskWait => {
             // Wake this activation when the future completes. Registration
             // takes the frame and the future's object address and retains
             // nothing: explicit TIR still owns the future.
@@ -151,7 +152,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 vars,
                 representation_plan,
                 future,
-                "task_wait",
+                OpKind::TaskWait,
             );
             let self_ptr = builder.block_params(entry_block)[0];
             let future_ptr = unbox_ptr_value(&mut *builder, word);
@@ -166,7 +167,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             );
             builder.ins().call(sleep_register, &[self_ptr, future_ptr]);
         }
-        "call_async" => {
+        OpKind::CallAsync => {
             let out_name = op
                 .out
                 .as_ref()
@@ -243,7 +244,7 @@ fn activation_object_word(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     name: &str,
-    kind: &str,
+    kind: OpKind,
 ) -> Value {
     assert!(
         !representation_plan.is_raw_int_carrier_name(name)

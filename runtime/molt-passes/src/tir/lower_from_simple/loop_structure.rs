@@ -35,12 +35,12 @@ pub(super) fn detect_loop_structure(
         if bb.start_op == bb.end_op || bb.start_op >= ir.ops.len() {
             continue;
         }
-        let first_kind = ir.ops[bb.start_op].kind.as_str();
+        let first_kind = ir.ops[bb.start_op].kind;
         match first_kind {
-            "loop_start" => {
+            molt_ir::OpKind::LoopStart => {
                 roles.insert(BlockId(bid as u32), LoopRole::LoopHeader);
             }
-            "loop_end" => {
+            molt_ir::OpKind::LoopEnd => {
                 roles.insert(BlockId(bid as u32), LoopRole::LoopEnd);
             }
             _ => {}
@@ -48,13 +48,13 @@ pub(super) fn detect_loop_structure(
     }
     let mut loop_stack: Vec<(usize, BlockId)> = Vec::new();
     for (op_idx, op) in ir.ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" => {
+        match op.kind {
+            molt_ir::OpKind::LoopStart => {
                 if let Some(header_bid) = block_containing(op_idx) {
                     loop_stack.push((op_idx, header_bid));
                 }
             }
-            "loop_end" => {
+            molt_ir::OpKind::LoopEnd => {
                 let Some((header_op_idx, header_bid)) = loop_stack.pop() else {
                     continue;
                 };
@@ -65,14 +65,14 @@ pub(super) fn detect_loop_structure(
 
                 let mut nested_depth = 0usize;
                 for inner_idx in (header_op_idx + 1)..op_idx {
-                    match ir.ops[inner_idx].kind.as_str() {
-                        "loop_start" => nested_depth += 1,
-                        "loop_end" => nested_depth = nested_depth.saturating_sub(1),
-                        "loop_break_if_true" if nested_depth == 0 => {
+                    match ir.ops[inner_idx].kind {
+                        molt_ir::OpKind::LoopStart => nested_depth += 1,
+                        molt_ir::OpKind::LoopEnd => nested_depth = nested_depth.saturating_sub(1),
+                        molt_ir::OpKind::LoopBreakIfTrue if nested_depth == 0 => {
                             loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfTrue);
                             break;
                         }
-                        "loop_break_if_false" if nested_depth == 0 => {
+                        molt_ir::OpKind::LoopBreakIfFalse if nested_depth == 0 => {
                             loop_break_kinds.insert(header_bid, LoopBreakKind::BreakIfFalse);
                             break;
                         }
@@ -96,16 +96,16 @@ pub(super) fn detect_loop_cond_blocks(ir: &FunctionIR, cfg: &CFG) -> HashMap<Blo
     };
     let mut loop_stack: Vec<(usize, BlockId)> = Vec::new();
     for (op_idx, op) in ir.ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" => {
+        match op.kind {
+            molt_ir::OpKind::LoopStart => {
                 if let Some(header_bid) = block_containing(op_idx) {
                     loop_stack.push((op_idx, header_bid));
                 }
             }
-            "loop_end" => {
+            molt_ir::OpKind::LoopEnd => {
                 loop_stack.pop();
             }
-            "loop_break_if_true" | "loop_break_if_false" => {
+            molt_ir::OpKind::LoopBreakIfTrue | molt_ir::OpKind::LoopBreakIfFalse => {
                 let Some((_, header_bid)) = loop_stack.last().copied() else {
                     continue;
                 };

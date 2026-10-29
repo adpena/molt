@@ -1,6 +1,7 @@
 use super::*;
 use cranelift_codegen::ir::{Block, ExternalName, FuncRef, Inst, InstructionData, ValueDef};
 use cranelift_frontend::Variable;
+use molt_ir::OpKind;
 
 #[test]
 fn cold_module_chunk_codegen_classification_only_matches_module_chunks() {
@@ -34,24 +35,21 @@ fn lower_with_wide_operands(
 ) -> (Function, BTreeMap<&'static str, u32>) {
     let plan = representation_plan_for_ops(&[
         OpIR {
-            kind: "const_int".into(),
             value: Some(1_i64 << 31),
             out: Some("limb".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstInt)
         },
         OpIR {
-            kind: "checked_mul".into(),
             args: Some(vec!["limb".into(), "limb".into()]),
             var: Some("wide".into()),
             out: Some("none".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckedMul)
         },
         OpIR {
-            kind: "checked_add".into(),
             args: Some(vec!["wide".into(), "limb".into()]),
             var: Some("wider".into()),
             out: Some("none".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckedAdd)
         },
         op.clone(),
     ]);
@@ -108,10 +106,9 @@ fn lower_with_wide_operands(
 /// Lower one `slice_new` through its production family handler.
 fn lower_slice_new(args: &[&str], out: Option<&str>) -> (Function, BTreeMap<&'static str, u32>) {
     let slice = OpIR {
-        kind: "slice_new".into(),
         args: Some(args.iter().map(|arg| arg.to_string()).collect()),
         out: out.map(str::to_string),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::SliceNew)
     };
     lower_with_wide_operands(&slice, |backend, builder, refs, sealed, vars, plan| {
         let (mut tracked_obj, mut tracked_ptr) = (BTreeMap::new(), BTreeMap::new());
@@ -214,10 +211,9 @@ fn omitted_slice_bounds_are_none_direct_arguments() {
 #[test]
 fn bound_borrowed_transaction_result_is_secured_before_temporary_release() {
     let op = OpIR {
-        kind: "dict_set".into(),
         args: Some(vec!["wide".into(), "wide".into(), "wider".into()]),
         out: Some("result".into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::DictSet)
     };
     let (function, ids) =
         lower_with_wide_operands(&op, |backend, builder, refs, sealed, vars, plan| {
@@ -287,14 +283,13 @@ fn shared_boxed_calls_retire_temporary_and_discarded_owners_separately() {
         let abi = runtime_boxed_op_abi(kind).unwrap();
         for bound in [false, true] {
             let op = OpIR {
-                kind: kind.into(),
                 args: Some(
                     (0..abi.arity)
                         .map(|i| if i % 2 == 0 { "wide" } else { "wider" }.into())
                         .collect(),
                 ),
                 out: bound.then(|| "result".into()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             };
             let (function, ids) =
                 lower_with_wide_operands(&op, |backend, builder, refs, sealed, vars, plan| {

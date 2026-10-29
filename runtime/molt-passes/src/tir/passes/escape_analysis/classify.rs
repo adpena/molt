@@ -3,7 +3,7 @@
 use crate::tir::op_kinds_generated::{
     copy_kind_is_explicit_no_heap_move_table, opcode_is_escape_alloc_site_table,
 };
-use crate::tir::ops::{AttrDict, AttrValue, OpCode};
+use crate::tir::ops::OpCode;
 
 /// Escape lattice for allocated values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -16,21 +16,13 @@ pub enum EscapeState {
     GlobalEscape = 2,
 }
 
-/// Extract a string attribute value from an `AttrDict`.
-pub(super) fn attr_str<'a>(attrs: &'a AttrDict, key: &str) -> Option<&'a str> {
-    match attrs.get(key) {
-        Some(AttrValue::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
 /// Returns `true` when an `OpCode::Copy` op is a genuine SSA move (its result
 /// aliases its operand — the same heap object), as opposed to the opaque
-/// `_original_kind` passthrough that `kind_to_opcode` assigns to SimpleIR ops
+/// `origin` passthrough that `kind_to_opcode` assigns to SimpleIR ops
 /// without a dedicated TIR opcode.
 ///
-/// A move has either no `_original_kind` (a true SSA-lift copy) or an
-/// `_original_kind` the generated registry proves is a no-heap move of operand 0
+/// A move has either no `origin` (a true SSA-lift copy) or an
+/// `origin` the generated registry proves is a no-heap move of operand 0
 /// (the named SSA/var moves plus the validate-and-pass-through guards). Anything
 /// else under `Copy` is a passthrough whose result is a *distinct* value (e.g. a
 /// freshly built container), so it must NOT be aliased to its operand.
@@ -43,8 +35,8 @@ pub(super) fn attr_str<'a>(attrs: &'a AttrDict, key: &str) -> Option<&'a str> {
 /// registry's operand-0 pure-move contract for all those kinds (including the
 /// guard passthroughs), so consuming the broader authority is sound and only
 /// tightens the alias relation toward the rest of the compiler.
-pub(super) fn is_pure_move_copy(attrs: &AttrDict) -> bool {
-    match attr_str(attrs, "_original_kind") {
+pub(super) fn is_pure_move_copy(origin: Option<molt_ir::OpKind>) -> bool {
+    match origin {
         None => true,
         Some(kind) => copy_kind_is_explicit_no_heap_move_table(kind),
     }

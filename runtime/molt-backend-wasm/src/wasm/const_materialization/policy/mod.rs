@@ -19,10 +19,10 @@ pub(crate) struct WasmConstOpPolicy(&'static WasmConstOpPolicySpec);
 
 impl WasmConstOpPolicy {
     pub(in crate::wasm) fn for_op(op: &OpIR) -> Option<Self> {
-        Self::for_kind(op.kind.as_str())
+        Self::for_kind(op.kind)
     }
 
-    pub(in crate::wasm) fn for_kind(kind: &str) -> Option<Self> {
+    pub(in crate::wasm) fn for_kind(kind: molt_ir::OpKind) -> Option<Self> {
         wasm_const_op_policy(kind).map(Self)
     }
 

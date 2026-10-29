@@ -454,6 +454,9 @@ impl SourceSite {
 /// A single operation in the TIR.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirOp {
+    /// Preserved wire identity, separate from untyped payload attributes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::OpKind>,
     /// Dialect this operation belongs to.
     pub dialect: Dialect,
     /// The operation code.
@@ -463,9 +466,29 @@ pub struct TirOp {
     /// SSA value results (outputs).
     pub results: Vec<ValueId>,
     /// Metadata / immediate attributes.
+    #[serde(deserialize_with = "deserialize_op_attrs")]
     pub attrs: AttrDict,
     /// Source location for diagnostics (byte offset range).
     pub source_span: Option<(u32, u32)>,
+}
+
+/// Legacy identity metadata is rejected, never interpreted as a second kind channel.
+pub(crate) fn validate_op_attr_keys<'a>(
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Result<(), &'static str> {
+    if keys.into_iter().any(|key| key == "_original_kind") {
+        Err("legacy _original_kind attribute is forbidden; use the typed origin field")
+    } else {
+        Ok(())
+    }
+}
+
+fn deserialize_op_attrs<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<AttrDict, D::Error> {
+    let attrs = <AttrDict as serde::Deserialize>::deserialize(decoder)?;
+    validate_op_attr_keys(attrs.keys().map(String::as_str)).map_err(serde::de::Error::custom)?;
+    Ok(attrs)
 }
 
 /// Canonical TIR marker for an exception observation that must also service
@@ -492,7 +515,7 @@ pub struct BuiltinCallView<'a, T> {
     pub arguments: &'a [T],
     /// Specialized source operations retain their backend-supported spelling.
     /// In particular, range_new is a primitive, unlike mutable builtin range.
-    pub wire_kind: &'a str,
+    pub wire_kind: crate::OpKind,
 }
 
 impl<'a, T> BuiltinCallView<'a, T> {
@@ -510,6 +533,7 @@ impl<'a, T> BuiltinCallView<'a, T> {
 /// This generic projection also serves analyses over operand facts.
 pub fn builtin_call_view<'a, T>(
     opcode: OpCode,
+    origin: Option<crate::OpKind>,
     attrs: &'a AttrDict,
     operands: &'a [T],
 ) -> Option<BuiltinCallView<'a, T>> {
@@ -532,11 +556,7 @@ pub fn builtin_call_view<'a, T>(
             _ => None,
         }
     };
-    let (name, spelling, original) = (
-        string("name")?,
-        string("s_value")?,
-        string("_original_kind")?,
-    );
+    let (name, spelling) = (string("name")?, string("s_value")?);
     if name
         .zip(spelling)
         .is_some_and(|(name, spelling)| name != spelling)
@@ -544,21 +564,37 @@ pub fn builtin_call_view<'a, T>(
         return None;
     }
     let name = name.or(spelling);
-    let (target, arguments, wire_kind) = match original {
-        Some("range_new") if name.is_none_or(|name| name == "range") && operands.len() == 3 => {
-            (BuiltinCallTarget::Named("range"), operands, "range_new")
+    let (target, arguments, wire_kind) = match origin {
+        Some(crate::OpKind::RangeNew)
+            if name.is_none_or(|name| name == "range") && operands.len() == 3 =>
+        {
+            (
+                BuiltinCallTarget::Named("range"),
+                operands,
+                crate::OpKind::RangeNew,
+            )
         }
-        Some(kind @ ("print" | "builtin_print"))
-            if name.is_none_or(|name| name == kind || name == "print") =>
+        Some(kind @ (crate::OpKind::Print | crate::OpKind::BuiltinPrint))
+            if name.is_none_or(|name| {
+                name == "print" || (kind == crate::OpKind::BuiltinPrint && name == "builtin_print")
+            }) =>
         {
             (BuiltinCallTarget::Named("print"), operands, kind)
         }
         Some(_) => return None,
         None => match name {
-            Some(name) => (BuiltinCallTarget::Named(name), operands, "call_builtin"),
+            Some(name) => (
+                BuiltinCallTarget::Named(name),
+                operands,
+                crate::OpKind::CallBuiltin,
+            ),
             None => {
                 let (name, arguments) = operands.split_first()?;
-                (BuiltinCallTarget::Dynamic(name), arguments, "call_builtin")
+                (
+                    BuiltinCallTarget::Dynamic(name),
+                    arguments,
+                    crate::OpKind::CallBuiltin,
+                )
             }
         },
     };
@@ -570,9 +606,14 @@ pub fn builtin_call_view<'a, T>(
 }
 
 impl TirOp {
+    pub fn with_origin(mut self, origin: crate::OpKind) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+
     pub fn builtin_call(&self) -> Option<BuiltinCallView<'_, ValueId>> {
         (self.has_valid_shape() && self.results.len() <= 1)
-            .then(|| builtin_call_view(self.opcode, &self.attrs, &self.operands))
+            .then(|| builtin_call_view(self.opcode, self.origin, &self.attrs, &self.operands))
             .flatten()
     }
 
@@ -583,7 +624,7 @@ impl TirOp {
             return None;
         }
         if self.opcode == OpCode::Copy
-            && matches!(self.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "len")
+            && self.origin == Some(crate::OpKind::Len)
             && let [argument] = self.operands.as_slice()
         {
             return Some(*argument);
@@ -603,9 +644,7 @@ impl TirOp {
         {
             return None;
         }
-        if !matches!(self.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
-            if kind == "load")
-        {
+        if self.origin != Some(crate::OpKind::Load) {
             return None;
         }
         match self.attrs.get("value") {
@@ -627,9 +666,7 @@ impl TirOp {
         {
             return None;
         }
-        if !matches!(self.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
-            if kind == "store")
-        {
+        if self.origin != Some(crate::OpKind::Store) {
             return None;
         }
         match self.attrs.get("value") {
@@ -735,11 +772,9 @@ impl TirOp {
     pub fn can_carry_async_work_poll(&self) -> bool {
         self.opcode == OpCode::CheckException
             || (self.opcode == OpCode::Copy
-                && matches!(
-                    self.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind))
-                        if super::op_kinds_generated::simpleir_kind_may_carry_async_work_poll_marker(kind)
-                ))
+                && self
+                    .origin
+                    .is_some_and(crate::OpKind::may_carry_async_work_poll_marker))
     }
 
     /// Fuse the canonical asynchronous-work poll into this observation.
@@ -770,14 +805,15 @@ impl TirOp {
     ///
     /// `OpCode::Copy` is also the legacy fallback carrier for SimpleIR
     /// operations that have not yet been promoted into first-class TIR
-    /// opcodes.  Those fallback copies carry semantic attributes such as
-    /// `_original_kind` and must not be propagated, hoisted, vectorized, or
+    /// opcodes. Those carriers keep a typed `origin` and must not be
+    /// propagated, hoisted, vectorized, or
     /// otherwise treated as transparent copies.
     #[inline]
     pub fn is_plain_value_copy(&self) -> bool {
         self.opcode == OpCode::Copy
             && self.operands.len() == 1
             && self.results.len() == 1
+            && self.origin.is_none()
             && self.attrs.is_empty()
     }
 
@@ -821,6 +857,7 @@ pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
         _ => (OpCode::ConstNone, AttrDict::new()),
     };
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: Vec::new(),
@@ -833,46 +870,59 @@ pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OpKind;
 
     #[test]
     fn builtin_call_has_one_identity_and_argument_authority() {
         let values = [ValueId(0), ValueId(1), ValueId(2)];
         let mut attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
         for count in 0..=3 {
-            let call = builtin_call_view(OpCode::CallBuiltin, &attrs, &values[..count]).unwrap();
+            let call =
+                builtin_call_view(OpCode::CallBuiltin, None, &attrs, &values[..count]).unwrap();
             assert_eq!(call.named_target(), Some("len"));
             assert_eq!(
                 call.arguments,
                 &values[..count],
                 "named calls never discard operand zero"
             );
-            assert_eq!(call.wire_kind, "call_builtin");
+            assert_eq!(call.wire_kind, crate::OpKind::CallBuiltin);
         }
         attrs.clear();
-        let call = builtin_call_view(OpCode::CallBuiltin, &attrs, &values).unwrap();
+        let call = builtin_call_view(OpCode::CallBuiltin, None, &attrs, &values).unwrap();
         assert_eq!(call.target, BuiltinCallTarget::Dynamic(&values[0]));
         assert_eq!(call.arguments, &values[1..]);
-        assert!(builtin_call_view::<ValueId>(OpCode::CallBuiltin, &attrs, &[]).is_none());
-        assert!(builtin_call_view(OpCode::Call, &attrs, &values).is_none());
-        for kind in ["range_new", "print", "builtin_print"] {
-            let name = if kind == "range_new" {
+        assert!(builtin_call_view::<ValueId>(OpCode::CallBuiltin, None, &attrs, &[]).is_none());
+        assert!(builtin_call_view(OpCode::Call, None, &attrs, &values).is_none());
+        for kind in [
+            crate::OpKind::RangeNew,
+            crate::OpKind::Print,
+            crate::OpKind::BuiltinPrint,
+        ] {
+            let name = if kind == crate::OpKind::RangeNew {
                 "range"
             } else {
                 "print"
             };
             attrs = AttrDict::from([
-                ("_original_kind".into(), AttrValue::Str(kind.into())),
                 ("name".into(), AttrValue::Str(name.into())),
                 ("s_value".into(), AttrValue::Str(name.into())),
             ]);
-            let call = builtin_call_view(OpCode::CallBuiltin, &attrs, &values).unwrap();
+            let call = builtin_call_view(OpCode::CallBuiltin, Some(kind), &attrs, &values).unwrap();
             assert_eq!(call.named_target(), Some(name));
             assert_eq!(call.wire_kind, kind);
             assert_eq!(call.arguments, values);
         }
-        attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str("range_new".into()))]);
+        attrs.clear();
         for count in 0..3 {
-            assert!(builtin_call_view(OpCode::CallBuiltin, &attrs, &values[..count]).is_none());
+            assert!(
+                builtin_call_view(
+                    OpCode::CallBuiltin,
+                    Some(crate::OpKind::RangeNew),
+                    &attrs,
+                    &values[..count]
+                )
+                .is_none()
+            );
         }
     }
 
@@ -882,14 +932,9 @@ mod tests {
         for attrs in [
             AttrDict::from([("name".into(), AttrValue::Int(1))]),
             AttrDict::from([("name".into(), AttrValue::Str(String::new()))]),
-            AttrDict::from([("_original_kind".into(), AttrValue::Str("unknown".into()))]),
             AttrDict::from([
                 ("name".into(), AttrValue::Str("len".into())),
                 ("s_value".into(), AttrValue::Str("print".into())),
-            ]),
-            AttrDict::from([
-                ("name".into(), AttrValue::Str("len".into())),
-                ("_original_kind".into(), AttrValue::Str("print".into())),
             ]),
             AttrDict::from([
                 ("name".into(), AttrValue::Str("len".into())),
@@ -897,8 +942,29 @@ mod tests {
             ]),
         ] {
             assert!(
-                builtin_call_view(OpCode::CallBuiltin, &attrs, &operands).is_none(),
+                builtin_call_view(OpCode::CallBuiltin, None, &attrs, &operands).is_none(),
                 "{attrs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_and_retired_wire_spellings_fail_at_decode() {
+        for spelling in [
+            "unknown",
+            "store_init",
+            "guarded_field_init",
+            "unknown_builtin",
+        ] {
+            let error =
+                serde_json::from_value::<crate::OpKind>(serde_json::json!(spelling)).unwrap_err();
+            assert!(error.to_string().contains(spelling));
+        }
+        let attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+        for origin in [crate::OpKind::Print, crate::OpKind::Store] {
+            assert!(
+                builtin_call_view(OpCode::CallBuiltin, Some(origin), &attrs, &[ValueId(1)])
+                    .is_none()
             );
         }
     }
@@ -910,11 +976,11 @@ mod tests {
         op.operands = vec![ValueId(1)];
         op.attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
         assert_eq!(op.length_argument(), None);
-        op.attrs
-            .insert("_original_kind".into(), AttrValue::Str("print".into()));
+        op.origin = Some(OpKind::Print);
         assert_eq!(op.length_argument(), None);
         op.opcode = OpCode::Copy;
-        op.attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str("len".into()))]);
+        op.attrs.clear();
+        op.origin = Some(crate::OpKind::Len);
         assert_eq!(op.length_argument(), Some(ValueId(1)));
         op.results.push(ValueId(3));
         assert_eq!(op.length_argument(), None);
@@ -923,6 +989,7 @@ mod tests {
     #[test]
     fn retiring_poll_role_preserves_exception_payload_and_source() {
         let original = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![ValueId(7), ValueId(8)],
@@ -981,8 +1048,7 @@ mod tests {
         op.opcode = OpCode::StoreAttr;
         op.operands = vec![ValueId(0), ValueId(1)];
         op.results.clear();
-        op.attrs
-            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        op.origin = Some(OpKind::Store);
         op.attrs.insert("value".into(), AttrValue::Int(8));
         assert_eq!(op.plain_typed_slot_store(), Some((ValueId(0), 8)));
         op.attrs.remove("value");
@@ -990,13 +1056,15 @@ mod tests {
         op.attrs.insert("value".into(), AttrValue::Int(-1));
         assert_eq!(op.plain_typed_slot_store(), None);
         op.attrs.insert("value".into(), AttrValue::Int(0));
-        for kind in ["guarded_field_set", "set_attr_generic_ptr", "unknown"] {
-            op.attrs
-                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        for kind in [
+            crate::OpKind::GuardedFieldSet,
+            crate::OpKind::SetAttrGenericPtr,
+            crate::OpKind::Add,
+        ] {
+            op.origin = Some(kind);
             assert_eq!(op.plain_typed_slot_store(), None);
         }
-        op.attrs
-            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        op.origin = Some(OpKind::Store);
         op.operands.push(ValueId(3));
         assert_eq!(op.plain_typed_slot_store(), None);
         op.operands.pop();
@@ -1009,19 +1077,17 @@ mod tests {
     }
 
     #[test]
-    fn plain_slot_store_rejects_retired_and_generic_spellings() {
+    fn plain_slot_store_rejects_generic_origins() {
         let mut op = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(2));
         op.opcode = OpCode::StoreAttr;
         op.operands = vec![ValueId(0), ValueId(1)];
         op.results.clear();
         op.attrs.insert("value".into(), AttrValue::Int(8));
 
-        op.attrs
-            .insert("_original_kind".into(), AttrValue::Str("store".into()));
+        op.origin = Some(OpKind::Store);
         assert_eq!(op.plain_typed_slot_store(), Some((ValueId(0), 8)));
-        for kind in ["store_init", "guarded_field_set", "guarded_field_init"] {
-            op.attrs
-                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        for kind in [crate::OpKind::GuardedFieldSet, crate::OpKind::SetAttr] {
+            op.origin = Some(kind);
             assert_eq!(op.plain_typed_slot_store(), None);
         }
     }
@@ -1032,8 +1098,7 @@ mod tests {
         op.opcode = OpCode::LoadAttr;
         op.operands = vec![ValueId(0)];
         op.results = vec![ValueId(1)];
-        op.attrs
-            .insert("_original_kind".into(), AttrValue::Str("load".into()));
+        op.origin = Some(OpKind::Load);
         op.attrs.insert("value".into(), AttrValue::Int(8));
         assert_eq!(op.plain_typed_slot_load(), Some((ValueId(0), 8)));
 
@@ -1042,14 +1107,16 @@ mod tests {
         op.attrs.insert("value".into(), AttrValue::Int(-1));
         assert_eq!(op.plain_typed_slot_load(), None);
         op.attrs.insert("value".into(), AttrValue::Int(0));
-        for kind in ["guarded_field_get", "get_attr", "unknown"] {
-            op.attrs
-                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        for kind in [
+            crate::OpKind::GuardedFieldGet,
+            crate::OpKind::GetAttr,
+            crate::OpKind::Add,
+        ] {
+            op.origin = Some(kind);
             assert_eq!(op.plain_typed_slot_load(), None);
         }
 
-        op.attrs
-            .insert("_original_kind".into(), AttrValue::Str("load".into()));
+        op.origin = Some(OpKind::Load);
         op.operands.push(ValueId(2));
         assert_eq!(op.plain_typed_slot_load(), None);
         op.operands.pop();

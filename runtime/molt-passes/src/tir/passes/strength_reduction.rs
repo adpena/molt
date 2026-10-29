@@ -167,6 +167,7 @@ fn try_mul_reduce(
         return Some(StrengthRewrite {
             prefix: Vec::new(),
             replacement: TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![var_operand, var_operand],
@@ -195,6 +196,7 @@ fn try_pow_square_reduce(
         return Some(StrengthRewrite {
             prefix: Vec::new(),
             replacement: TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Mul,
                 operands: vec![lhs, lhs],
@@ -234,6 +236,7 @@ fn try_power_two_rhs_reduce(
     Some(StrengthRewrite {
         prefix: vec![const_op],
         replacement: TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: replacement_opcode,
             operands: vec![lhs, const_id],
@@ -256,6 +259,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -283,6 +287,7 @@ mod tests {
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(value));
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -296,6 +301,7 @@ mod tests {
         let mut attrs = AttrDict::new();
         attrs.insert("f_value".into(), AttrValue::Float(value));
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
@@ -307,6 +313,7 @@ mod tests {
 
     fn make_binop(opcode: OpCode, result: u32, lhs: u32, rhs: u32) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(lhs), ValueId(rhs)],

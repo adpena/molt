@@ -1,38 +1,39 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_text_transform`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_text_transform`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "bytearray_fill_range",
-    "string_format",
-    "string_join",
-    "string_split",
-    "string_split_validate",
-    "string_split_field",
-    "string_split_field_len",
-    "string_split_field_eq",
-    "string_split_field_start",
-    "string_split_field_end",
-    "string_split_field_is_ascii",
-    "string_split_field_len_from_bounds",
-    "string_split_field_ord_at_bounds",
-    "string_split_field_to_int",
-    "string_split_max",
-    "string_lower",
-    "string_upper",
-    "string_capitalize",
-    "string_strip",
-    "string_lstrip",
-    "string_rstrip",
-    "string_replace",
-    "bytes_split",
-    "bytes_split_max",
-    "bytearray_split",
-    "bytearray_split_max",
-    "bytes_replace",
-    "bytearray_replace",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::BytearrayFillRange,
+    OpKind::StringFormat,
+    OpKind::StringJoin,
+    OpKind::StringSplit,
+    OpKind::StringSplitValidate,
+    OpKind::StringSplitField,
+    OpKind::StringSplitFieldLen,
+    OpKind::StringSplitFieldEq,
+    OpKind::StringSplitFieldStart,
+    OpKind::StringSplitFieldEnd,
+    OpKind::StringSplitFieldIsAscii,
+    OpKind::StringSplitFieldLenFromBounds,
+    OpKind::StringSplitFieldOrdAtBounds,
+    OpKind::StringSplitFieldToInt,
+    OpKind::StringSplitMax,
+    OpKind::StringLower,
+    OpKind::StringUpper,
+    OpKind::StringCapitalize,
+    OpKind::StringStrip,
+    OpKind::StringLstrip,
+    OpKind::StringRstrip,
+    OpKind::StringReplace,
+    OpKind::BytesSplit,
+    OpKind::BytesSplitMax,
+    OpKind::BytearraySplit,
+    OpKind::BytearraySplitMax,
+    OpKind::BytesReplace,
+    OpKind::BytearrayReplace,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for text transform ops: `format`/`join`/`split`(+field/max/validate)/`lower`/`upper`/`capitalize`/`strip`/`replace` over `str`, plus `split`/`replace`/`fill_range` over `bytes`/`bytearray`.
@@ -131,8 +132,8 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             def_var_named(&mut *builder, vars, out__, res);
         }
     };
-    match op.kind.as_str() {
-        "bytearray_fill_range" => {
+    match op.kind {
+        OpKind::BytearrayFillRange => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let bytearray = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -194,7 +195,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_format" => {
+        OpKind::StringFormat => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -232,7 +233,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_join" => {
+        OpKind::StringJoin => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let sep = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -270,7 +271,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_split" => {
+        OpKind::StringSplit => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -308,7 +309,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_split_validate" => {
+        OpKind::StringSplitValidate => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -346,7 +347,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_split_field" => {
+        OpKind::StringSplitField => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -395,7 +396,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_split_field_len" => {
+        OpKind::StringSplitFieldLen => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -444,7 +445,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_split_field_eq" => {
+        OpKind::StringSplitFieldEq => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -506,7 +507,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_split_max" => {
+        OpKind::StringSplitMax => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -557,7 +558,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_lower" => {
+        OpKind::StringLower => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -584,7 +585,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_upper" => {
+        OpKind::StringUpper => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -611,7 +612,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_capitalize" => {
+        OpKind::StringCapitalize => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -638,7 +639,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_strip" => {
+        OpKind::StringStrip => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -676,7 +677,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_lstrip" => {
+        OpKind::StringLstrip => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -714,7 +715,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_rstrip" => {
+        OpKind::StringRstrip => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -752,7 +753,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_replace" => {
+        OpKind::StringReplace => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -814,7 +815,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytes_split" => {
+        OpKind::BytesSplit => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -852,7 +853,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytes_split_max" => {
+        OpKind::BytesSplitMax => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -903,7 +904,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytearray_split" => {
+        OpKind::BytearraySplit => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -941,7 +942,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytearray_split_max" => {
+        OpKind::BytearraySplitMax => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -992,7 +993,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytes_replace" => {
+        OpKind::BytesReplace => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -1054,7 +1055,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "bytearray_replace" => {
+        OpKind::BytearrayReplace => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let hay = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -1116,7 +1117,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "string_split_field_start" => emit_split_field_op(
+        OpKind::StringSplitFieldStart => emit_split_field_op(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
@@ -1125,7 +1126,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             "molt_string_split_field_start",
             op,
         ),
-        "string_split_field_end" => emit_split_field_op(
+        OpKind::StringSplitFieldEnd => emit_split_field_op(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
@@ -1134,7 +1135,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             "molt_string_split_field_end",
             op,
         ),
-        "string_split_field_is_ascii" => emit_split_field_op(
+        OpKind::StringSplitFieldIsAscii => emit_split_field_op(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
@@ -1143,7 +1144,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             "molt_string_split_field_is_ascii",
             op,
         ),
-        "string_split_field_len_from_bounds" => emit_split_field_op(
+        OpKind::StringSplitFieldLenFromBounds => emit_split_field_op(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
@@ -1152,7 +1153,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             "molt_string_split_field_len_from_bounds",
             op,
         ),
-        "string_split_field_ord_at_bounds" => emit_split_field_op(
+        OpKind::StringSplitFieldOrdAtBounds => emit_split_field_op(
             &mut *module,
             &mut *import_ids,
             &mut *builder,
@@ -1161,7 +1162,7 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
             "molt_string_split_field_ord_at_bounds",
             op,
         ),
-        "string_split_field_to_int" => emit_split_field_op(
+        OpKind::StringSplitFieldToInt => emit_split_field_op(
             &mut *module,
             &mut *import_ids,
             &mut *builder,

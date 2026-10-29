@@ -13,9 +13,11 @@ pub(super) fn emit_runtime_effect_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "exception_pending" => emit_exception_pending(func, op, import_ids, locals, reloc_enabled),
-        "print" => emit_print(func, op, import_ids, locals, reloc_enabled),
+    match op.kind {
+        molt_ir::OpKind::ExceptionPending => {
+            emit_exception_pending(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::Print => emit_print(func, op, import_ids, locals, reloc_enabled),
         _ => return false,
     }
     true

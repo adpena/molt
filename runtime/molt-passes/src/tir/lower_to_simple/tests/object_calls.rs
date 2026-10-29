@@ -20,13 +20,14 @@ fn call_argument_form_survives_tir_roundtrip() {
             .blocks
             .values()
             .flat_map(|block| &block.ops)
-            .find(|op| {
-                op.attrs.get("_original_kind") == Some(&AttrValue::Str("callargs_new".into()))
-            })
+            .find(|op| op.origin == Some(molt_ir::OpKind::CallargsNew))
             .expect("builder survives lifting");
         assert_eq!(builder.call_argument_form().unwrap(), expected);
         let lowered = lower_to_simple_ir(&tir);
-        let builder = lowered.iter().find(|op| op.kind == "callargs_new").unwrap();
+        let builder = lowered
+            .iter()
+            .find(|op| op.kind == molt_ir::OpKind::CallargsNew)
+            .unwrap();
         assert_eq!(builder.call_argument_form().unwrap(), expected);
         assert_eq!(builder.s_value.as_deref(), wire);
     }
@@ -34,34 +35,32 @@ fn call_argument_form_survives_tir_roundtrip() {
 
 #[test]
 fn builtin_roundtrip_uses_the_shared_named_and_dynamic_argument_contract() {
-    for (attrs, count, expected_kind, expected_name) in [
+    for (origin, attrs, count, expected_kind, expected_name) in [
         (
+            None,
             AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
             1,
-            "call_builtin",
+            molt_ir::OpKind::CallBuiltin,
             Some("len"),
         ),
-        (AttrDict::new(), 2, "call_builtin", None),
+        (None, AttrDict::new(), 2, molt_ir::OpKind::CallBuiltin, None),
         (
-            AttrDict::from([
-                ("_original_kind".into(), AttrValue::Str("range_new".into())),
-                ("name".into(), AttrValue::Str("range".into())),
-            ]),
+            Some(molt_ir::OpKind::RangeNew),
+            AttrDict::from([("name".into(), AttrValue::Str("range".into()))]),
             3,
-            "range_new",
+            molt_ir::OpKind::RangeNew,
             Some("range"),
         ),
         (
-            AttrDict::from([(
-                "_original_kind".into(),
-                AttrValue::Str("builtin_print".into()),
-            )]),
+            Some(molt_ir::OpKind::BuiltinPrint),
+            AttrDict::new(),
             1,
-            "builtin_print",
+            molt_ir::OpKind::BuiltinPrint,
             Some("print"),
         ),
     ] {
         let op = TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
             operands: (0..count).map(ValueId).collect(),
@@ -82,14 +81,12 @@ fn builtin_roundtrip_uses_the_shared_named_and_dynamic_argument_contract() {
 #[should_panic(expected = "malformed CallBuiltin identity or argument contract")]
 fn conflicting_builtin_identity_never_silently_disappears_in_roundtrip() {
     let op = TirOp {
+        origin: Some(molt_ir::OpKind::Print),
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: vec![ValueId(0)],
         results: vec![ValueId(1)],
-        attrs: AttrDict::from([
-            ("name".into(), AttrValue::Str("len".into())),
-            ("_original_kind".into(), AttrValue::Str("print".into())),
-        ]),
+        attrs: AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
         source_span: None,
     };
     super::super::op_lowering::lower_op_many(&op);
@@ -107,38 +104,38 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         params: vec!["x".into()],
         ops: vec![
             OpIR {
-                kind: "store_var".into(),
+                kind: molt_ir::OpKind::StoreVar,
                 var: Some("x".into()),
                 args: Some(vec!["x".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
             OpIR {
-                kind: "line".into(),
+                kind: molt_ir::OpKind::Line,
                 value: Some(5),
                 col_offset: Some(4),
                 end_col_offset: Some(18),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
             OpIR {
-                kind: "type_of".into(),
+                kind: molt_ir::OpKind::TypeOf,
                 args: Some(vec!["x".into()]),
                 out: Some("v99".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TypeOf)
             },
             OpIR {
-                kind: "print".into(),
+                kind: molt_ir::OpKind::Print,
                 args: Some(vec!["v99".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Print)
             },
             OpIR {
-                kind: "const_none".into(),
+                kind: molt_ir::OpKind::ConstNone,
                 out: Some("v100".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNone)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["v100".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         param_types: Some(vec!["i64".into()]),
@@ -155,79 +152,79 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         params: vec!["__molt_module_obj__".into()],
         ops: vec![
             OpIR {
-                kind: "line".into(),
+                kind: molt_ir::OpKind::Line,
                 value: Some(1),
                 col_offset: Some(0),
                 end_col_offset: Some(8),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(100),
                 out: Some("v63".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "builtin_type".into(),
+                kind: molt_ir::OpKind::BuiltinType,
                 args: Some(vec!["v63".into()]),
                 out: Some("v64".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::BuiltinType)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("C".into()),
                 out: Some("v65".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("C".into()),
                 out: Some("v66".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("__main__".into()),
                 out: Some("v67".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(1),
                 out: Some("v68".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("__name__".into()),
                 out: Some("v69".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("__qualname__".into()),
                 out: Some("v70".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("__module__".into()),
                 out: Some("v71".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("__firstlineno__".into()),
                 out: Some("v72".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "class_def".into(),
+                kind: molt_ir::OpKind::ClassDef,
                 args: Some(vec![
                     "v65".into(),
                     "v64".into(),
@@ -242,269 +239,269 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
                 ]),
                 s_value: Some("1,4,8,1,1".into()),
                 out: Some("v73".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ClassDef)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("C".into()),
                 out: Some("v74".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_set_attr".into(),
+                kind: molt_ir::OpKind::ModuleSetAttr,
                 args: Some(vec![
                     "__molt_module_obj__".into(),
                     "v74".into(),
                     "v73".into(),
                 ]),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleSetAttr)
             },
             OpIR {
-                kind: "line".into(),
+                kind: molt_ir::OpKind::Line,
                 value: Some(4),
                 col_offset: Some(0),
                 end_col_offset: Some(18),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "func_new".into(),
+                kind: molt_ir::OpKind::FuncNew,
                 s_value: Some("func_objarg__g".into()),
                 value: Some(1),
                 out: Some("v75".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::FuncNew)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("g".into()),
                 out: Some("v76".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v76".into()]),
                 s_value: Some("__name__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("g".into()),
                 out: Some("v77".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v77".into()]),
                 s_value: Some("__qualname__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("func_objarg".into()),
                 out: Some("v78".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v78".into()]),
                 s_value: Some("__module__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("x".into()),
                 out: Some("v79".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "tuple_new".into(),
+                kind: molt_ir::OpKind::TupleNew,
                 args: Some(vec!["v79".into()]),
                 out: Some("v80".into()),
                 type_hint: Some("tuple".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TupleNew)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v80".into()]),
                 s_value: Some("__molt_arg_names__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(0),
                 out: Some("v81".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v81".into()]),
                 s_value: Some("__molt_posonly__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "tuple_new".into(),
+                kind: molt_ir::OpKind::TupleNew,
                 args: Some(vec![]),
                 out: Some("v82".into()),
                 type_hint: Some("tuple".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TupleNew)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v82".into()]),
                 s_value: Some("__molt_kwonly_names__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_none".into(),
+                kind: molt_ir::OpKind::ConstNone,
                 out: Some("v83".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNone)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v83".into()]),
                 s_value: Some("__molt_vararg__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v83".into()]),
                 s_value: Some("__molt_varkw__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v83".into()]),
                 s_value: Some("__defaults__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v83".into()]),
                 s_value: Some("__kwdefaults__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v83".into()]),
                 s_value: Some("__doc__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("/tmp/func_objarg.py".into()),
                 out: Some("v88".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(4),
                 out: Some("v89".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("g".into()),
                 out: Some("v90".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("x".into()),
                 out: Some("v92".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "tuple_new".into(),
+                kind: molt_ir::OpKind::TupleNew,
                 args: Some(vec!["v92".into()]),
                 out: Some("v93".into()),
                 type_hint: Some("tuple".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TupleNew)
             },
             OpIR {
-                kind: "tuple_new".into(),
+                kind: molt_ir::OpKind::TupleNew,
                 args: Some(vec![]),
                 out: Some("v94".into()),
                 type_hint: Some("tuple".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TupleNew)
             },
             OpIR {
-                kind: "code_new".into(),
+                kind: molt_ir::OpKind::CodeNew,
                 args: Some(vec![
                     "v88".into(),
                     "v90".into(),
@@ -517,210 +514,210 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
                     "v81".into(),
                 ]),
                 out: Some("v97".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CodeNew)
             },
             OpIR {
-                kind: "set_attr_generic_obj".into(),
+                kind: molt_ir::OpKind::SetAttrGenericObj,
                 args: Some(vec!["v75".into(), "v97".into()]),
                 s_value: Some("__code__".into()),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::SetAttrGenericObj)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("__dict__".into()),
                 out: Some("code_globals_name".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_get_attr".into(),
+                kind: molt_ir::OpKind::ModuleGetAttr,
                 args: Some(vec![
                     "__molt_module_obj__".into(),
                     "code_globals_name".into(),
                 ]),
                 out: Some("code_globals".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
             },
             OpIR {
-                kind: "code_slot_set".into(),
+                kind: molt_ir::OpKind::CodeSlotSet,
                 s_value: Some("func_objarg__g".into()),
                 args: Some(vec!["v97".into(), "code_globals".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CodeSlotSet)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("g".into()),
                 out: Some("v98".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_set_attr".into(),
+                kind: molt_ir::OpKind::ModuleSetAttr,
                 args: Some(vec![
                     "__molt_module_obj__".into(),
                     "v98".into(),
                     "v75".into(),
                 ]),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleSetAttr)
             },
             OpIR {
-                kind: "line".into(),
+                kind: molt_ir::OpKind::Line,
                 value: Some(7),
                 col_offset: Some(0),
                 end_col_offset: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("C".into()),
                 out: Some("v101".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_get_attr".into(),
+                kind: molt_ir::OpKind::ModuleGetAttr,
                 args: Some(vec!["__molt_module_obj__".into(), "v101".into()]),
                 out: Some("v102".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "callargs_new".into(),
+                kind: molt_ir::OpKind::CallargsNew,
                 out: Some("v103".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallargsNew)
             },
             OpIR {
-                kind: "call_bind".into(),
+                kind: molt_ir::OpKind::CallBind,
                 args: Some(vec!["v102".into(), "v103".into()]),
                 out: Some("v104".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallBind)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("c".into()),
                 out: Some("v105".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_set_attr".into(),
+                kind: molt_ir::OpKind::ModuleSetAttr,
                 args: Some(vec![
                     "__molt_module_obj__".into(),
                     "v105".into(),
                     "v104".into(),
                 ]),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleSetAttr)
             },
             OpIR {
-                kind: "line".into(),
+                kind: molt_ir::OpKind::Line,
                 value: Some(8),
                 col_offset: Some(0),
                 end_col_offset: Some(4),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "call".into(),
+                kind: molt_ir::OpKind::Call,
                 s_value: Some("func_objarg__g".into()),
                 args: Some(vec!["v104".into()]),
                 out: Some("v106".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             },
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "label".into(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
             OpIR {
-                kind: "exception_last".into(),
+                kind: molt_ir::OpKind::ExceptionLast,
                 out: Some("v107".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionLast)
             },
             OpIR {
-                kind: "const_none".into(),
+                kind: molt_ir::OpKind::ConstNone,
                 out: Some("v108".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNone)
             },
             OpIR {
-                kind: "const_none".into(),
+                kind: molt_ir::OpKind::ConstNone,
                 out: Some("v108".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNone)
             },
             OpIR {
-                kind: "is".into(),
+                kind: molt_ir::OpKind::Is,
                 args: Some(vec!["v107".into(), "v108".into()]),
                 out: Some("v109".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Is)
             },
             OpIR {
-                kind: "not".into(),
+                kind: molt_ir::OpKind::Not,
                 args: Some(vec!["v109".into()]),
                 out: Some("v110".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Not)
             },
             OpIR {
-                kind: "if".into(),
+                kind: molt_ir::OpKind::If,
                 args: Some(vec!["v110".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::If)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("func_objarg".into()),
                 out: Some("v111".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_cache_del".into(),
+                kind: molt_ir::OpKind::ModuleCacheDel,
                 args: Some(vec!["v111".into()]),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleCacheDel)
             },
             OpIR {
-                kind: "const_str".into(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("__main__".into()),
                 out: Some("v112".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_cache_del".into(),
+                kind: molt_ir::OpKind::ModuleCacheDel,
                 args: Some(vec!["v112".into()]),
                 out: Some("none".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleCacheDel)
             },
             OpIR {
-                kind: "end_if".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::EndIf,
+                ..OpIR::new(molt_ir::OpKind::EndIf)
             },
             OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             },
         ],
         param_types: Some(vec!["i64".into()]),
@@ -747,7 +744,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         if func_ir.name == "func_objarg__g" {
             let type_of = round_tripped
                 .iter()
-                .find(|op| op.kind == "type_of")
+                .find(|op| op.kind == molt_ir::OpKind::TypeOf)
                 .expect("callee must preserve type_of");
             assert_eq!(type_of.args.as_ref().map(Vec::len), Some(1));
             let arg_name = type_of.args.as_ref().unwrap()[0].clone();
@@ -758,7 +755,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
             let arg_op = producer_by_out
                 .get(&arg_name)
                 .expect("type_of operand must come from a copy_var");
-            assert_eq!(arg_op.kind, "copy_var");
+            assert_eq!(arg_op.kind, molt_ir::OpKind::CopyVar);
             assert_eq!(arg_op.var.as_deref(), Some("x"));
         } else {
             let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
@@ -767,7 +764,10 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
                 .collect();
             let call = round_tripped
                 .iter()
-                .find(|op| op.kind == "call" && op.s_value.as_deref() == Some("func_objarg__g"))
+                .find(|op| {
+                    op.kind == molt_ir::OpKind::Call
+                        && op.s_value.as_deref() == Some("func_objarg__g")
+                })
                 .expect("caller must preserve direct call to func_objarg__g");
             let call_args = call
                 .args
@@ -777,7 +777,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
             let arg_op = producer_by_out
                 .get(&call_args[0])
                 .expect("direct call argument must come from an op");
-            assert_eq!(arg_op.kind, "call_bind");
+            assert_eq!(arg_op.kind, molt_ir::OpKind::CallBind);
             assert_eq!(arg_op.s_value, None);
         }
     }

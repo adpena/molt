@@ -12,6 +12,7 @@
 // projection and representation planning live in molt-tir. Keep backend-local
 // `crate::*` routes explicit so moved facts are not silently borrowed through a
 // legacy crate boundary.
+pub use molt_ir::OpKind;
 pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, backend_environment, debug_artifacts, ir, ir_schema, json_boundary,
     process_diagnostics, repr, runtime_callable_symbols, stdlib_module_symbols,

@@ -34,6 +34,7 @@ fn binary_callee(name: &str, opcode: OpCode, return_type: TirType) -> TirFunctio
     let entry = f.entry_block;
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![p0, p1],
@@ -90,6 +91,7 @@ fn closure_callee(name: &str) -> TirFunction {
     let block = f.blocks.get_mut(&entry).unwrap();
     // cell = __molt_closure__[0]
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![env],
@@ -99,6 +101,7 @@ fn closure_callee(name: &str) -> TirFunction {
     });
     // base = cell[0]
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![cell],
@@ -108,6 +111,7 @@ fn closure_callee(name: &str) -> TirFunction {
     });
     // sum = base + x
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![base, x],
@@ -136,6 +140,7 @@ fn const_callee() -> TirFunction {
     attrs.insert("value".into(), AttrValue::Int(42));
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -167,6 +172,7 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
     one_attrs.insert("value".into(), AttrValue::Int(1));
     let block = g.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -175,6 +181,7 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
         source_span: None,
     });
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -183,6 +190,7 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
         source_span: None,
     });
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![call_res, one],
@@ -208,6 +216,7 @@ fn over_base_budget_float_callee_with_return_type(name: &str, return_type: TirTy
         let mut attrs = AttrDict::new();
         attrs.insert("f_value".into(), AttrValue::Float(i as f64));
         f.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
@@ -243,6 +252,7 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
     scale_attrs.insert("f_value".into(), AttrValue::Float(2.0));
     let block = g.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -251,6 +261,7 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
         source_span: None,
     });
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstFloat,
         operands: vec![],
@@ -259,6 +270,7 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
         source_span: None,
     });
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Mul,
         operands: vec![call_res, scale],
@@ -313,6 +325,7 @@ fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirF
         ce_attrs.insert("value".into(), AttrValue::Int(exc_label));
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -390,6 +403,7 @@ fn caller_calling_obs_with_label_and_type(
         let block = c.blocks.get_mut(&entry).unwrap();
         block.ops.push(dead_placeholder_const_for_type(&ty, arg));
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![arg],
@@ -399,6 +413,7 @@ fn caller_calling_obs_with_label_and_type(
         });
         // The caller's own post-call exception observation.
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],

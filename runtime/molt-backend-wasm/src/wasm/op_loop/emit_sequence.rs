@@ -11,7 +11,6 @@ use super::object_attr_ops::emit_object_attr_op;
 use super::out_param::WasmOutParam;
 use super::runtime_service_ops::{RuntimeServiceOpContext, emit_runtime_service_op};
 use crate::OpIR;
-use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_split_barrier;
 use molt_tir::tir::simple_def_use::visit_simple_ir_defined_names;
 use std::collections::BTreeMap;
 use wasm_encoder::Function;
@@ -238,7 +237,7 @@ fn invalidate_raw_int_facts(
     locals: &crate::wasm::WasmFrameLocals,
     facts: &mut BTreeMap<u32, i64>,
 ) {
-    if simpleir_kind_is_wasm_split_barrier(&op.kind) {
+    if op.kind.is_wasm_split_barrier() {
         facts.clear();
     } else {
         visit_simple_ir_defined_names(op, |name| {
@@ -261,38 +260,35 @@ mod tests {
         ]));
         for op in [
             OpIR {
-                kind: "store_var".into(),
                 var: Some("slot".into()),
                 out: Some("result".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
             OpIR {
-                kind: "iter_next_unboxed".into(),
                 var: Some("slot".into()),
                 out: Some("result".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::IterNextUnboxed)
             },
             OpIR {
-                kind: "unpack_sequence".into(),
                 args: Some(vec!["source".into(), "slot".into(), "result".into()]),
                 value: Some(2),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::UnpackSequence)
             },
         ] {
             let mut facts = BTreeMap::from([(0, 7), (1, 8), (2, 9)]);
             invalidate_raw_int_facts(&op, &locals, &mut facts);
             assert_eq!(facts, BTreeMap::from([(0, 7)]), "{}", op.kind);
         }
-        for kind in ["if", "else", "end_if", "label", "loop_start", "loop_end"] {
+        for kind in [
+            molt_ir::OpKind::If,
+            molt_ir::OpKind::Else,
+            molt_ir::OpKind::EndIf,
+            molt_ir::OpKind::Label,
+            molt_ir::OpKind::LoopStart,
+            molt_ir::OpKind::LoopEnd,
+        ] {
             let mut facts = BTreeMap::from([(0, 7)]);
-            invalidate_raw_int_facts(
-                &OpIR {
-                    kind: kind.into(),
-                    ..OpIR::default()
-                },
-                &locals,
-                &mut facts,
-            );
+            invalidate_raw_int_facts(&OpIR::new(kind), &locals, &mut facts);
             assert!(facts.is_empty(), "{kind}");
         }
     }

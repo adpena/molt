@@ -1,23 +1,24 @@
 use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_value_transfer_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_value_transfer_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "inc_ref",
-    "borrow",
-    "dec_ref",
-    "del_boundary",
-    "release",
-    "box",
-    "unbox",
-    "cast",
-    "widen",
-    "identity_alias",
-    "binding_alias",
-    "copy",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::IncRef,
+    OpKind::Borrow,
+    OpKind::DecRef,
+    OpKind::DelBoundary,
+    OpKind::Release,
+    OpKind::Box,
+    OpKind::Unbox,
+    OpKind::Cast,
+    OpKind::Widen,
+    OpKind::IdentityAlias,
+    OpKind::BindingAlias,
+    OpKind::Copy,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Define `out_name` from `src_name` when `out_name` is an unboxed-scalar
@@ -150,12 +151,12 @@ pub(in crate::native_backend::function_compiler) fn define_alias_result(
         )
         .expect("alias source not found")
     });
-    let kind = op.kind.as_str();
+    let kind = op.kind;
     let retained_binding =
         crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
             || crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(kind)
             || (rc_authority.native_value_tracking_enabled()
-                && (matches!(kind, "cast" | "widen")
+                && (matches!(kind, OpKind::Cast | OpKind::Widen)
                     || native_alias_mints_owner(alias_roots, src_name, out_name)));
     let boxed_source = merge_rebind_storage_for_name(src_name, representation_plan)
         == MergeRebindStorageKind::BoxedI64;
@@ -214,8 +215,8 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
         )
     };
 
-    match op.kind.as_str() {
-        "inc_ref" | "borrow" => {
+    match op.kind {
+        OpKind::IncRef | OpKind::Borrow => {
             if !rc_skip_inc.contains(&op_idx) {
                 let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
                 let src_name = args_names
@@ -258,7 +259,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 def_var_named(&mut *builder, vars, out_name, src);
             }
         }
-        "dec_ref" | "release" => {
+        OpKind::DecRef | OpKind::Release => {
             let args_names = op.args.as_ref().expect("dec_ref/release args missing");
             let src_name = args_names
                 .first()
@@ -290,14 +291,14 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 }
             }
         }
-        "del_boundary" => {
+        OpKind::DelBoundary => {
             // Native preanalysis consumes DelBoundary to pin Python lifetime
             // boundaries. Drop insertion normally normalizes it away; if it
             // survives on a dormant-native lane, codegen must route it
             // explicitly and perform no second release here.
         }
         // `copy` is the frontend's args-based pure SSA value move
-        // (`{kind:"copy", args:[src], out:result}`). It survives
+        // (`{kind:OpKind::Copy, args:[src], out:result}`). It survives
         // typed copy propagation whenever its result/source is a mutable-storage
         // (reassigned-local) name, so it reaches codegen and must be lowered
         // here rather than silently dropped. It shares the alias lowering:
@@ -308,7 +309,13 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
         // exactly +1. Direct conversions use the same representation boundary:
         // boxed inputs retain an independent result; raw inputs materialize
         // their result ownership without retaining a nonexistent source owner.
-        "copy" | "identity_alias" | "binding_alias" | "box" | "unbox" | "cast" | "widen" => {
+        OpKind::Copy
+        | OpKind::IdentityAlias
+        | OpKind::BindingAlias
+        | OpKind::Box
+        | OpKind::Unbox
+        | OpKind::Cast
+        | OpKind::Widen => {
             let args_names = op.args.as_ref().expect("alias args missing");
             let src_name = args_names
                 .first()
@@ -331,7 +338,8 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                     local_inc_ref_obj,
                     nbc,
                 );
-            } else if op.kind == "box" && representation_plan.is_full_deopt_int_name(src_name) {
+            } else if op.kind == OpKind::Box && representation_plan.is_full_deopt_int_name(src_name)
+            {
                 // Only full-width carriers have a BoxVal allocation/failure
                 // effect to preserve when the result is discarded. The captured
                 // transport owns this box, not the borrowed raw source or an

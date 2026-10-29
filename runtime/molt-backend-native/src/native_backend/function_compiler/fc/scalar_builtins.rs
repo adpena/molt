@@ -1,10 +1,10 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_scalar_builtin`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_scalar_builtin`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["id", "ord", "ord_at", "chr"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::Id, OpKind::Ord, OpKind::OrdAt, OpKind::Chr);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for scalar builtin runtime-call ops:
@@ -51,8 +51,8 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
         )
     };
 
-    match op.kind.as_str() {
-        "id" => {
+    match op.kind {
+        OpKind::Id => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -79,7 +79,7 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "ord" => {
+        OpKind::Ord => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -106,7 +106,7 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "ord_at" => {
+        OpKind::OrdAt => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -144,7 +144,7 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "chr" => {
+        OpKind::Chr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,

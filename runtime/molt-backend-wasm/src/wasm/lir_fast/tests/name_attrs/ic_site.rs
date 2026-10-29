@@ -2,7 +2,10 @@ use super::super::*;
 
 #[test]
 fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
-    for kind in ["get_attr_generic_ptr", "get_attr_generic_obj"] {
+    for kind in [
+        molt_ir::OpKind::GetAttrGenericPtr,
+        molt_ir::OpKind::GetAttrGenericObj,
+    ] {
         for (receiver_type, raw_carrier) in [
             (TirType::DynBox, false),
             (TirType::I64, false),
@@ -20,13 +23,14 @@ fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
             func.value_types.insert(result_id, TirType::DynBox);
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
+                origin: Some(kind),
                 dialect: Dialect::Molt,
                 opcode: OpCode::LoadAttr,
                 operands: vec![ValueId(0)],
                 results: vec![result_id],
                 attrs: {
                     let mut m = AttrDict::new();
-                    m.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+
                     m.insert("name".into(), AttrValue::Str("field".into()));
                     m.insert(
                         "_source_op_idx".into(),
@@ -86,7 +90,7 @@ fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
                 output.data_ptr_i32_literals
             );
             let expected_site_bits =
-                box_int_bits(stable_ic_site_id(func_name, source_op_idx, kind));
+                box_int_bits(stable_ic_site_id(func_name, source_op_idx, kind.as_str()));
             let has_site = output.instructions.iter().any(
                 |inst| matches!(inst, Instruction::I64Const(bits) if *bits == expected_site_bits),
             );
@@ -124,7 +128,10 @@ fn generic_literal_name_attrs_preserve_boxed_receivers_and_source_site_id() {
 
 #[test]
 fn generic_literal_name_writes_carry_source_site_id() {
-    for kind in ["set_attr_generic_ptr", "set_attr_generic_obj"] {
+    for kind in [
+        molt_ir::OpKind::SetAttrGenericPtr,
+        molt_ir::OpKind::SetAttrGenericObj,
+    ] {
         let func_name = "generic_literal_name_write";
         let source_op_idx = 29usize;
         let mut func = TirFunction::new(
@@ -135,13 +142,14 @@ fn generic_literal_name_writes_carry_source_site_id() {
         );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: OpCode::StoreAttr,
             operands: vec![ValueId(0), ValueId(1)],
             results: vec![],
             attrs: {
                 let mut m = AttrDict::new();
-                m.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+
                 m.insert("name".into(), AttrValue::Str("field".into()));
                 m.insert(
                     "_source_op_idx".into(),
@@ -173,7 +181,8 @@ fn generic_literal_name_writes_carry_source_site_id() {
             output.data_ptr_i32_literals.contains(&b"field".to_vec()),
             "{kind} must carry the literal name as a LIR data pointer"
         );
-        let expected_site_bits = box_int_bits(stable_ic_site_id(func_name, source_op_idx, kind));
+        let expected_site_bits =
+            box_int_bits(stable_ic_site_id(func_name, source_op_idx, kind.as_str()));
         assert!(
             output.instructions.iter().any(
                 |inst| matches!(inst, Instruction::I64Const(bits) if *bits == expected_site_bits)

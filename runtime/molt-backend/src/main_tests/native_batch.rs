@@ -46,14 +46,10 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         params: vec![],
                         ops: vec![
                             OpIR {
-                                kind: "call".to_string(),
                                 s_value: Some("helper".to_string()),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::Call)
                             },
-                            OpIR {
-                                kind: "ret_void".to_string(),
-                                ..OpIR::default()
-                            },
+                            OpIR::new(molt_ir::OpKind::RetVoid),
                         ],
                         param_types: None,
                         source_file: None,
@@ -66,10 +62,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "helper".to_string(),
                         params: vec![],
-                        ops: vec![OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        }],
+                        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                         param_types: None,
                         source_file: None,
                         is_extern: false,

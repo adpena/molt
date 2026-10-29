@@ -16,28 +16,28 @@ fn native_representation_plan(func_ir: &FunctionIR) -> ScalarRepresentationPlan 
 
 fn const_int(out: &str, value: i64) -> OpIR {
     OpIR {
-        kind: "const".to_string(),
+        kind: molt_ir::OpKind::Const,
         out: Some(out.to_string()),
         value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Const)
     }
 }
 
 fn const_bool(out: &str, value: bool) -> OpIR {
     OpIR {
-        kind: "const_bool".to_string(),
+        kind: molt_ir::OpKind::ConstBool,
         out: Some(out.to_string()),
         value: Some(i64::from(value)),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstBool)
     }
 }
 
 fn const_float(out: &str, value: f64) -> OpIR {
     OpIR {
-        kind: "const_float".to_string(),
+        kind: molt_ir::OpKind::ConstFloat,
         out: Some(out.to_string()),
         f_value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
     }
 }
 
@@ -111,20 +111,40 @@ fn fresh_hash_seeds_preserve_plan_facts_and_consumer_views() {
             const_bool("flag", true),
             const_float("float", 1.25),
             op(
-                "list_int_new",
+                molt_ir::OpKind::ListIntNew,
                 Some("items"),
                 None,
                 &["_bb1000_arg0", "_bb1001_arg0"],
             ),
-            op("copy", Some("alias"), None, &["items"]),
-            op("index", Some("read"), None, &["alias", "index"]),
-            op("store_var", None, Some("saved"), &["_bb1001_arg0"]),
-            op("load_var", Some("restored"), Some("saved"), &[]),
-            op("store_var", None, Some("mixed"), &["_bb1001_arg0"]),
-            op("store_var", None, Some("mixed"), &["flag"]),
+            op(molt_ir::OpKind::Copy, Some("alias"), None, &["items"]),
+            op(
+                molt_ir::OpKind::Index,
+                Some("read"),
+                None,
+                &["alias", "index"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("saved"),
+                &["_bb1001_arg0"],
+            ),
+            op(
+                molt_ir::OpKind::LoadVar,
+                Some("restored"),
+                Some("saved"),
+                &[],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("mixed"),
+                &["_bb1001_arg0"],
+            ),
+            op(molt_ir::OpKind::StoreVar, None, Some("mixed"), &["flag"]),
         ],
     );
-    let list_read = op("index", None, None, &["alias", "index"]);
+    let list_read = op(molt_ir::OpKind::Index, None, None, &["alias", "index"]);
     for target in [
         crate::tir::TargetInfo::native_release_fast(),
         crate::tir::TargetInfo::wasm_release_fast(),
@@ -164,7 +184,7 @@ fn fresh_hash_seeds_preserve_plan_facts_and_consumer_views() {
 
 #[test]
 fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
-    for kind in ["store_var", "store_fast"] {
+    for kind in [molt_ir::OpKind::StoreVar, molt_ir::OpKind::StoreFast] {
         let func = function(
             "binding_snapshot_facts",
             &[],
@@ -173,7 +193,7 @@ fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
                 const_int("lhs", 1_i64 << 31),
                 const_int("rhs", 1_i64 << 31),
                 op(
-                    "checked_mul",
+                    molt_ir::OpKind::CheckedMul,
                     Some("overflow"),
                     Some("wide"),
                     &["lhs", "rhs"],
@@ -184,11 +204,16 @@ fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
                 op(kind, Some("float_snapshot"), Some("mixed"), &["float"]),
                 op(kind, Some("bool_snapshot"), Some("mixed"), &["bool"]),
                 op(kind, None, Some("wide_copy"), &["wide_snapshot"]),
-                op("list_int_new", Some("items"), None, &["lhs", "rhs"]),
-                op(kind, Some("items_snapshot"), Some("items_slot"), &["items"]),
-                op("missing", Some("missing_value"), None, &[]),
                 op(
-                    "delete_var",
+                    molt_ir::OpKind::ListIntNew,
+                    Some("items"),
+                    None,
+                    &["lhs", "rhs"],
+                ),
+                op(kind, Some("items_snapshot"), Some("items_slot"), &["items"]),
+                op(molt_ir::OpKind::Missing, Some("missing_value"), None, &[]),
+                op(
+                    molt_ir::OpKind::DeleteVar,
                     Some("delete_metadata"),
                     Some("items_slot"),
                     &["missing_value", "items_snapshot"],
@@ -204,7 +229,7 @@ fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
         );
         assert_eq!(
             plan.is_full_deopt_int_name("wide_copy"),
-            kind == "store_var",
+            kind == molt_ir::OpKind::StoreVar,
             "field-role knowledge does not admit store_fast as a raw-carrier move"
         );
         assert!(plan.is_float_unboxed("float_snapshot"), "{kind}");
@@ -228,11 +253,11 @@ fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
 #[test]
 fn alias_facts_follow_argument_before_transport_var_metadata() {
     for kind in [
-        "copy",
-        "copy_var",
-        "load_var",
-        "identity_alias",
-        "binding_alias",
+        molt_ir::OpKind::Copy,
+        molt_ir::OpKind::CopyVar,
+        molt_ir::OpKind::LoadVar,
+        molt_ir::OpKind::IdentityAlias,
+        molt_ir::OpKind::BindingAlias,
     ] {
         let func = function(
             "alias_source_precedence",
@@ -242,7 +267,7 @@ fn alias_facts_follow_argument_before_transport_var_metadata() {
                 const_int("integer", 7),
                 const_float("float_metadata", 1.25),
                 op(kind, Some("snapshot"), Some("float_metadata"), &["integer"]),
-                op("store_var", None, Some("slot"), &["snapshot"]),
+                op(molt_ir::OpKind::StoreVar, None, Some("slot"), &["snapshot"]),
             ],
         );
         let index = FunctionFactIndex::for_function(&func);
@@ -271,14 +296,18 @@ fn alias_facts_follow_argument_before_transport_var_metadata() {
 
 #[test]
 fn scalar_store_facts_project_both_checked_results_and_all_constant_spellings() {
-    for constant_kind in ["const", "const_int", "load_const"] {
-        for checked_kind in ["checked_add", "checked_mul"] {
+    for constant_kind in [
+        molt_ir::OpKind::Const,
+        molt_ir::OpKind::ConstInt,
+        molt_ir::OpKind::LoadConst,
+    ] {
+        for checked_kind in [molt_ir::OpKind::CheckedAdd, molt_ir::OpKind::CheckedMul] {
             assert!(matches!(
                 kind_to_opcode_table(checked_kind),
                 Some(OpCode::CheckedAdd | OpCode::CheckedMul)
             ));
             let mut seed = const_int("seed", 1_i64 << 31);
-            seed.kind = constant_kind.into();
+            seed.kind = constant_kind;
             let function = function(
                 "checked_result_store_facts",
                 &[],
@@ -292,13 +321,23 @@ fn scalar_store_facts_project_both_checked_results_and_all_constant_spellings() 
                         &["seed", "seed"],
                     ),
                     op(
-                        "store_var",
+                        molt_ir::OpKind::StoreVar,
                         Some("snapshot"),
                         Some("value_slot"),
                         &["value"],
                     ),
-                    op("store_var", None, Some("snapshot_slot"), &["snapshot"]),
-                    op("store_var", None, Some("flag_slot"), &["overflow"]),
+                    op(
+                        molt_ir::OpKind::StoreVar,
+                        None,
+                        Some("snapshot_slot"),
+                        &["snapshot"],
+                    ),
+                    op(
+                        molt_ir::OpKind::StoreVar,
+                        None,
+                        Some("flag_slot"),
+                        &["overflow"],
+                    ),
                 ],
             );
             let plan = native_representation_plan(&function);
@@ -321,18 +360,28 @@ fn scalar_store_facts_project_both_checked_results_and_all_constant_spellings() 
 fn reserved_none_operands_remain_singletons_through_lift_and_roundtrip() {
     for ops in [
         vec![
-            op("copy_var", Some("snapshot"), None, &["none"]),
-            op("ret", None, None, &["snapshot"]),
+            op(molt_ir::OpKind::CopyVar, Some("snapshot"), None, &["none"]),
+            op(molt_ir::OpKind::Ret, None, None, &["snapshot"]),
         ],
         vec![
-            op("load_var", Some("snapshot"), Some("none"), &[]),
-            op("ret", None, None, &["snapshot"]),
+            op(
+                molt_ir::OpKind::LoadVar,
+                Some("snapshot"),
+                Some("none"),
+                &[],
+            ),
+            op(molt_ir::OpKind::Ret, None, None, &["snapshot"]),
         ],
         vec![
-            op("store_var", Some("snapshot"), Some("local"), &["none"]),
-            op("ret", None, None, &["snapshot"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                Some("snapshot"),
+                Some("local"),
+                &["none"],
+            ),
+            op(molt_ir::OpKind::Ret, None, None, &["snapshot"]),
         ],
-        vec![op("ret", None, None, &["none"])],
+        vec![op(molt_ir::OpKind::Ret, None, None, &["none"])],
     ] {
         let mut source = function("reserved_none_roundtrip", &[], None, ops);
         for _ in 0..2 {
@@ -396,7 +445,7 @@ fn container_kind_comes_from_structured_tir_types() {
             "tuple[int, str]",
             "str",
         ]),
-        vec![op("ret", None, None, &["xs"])],
+        vec![op(molt_ir::OpKind::Ret, None, None, &["xs"])],
     );
     let plan = native_representation_plan(&func);
 
@@ -409,7 +458,7 @@ fn container_kind_comes_from_structured_tir_types() {
 
 #[test]
 fn container_transport_metadata_does_not_seed_container_kind() {
-    let mut index = op("index", Some("item"), None, &["xs", "i"]);
+    let mut index = op(molt_ir::OpKind::Index, Some("item"), None, &["xs", "i"]);
     index.container_type = Some("list".to_string());
     index.type_hint = Some("list".to_string());
     let func = function("transport_only", &["xs", "i"], None, vec![index]);
@@ -421,7 +470,7 @@ fn container_transport_metadata_does_not_seed_container_kind() {
 
 #[test]
 fn exact_builtin_list_class_requires_allocator_provenance() {
-    let index = op("index", Some("item"), None, &["xs", "i"]);
+    let index = op(molt_ir::OpKind::Index, Some("item"), None, &["xs", "i"]);
     let annotated = function(
         "annotated_list_parameter",
         &["xs", "i"],
@@ -433,18 +482,19 @@ fn exact_builtin_list_class_requires_allocator_provenance() {
     assert!(!plan.op_has_exact_builtin_list(&index));
 
     for kind in [
-        "copy",
-        "identity_alias",
-        "binding_alias",
-        "guard_tag",
-        "guard_type",
+        molt_ir::OpKind::Copy,
+        molt_ir::OpKind::IdentityAlias,
+        molt_ir::OpKind::BindingAlias,
+        molt_ir::OpKind::GuardTag,
+        molt_ir::OpKind::GuardType,
     ] {
-        let alias_index = op("index", Some("item"), None, &["alias", "i"]);
-        let inputs: &[&str] = if matches!(kind, "guard_tag" | "guard_type") {
-            &["xs", "expected_tag"]
-        } else {
-            &["xs"]
-        };
+        let alias_index = op(molt_ir::OpKind::Index, Some("item"), None, &["alias", "i"]);
+        let inputs: &[&str] =
+            if matches!(kind, molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType) {
+                &["xs", "expected_tag"]
+            } else {
+                &["xs"]
+            };
         let constructed = function(
             "exact_list_alias",
             &[],
@@ -453,7 +503,7 @@ fn exact_builtin_list_class_requires_allocator_provenance() {
                 const_int("i", 0),
                 const_int("value", 1),
                 const_int("expected_tag", 8),
-                op("list_new", Some("xs"), None, &["value"]),
+                op(molt_ir::OpKind::ListNew, Some("xs"), None, &["value"]),
                 op(kind, Some("alias"), None, inputs),
                 alias_index.clone(),
             ],
@@ -464,9 +514,10 @@ fn exact_builtin_list_class_requires_allocator_provenance() {
         let mut ambiguous = constructed.clone();
         ambiguous.params.push("unknown".to_string());
         ambiguous.param_types = None;
-        ambiguous
-            .ops
-            .insert(5, op("copy", Some("alias"), None, &["unknown"]));
+        ambiguous.ops.insert(
+            5,
+            op(molt_ir::OpKind::Copy, Some("alias"), None, &["unknown"]),
+        );
         let plan = native_representation_plan(&ambiguous);
         assert!(!plan.op_has_exact_builtin_list(&alias_index), "{kind}");
     }
@@ -474,9 +525,19 @@ fn exact_builtin_list_class_requires_allocator_provenance() {
 
 #[test]
 fn retained_container_alias_keeps_class_but_escape_revokes_storage() {
-    let alias = op("binding_alias", Some("captured"), None, &["xs"]);
-    let index = op("index", Some("item"), None, &["xs", "i"]);
-    let captured_index = op("index", Some("captured_item"), None, &["captured", "i"]);
+    let alias = op(
+        molt_ir::OpKind::BindingAlias,
+        Some("captured"),
+        None,
+        &["xs"],
+    );
+    let index = op(molt_ir::OpKind::Index, Some("item"), None, &["xs", "i"]);
+    let captured_index = op(
+        molt_ir::OpKind::Index,
+        Some("captured_item"),
+        None,
+        &["captured", "i"],
+    );
     let mut func = function(
         "retained_list_storage",
         &[],
@@ -485,7 +546,12 @@ fn retained_container_alias_keeps_class_but_escape_revokes_storage() {
             const_int("count", 4),
             const_int("fill", 0),
             const_int("i", 0),
-            op("list_int_new", Some("xs"), None, &["count", "fill"]),
+            op(
+                molt_ir::OpKind::ListIntNew,
+                Some("xs"),
+                None,
+                &["count", "fill"],
+            ),
             alias,
             index.clone(),
             captured_index.clone(),
@@ -502,7 +568,12 @@ fn retained_container_alias_keeps_class_but_escape_revokes_storage() {
         );
     }
 
-    let mut escape = op("call", Some("call_result"), None, &["captured"]);
+    let mut escape = op(
+        molt_ir::OpKind::Call,
+        Some("call_result"),
+        None,
+        &["captured"],
+    );
     escape.s_value = Some("opaque_consumer".to_string());
     func.ops.insert(5, escape);
     let plan = native_representation_plan(&func);
@@ -516,7 +587,7 @@ fn retained_container_alias_keeps_class_but_escape_revokes_storage() {
 
 #[test]
 fn flat_list_storage_requires_structural_producer() {
-    let mut index = op("index", Some("item"), None, &["xs", "i"]);
+    let mut index = op(molt_ir::OpKind::Index, Some("item"), None, &["xs", "i"]);
     index.container_type = Some("list".to_string());
     let func = function(
         "transport_only_storage",
@@ -533,15 +604,15 @@ fn flat_list_storage_requires_structural_producer() {
 #[test]
 fn list_int_new_seeds_flat_storage_and_aliases() {
     let list_new = op(
-        "list_int_new",
+        molt_ir::OpKind::ListIntNew,
         Some("xs"),
         None,
         &["storage_count", "storage_fill"],
     );
-    let copy = op("copy", Some("ys"), None, &["xs"]);
-    let store = op("store_var", None, Some("slot"), &["ys"]);
-    let load = op("load_var", Some("zs"), Some("slot"), &[]);
-    let index = op("index", Some("item"), None, &["zs", "i"]);
+    let copy = op(molt_ir::OpKind::Copy, Some("ys"), None, &["xs"]);
+    let store = op(molt_ir::OpKind::StoreVar, None, Some("slot"), &["ys"]);
+    let load = op(molt_ir::OpKind::LoadVar, Some("zs"), Some("slot"), &[]);
+    let index = op(molt_ir::OpKind::Index, Some("item"), None, &["zs", "i"]);
     let func = function(
         "storage_aliases",
         &[],
@@ -581,15 +652,20 @@ fn list_int_new_seeds_flat_storage_and_aliases() {
 #[test]
 fn non_int_store_index_conflicts_flat_list_storage() {
     let list_new = op(
-        "list_int_new",
+        molt_ir::OpKind::ListIntNew,
         Some("xs"),
         None,
         &["storage_count", "storage_fill"],
     );
     let idx = const_int("i", 0);
     let value = const_float("f", 1.25);
-    let store = op("store_index", Some("ys"), None, &["xs", "i", "f"]);
-    let index = op("index", Some("item"), None, &["ys", "i"]);
+    let store = op(
+        molt_ir::OpKind::StoreIndex,
+        Some("ys"),
+        None,
+        &["xs", "i", "f"],
+    );
+    let index = op(molt_ir::OpKind::Index, Some("item"), None, &["ys", "i"]);
     let func = function(
         "flat_storage_non_int_write",
         &[],
@@ -614,7 +690,12 @@ fn non_int_store_index_conflicts_flat_list_storage() {
 
 #[test]
 fn semantic_list_bool_index_does_not_authorize_raw_bool_primary() {
-    let index = op("index", Some("item"), None, &["items", "idx"]);
+    let index = op(
+        molt_ir::OpKind::Index,
+        Some("item"),
+        None,
+        &["items", "idx"],
+    );
     let func = function(
         "typed_list_bool_index",
         &["items", "idx"],
@@ -641,7 +722,12 @@ fn semantic_list_bool_index_does_not_authorize_raw_bool_primary() {
 
 #[test]
 fn index_result_lane_comes_from_element_fact_not_key() {
-    let index = op("index", Some("item"), None, &["items", "idx"]);
+    let index = op(
+        molt_ir::OpKind::Index,
+        Some("item"),
+        None,
+        &["items", "idx"],
+    );
     let func = function(
         "typed_list_int_index",
         &["items", "idx"],
@@ -664,7 +750,7 @@ fn index_result_lane_comes_from_element_fact_not_key() {
 #[test]
 fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
     let list_new = op(
-        "list_int_new",
+        molt_ir::OpKind::ListIntNew,
         Some("items"),
         None,
         &["storage_count", "storage_fill"],
@@ -672,13 +758,13 @@ fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
     let index = const_int("idx", 0);
     let value = const_int("value", 7);
     let store_index = op(
-        "store_index",
+        molt_ir::OpKind::StoreIndex,
         Some("after_store"),
         None,
         &["items", "idx", "value"],
     );
     let dict_set = op(
-        "dict_set",
+        molt_ir::OpKind::DictSet,
         Some("after_dict_set"),
         None,
         &["items", "idx", "value"],
@@ -707,20 +793,25 @@ fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
 
 #[test]
 fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
-    let mut ord_at = op("ord_at", Some("code"), None, &["text", "idx"]);
+    let mut ord_at = op(molt_ir::OpKind::OrdAt, Some("code"), None, &["text", "idx"]);
     ord_at.type_hint = Some("list".to_string());
     ord_at.container_type = Some("list".to_string());
-    let add = op("add", Some("shifted"), None, &["code", "bias"]);
+    let add = op(
+        molt_ir::OpKind::Add,
+        Some("shifted"),
+        None,
+        &["code", "bias"],
+    );
     let func = function(
         "ord_at_representation",
         &[],
         None,
         vec![
             OpIR {
-                kind: "const_str".to_string(),
+                kind: molt_ir::OpKind::ConstStr,
                 out: Some("text".to_string()),
                 s_value: Some("AéZ".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             const_int("idx", 1),
             ord_at,
@@ -750,7 +841,7 @@ fn ord_at_result_is_integer_family_from_tir_not_transport_hints() {
 #[test]
 fn generic_index_does_not_promote_result_from_integer_key() {
     let index = op(
-        "index",
+        molt_ir::OpKind::Index,
         Some("object_type_tag"),
         None,
         &["__molt_split_frame", "__molt_split_frame_index"],
@@ -760,11 +851,16 @@ fn generic_index_does_not_promote_result_from_integer_key() {
         &[],
         None,
         vec![
-            op("list_new", Some("__molt_split_frame"), None, &[]),
+            op(
+                molt_ir::OpKind::ListNew,
+                Some("__molt_split_frame"),
+                None,
+                &[],
+            ),
             const_int("__molt_split_frame_index", 0),
             index.clone(),
             op(
-                "builtin_type",
+                molt_ir::OpKind::BuiltinType,
                 Some("object_type"),
                 None,
                 &["object_type_tag"],
@@ -789,14 +885,29 @@ fn alias_group_unknown_loop_header_source_terminates_without_promotion() {
         None,
         vec![
             const_int("zero", 0),
-            op("const_none", Some("none_value"), None, &[]),
+            op(molt_ir::OpKind::ConstNone, Some("none_value"), None, &[]),
             const_int("one", 1),
-            op("store_var", None, Some("_bb2_arg0"), &["zero"]),
-            op("store_var", None, Some("_bb2_arg0"), &["none_value"]),
-            op("load_var", Some("_v19"), Some("_bb2_arg0"), &[]),
-            op("add", Some("next"), None, &["one", "one"]),
-            op("store_var", None, Some("_v19"), &["next"]),
-            op("copy_var", Some("after"), None, &["_v19"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("_bb2_arg0"),
+                &["zero"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("_bb2_arg0"),
+                &["none_value"],
+            ),
+            op(
+                molt_ir::OpKind::LoadVar,
+                Some("_v19"),
+                Some("_bb2_arg0"),
+                &[],
+            ),
+            op(molt_ir::OpKind::Add, Some("next"), None, &["one", "one"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("_v19"), &["next"]),
+            op(molt_ir::OpKind::CopyVar, Some("after"), None, &["_v19"]),
         ],
     );
 
@@ -821,9 +932,14 @@ fn pending_store_target_dominates_same_name_alias_output() {
         None,
         vec![
             const_int("one", 1),
-            op("copy_var", Some("slot"), None, &["one"]),
-            op("store_var", None, Some("slot"), &["unproven_source"]),
-            op("copy_var", Some("after"), None, &["slot"]),
+            op(molt_ir::OpKind::CopyVar, Some("slot"), None, &["one"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("slot"),
+                &["unproven_source"],
+            ),
+            op(molt_ir::OpKind::CopyVar, Some("after"), None, &["slot"]),
         ],
     );
 
@@ -848,8 +964,13 @@ fn pending_store_target_remains_relevant_for_same_name_alias_output() {
         None,
         vec![
             const_int("one", 1),
-            op("copy_var", Some("slot"), None, &["one"]),
-            op("store_var", None, Some("slot"), &["unproven_source"]),
+            op(molt_ir::OpKind::CopyVar, Some("slot"), None, &["one"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("slot"),
+                &["unproven_source"],
+            ),
         ],
     );
 
@@ -870,10 +991,15 @@ fn pending_alias_source_blocks_store_target_reinsert_loop() {
         None,
         vec![
             const_int("one", 1),
-            op("store_var", None, Some("loop_slot"), &["unproven_source"]),
-            op("load_var", Some("iv"), Some("loop_slot"), &[]),
-            op("store_var", None, Some("iv"), &["one"]),
-            op("copy_var", Some("after"), None, &["iv"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("loop_slot"),
+                &["unproven_source"],
+            ),
+            op(molt_ir::OpKind::LoadVar, Some("iv"), Some("loop_slot"), &[]),
+            op(molt_ir::OpKind::StoreVar, None, Some("iv"), &["one"]),
+            op(molt_ir::OpKind::CopyVar, Some("after"), None, &["iv"]),
         ],
     );
 
@@ -893,26 +1019,41 @@ fn pending_alias_source_blocks_store_target_reinsert_loop() {
 #[test]
 fn iter_next_done_flag_uses_fused_bool_fact() {
     let done_index = const_int("done_index", 1);
-    let done = op("index", Some("done_flag"), None, &["pair", "done_index"]);
+    let done = op(
+        molt_ir::OpKind::Index,
+        Some("done_flag"),
+        None,
+        &["pair", "done_index"],
+    );
     let value_index = const_int("value_index", 0);
-    let value = op("index", Some("next_value"), None, &["pair", "value_index"]);
+    let value = op(
+        molt_ir::OpKind::Index,
+        Some("next_value"),
+        None,
+        &["pair", "value_index"],
+    );
     let func = function(
         "iter_next_done_flag",
         &["items"],
         None,
         vec![
-            op("iter", Some("iter_obj"), None, &["items"]),
-            op("loop_start", None, None, &[]),
-            op("iter_next", Some("pair"), None, &["iter_obj"]),
+            op(molt_ir::OpKind::Iter, Some("iter_obj"), None, &["items"]),
+            op(molt_ir::OpKind::LoopStart, None, None, &[]),
+            op(molt_ir::OpKind::IterNext, Some("pair"), None, &["iter_obj"]),
             done_index,
             done.clone(),
-            op("loop_break_if_true", None, None, &["done_flag"]),
+            op(molt_ir::OpKind::LoopBreakIfTrue, None, None, &["done_flag"]),
             value_index,
             value,
-            op("module_cache_set", None, None, &["next_value", "items"]),
-            op("loop_continue", None, None, &[]),
-            op("loop_end", None, None, &[]),
-            op("ret_void", None, None, &[]),
+            op(
+                molt_ir::OpKind::ModuleCacheSet,
+                None,
+                None,
+                &["next_value", "items"],
+            ),
+            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
+            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
+            op(molt_ir::OpKind::RetVoid, None, None, &[]),
         ],
     );
     let plan = native_representation_plan(&func);
@@ -944,9 +1085,9 @@ fn input_producer_identity_is_separate_from_injective_lowered_names() {
             vec![
                 const_bool("value", true),
                 if returned {
-                    op("ret", None, None, &["value"])
+                    op(molt_ir::OpKind::Ret, None, None, &["value"])
                 } else {
-                    op("ret_void", None, None, &[])
+                    op(molt_ir::OpKind::RetVoid, None, None, &[])
                 },
             ],
         );
@@ -999,8 +1140,8 @@ fn constructor_fact_repair_cannot_override_ambiguous_source_identity() {
         &["value"],
         None,
         vec![
-            op("list_new", Some("value"), None, &[]),
-            op("ret", None, None, &["value"]),
+            op(molt_ir::OpKind::ListNew, Some("value"), None, &[]),
+            op(molt_ir::OpKind::Ret, None, None, &["value"]),
         ],
     );
     let source_plan = native_representation_plan(&source);
@@ -1013,7 +1154,7 @@ fn constructor_fact_repair_cannot_override_ambiguous_source_identity() {
     let lowered_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
     let produced = lowered_ops
         .iter()
-        .find(|op| op.kind == "list_new")
+        .find(|op| op.kind == molt_ir::OpKind::ListNew)
         .unwrap()
         .out
         .clone()
@@ -1062,7 +1203,7 @@ fn plan_uses_entry_param_names_as_scalar_facts() {
         "typed_params",
         &["x", "flag"],
         Some(vec!["int", "bool"]),
-        vec![op("ret", None, Some("x"), &[])],
+        vec![op(molt_ir::OpKind::Ret, None, Some("x"), &[])],
     );
 
     let (int_like, bool_like, _, _, _) = native_representation_plan(&func).scalar_name_sets();
@@ -1080,9 +1221,9 @@ fn plan_propagates_store_targets_only_when_all_sources_match() {
         vec![
             const_int("i", 1),
             const_bool("b", true),
-            op("store_var", None, Some("slot"), &["i"]),
-            op("store_var", None, Some("slot"), &["b"]),
-            op("ret", None, Some("slot"), &[]),
+            op(molt_ir::OpKind::StoreVar, None, Some("slot"), &["i"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("slot"), &["b"]),
+            op(molt_ir::OpKind::Ret, None, Some("slot"), &[]),
         ],
     );
     let (int_like, bool_like, _, _, _) = native_representation_plan(&mixed).scalar_name_sets();
@@ -1095,8 +1236,8 @@ fn plan_propagates_store_targets_only_when_all_sources_match() {
         None,
         vec![
             const_int("i", 1),
-            op("store_var", None, Some("slot"), &["i"]),
-            op("ret", None, Some("slot"), &[]),
+            op(molt_ir::OpKind::StoreVar, None, Some("slot"), &["i"]),
+            op(molt_ir::OpKind::Ret, None, Some("slot"), &[]),
         ],
     );
     let (int_like, _, _, _, _) = native_representation_plan(&uniform).scalar_name_sets();
@@ -1110,9 +1251,14 @@ fn unknown_store_target_blocks_alias_output_reinsertion() {
         &[],
         None,
         vec![
-            op("store_var", None, Some("slot"), &["unknown_source"]),
-            op("copy", Some("slot"), None, &["seed"]),
-            op("load_var", Some("loaded"), Some("slot"), &[]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("slot"),
+                &["unknown_source"],
+            ),
+            op(molt_ir::OpKind::Copy, Some("slot"), None, &["seed"]),
+            op(molt_ir::OpKind::LoadVar, Some("loaded"), Some("slot"), &[]),
         ],
     );
     let fact_index = FunctionFactIndex::for_function(&func);
@@ -1141,7 +1287,7 @@ fn unknown_store_target_blocks_alias_output_reinsertion() {
 
 #[test]
 fn generic_type_hint_does_not_seed_plan_scalar_fact() {
-    let mut generic = op("call", Some("maybe_int"), None, &[]);
+    let mut generic = op(molt_ir::OpKind::Call, Some("maybe_int"), None, &[]);
     generic.type_hint = Some("int".to_string());
     let func = function("generic_hint", &[], None, vec![generic]);
 
@@ -1158,9 +1304,19 @@ fn integer_family_preserves_boxed_unbounded_arithmetic_lane() {
         Some(vec!["int"]),
         vec![
             const_int("factor", 3_266_489_917),
-            op("mul", Some("wide"), None, &["seed", "factor"]),
+            op(
+                molt_ir::OpKind::Mul,
+                Some("wide"),
+                None,
+                &["seed", "factor"],
+            ),
             const_int("mask", 7),
-            op("bit_or", Some("masked"), None, &["wide", "mask"]),
+            op(
+                molt_ir::OpKind::BitOr,
+                Some("masked"),
+                None,
+                &["wide", "mask"],
+            ),
         ],
     );
 
@@ -1186,9 +1342,19 @@ fn primary_int_names_admit_bounded_arithmetic_range_proof() {
         vec![
             const_int("lhs", 5),
             const_int("rhs", 3),
-            op("bit_xor", Some("masked"), None, &["lhs", "rhs"]),
-            op("add", Some("sum"), None, &["lhs", "rhs"]),
-            op("lshift", Some("shifted"), None, &["lhs", "rhs"]),
+            op(
+                molt_ir::OpKind::BitXor,
+                Some("masked"),
+                None,
+                &["lhs", "rhs"],
+            ),
+            op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]),
+            op(
+                molt_ir::OpKind::Lshift,
+                Some("shifted"),
+                None,
+                &["lhs", "rhs"],
+            ),
         ],
     );
 
@@ -1208,7 +1374,7 @@ fn primary_int_names_exclude_unbounded_param_arithmetic_without_range_proof() {
         "int_primary_params",
         &["lhs", "rhs"],
         Some(vec!["int", "int"]),
-        vec![op("add", Some("sum"), None, &["lhs", "rhs"])],
+        vec![op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"])],
     );
 
     let plan = native_representation_plan(&func);
@@ -1228,7 +1394,7 @@ fn primary_int_names_exclude_arithmetic_that_can_overflow_i64() {
         vec![
             const_int("lhs", i64::MAX),
             const_int("rhs", 1),
-            op("add", Some("sum"), None, &["lhs", "rhs"]),
+            op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]),
         ],
     );
 
@@ -1249,16 +1415,31 @@ fn counted_store_load_loop_proves_bounded_i64_add() {
             const_int("init", 0),
             const_int("one", 1),
             const_int("stop", 1_000_000),
-            op("store_var", None, Some("i"), &["init"]),
-            op("loop_start", None, None, &[]),
-            op("load_var", Some("i_cur"), Some("i"), &[]),
-            op("lt", Some("keep_going"), None, &["i_cur", "stop"]),
-            op("loop_break_if_false", None, None, &["keep_going"]),
-            op("add", Some("i_next"), None, &["i_cur", "one"]),
-            op("store_var", None, Some("i"), &["i_next"]),
-            op("loop_continue", None, None, &[]),
-            op("loop_end", None, None, &[]),
-            op("load_var", Some("i_after"), Some("i"), &[]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["init"]),
+            op(molt_ir::OpKind::LoopStart, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_cur"), Some("i"), &[]),
+            op(
+                molt_ir::OpKind::Lt,
+                Some("keep_going"),
+                None,
+                &["i_cur", "stop"],
+            ),
+            op(
+                molt_ir::OpKind::LoopBreakIfFalse,
+                None,
+                None,
+                &["keep_going"],
+            ),
+            op(
+                molt_ir::OpKind::Add,
+                Some("i_next"),
+                None,
+                &["i_cur", "one"],
+            ),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["i_next"]),
+            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
+            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_after"), Some("i"), &[]),
         ],
     );
 
@@ -1280,15 +1461,30 @@ fn mismatched_counted_loop_direction_does_not_prove_update_range() {
             const_int("init", 0),
             const_int("one", 1),
             const_int("stop", 1_000_000),
-            op("store_var", None, Some("i"), &["init"]),
-            op("loop_start", None, None, &[]),
-            op("load_var", Some("i_cur"), Some("i"), &[]),
-            op("gt", Some("keep_going"), None, &["i_cur", "stop"]),
-            op("loop_break_if_false", None, None, &["keep_going"]),
-            op("add", Some("i_next"), None, &["i_cur", "one"]),
-            op("store_var", None, Some("i"), &["i_next"]),
-            op("loop_continue", None, None, &[]),
-            op("loop_end", None, None, &[]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["init"]),
+            op(molt_ir::OpKind::LoopStart, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_cur"), Some("i"), &[]),
+            op(
+                molt_ir::OpKind::Gt,
+                Some("keep_going"),
+                None,
+                &["i_cur", "stop"],
+            ),
+            op(
+                molt_ir::OpKind::LoopBreakIfFalse,
+                None,
+                None,
+                &["keep_going"],
+            ),
+            op(
+                molt_ir::OpKind::Add,
+                Some("i_next"),
+                None,
+                &["i_cur", "one"],
+            ),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["i_next"]),
+            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
+            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
         ],
     );
 
@@ -1309,25 +1505,50 @@ fn bool_primary_projection_is_tir_value_owned() {
             const_int("lhs", 1),
             const_int("rhs", 2),
             const_bool("flag", true),
-            op("copy_var", Some("flag_copy"), Some("flag"), &[]),
-            op("eq", Some("cmp"), None, &["lhs", "rhs"]),
-            op("not", Some("negated"), None, &["cmp"]),
             op(
-                "checked_add",
+                molt_ir::OpKind::CopyVar,
+                Some("flag_copy"),
+                Some("flag"),
+                &[],
+            ),
+            op(molt_ir::OpKind::Eq, Some("cmp"), None, &["lhs", "rhs"]),
+            op(molt_ir::OpKind::Not, Some("negated"), None, &["cmp"]),
+            op(
+                molt_ir::OpKind::CheckedAdd,
                 Some("add_overflow"),
                 Some("sum"),
                 &["lhs", "rhs"],
             ),
             op(
-                "checked_mul",
+                molt_ir::OpKind::CheckedMul,
                 Some("mul_overflow"),
                 Some("product"),
                 &["lhs", "rhs"],
             ),
-            op("and", Some("both"), None, &["flag_copy", "add_overflow"]),
-            op("or", Some("either"), None, &["both", "mul_overflow"]),
-            op("copy", Some("either_copy"), None, &["either"]),
-            op("index", Some("opaque_result"), None, &["flag", "lhs"]),
+            op(
+                molt_ir::OpKind::And,
+                Some("both"),
+                None,
+                &["flag_copy", "add_overflow"],
+            ),
+            op(
+                molt_ir::OpKind::Or,
+                Some("either"),
+                None,
+                &["both", "mul_overflow"],
+            ),
+            op(
+                molt_ir::OpKind::Copy,
+                Some("either_copy"),
+                None,
+                &["either"],
+            ),
+            op(
+                molt_ir::OpKind::Index,
+                Some("opaque_result"),
+                None,
+                &["flag", "lhs"],
+            ),
         ],
     );
 
@@ -1368,7 +1589,7 @@ fn bool_primary_projection_is_tir_value_owned() {
 
 #[test]
 fn scalar_lane_does_not_classify_unbounded_int_pow_as_inline_int() {
-    let pow = op("pow", Some("powv"), None, &["base", "exp"]);
+    let pow = op(molt_ir::OpKind::Pow, Some("powv"), None, &["base", "exp"]);
     let func = function(
         "int_pow",
         &["base", "exp"],
@@ -1383,7 +1604,7 @@ fn scalar_lane_does_not_classify_unbounded_int_pow_as_inline_int() {
 
 #[test]
 fn transport_hints_do_not_prove_scalar_representation() {
-    let mut add = op("add", Some("sum"), None, &["lhs", "rhs"]);
+    let mut add = op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]);
     add.type_hint = Some("int".to_string());
     let func = function("hinted_add", &["lhs", "rhs"], None, vec![add.clone()]);
 
@@ -1396,8 +1617,8 @@ fn transport_hints_do_not_prove_scalar_representation() {
 
 #[test]
 fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
-    let add = op("add", Some("sum"), None, &["lhs", "rhs"]);
-    let mul = op("mul", Some("product"), None, &["lhs", "rhs"]);
+    let add = op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]);
+    let mul = op(molt_ir::OpKind::Mul, Some("product"), None, &["lhs", "rhs"]);
     let func = function(
         "typed_add",
         &["lhs", "rhs"],
@@ -1419,10 +1640,15 @@ fn typed_operands_prove_integer_runtime_lane_without_transport_hints() {
 fn const_numeric_ops_prove_direct_numeric_result_lanes() {
     let const_lhs = const_int("lhs", 2);
     let const_rhs = const_int("rhs", 3);
-    let add = op("add", Some("sum"), None, &["lhs", "rhs"]);
+    let add = op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]);
     let f_lhs = const_float("f_lhs", 1.25);
     let f_rhs = const_float("f_rhs", 2.5);
-    let f_add = op("add", Some("f_sum"), None, &["f_lhs", "f_rhs"]);
+    let f_add = op(
+        molt_ir::OpKind::Add,
+        Some("f_sum"),
+        None,
+        &["f_lhs", "f_rhs"],
+    );
     let func = function(
         "const_numeric_ops",
         &[],
@@ -1448,10 +1674,15 @@ fn const_numeric_ops_prove_direct_numeric_result_lanes() {
 
 #[test]
 fn direct_numeric_repr_uses_current_producer_not_durable_source_index() {
-    let mut safe_add = op("add", Some("safe_sum"), None, &["lhs", "rhs"]);
+    let mut safe_add = op(
+        molt_ir::OpKind::Add,
+        Some("safe_sum"),
+        None,
+        &["lhs", "rhs"],
+    );
     safe_add.source_op_idx = Some(5);
     let unproven_add = op(
-        "add",
+        molt_ir::OpKind::Add,
         Some("unproven_sum"),
         None,
         &["unknown_lhs", "unknown_rhs"],
@@ -1481,7 +1712,7 @@ fn direct_numeric_repr_uses_current_producer_not_durable_source_index() {
 
 #[test]
 fn duplicate_output_producers_block_direct_numeric_projection() {
-    let add = op("add", Some("rebound"), None, &["lhs", "rhs"]);
+    let add = op(molt_ir::OpKind::Add, Some("rebound"), None, &["lhs", "rhs"]);
     let func = function(
         "ambiguous_numeric_producer",
         &["fallback"],
@@ -1490,7 +1721,7 @@ fn duplicate_output_producers_block_direct_numeric_projection() {
             const_int("lhs", 2),
             const_int("rhs", 3),
             add.clone(),
-            op("copy", Some("rebound"), None, &["fallback"]),
+            op(molt_ir::OpKind::Copy, Some("rebound"), None, &["fallback"]),
         ],
     );
 
@@ -1501,7 +1732,12 @@ fn duplicate_output_producers_block_direct_numeric_projection() {
 
 #[test]
 fn returned_counted_loop_retains_direct_add_op_repr() {
-    let add = op("add", Some("i_next"), None, &["i_cur", "one"]);
+    let add = op(
+        molt_ir::OpKind::Add,
+        Some("i_next"),
+        None,
+        &["i_cur", "one"],
+    );
     let mut func = function(
         "returned_counted_store_load_loop",
         &[],
@@ -1510,17 +1746,27 @@ fn returned_counted_loop_retains_direct_add_op_repr() {
             const_int("init", 0),
             const_int("one", 1),
             const_int("stop", 1_000_000),
-            op("store_var", None, Some("i"), &["init"]),
-            op("loop_start", None, None, &[]),
-            op("load_var", Some("i_cur"), Some("i"), &[]),
-            op("lt", Some("keep_going"), None, &["i_cur", "stop"]),
-            op("loop_break_if_false", None, None, &["keep_going"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["init"]),
+            op(molt_ir::OpKind::LoopStart, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_cur"), Some("i"), &[]),
+            op(
+                molt_ir::OpKind::Lt,
+                Some("keep_going"),
+                None,
+                &["i_cur", "stop"],
+            ),
+            op(
+                molt_ir::OpKind::LoopBreakIfFalse,
+                None,
+                None,
+                &["keep_going"],
+            ),
             add.clone(),
-            op("store_var", None, Some("i"), &["i_next"]),
-            op("loop_continue", None, None, &[]),
-            op("loop_end", None, None, &[]),
-            op("load_var", Some("i_after"), Some("i"), &[]),
-            op("ret", None, Some("i_after"), &["i_after"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["i_next"]),
+            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
+            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_after"), Some("i"), &[]),
+            op(molt_ir::OpKind::Ret, None, Some("i_after"), &["i_after"]),
         ],
     );
 
@@ -1541,7 +1787,12 @@ fn returned_counted_loop_retains_direct_add_op_repr() {
 
 #[test]
 fn counted_loop_transfer_boundaries_preserve_native_and_wasm_scalar_facts() {
-    let add = op("add", Some("i_next"), None, &["i_view", "one"]);
+    let add = op(
+        molt_ir::OpKind::Add,
+        Some("i_next"),
+        None,
+        &["i_view", "one"],
+    );
     let func = function(
         "checked_counted_alias_loop",
         &[],
@@ -1550,22 +1801,32 @@ fn counted_loop_transfer_boundaries_preserve_native_and_wasm_scalar_facts() {
             const_int("init", 0),
             const_int("one", 1),
             const_int("stop", 1_000_000),
-            op("store_var", None, Some("i"), &["init"]),
-            op("loop_start", None, None, &[]),
-            op("load_var", Some("i_cur"), Some("i"), &[]),
-            op("copy", Some("i_view"), None, &["i_cur"]),
-            op("lt", Some("keep_going"), None, &["i_view", "stop"]),
-            op("check_exception", None, None, &[]),
-            op("loop_break_if_false", None, None, &["keep_going"]),
-            op("check_exception", None, None, &[]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["init"]),
+            op(molt_ir::OpKind::LoopStart, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_cur"), Some("i"), &[]),
+            op(molt_ir::OpKind::Copy, Some("i_view"), None, &["i_cur"]),
+            op(
+                molt_ir::OpKind::Lt,
+                Some("keep_going"),
+                None,
+                &["i_view", "stop"],
+            ),
+            op(molt_ir::OpKind::CheckException, None, None, &[]),
+            op(
+                molt_ir::OpKind::LoopBreakIfFalse,
+                None,
+                None,
+                &["keep_going"],
+            ),
+            op(molt_ir::OpKind::CheckException, None, None, &[]),
             add.clone(),
-            op("copy", Some("next_view"), None, &["i_next"]),
-            op("store_var", None, Some("i"), &["next_view"]),
-            op("check_exception", None, None, &[]),
-            op("loop_continue", None, None, &[]),
-            op("loop_end", None, None, &[]),
-            op("load_var", Some("i_after"), Some("i"), &[]),
-            op("ret", None, Some("i_after"), &["i_after"]),
+            op(molt_ir::OpKind::Copy, Some("next_view"), None, &["i_next"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["next_view"]),
+            op(molt_ir::OpKind::CheckException, None, None, &[]),
+            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
+            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("i_after"), Some("i"), &[]),
+            op(molt_ir::OpKind::Ret, None, Some("i_after"), &["i_after"]),
         ],
     );
     for target in [
@@ -1589,8 +1850,13 @@ fn counted_loop_transfer_boundaries_preserve_native_and_wasm_scalar_facts() {
 
 #[test]
 fn list_repeat_does_not_take_integer_runtime_lane() {
-    let list_new = op("list_new", Some("items"), None, &["item"]);
-    let repeat = op("mul", Some("repeated"), None, &["items", "count"]);
+    let list_new = op(molt_ir::OpKind::ListNew, Some("items"), None, &["item"]);
+    let repeat = op(
+        molt_ir::OpKind::Mul,
+        Some("repeated"),
+        None,
+        &["items", "count"],
+    );
     let func = function(
         "list_repeat",
         &["item", "count"],
@@ -1607,7 +1873,7 @@ fn list_repeat_does_not_take_integer_runtime_lane() {
 
 #[test]
 fn scalar_lane_keeps_float_pow_on_float_lane() {
-    let pow = op("pow", Some("powv"), None, &["base", "exp"]);
+    let pow = op(molt_ir::OpKind::Pow, Some("powv"), None, &["base", "exp"]);
     let func = function(
         "float_pow",
         &["base", "exp"],
@@ -1628,31 +1894,56 @@ fn scalar_store_targets_are_plan_owned_and_all_sources() {
         None,
         vec![
             const_int("i_seed", 7),
-            op("copy_var", Some("i_copy"), None, &["i_seed"]),
-            op("store_var", None, Some("i_slot"), &["i_copy"]),
+            op(molt_ir::OpKind::CopyVar, Some("i_copy"), None, &["i_seed"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i_slot"), &["i_copy"]),
             const_float("f_seed", 1.25),
-            op("copy_var", Some("f_copy"), Some("f_seed"), &[]),
-            op("store_var", None, Some("f_slot"), &["f_copy"]),
+            op(
+                molt_ir::OpKind::CopyVar,
+                Some("f_copy"),
+                Some("f_seed"),
+                &[],
+            ),
+            op(molt_ir::OpKind::StoreVar, None, Some("f_slot"), &["f_copy"]),
             const_bool("b_seed", true),
-            op("identity_alias", Some("b_copy"), None, &["b_seed"]),
-            op("store_var", None, Some("b_slot"), &["b_copy"]),
+            op(
+                molt_ir::OpKind::IdentityAlias,
+                Some("b_copy"),
+                None,
+                &["b_seed"],
+            ),
+            op(molt_ir::OpKind::StoreVar, None, Some("b_slot"), &["b_copy"]),
             OpIR {
-                kind: "const_str".to_string(),
+                kind: molt_ir::OpKind::ConstStr,
                 out: Some("s_seed".to_string()),
                 s_value: Some("lane".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
-            op("copy", Some("s_copy"), None, &["s_seed"]),
-            op("store_var", None, Some("s_slot"), &["s_copy"]),
-            op("store_var", None, Some("mixed_slot"), &["i_seed"]),
-            op("store_var", None, Some("mixed_slot"), &["f_seed"]),
+            op(molt_ir::OpKind::Copy, Some("s_copy"), None, &["s_seed"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("s_slot"), &["s_copy"]),
             op(
-                "call_indirect",
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("mixed_slot"),
+                &["i_seed"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("mixed_slot"),
+                &["f_seed"],
+            ),
+            op(
+                molt_ir::OpKind::CallIndirect,
                 Some("dynamic"),
                 None,
                 &["callable", "args"],
             ),
-            op("store_var", None, Some("dynamic_slot"), &["dynamic"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("dynamic_slot"),
+                &["dynamic"],
+            ),
         ],
     );
 
@@ -1683,39 +1974,74 @@ fn raw_loop_iv_copy_used_by_object_ops_stays_primary_until_escape() {
         &[],
         None,
         vec![
-            op("missing", Some("missing_i"), None, &[]),
-            op("store_var", None, Some("i"), &["missing_i"]),
-            op("copy_var", Some("missing_copy"), None, &["missing_i"]),
+            op(molt_ir::OpKind::Missing, Some("missing_i"), None, &[]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["missing_i"]),
+            op(
+                molt_ir::OpKind::CopyVar,
+                Some("missing_copy"),
+                None,
+                &["missing_i"],
+            ),
             const_int("stop", 3),
             const_int("zero", 0),
             const_int("one", 1),
-            op("copy_var", Some("zero_copy"), None, &["zero"]),
-            op("store_var", None, Some("_bb1_arg0"), &["zero_copy"]),
-            op("store_var", None, Some("_bb1_arg1"), &["missing_copy"]),
-            op("loop_start", None, None, &[]),
-            op("load_var", Some("iv"), Some("_bb1_arg0"), &[]),
-            op("load_var", Some("carried_obj"), Some("_bb1_arg1"), &[]),
-            op("lt", Some("cond"), None, &["iv", "stop"]),
-            op("loop_break_if_false", None, None, &["cond"]),
-            op("store_var", None, Some("i"), &["iv"]),
-            op("copy_var", Some("escaped_iv"), None, &["iv"]),
-            op("check_exception", None, None, &[]),
-            op("type_of", Some("ty"), None, &["escaped_iv"]),
-            op("check_exception", None, None, &[]),
-            op("str_from_obj", Some("text"), None, &["escaped_iv"]),
+            op(molt_ir::OpKind::CopyVar, Some("zero_copy"), None, &["zero"]),
             op(
-                "exception_new_builtin_one",
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("_bb1_arg0"),
+                &["zero_copy"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("_bb1_arg1"),
+                &["missing_copy"],
+            ),
+            op(molt_ir::OpKind::LoopStart, None, None, &[]),
+            op(molt_ir::OpKind::LoadVar, Some("iv"), Some("_bb1_arg0"), &[]),
+            op(
+                molt_ir::OpKind::LoadVar,
+                Some("carried_obj"),
+                Some("_bb1_arg1"),
+                &[],
+            ),
+            op(molt_ir::OpKind::Lt, Some("cond"), None, &["iv", "stop"]),
+            op(molt_ir::OpKind::LoopBreakIfFalse, None, None, &["cond"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["iv"]),
+            op(molt_ir::OpKind::CopyVar, Some("escaped_iv"), None, &["iv"]),
+            op(molt_ir::OpKind::CheckException, None, None, &[]),
+            op(molt_ir::OpKind::TypeOf, Some("ty"), None, &["escaped_iv"]),
+            op(molt_ir::OpKind::CheckException, None, None, &[]),
+            op(
+                molt_ir::OpKind::StrFromObj,
+                Some("text"),
+                None,
+                &["escaped_iv"],
+            ),
+            op(
+                molt_ir::OpKind::ExceptionNewBuiltinOne,
                 Some("exc"),
                 None,
                 &["escaped_iv"],
             ),
-            op("add", Some("next"), None, &["iv", "one"]),
-            op("store_var", None, Some("iv"), &["next"]),
-            op("copy_var", Some("next_copy"), None, &["next"]),
-            op("store_var", None, Some("_bb1_arg0"), &["next_copy"]),
-            op("store_var", None, Some("_bb1_arg1"), &["escaped_iv"]),
-            op("loop_continue", None, None, &[]),
-            op("loop_end", None, None, &[]),
+            op(molt_ir::OpKind::Add, Some("next"), None, &["iv", "one"]),
+            op(molt_ir::OpKind::StoreVar, None, Some("iv"), &["next"]),
+            op(molt_ir::OpKind::CopyVar, Some("next_copy"), None, &["next"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("_bb1_arg0"),
+                &["next_copy"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("_bb1_arg1"),
+                &["escaped_iv"],
+            ),
+            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
+            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
         ],
     );
 
@@ -1739,10 +2065,15 @@ fn float_primary_scope_excludes_pow_without_disabling_unrelated_float_defs() {
         vec![
             const_float("base", 2.0),
             const_float("exp", 3.0),
-            op("pow", Some("pow_result"), None, &["base", "exp"]),
-            op("add", Some("sum"), None, &["base", "exp"]),
-            op("copy_var", Some("sum_copy"), Some("sum"), &[]),
-            op("copy_var", Some("param_copy"), Some("p"), &[]),
+            op(
+                molt_ir::OpKind::Pow,
+                Some("pow_result"),
+                None,
+                &["base", "exp"],
+            ),
+            op(molt_ir::OpKind::Add, Some("sum"), None, &["base", "exp"]),
+            op(molt_ir::OpKind::CopyVar, Some("sum_copy"), Some("sum"), &[]),
+            op(molt_ir::OpKind::CopyVar, Some("param_copy"), Some("p"), &[]),
         ],
     );
 
@@ -1770,10 +2101,25 @@ fn float_primary_store_targets_require_all_sources() {
         None,
         vec![
             const_float("f_seed", 1.5),
-            op("store_var", None, Some("float_slot"), &["f_seed"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("float_slot"),
+                &["f_seed"],
+            ),
             const_int("i_seed", 2),
-            op("store_var", None, Some("mixed_slot"), &["f_seed"]),
-            op("store_var", None, Some("mixed_slot"), &["i_seed"]),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("mixed_slot"),
+                &["f_seed"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("mixed_slot"),
+                &["i_seed"],
+            ),
         ],
     );
 
@@ -1792,29 +2138,59 @@ fn scalar_primary_excludes_missing_sentinel_store_sources() {
         None,
         vec![
             const_int("i_seed", 7),
-            op("store_var", None, Some("int_slot"), &["i_seed"]),
-            op("store_var", None, Some("maybe_int_slot"), &["i_seed"]),
-            const_bool("b_seed", true),
-            op("store_var", None, Some("bool_slot"), &["b_seed"]),
-            op("store_var", None, Some("maybe_bool_slot"), &["b_seed"]),
-            const_float("f_seed", 1.5),
-            op("store_var", None, Some("float_slot"), &["f_seed"]),
-            op("store_var", None, Some("maybe_float_slot"), &["f_seed"]),
-            op("missing", Some("missing_value"), None, &[]),
             op(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("int_slot"),
+                &["i_seed"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("maybe_int_slot"),
+                &["i_seed"],
+            ),
+            const_bool("b_seed", true),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("bool_slot"),
+                &["b_seed"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("maybe_bool_slot"),
+                &["b_seed"],
+            ),
+            const_float("f_seed", 1.5),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("float_slot"),
+                &["f_seed"],
+            ),
+            op(
+                molt_ir::OpKind::StoreVar,
+                None,
+                Some("maybe_float_slot"),
+                &["f_seed"],
+            ),
+            op(molt_ir::OpKind::Missing, Some("missing_value"), None, &[]),
+            op(
+                molt_ir::OpKind::StoreVar,
                 None,
                 Some("maybe_int_slot"),
                 &["missing_value"],
             ),
             op(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 None,
                 Some("maybe_bool_slot"),
                 &["missing_value"],
             ),
             op(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 None,
                 Some("maybe_float_slot"),
                 &["missing_value"],
@@ -1844,8 +2220,8 @@ fn cold_module_chunk_functions_keep_semantic_facts_without_primary_carriers() {
         vec![
             const_int("value", 1),
             const_bool("flag", true),
-            op("list_new", Some("items"), None, &["value"]),
-            op("const_none", Some("nothing"), None, &[]),
+            op(molt_ir::OpKind::ListNew, Some("items"), None, &["value"]),
+            op(molt_ir::OpKind::ConstNone, Some("nothing"), None, &[]),
         ],
     );
 
@@ -1876,33 +2252,48 @@ fn cold_module_chunk_functions_keep_semantic_facts_without_primary_carriers() {
 #[test]
 fn cold_non_numeric_plans_match_the_former_eager_optimized_view() {
     let string = |name: &str, value: &str| OpIR {
-        kind: "const_str".to_string(),
+        kind: molt_ir::OpKind::ConstStr,
         out: Some(name.to_string()),
         s_value: Some(value.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstStr)
     };
     let cases = [
         vec![
             string("key", "name"),
             string("value", "text"),
-            op("dict_new", Some("mapping"), None, &["key", "value"]),
-            op("store_var", None, Some("saved"), &["mapping"]),
-            op("load_var", Some("restored"), Some("saved"), &[]),
+            op(
+                molt_ir::OpKind::DictNew,
+                Some("mapping"),
+                None,
+                &["key", "value"],
+            ),
+            op(molt_ir::OpKind::StoreVar, None, Some("saved"), &["mapping"]),
+            op(
+                molt_ir::OpKind::LoadVar,
+                Some("restored"),
+                Some("saved"),
+                &[],
+            ),
         ],
         vec![
             const_int("value", 7),
             const_bool("flag", true),
-            op("list_new", Some("items"), None, &["value"]),
-            op("copy", Some("alias"), None, &["items"]),
-            op("const_none", Some("nothing"), None, &[]),
+            op(molt_ir::OpKind::ListNew, Some("items"), None, &["value"]),
+            op(molt_ir::OpKind::Copy, Some("alias"), None, &["items"]),
+            op(molt_ir::OpKind::ConstNone, Some("nothing"), None, &[]),
         ],
         vec![
             const_int("n", 4),
             const_int("fill", 7),
             const_int("i", 0),
-            op("list_int_new", Some("items"), None, &["n", "fill"]),
-            op("copy", Some("alias"), None, &["items"]),
-            op("index", Some("read"), None, &["alias", "i"]),
+            op(
+                molt_ir::OpKind::ListIntNew,
+                Some("items"),
+                None,
+                &["n", "fill"],
+            ),
+            op(molt_ir::OpKind::Copy, Some("alias"), None, &["items"]),
+            op(molt_ir::OpKind::Index, Some("read"), None, &["alias", "i"]),
         ],
     ];
     for target in [
@@ -1943,7 +2334,12 @@ fn cold_non_numeric_plans_match_the_former_eager_optimized_view() {
                     Some(ContainerKind::Dict)
                 );
             } else {
-                assert!(plan.op_has_exact_builtin_list(&op("index", None, None, &["alias", "i"],)));
+                assert!(plan.op_has_exact_builtin_list(&op(
+                    molt_ir::OpKind::Index,
+                    None,
+                    None,
+                    &["alias", "i"],
+                )));
                 if case == 2 {
                     assert_eq!(
                         plan.name_container_storage_kind("alias"),
@@ -1957,9 +2353,19 @@ fn cold_non_numeric_plans_match_the_former_eager_optimized_view() {
 
 #[test]
 fn cold_numeric_results_retain_direct_carriers_without_primary_names() {
-    let add = op("add", Some("sum"), None, &["lhs", "rhs"]);
-    let float_add = op("add", Some("float_sum"), None, &["float_lhs", "float_rhs"]);
-    let dynamic_add = op("add", Some("unknown_sum"), None, &["unknown", "rhs"]);
+    let add = op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]);
+    let float_add = op(
+        molt_ir::OpKind::Add,
+        Some("float_sum"),
+        None,
+        &["float_lhs", "float_rhs"],
+    );
+    let dynamic_add = op(
+        molt_ir::OpKind::Add,
+        Some("unknown_sum"),
+        None,
+        &["unknown", "rhs"],
+    );
     let function = function(
         "__molt_module_chunk_numeric",
         &["unknown"],
@@ -1993,14 +2399,21 @@ fn cold_numeric_results_retain_direct_carriers_without_primary_names() {
 
 #[test]
 fn annotation_only_comparisons_do_not_mint_raw_bool_carriers() {
-    for comparison in ["eq", "ne", "lt", "le", "gt", "ge"] {
+    for comparison in [
+        molt_ir::OpKind::Eq,
+        molt_ir::OpKind::Ne,
+        molt_ir::OpKind::Lt,
+        molt_ir::OpKind::Le,
+        molt_ir::OpKind::Gt,
+        molt_ir::OpKind::Ge,
+    ] {
         let func = function(
             "annotation_comparison",
             &["lhs", "rhs"],
             Some(vec!["int", "int"]),
             vec![
                 op(comparison, Some("cmp"), None, &["lhs", "rhs"]),
-                op("not", Some("negated"), None, &["cmp"]),
+                op(molt_ir::OpKind::Not, Some("negated"), None, &["cmp"]),
             ],
         );
         let primary = native_representation_plan(&func).primary_name_sets();
@@ -2028,24 +2441,39 @@ fn annotation_only_scalar_aliases_remain_boxed_beside_exact_producers() {
             Some(vec![annotation]),
             vec![
                 seed,
-                op("copy", Some("exact_copy"), None, &["seed"]),
-                op("store_var", None, Some("exact_slot"), &["exact_copy"]),
-                op("load_var", Some("exact_load"), Some("exact_slot"), &[]),
-                op("copy", Some("parameter_copy"), None, &["parameter"]),
+                op(molt_ir::OpKind::Copy, Some("exact_copy"), None, &["seed"]),
                 op(
-                    "copy_var",
+                    molt_ir::OpKind::StoreVar,
+                    None,
+                    Some("exact_slot"),
+                    &["exact_copy"],
+                ),
+                op(
+                    molt_ir::OpKind::LoadVar,
+                    Some("exact_load"),
+                    Some("exact_slot"),
+                    &[],
+                ),
+                op(
+                    molt_ir::OpKind::Copy,
+                    Some("parameter_copy"),
+                    None,
+                    &["parameter"],
+                ),
+                op(
+                    molt_ir::OpKind::CopyVar,
                     Some("parameter_alias"),
                     Some("parameter_copy"),
                     &[],
                 ),
                 op(
-                    "store_var",
+                    molt_ir::OpKind::StoreVar,
                     None,
                     Some("parameter_slot"),
                     &["parameter_alias"],
                 ),
                 op(
-                    "load_var",
+                    molt_ir::OpKind::LoadVar,
                     Some("parameter_load"),
                     Some("parameter_slot"),
                     &[],
@@ -2093,7 +2521,12 @@ fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consume
             const_int("fill", 7),
             vec![
                 const_int("wide", 1_i64 << 62),
-                op("store_index", Some("after"), None, &["alias", "i", "wide"]),
+                op(
+                    molt_ir::OpKind::StoreIndex,
+                    Some("after"),
+                    None,
+                    &["alias", "i", "wide"],
+                ),
             ],
             false,
         ),
@@ -2103,7 +2536,7 @@ fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consume
             vec![
                 const_bool("boolean", true),
                 op(
-                    "store_index",
+                    molt_ir::OpKind::StoreIndex,
                     Some("after"),
                     None,
                     &["alias", "i", "boolean"],
@@ -2115,7 +2548,7 @@ fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consume
             "callback_key",
             const_int("fill", 7),
             vec![op(
-                "index",
+                molt_ir::OpKind::Index,
                 Some("callback_read"),
                 None,
                 &["alias", "callback"],
@@ -2125,7 +2558,12 @@ fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consume
         (
             "escape",
             const_int("fill", 7),
-            vec![op("call", Some("ignored"), None, &["callee", "alias"])],
+            vec![op(
+                molt_ir::OpKind::Call,
+                Some("ignored"),
+                None,
+                &["callee", "alias"],
+            )],
             false,
         ),
     ] {
@@ -2133,11 +2571,16 @@ fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consume
             const_int("n", 4),
             const_int("i", 0),
             fill,
-            op("list_int_new", Some("xs"), None, &["n", "fill"]),
-            op("copy", Some("alias"), None, &["xs"]),
+            op(
+                molt_ir::OpKind::ListIntNew,
+                Some("xs"),
+                None,
+                &["n", "fill"],
+            ),
+            op(molt_ir::OpKind::Copy, Some("alias"), None, &["xs"]),
         ];
         ops.extend(tail);
-        ops.push(op("index", Some("read"), None, &["xs", "i"]));
+        ops.push(op(molt_ir::OpKind::Index, Some("read"), None, &["xs", "i"]));
         let func = function(case, &["callback", "callee"], None, ops);
         let plan = native_representation_plan(&func);
         assert_eq!(
@@ -2159,10 +2602,14 @@ fn flat_storage_index_keys_require_exact_integers_not_inline_carriers() {
         ("inline", const_int("i", 0), true),
         ("wide", const_int("i", 1_i64 << 62), true),
         ("bool", const_bool("i", true), true),
-        ("annotation", op("copy", Some("i"), None, &["key"]), false),
+        (
+            "annotation",
+            op(molt_ir::OpKind::Copy, Some("i"), None, &["key"]),
+            false,
+        ),
     ] {
-        for access in ["index", "store_index"] {
-            let args = if access == "index" {
+        for access in [molt_ir::OpKind::Index, molt_ir::OpKind::StoreIndex] {
+            let args = if access == molt_ir::OpKind::Index {
                 vec!["xs", "i"]
             } else {
                 vec!["xs", "i", "fill"]
@@ -2174,7 +2621,12 @@ fn flat_storage_index_keys_require_exact_integers_not_inline_carriers() {
                 vec![
                     const_int("n", 4),
                     const_int("fill", 7),
-                    op("list_int_new", Some("xs"), None, &["n", "fill"]),
+                    op(
+                        molt_ir::OpKind::ListIntNew,
+                        Some("xs"),
+                        None,
+                        &["n", "fill"],
+                    ),
                     key.clone(),
                     op(access, Some("result"), None, &args),
                 ],
@@ -2206,13 +2658,18 @@ fn canonical_repeat_proves_singleton_aliases_before_publishing_flat_storage() {
                 const_int("n", 3),
                 const_int("i", 0),
                 const_int("fill", 7),
-                op("list_new", Some("source"), None, &["fill"]),
-                op("copy", Some("alias"), None, &["source"]),
+                op(molt_ir::OpKind::ListNew, Some("source"), None, &["fill"]),
+                op(molt_ir::OpKind::Copy, Some("alias"), None, &["source"]),
             ];
             if mutation {
                 ops.extend([
                     const_int("wide", 1_i64 << 62),
-                    op("store_index", Some("after"), None, &["alias", "i", "wide"]),
+                    op(
+                        molt_ir::OpKind::StoreIndex,
+                        Some("after"),
+                        None,
+                        &["alias", "i", "wide"],
+                    ),
                 ]);
             }
             let operands = if reverse {
@@ -2220,8 +2677,13 @@ fn canonical_repeat_proves_singleton_aliases_before_publishing_flat_storage() {
             } else {
                 ["source", "n"]
             };
-            ops.push(op("mul", Some("repeated"), None, &operands));
-            ops.push(op("index", Some("read"), None, &["repeated", "i"]));
+            ops.push(op(molt_ir::OpKind::Mul, Some("repeated"), None, &operands));
+            ops.push(op(
+                molt_ir::OpKind::Index,
+                Some("read"),
+                None,
+                &["repeated", "i"],
+            ));
             let func = function("repeat_storage", &[], None, ops);
             let plan = native_representation_plan(&func);
             assert_eq!(
@@ -2234,7 +2696,7 @@ fn canonical_repeat_proves_singleton_aliases_before_publishing_flat_storage() {
 
 #[test]
 fn runtime_guard_alias_keeps_source_carrier_despite_mismatching_tag() {
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
         let func = function(
             "runtime_guard_carriers",
             &[],
@@ -2243,7 +2705,7 @@ fn runtime_guard_alias_keeps_source_carrier_despite_mismatching_tag() {
                 const_int("left", 1_i64 << 31),
                 const_int("right", 1_i64 << 31),
                 op(
-                    "checked_mul",
+                    molt_ir::OpKind::CheckedMul,
                     Some("overflow"),
                     Some("wide"),
                     &["left", "right"],
@@ -2280,7 +2742,7 @@ fn final_projection_uses_emitted_ssa_identity_and_never_authored_name_collisions
                 const_int("integer", 7),
                 const_bool("boolean", true),
                 op(
-                    "ret",
+                    molt_ir::OpKind::Ret,
                     None,
                     None,
                     &[if returned { "boolean" } else { "integer" }],
@@ -2303,7 +2765,12 @@ fn final_projection_uses_emitted_ssa_identity_and_never_authored_name_collisions
         }
         refine_types(&mut typed);
         let before = serde_json::to_vec(&typed).unwrap();
-        source.ops = vec![op("ret", None, None, &["poisoned_old_source"])];
+        source.ops = vec![op(
+            molt_ir::OpKind::Ret,
+            None,
+            None,
+            &["poisoned_old_source"],
+        )];
         let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
         assert_eq!(
             serde_json::to_vec(&typed).unwrap(),
@@ -2324,7 +2791,7 @@ fn final_projection_uses_emitted_ssa_identity_and_never_authored_name_collisions
         let integer = source
             .ops
             .iter()
-            .find(|operation| operation.kind == "const")
+            .find(|operation| operation.kind == molt_ir::OpKind::Const)
             .unwrap()
             .out
             .as_deref()
@@ -2332,7 +2799,7 @@ fn final_projection_uses_emitted_ssa_identity_and_never_authored_name_collisions
         let boolean = source
             .ops
             .iter()
-            .find(|operation| operation.kind == "const_bool")
+            .find(|operation| operation.kind == molt_ir::OpKind::ConstBool)
             .unwrap()
             .out
             .as_deref()
@@ -2354,7 +2821,7 @@ fn final_projection_uses_emitted_ssa_identity_and_never_authored_name_collisions
         let returned_name = source
             .ops
             .iter()
-            .find(|operation| operation.kind == "ret")
+            .find(|operation| operation.kind == molt_ir::OpKind::Ret)
             .and_then(|operation| operation.args.as_ref())
             .unwrap();
         assert_eq!(returned_name.len(), 1);
@@ -2381,7 +2848,7 @@ fn final_projection_preserves_inline_integer_boundary_and_float_bool_carriers() 
                 const_int("integer", value),
                 const_float("float", 1.25),
                 const_bool("boolean", true),
-                op("ret", None, None, &["integer"]),
+                op(molt_ir::OpKind::Ret, None, None, &["integer"]),
             ],
         );
         let mut typed =
@@ -2414,15 +2881,15 @@ fn final_projection_keeps_typed_store_site_bound_to_emitted_operation() {
         vec![
             OpIR {
                 value: Some(16),
-                ..op("alloc", Some("object"), None, &[])
+                ..op(molt_ir::OpKind::Alloc, Some("object"), None, &[])
             },
             const_int("value", 7),
             OpIR {
                 value: Some(8),
                 source_op_idx: Some(999),
-                ..op("store", None, None, &["object", "value"])
+                ..op(molt_ir::OpKind::Store, None, None, &["object", "value"])
             },
-            op("ret", None, None, &["object"]),
+            op(molt_ir::OpKind::Ret, None, None, &["object"]),
         ],
     );
     let mut typed =
@@ -2432,7 +2899,7 @@ fn final_projection_keeps_typed_store_site_bound_to_emitted_operation() {
     let index = source
         .ops
         .iter()
-        .position(|operation| operation.kind == "store")
+        .position(|operation| operation.kind == molt_ir::OpKind::Store)
         .unwrap();
     assert_eq!(
         plan.typed_slot_store_modes().get(&index),
@@ -2454,13 +2921,18 @@ fn final_projection_keeps_checked_value_flag_and_owned_alias_carriers_distinct()
             const_int("left", 1_i64 << 31),
             const_int("right", 1_i64 << 31),
             op(
-                "checked_mul",
+                molt_ir::OpKind::CheckedMul,
                 Some("overflow"),
                 Some("wide"),
                 &["left", "right"],
             ),
-            op("binding_alias", Some("owned_alias"), None, &["wide"]),
-            op("ret", None, None, &["owned_alias"]),
+            op(
+                molt_ir::OpKind::BindingAlias,
+                Some("owned_alias"),
+                None,
+                &["wide"],
+            ),
+            op(molt_ir::OpKind::Ret, None, None, &["owned_alias"]),
         ],
     );
     let mut typed =
@@ -2470,7 +2942,7 @@ fn final_projection_keeps_checked_value_flag_and_owned_alias_carriers_distinct()
     let checked = source
         .ops
         .iter()
-        .find(|operation| operation.kind == "checked_mul")
+        .find(|operation| operation.kind == molt_ir::OpKind::CheckedMul)
         .unwrap();
     let value = checked.var.as_deref().expect("checked value result");
     let flag = checked.out.as_deref().expect("checked overflow flag");

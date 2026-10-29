@@ -1,13 +1,12 @@
 //! The shared SimpleIR pipeline (design 76) on the Luau target, executed.
 use super::*;
 
-fn op(kind: &str, out: Option<&str>, value: Option<i64>, args: &[&str]) -> OpIR {
+fn op(kind: molt_ir::OpKind, out: Option<&str>, value: Option<i64>, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         out: out.map(str::to_string),
         value,
         args: (!args.is_empty()).then(|| args.iter().map(|arg| arg.to_string()).collect()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -18,19 +17,19 @@ fn folding_program() -> SimpleIR {
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
-                ops: vec![op("ret_void", None, None, &[])],
+                ops: vec![op(molt_ir::OpKind::RetVoid, None, None, &[])],
                 ..FunctionIR::default()
             },
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "compute".to_string(),
                 ops: vec![
-                    op("const", Some("a"), Some(6), &[]),
-                    op("const", Some("b"), Some(7), &[]),
-                    op("mul", Some("c"), None, &["a", "b"]),
-                    op("const", Some("d"), Some(1), &[]),
-                    op("add", Some("e"), None, &["c", "d"]),
-                    op("ret", None, None, &["e"]),
+                    op(molt_ir::OpKind::Const, Some("a"), Some(6), &[]),
+                    op(molt_ir::OpKind::Const, Some("b"), Some(7), &[]),
+                    op(molt_ir::OpKind::Mul, Some("c"), None, &["a", "b"]),
+                    op(molt_ir::OpKind::Const, Some("d"), Some(1), &[]),
+                    op(molt_ir::OpKind::Add, Some("e"), None, &["c", "d"]),
+                    op(molt_ir::OpKind::Ret, None, None, &["e"]),
                 ],
                 ..FunctionIR::default()
             },
@@ -39,12 +38,8 @@ fn folding_program() -> SimpleIR {
     }
 }
 
-fn compute_kinds(ir: &SimpleIR) -> Vec<&str> {
-    ir.functions[1]
-        .ops
-        .iter()
-        .map(|op| op.kind.as_str())
-        .collect()
+fn compute_kinds(ir: &SimpleIR) -> Vec<molt_ir::OpKind> {
+    ir.functions[1].ops.iter().map(|op| op.kind).collect()
 }
 
 #[test]
@@ -69,7 +64,7 @@ fn lune_oracle_shared_pipeline_folding_admits_and_executes_exact_integer_program
     assert!(
         !compute_kinds(&optimized)
             .iter()
-            .any(|kind| matches!(*kind, "mul" | "add")),
+            .any(|kind| matches!(*kind, molt_ir::OpKind::Mul | molt_ir::OpKind::Add)),
         "{:?}",
         compute_kinds(&optimized)
     );

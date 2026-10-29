@@ -14,7 +14,7 @@ pub(crate) fn run() -> Result<(Value, bool), String> {
     let mut function_reports = Vec::with_capacity(ir.functions.len());
     let mut verified = true;
     for func in &mut ir.functions {
-        if func.ops.iter().any(|op| op.kind == "phi") {
+        if func.ops.iter().any(|op| op.kind == molt_ir::OpKind::Phi) {
             rewrite_phi(func);
         }
 

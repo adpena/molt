@@ -1,5 +1,6 @@
-#[cfg(feature = "native-backend")]
 use super::*;
+#[cfg(feature = "native-backend")]
+use molt_ir::OpKind;
 
 /// Publish the exact generated import return contract before operand cleanup.
 /// A borrowed result can alias a temporary argument; a bound result must own an
@@ -184,7 +185,7 @@ impl<'op> NativeOperandTransaction<'op> {
         vars: &BTreeMap<String, Variable>,
         representation_plan: &ScalarRepresentationPlan,
     ) {
-        let callable = crate::tir::op_kinds_generated::kind_source_call_callable_operand(&op.kind);
+        let callable = crate::tir::op_kinds_generated::kind_source_call_callable_operand(op.kind);
         for (index, name) in op.args.iter().flatten().enumerate() {
             if !Self::call_takes_position(op, index)
                 || representation_plan.is_raw_int_carrier_name(name)
@@ -208,7 +209,7 @@ impl<'op> NativeOperandTransaction<'op> {
         op.argument_custody.as_deref().is_some_and(|custody| {
             custody.get(index) == Some(&molt_ir::ParameterCustody::Transferred)
         }) || crate::tir::op_kinds_generated::kind_consumed_operand_table(
-            &op.kind,
+            op.kind,
             op.args.as_ref().map_or(0, Vec::len),
         ) == Some(index)
     }
@@ -865,7 +866,7 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
-    if op.kind == "dict_new" {
+    if op.kind == OpKind::DictNew {
         emit_fixed_aggregate_constructor(
             op,
             FixedAggregateConstructor::Dict,
@@ -882,9 +883,9 @@ pub(in crate::native_backend::function_compiler) fn emit_hash_container_construc
         );
         return;
     }
-    let (new_symbol, insert_symbol) = match op.kind.as_str() {
-        "set_new" => ("molt_set_new", "molt_set_add"),
-        "frozenset_new" => ("molt_frozenset_new", "molt_frozenset_add"),
+    let (new_symbol, insert_symbol) = match op.kind {
+        OpKind::SetNew => ("molt_set_new", "molt_set_add"),
+        OpKind::FrozensetNew => ("molt_frozenset_new", "molt_frozenset_add"),
         kind => panic!("not a hash container constructor: {kind}"),
     };
     let args = op.args.as_deref().unwrap_or(&[]);

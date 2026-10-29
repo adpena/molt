@@ -42,14 +42,14 @@ fn python_text_constructors_reject_malformed_utf8_without_replacement() {
     ] {
         assert_eq!(PythonString::from_utf8_surrogatepass(&bytes), Err(0));
         let op = crate::OpIR {
-            kind: "const_str".into(),
+            kind: crate::OpKind::ConstStr,
             bytes: Some(bytes.clone()),
             out: Some("s".into()),
-            ..crate::OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         };
         assert!(crate::literal_payload::validate_simple_literal(&op).is_err());
         let raw = crate::OpIR {
-            kind: "const_bytes".into(),
+            kind: crate::OpKind::ConstBytes,
             ..op
         };
         assert!(crate::literal_payload::validate_simple_literal(&raw).is_ok());

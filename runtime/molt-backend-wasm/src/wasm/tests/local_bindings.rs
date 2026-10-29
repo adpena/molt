@@ -8,7 +8,7 @@ use std::path::PathBuf;
 fn iterator_result_roles_survive_absent_and_discarded_siblings() {
     for value in [None, Some("none"), Some("unused_value"), Some("value")] {
         for done in [None, Some("none"), Some("unused_done"), Some("done")] {
-            let mut next = wasm_test_op("iter_next_unboxed", done, vec!["iterator"]);
+            let mut next = wasm_test_op(molt_ir::OpKind::IterNextUnboxed, done, vec!["iterator"]);
             next.var = value.map(str::to_string);
             let ir = SimpleIR {
                 functions: vec![wasm_test_function(
@@ -18,7 +18,7 @@ fn iterator_result_roles_survive_absent_and_discarded_siblings() {
                     vec![
                         next,
                         wasm_test_op(
-                            "ret",
+                            molt_ir::OpKind::Ret,
                             None,
                             vec![if done == Some("done") {
                                 "done"
@@ -168,7 +168,7 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
         ] {
             let mut ops = Vec::new();
             if labelled {
-                for kind in ["jump", "label"] {
+                for kind in [molt_ir::OpKind::Jump, molt_ir::OpKind::Label] {
                     let mut marker = wasm_test_op(kind, None, vec![]);
                     marker.value = Some(7);
                     ops.push(marker);
@@ -179,30 +179,32 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
             } else {
                 "source"
             };
-            let mut store = wasm_test_op("store_var", result, vec![input]);
+            let mut store = wasm_test_op(molt_ir::OpKind::StoreVar, result, vec![input]);
             store.var = destination.map(str::to_string);
             ops.push(store);
             if rebind {
-                let mut store = wasm_test_op("store_var", None, vec!["replacement"]);
+                let mut store = wasm_test_op(molt_ir::OpKind::StoreVar, None, vec!["replacement"]);
                 store.var = destination.map(str::to_string);
                 ops.push(store);
             }
             if name == "metadata_copy" {
-                let mut copy = wasm_test_op("copy_var", Some("copied"), vec!["snapshot"]);
+                let mut copy =
+                    wasm_test_op(molt_ir::OpKind::CopyVar, Some("copied"), vec!["snapshot"]);
                 copy.var = Some("replacement".into()); // Authored metadata is not an operand.
                 ops.push(copy);
             }
             if name == "discard_float" {
-                let mut discarded = wasm_test_op("const_float", Some("none"), vec![]);
+                let mut discarded = wasm_test_op(molt_ir::OpKind::ConstFloat, Some("none"), vec![]);
                 discarded.f_value = Some(9.5);
                 ops.push(discarded);
             }
             if name == "discard_internal_call" {
-                let mut call = wasm_test_op("call_internal", Some("none"), vec!["source"]);
+                let mut call =
+                    wasm_test_op(molt_ir::OpKind::CallInternal, Some("none"), vec!["source"]);
                 call.s_value = Some("identity_target".into());
                 ops.push(call);
             }
-            ops.push(wasm_test_op("ret", None, vec![returned]));
+            ops.push(wasm_test_op(molt_ir::OpKind::Ret, None, vec![returned]));
             let mut functions = vec![wasm_test_function(
                 "molt_main",
                 vec!["source", "replacement"],
@@ -214,7 +216,7 @@ fn direct_wasm_bindings_execute_snapshot_rebind_and_discard_forms() {
                     "identity_target",
                     vec!["value"],
                     None,
-                    vec![wasm_test_op("ret", None, vec!["value"])],
+                    vec![wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"])],
                 ));
             }
             let ir = SimpleIR {

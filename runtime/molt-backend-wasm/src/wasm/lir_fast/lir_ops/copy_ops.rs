@@ -87,7 +87,7 @@ pub(super) fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
 
 pub(super) fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
     match original_kind(op) {
-        Some("binding_alias") => emit_lir_binding_alias(ctx, op),
+        Some(molt_ir::OpKind::BindingAlias) => emit_lir_binding_alias(ctx, op),
         _ if crate::tir::passes::value_identity::copy_value_source(&op.tir_op).is_some() => {
             emit_lir_identity_copy(ctx, op)
         }

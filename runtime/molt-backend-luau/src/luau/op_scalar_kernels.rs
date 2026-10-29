@@ -3,17 +3,20 @@ use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results
 
 impl LuauBackend {
     pub(super) fn emit_scalar_kernel_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
+        match op.kind {
             // A fused-loop reduction may stand in for items of its loop only
             // when the result is exactly the loop's: exact ints and in-order
             // IEEE float operations. Luau numbers cannot hold Python ints
             // exactly, so the op consumes nothing, `(None, None, 0, False)`,
             // and the ordinary loop lowered after it runs every item.
-            "vec_sum" | "vec_prod" | "vec_min" | "vec_max" => {
+            molt_ir::OpKind::VecSum
+            | molt_ir::OpKind::VecProd
+            | molt_ir::OpKind::VecMin
+            | molt_ir::OpKind::VecMax => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{nil, nil, 0, false}}"));
             }
-            "checked_add" => {
+            molt_ir::OpKind::CheckedAdd => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
@@ -47,7 +50,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "checked_mul" => {
+            molt_ir::OpKind::CheckedMul => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);

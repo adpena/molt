@@ -321,6 +321,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         let mut const_attrs = AttrDict::new();
         const_attrs.insert("value".into(), AttrValue::Int(iter_value));
         landing_ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -354,6 +355,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
                 .map(|v| remap.get(v).copied().unwrap_or(*v))
                 .collect();
             landing_ops.push(TirOp {
+                origin: op.origin,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands: new_operands,
@@ -382,6 +384,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(final_iv_value));
         landing_ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],

@@ -1,4 +1,14 @@
 use super::*;
+use molt_ir::OpKind;
+
+macro_rules! define_llvm_op_kinds {
+    ($($kind:path),* $(,)?) => {
+        macro_rules! handled_kind_pattern { () => { $($kind)|* }; }
+        pub(super) use handled_kind_pattern;
+        #[cfg(test)]
+        pub(super) const HANDLED_KINDS: &[OpKind] = &[$($kind),*];
+    };
+}
 
 #[path = "preserved_ops/callable_ops.rs"]
 mod callable_ops;
@@ -12,7 +22,7 @@ mod op_family;
 use op_family::LlvmPreservedOpFamily;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    pub(super) fn lower_preserved_simpleir_op(&mut self, op: &TirOp, kind: &str) -> bool {
+    pub(super) fn lower_preserved_simpleir_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
         match op_family::llvm_preserved_op_family(kind) {
             Some(LlvmPreservedOpFamily::Direct) => self.lower_preserved_direct_op(op, kind),
             Some(LlvmPreservedOpFamily::Container) => self.lower_preserved_container_op(op, kind),
@@ -20,7 +30,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             None => {
                 // Generic preserved-op runtime-call fallback. Every other operator /
                 // conversion kind the frontend emits that has no dedicated TIR opcode
-                // is restored from `_original_kind` and lowered as `molt_<kind>` only
+                // is restored from `origin` and lowered as `molt_<kind>` only
                 // when the runtime ABI classifier proves the boxed call is exact.
                 self.try_lower_preserved_runtime_call(op, kind)
             }

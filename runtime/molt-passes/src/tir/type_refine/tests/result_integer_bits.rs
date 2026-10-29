@@ -59,7 +59,13 @@ fn integer_bitwise_result_family_preserves_python_type_without_raw_storage_proof
                     4,
                 );
                 assert_eq!(
-                    infer_result_types_with_attrs(opcode, &[lhs.clone(), rhs.clone()], None, 1),
+                    infer_result_types_with_attrs(
+                        opcode,
+                        None,
+                        &[lhs.clone(), rhs.clone()],
+                        None,
+                        1
+                    ),
                     vec![Some(expected.clone())],
                     "{opcode:?}, {lhs:?}, {rhs:?}",
                 );
@@ -117,14 +123,14 @@ fn integer_bitwise_result_rules_reject_unknown_domains_and_invalid_shapes() {
         for count in (0..=3).filter(|count| *count != arity) {
             let operands = vec![TirType::I64; count];
             assert_eq!(
-                infer_result_types_with_attrs(opcode, &operands, None, 1),
+                infer_result_types_with_attrs(opcode, None, &operands, None, 1),
                 vec![None]
             );
         }
         let operands = vec![TirType::I64; arity];
         for result_count in [0, 2] {
             assert_eq!(
-                infer_result_types_with_attrs(opcode, &operands, None, result_count),
+                infer_result_types_with_attrs(opcode, None, &operands, None, result_count),
                 vec![None; result_count],
             );
         }
@@ -138,7 +144,7 @@ fn integer_bitwise_result_rules_reject_unknown_domains_and_invalid_shapes() {
                 let mut operands = operands.clone();
                 operands[position] = unknown.clone();
                 assert_eq!(
-                    infer_result_types_with_attrs(opcode, &operands, None, 1),
+                    infer_result_types_with_attrs(opcode, None, &operands, None, 1),
                     vec![expected.clone()],
                     "{opcode:?}, {operands:?}",
                 );

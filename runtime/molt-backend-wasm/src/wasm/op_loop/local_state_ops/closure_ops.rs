@@ -15,8 +15,8 @@ pub(super) fn emit_closure_local_state_op(
     let locals = context.locals;
     let reloc_enabled = context.reloc_enabled;
 
-    match op.kind.as_str() {
-        "closure_load" => {
+    match op.kind {
+        molt_ir::OpKind::ClosureLoad => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);
@@ -44,7 +44,7 @@ pub(super) fn emit_closure_local_state_op(
                 WasmRuntimeImport::ClosureLoad,
             );
         }
-        "closure_store" => {
+        molt_ir::OpKind::ClosureStore => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             let tmp_ptr = locals.synthetic(WasmFrameSyntheticLocal::MoltTmp0);

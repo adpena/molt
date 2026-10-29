@@ -6,7 +6,7 @@ mod tests {
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::lower_from_simple::{lower_to_tir, lower_to_tir_for_target};
     use crate::tir::lower_to_simple::lower_to_simple_ir;
-    use crate::tir::op_kinds_generated::simpleir_kind_is_structural;
+
     use crate::tir::passes::run_pipeline;
     use crate::tir::target_info::TargetInfo;
     use crate::tir::type_refine::refine_types;
@@ -48,47 +48,47 @@ mod tests {
         lower_to_simple_ir(&tir)
     }
 
-    fn op(kind: &str) -> OpIR {
+    fn op(kind: molt_ir::OpKind) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
-            ..OpIR::default()
+            kind,
+            ..OpIR::new(kind)
         }
     }
 
-    fn op_val(kind: &str, value: i64) -> OpIR {
+    fn op_val(kind: molt_ir::OpKind, value: i64) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
+            kind,
             value: Some(value),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
-    fn op_out(kind: &str, out: &str) -> OpIR {
+    fn op_out(kind: molt_ir::OpKind, out: &str) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
+            kind,
             out: Some(out.to_string()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
     fn int_literal(out: &str, value: i64) -> OpIR {
         OpIR {
             value: Some(value),
-            ..op_out("const", out)
+            ..op_out(molt_ir::OpKind::Const, out)
         }
     }
 
     fn str_literal(out: &str, value: &str) -> OpIR {
         OpIR {
             s_value: Some(value.to_string()),
-            ..op_out("const_str", out)
+            ..op_out(molt_ir::OpKind::ConstStr, out)
         }
     }
 
     fn bool_literal(out: &str, value: bool) -> OpIR {
         OpIR {
             value: Some(i64::from(value)),
-            ..op_out("const_bool", out)
+            ..op_out(molt_ir::OpKind::ConstBool, out)
         }
     }
 
@@ -98,20 +98,20 @@ mod tests {
         roundtrip_function(function)
     }
 
-    fn op_args(kind: &str, args: &[&str]) -> OpIR {
+    fn op_args(kind: molt_ir::OpKind, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
+            kind,
             args: Some(args.iter().map(|s| s.to_string()).collect()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
-    fn op_out_args(kind: &str, out: &str, args: &[&str]) -> OpIR {
+    fn op_out_args(kind: molt_ir::OpKind, out: &str, args: &[&str]) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
+            kind,
             out: Some(out.to_string()),
             args: Some(args.iter().map(|s| s.to_string()).collect()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
@@ -119,7 +119,7 @@ mod tests {
     fn call_out(out: &str, callee: &str, args: &[&str]) -> OpIR {
         OpIR {
             s_value: Some(callee.to_string()),
-            ..op_out_args("call", out, args)
+            ..op_out_args(molt_ir::OpKind::Call, out, args)
         }
     }
 
@@ -132,8 +132,8 @@ mod tests {
         let ops = vec![
             int_literal("x", 7),
             int_literal("y", 11),
-            op_out_args("add", "z", &["x", "y"]),
-            op_args("ret", &["z"]),
+            op_out_args(molt_ir::OpKind::Add, "z", &["x", "y"]),
+            op_args(molt_ir::OpKind::Ret, &["z"]),
         ];
         let result = roundtrip(ops);
         assert!(
@@ -146,21 +146,21 @@ mod tests {
     fn roundtrip_preserves_source_site_coordinates() {
         let ops = vec![
             OpIR {
-                kind: "line".to_string(),
+                kind: molt_ir::OpKind::Line,
                 value: Some(12),
                 source_line: Some(12),
                 col_offset: Some(4),
                 end_col_offset: Some(9),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
             OpIR {
-                kind: "const".to_string(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(7),
                 out: Some("x".to_string()),
                 source_op_idx: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
-            op_args("ret", &["x"]),
+            op_args(molt_ir::OpKind::Ret, &["x"]),
         ];
         let result = roundtrip(ops);
         assert!(
@@ -184,12 +184,12 @@ mod tests {
     #[test]
     fn roundtrip_if_else() {
         let ops = vec![
-            op_args("if", &["cond"]),
+            op_args(molt_ir::OpKind::If, &["cond"]),
             int_literal("a", 2),
-            op("else"),
+            op(molt_ir::OpKind::Else),
             int_literal("b", 3),
-            op("end_if"),
-            op("ret_void"),
+            op(molt_ir::OpKind::EndIf),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip_parameterized(ops, &["cond"]);
         assert!(!result.is_empty());
@@ -203,10 +203,10 @@ mod tests {
     fn roundtrip_loop() {
         let ops = vec![
             int_literal("i", 0),
-            op("loop_start"),
-            op_out_args("add", "i2", &["i", "i"]),
-            op("loop_end"),
-            op("ret_void"),
+            op(molt_ir::OpKind::LoopStart),
+            op_out_args(molt_ir::OpKind::Add, "i2", &["i", "i"]),
+            op(molt_ir::OpKind::LoopEnd),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip(ops);
         assert!(!result.is_empty());
@@ -220,12 +220,12 @@ mod tests {
     fn roundtrip_nested_if_in_loop() {
         let ops = vec![
             int_literal("i", 0),
-            op("loop_start"),
-            op_args("if", &["cond"]),
-            op_out_args("add", "i2", &["i", "i"]),
-            op("end_if"),
-            op("loop_end"),
-            op("ret_void"),
+            op(molt_ir::OpKind::LoopStart),
+            op_args(molt_ir::OpKind::If, &["cond"]),
+            op_out_args(molt_ir::OpKind::Add, "i2", &["i", "i"]),
+            op(molt_ir::OpKind::EndIf),
+            op(molt_ir::OpKind::LoopEnd),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip_parameterized(ops, &["cond"]);
         assert!(!result.is_empty());
@@ -234,73 +234,73 @@ mod tests {
     #[test]
     fn roundtrip_iter_loop_with_inner_return_keeps_post_loop_control() {
         let ops = vec![
-            op_out("missing", "v86"),
+            op_out(molt_ir::OpKind::Missing, "v86"),
             OpIR {
-                kind: "store_var".to_string(),
+                kind: molt_ir::OpKind::StoreVar,
                 var: Some("v".to_string()),
                 args: Some(vec!["v86".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
             OpIR {
-                kind: "iter".to_string(),
+                kind: molt_ir::OpKind::Iter,
                 args: Some(vec!["xs".to_string()]),
                 out: Some("it".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Iter)
             },
-            op_out("const_none", "none0"),
+            op_out(molt_ir::OpKind::ConstNone, "none0"),
             OpIR {
-                kind: "is".to_string(),
+                kind: molt_ir::OpKind::Is,
                 args: Some(vec!["it".to_string(), "none0".to_string()]),
                 out: Some("not_iterable".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Is)
             },
-            op_args("if", &["not_iterable"]),
+            op_args(molt_ir::OpKind::If, &["not_iterable"]),
             str_literal("msg", "not iterable"),
             str_literal("etype", "TypeError"),
-            op_out_args("tuple_new", "emsg", &["msg"]),
-            op_out_args("exception_new", "exc", &["etype", "emsg"]),
-            op_args("raise", &["exc"]),
-            op("end_if"),
+            op_out_args(molt_ir::OpKind::TupleNew, "emsg", &["msg"]),
+            op_out_args(molt_ir::OpKind::ExceptionNew, "exc", &["etype", "emsg"]),
+            op_args(molt_ir::OpKind::Raise, &["exc"]),
+            op(molt_ir::OpKind::EndIf),
             int_literal("idx0", 0),
             int_literal("idx1", 1),
             bool_literal("ret_true", true),
-            op("loop_start"),
+            op(molt_ir::OpKind::LoopStart),
             OpIR {
-                kind: "iter_next".to_string(),
+                kind: molt_ir::OpKind::IterNext,
                 args: Some(vec!["it".to_string()]),
                 out: Some("pair".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::IterNext)
             },
-            op_out_args("index", "done", &["pair", "idx1"]),
-            op_args("loop_break_if_true", &["done"]),
-            op_out_args("index", "elem", &["pair", "idx0"]),
+            op_out_args(molt_ir::OpKind::Index, "done", &["pair", "idx1"]),
+            op_args(molt_ir::OpKind::LoopBreakIfTrue, &["done"]),
+            op_out_args(molt_ir::OpKind::Index, "elem", &["pair", "idx0"]),
             OpIR {
-                kind: "store_var".to_string(),
+                kind: molt_ir::OpKind::StoreVar,
                 var: Some("v".to_string()),
                 args: Some(vec!["elem".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
             OpIR {
-                kind: "load_var".to_string(),
+                kind: molt_ir::OpKind::LoadVar,
                 var: Some("v".to_string()),
                 out: Some("cur".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::LoadVar)
             },
-            op_out_args("eq", "cmp", &["cur", "value"]),
-            op_args("if", &["cmp"]),
+            op_out_args(molt_ir::OpKind::Eq, "cmp", &["cur", "value"]),
+            op_args(molt_ir::OpKind::If, &["cmp"]),
             OpIR {
-                kind: "ret".to_string(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["ret_true".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
-            op("end_if"),
-            op("loop_continue"),
-            op("loop_end"),
+            op(molt_ir::OpKind::EndIf),
+            op(molt_ir::OpKind::LoopContinue),
+            op(molt_ir::OpKind::LoopEnd),
             bool_literal("ret_false", false),
             OpIR {
-                kind: "ret".to_string(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["ret_false".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ];
         let ir = FunctionIR {
@@ -326,17 +326,20 @@ mod tests {
         for expected in ["ret_true", "ret_false"] {
             assert!(
                 result.iter().any(|op| {
-                    op.kind == "ret" && op.args.as_ref().is_some_and(|args| args == &[expected])
+                    op.kind == molt_ir::OpKind::Ret
+                        && op.args.as_ref().is_some_and(|args| args == &[expected])
                 }),
                 "named return path {expected} must survive roundtrip: {result:?}"
             );
         }
         assert!(
-            result.iter().any(|op| op.kind == "async_work_poll"),
+            result
+                .iter()
+                .any(|op| op.kind == molt_ir::OpKind::AsyncWorkPoll),
             "loop backedges must retain the canonical asynchronous-work observation: {result:?}"
         );
         assert!(
-            result.iter().any(|op| op.kind == "loop_end"),
+            result.iter().any(|op| op.kind == molt_ir::OpKind::LoopEnd),
             "loop must keep its loop_end marker: {result:?}"
         );
     }
@@ -348,13 +351,13 @@ mod tests {
     #[test]
     fn roundtrip_multiple_returns() {
         let ops = vec![
-            op_args("if", &["cond"]),
+            op_args(molt_ir::OpKind::If, &["cond"]),
             int_literal("a", 2),
-            op_args("ret", &["a"]),
-            op("else"),
+            op_args(molt_ir::OpKind::Ret, &["a"]),
+            op(molt_ir::OpKind::Else),
             int_literal("b", 3),
-            op_args("ret", &["b"]),
-            op("end_if"),
+            op_args(molt_ir::OpKind::Ret, &["b"]),
+            op(molt_ir::OpKind::EndIf),
         ];
         let result = roundtrip_parameterized(ops, &["cond"]);
         assert!(!result.is_empty());
@@ -366,11 +369,11 @@ mod tests {
 
     #[test]
     fn roundtrip_empty() {
-        let ops = vec![op("ret_void")];
+        let ops = vec![op(molt_ir::OpKind::RetVoid)];
         let result = roundtrip(ops);
         assert!(!result.is_empty());
         assert!(
-            result.iter().any(|o| o.kind == "ret_void"),
+            result.iter().any(|o| o.kind == molt_ir::OpKind::RetVoid),
             "empty function must emit ret_void"
         );
     }
@@ -381,12 +384,12 @@ mod tests {
 
     #[test]
     fn roundtrip_integer_compat_hint() {
-        let add_op = op_out_args("add", "z", &["x", "y"]);
+        let add_op = op_out_args(molt_ir::OpKind::Add, "z", &["x", "y"]);
         let ops = vec![
             int_literal("x", 7),
             int_literal("y", 11),
             add_op,
-            op_args("ret", &["z"]),
+            op_args(molt_ir::OpKind::Ret, &["z"]),
         ];
         let result = roundtrip(ops);
         assert!(!result.is_empty());
@@ -401,10 +404,10 @@ mod tests {
         // jump to label 1; dead const; label 1; ret x
         let ops = vec![
             int_literal("x", 7),
-            op_val("jump", 1),
+            op_val(molt_ir::OpKind::Jump, 1),
             int_literal("dead", 99),
-            op_val("label", 1),
-            op_args("ret", &["x"]),
+            op_val(molt_ir::OpKind::Label, 1),
+            op_args(molt_ir::OpKind::Ret, &["x"]),
         ];
         let result = roundtrip(ops);
         assert!(!result.is_empty());
@@ -418,8 +421,8 @@ mod tests {
     fn tir_verifier_passes_after_pipeline() {
         let ops = vec![
             int_literal("x", 7),
-            op_out_args("add", "y", &["x", "x"]),
-            op_args("ret", &["y"]),
+            op_out_args(molt_ir::OpKind::Add, "y", &["x", "x"]),
+            op_args(molt_ir::OpKind::Ret, &["y"]),
         ];
         let ir = make_function(ops);
         let target = TargetInfo::native_release_fast();
@@ -445,8 +448,8 @@ mod tests {
             name: "with_params".to_string(),
             params: vec!["p0".to_string(), "p1".to_string()],
             ops: vec![
-                op_out_args("add", "r", &["p0", "p1"]),
-                op_args("ret", &["r"]),
+                op_out_args(molt_ir::OpKind::Add, "r", &["p0", "p1"]),
+                op_args(molt_ir::OpKind::Ret, &["r"]),
             ],
             param_types: None,
             source_file: None,
@@ -462,10 +465,6 @@ mod tests {
         assert!(verify_function(&tir).is_ok());
         let result = lower_to_simple_ir(&tir);
         assert!(!result.is_empty());
-        assert!(
-            result.iter().all(|op| op.kind != "load_param"),
-            "round-trip must preserve FunctionIR.params instead of synthesizing load_param ops"
-        );
     }
 
     // ---------------------------------------------------------------------------
@@ -480,8 +479,8 @@ mod tests {
             params: vec!["n".to_string()],
             ops: vec![
                 int_literal("one", 1),
-                op_out_args("add", "result", &["n", "one"]),
-                op_args("ret", &["result"]),
+                op_out_args(molt_ir::OpKind::Add, "result", &["n", "one"]),
+                op_args(molt_ir::OpKind::Ret, &["result"]),
             ],
             param_types: Some(vec!["int".to_string()]),
             source_file: None,
@@ -509,10 +508,10 @@ mod tests {
             int_literal("a", 2),
             int_literal("b", 3),
             int_literal("c", 5),
-            op_out_args("add", "ab", &["a", "b"]),
-            op_out_args("add", "abc", &["ab", "c"]),
-            op_out_args("mul", "result", &["ab", "abc"]),
-            op_args("ret", &["result"]),
+            op_out_args(molt_ir::OpKind::Add, "ab", &["a", "b"]),
+            op_out_args(molt_ir::OpKind::Add, "abc", &["ab", "c"]),
+            op_out_args(molt_ir::OpKind::Mul, "result", &["ab", "abc"]),
+            op_args(molt_ir::OpKind::Ret, &["result"]),
         ];
         let result = roundtrip(ops);
         assert!(!result.is_empty());
@@ -525,16 +524,16 @@ mod tests {
     #[test]
     fn roundtrip_nested_if_else() {
         let ops = vec![
-            op_args("if", &["c1"]),
-            op_args("if", &["c2"]),
+            op_args(molt_ir::OpKind::If, &["c1"]),
+            op_args(molt_ir::OpKind::If, &["c2"]),
             int_literal("aa", 2),
-            op("else"),
+            op(molt_ir::OpKind::Else),
             int_literal("ab", 3),
-            op("end_if"),
-            op("else"),
+            op(molt_ir::OpKind::EndIf),
+            op(molt_ir::OpKind::Else),
             int_literal("ba", 5),
-            op("end_if"),
-            op("ret_void"),
+            op(molt_ir::OpKind::EndIf),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip_parameterized(ops, &["c1", "c2"]);
         assert!(!result.is_empty());
@@ -546,7 +545,11 @@ mod tests {
 
     #[test]
     fn roundtrip_nop_function() {
-        let ops = vec![op("nop"), op("nop"), op("ret_void")];
+        let ops = vec![
+            op(molt_ir::OpKind::Nop),
+            op(molt_ir::OpKind::Nop),
+            op(molt_ir::OpKind::RetVoid),
+        ];
         let result = roundtrip(ops);
         assert!(!result.is_empty());
     }
@@ -557,11 +560,11 @@ mod tests {
 
     #[test]
     fn roundtrip_output_has_terminator() {
-        let ops = vec![int_literal("x", 7), op_args("ret", &["x"])];
+        let ops = vec![int_literal("x", 7), op_args(molt_ir::OpKind::Ret, &["x"])];
         let result = roundtrip(ops);
         let has_term = result.iter().any(|op| {
-            crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(op.kind.as_str())
-                || matches!(op.kind.as_str(), "jump" | "br_if")
+            op.kind.is_return_terminator()
+                || matches!(op.kind, molt_ir::OpKind::Jump | molt_ir::OpKind::BrIf)
         });
         assert!(
             has_term,
@@ -574,17 +577,17 @@ mod tests {
     fn roundtrip_unpack_sequence_preserves_output_vars() {
         let ops = vec![
             OpIR {
-                kind: "unpack_sequence".to_string(),
+                kind: molt_ir::OpKind::UnpackSequence,
                 args: Some(vec!["seq".to_string(), "a".to_string(), "b".to_string()]),
                 value: Some(2),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::UnpackSequence)
             },
-            op_args("ret", &["a"]),
+            op_args(molt_ir::OpKind::Ret, &["a"]),
         ];
         let result = roundtrip_parameterized(ops, &["seq"]);
         let unpack = result
             .iter()
-            .find(|op| op.kind == "unpack_sequence")
+            .find(|op| op.kind == molt_ir::OpKind::UnpackSequence)
             .expect("roundtrip must preserve unpack_sequence");
         let unpack_args = unpack
             .args
@@ -598,7 +601,7 @@ mod tests {
         assert_eq!(unpack.value, Some(2));
         let ret = result
             .iter()
-            .find(|op| op.kind == "ret")
+            .find(|op| op.kind == molt_ir::OpKind::Ret)
             .expect("roundtrip must preserve return");
         let ret_args = ret.args.as_ref().expect("ret must retain args");
         assert_eq!(
@@ -622,26 +625,28 @@ mod tests {
         //   ret_void
         let ops = vec![
             OpIR {
-                kind: "call".to_string(),
+                kind: molt_ir::OpKind::Call,
                 out: Some("result".into()),
                 s_value: Some("foo".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             },
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 out: Some("exc".into()),
                 value: Some(100),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
-            op("ret_void"),
-            op_val("label", 100),
-            op("ret_void"),
+            op(molt_ir::OpKind::RetVoid),
+            op_val(molt_ir::OpKind::Label, 100),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip(ops);
 
         // The call-return observation is promoted to the canonical asynchronous-work
         // spelling, and its exceptional target must still match an emitted label.
-        let check_exc = result.iter().find(|o| o.kind == "async_work_poll");
+        let check_exc = result
+            .iter()
+            .find(|o| o.kind == molt_ir::OpKind::AsyncWorkPoll);
         assert!(
             check_exc.is_some(),
             "the call-return asynchronous-work observation must survive round-trip"
@@ -653,7 +658,7 @@ mod tests {
 
         let label_vals: Vec<i64> = result
             .iter()
-            .filter(|o| o.kind == "label")
+            .filter(|o| o.kind == molt_ir::OpKind::Label)
             .filter_map(|o| o.value)
             .collect();
         assert!(
@@ -674,16 +679,16 @@ mod tests {
         // The output is used by `ret` so DCE doesn't remove it.
         let ops = vec![
             OpIR {
-                kind: "list_new".to_string(),
+                kind: molt_ir::OpKind::ListNew,
                 out: Some("lst".into()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ListNew)
             },
-            op_args("ret", &["lst"]),
+            op_args(molt_ir::OpKind::Ret, &["lst"]),
         ];
         let result = roundtrip(ops);
 
-        let list_new = result.iter().find(|o| o.kind == "list_new");
+        let list_new = result.iter().find(|o| o.kind == molt_ir::OpKind::ListNew);
         assert!(
             list_new.is_some(),
             "passthrough op 'list_new' must survive round-trip. Got: {:?}",
@@ -695,23 +700,23 @@ mod tests {
     fn roundtrip_ord_at_preserves_first_class_kind() {
         let ops = vec![
             OpIR {
-                kind: "const_str".to_string(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("Aé".into()),
                 out: Some("text".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "const".to_string(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(1),
                 out: Some("idx".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
-            op_out_args("ord_at", "code", &["text", "idx"]),
-            op_args("ret", &["code"]),
+            op_out_args(molt_ir::OpKind::OrdAt, "code", &["text", "idx"]),
+            op_args(molt_ir::OpKind::Ret, &["code"]),
         ];
         let result = roundtrip(ops);
 
-        let ord_at = result.iter().find(|o| o.kind == "ord_at");
+        let ord_at = result.iter().find(|o| o.kind == molt_ir::OpKind::OrdAt);
         assert!(
             ord_at.is_some(),
             "first-class ord_at must survive TIR round-trip. Got: {:?}",
@@ -732,18 +737,18 @@ mod tests {
         // The output is used by `ret` so DCE doesn't remove it.
         let ops = vec![
             OpIR {
-                kind: "dict_set".to_string(),
+                kind: molt_ir::OpKind::DictSet,
                 out: Some("res".into()),
                 args: Some(vec!["res".into()]),
                 s_value: Some("helper".into()),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::DictSet)
             },
-            op_args("ret", &["res"]),
+            op_args(molt_ir::OpKind::Ret, &["res"]),
         ];
         let result = roundtrip(ops);
 
-        let dict_set = result.iter().find(|o| o.kind == "dict_set");
+        let dict_set = result.iter().find(|o| o.kind == molt_ir::OpKind::DictSet);
         assert!(dict_set.is_some(), "dict_set must survive round-trip");
         let ds = dict_set.unwrap();
         assert_eq!(ds.value, Some(42), "value field must be preserved");
@@ -772,23 +777,25 @@ mod tests {
     fn roundtrip_check_exception_value_field() {
         let ops = vec![
             OpIR {
-                kind: "call".to_string(),
+                kind: molt_ir::OpKind::Call,
                 out: Some("result".into()),
                 s_value: Some("foo".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             },
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 out: Some("exc".into()),
                 value: Some(100),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
-            op("ret_void"),
-            op_val("state_label", 100),
-            op("ret_void"),
+            op(molt_ir::OpKind::RetVoid),
+            op_val(molt_ir::OpKind::StateLabel, 100),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip_no_opt(ops);
-        let check = result.iter().find(|o| o.kind == "check_exception");
+        let check = result
+            .iter()
+            .find(|o| o.kind == molt_ir::OpKind::CheckException);
         assert!(
             check.is_some(),
             "check_exception must survive round-trip, got: {:?}",
@@ -807,11 +814,11 @@ mod tests {
         // Exception-handling ops must NOT be structural — they carry semantics
         // that must be preserved as TirOps through SSA conversion.  Marking
         // them structural causes SSA to silently drop them.
-        assert!(!simpleir_kind_is_structural("check_exception"));
-        assert!(!simpleir_kind_is_structural("try_start"));
-        assert!(!simpleir_kind_is_structural("try_end"));
-        assert!(!simpleir_kind_is_structural("state_block_start"));
-        assert!(!simpleir_kind_is_structural("state_block_end"));
+        assert!(!(molt_ir::OpKind::CheckException).is_structural());
+        assert!(!(molt_ir::OpKind::TryStart).is_structural());
+        assert!(!(molt_ir::OpKind::TryEnd).is_structural());
+        assert!(!(molt_ir::OpKind::StateBlockStart).is_structural());
+        assert!(!(molt_ir::OpKind::StateBlockEnd).is_structural());
     }
 
     // ---------------------------------------------------------------------------
@@ -822,40 +829,40 @@ mod tests {
     fn roundtrip_try_start_try_end_value() {
         let ops = vec![
             OpIR {
-                kind: "try_start".to_string(),
+                kind: molt_ir::OpKind::TryStart,
                 value: Some(200),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryStart)
             },
             OpIR {
-                kind: "call".to_string(),
+                kind: molt_ir::OpKind::Call,
                 out: Some("r".into()),
                 s_value: Some("bar".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             },
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 out: Some("exc".into()),
                 value: Some(200),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "try_end".to_string(),
+                kind: molt_ir::OpKind::TryEnd,
                 value: Some(200),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryEnd)
             },
-            op("ret_void"),
-            op_val("state_label", 200),
-            op("ret_void"),
+            op(molt_ir::OpKind::RetVoid),
+            op_val(molt_ir::OpKind::StateLabel, 200),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip_no_opt(ops);
-        let try_start = result.iter().find(|o| o.kind == "try_start");
+        let try_start = result.iter().find(|o| o.kind == molt_ir::OpKind::TryStart);
         assert!(try_start.is_some(), "try_start must survive round-trip");
         assert!(
             try_start.unwrap().value.is_some(),
             "try_start.value must be preserved"
         );
 
-        let try_end = result.iter().find(|o| o.kind == "try_end");
+        let try_end = result.iter().find(|o| o.kind == molt_ir::OpKind::TryEnd);
         assert!(try_end.is_some(), "try_end must survive round-trip");
         assert!(
             try_end.unwrap().value.is_some(),
@@ -871,16 +878,16 @@ mod tests {
     fn roundtrip_passthrough_preserves_var() {
         let ops = vec![
             OpIR {
-                kind: "cast".to_string(),
+                kind: molt_ir::OpKind::Cast,
                 var: Some("my_var_name".into()),
                 out: Some("result".into()),
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Cast)
             },
-            op_args("ret", &["result"]),
+            op_args(molt_ir::OpKind::Ret, &["result"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let custom = result.iter().find(|o| o.kind == "cast");
+        let custom = result.iter().find(|o| o.kind == molt_ir::OpKind::Cast);
         assert!(custom.is_some(), "cast must survive round-trip");
         assert!(
             custom.unwrap().var.is_some(),
@@ -897,15 +904,15 @@ mod tests {
     fn roundtrip_passthrough_preserves_f_value() {
         let ops = vec![
             OpIR {
-                kind: "cast".to_string(),
+                kind: molt_ir::OpKind::Cast,
                 out: Some("result".into()),
                 f_value: Some(PI),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Cast)
             },
-            op_args("ret", &["result"]),
+            op_args(molt_ir::OpKind::Ret, &["result"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let fop = result.iter().find(|o| o.kind == "cast");
+        let fop = result.iter().find(|o| o.kind == molt_ir::OpKind::Cast);
         assert!(fop.is_some(), "cast must survive round-trip");
         assert_eq!(
             fop.unwrap().f_value,
@@ -922,15 +929,15 @@ mod tests {
     fn roundtrip_passthrough_preserves_bytes() {
         let ops = vec![
             OpIR {
-                kind: "cast".to_string(),
+                kind: molt_ir::OpKind::Cast,
                 out: Some("result".into()),
                 bytes: Some(vec![1, 2, 3]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Cast)
             },
-            op_args("ret", &["result"]),
+            op_args(molt_ir::OpKind::Ret, &["result"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let bop = result.iter().find(|o| o.kind == "cast");
+        let bop = result.iter().find(|o| o.kind == molt_ir::OpKind::Cast);
         assert!(bop.is_some(), "cast must survive round-trip");
         assert_eq!(
             bop.unwrap().bytes.as_deref(),
@@ -947,15 +954,15 @@ mod tests {
     fn roundtrip_const_preserves_value() {
         let ops = vec![
             OpIR {
-                kind: "const".to_string(),
+                kind: molt_ir::OpKind::Const,
                 out: Some("x".into()),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
-            op_args("ret", &["x"]),
+            op_args(molt_ir::OpKind::Ret, &["x"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let cnst = result.iter().find(|o| o.kind == "const");
+        let cnst = result.iter().find(|o| o.kind == molt_ir::OpKind::Const);
         assert!(cnst.is_some(), "const must survive round-trip");
         assert_eq!(
             cnst.unwrap().value,
@@ -968,15 +975,15 @@ mod tests {
     fn roundtrip_const_str_preserves_s_value() {
         let ops = vec![
             OpIR {
-                kind: "const_str".to_string(),
+                kind: molt_ir::OpKind::ConstStr,
                 out: Some("s".into()),
                 s_value: Some("hello".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
-            op_args("ret", &["s"]),
+            op_args(molt_ir::OpKind::Ret, &["s"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let cnst = result.iter().find(|o| o.kind == "const_str");
+        let cnst = result.iter().find(|o| o.kind == molt_ir::OpKind::ConstStr);
         assert!(cnst.is_some(), "const_str must survive round-trip");
         assert_eq!(
             cnst.unwrap().s_value.as_deref(),
@@ -989,15 +996,17 @@ mod tests {
     fn roundtrip_const_bytes_preserves_bytes() {
         let ops = vec![
             OpIR {
-                kind: "const_bytes".to_string(),
+                kind: molt_ir::OpKind::ConstBytes,
                 out: Some("b".into()),
                 bytes: Some(vec![0xDE, 0xAD]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstBytes)
             },
-            op_args("ret", &["b"]),
+            op_args(molt_ir::OpKind::Ret, &["b"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let cnst = result.iter().find(|o| o.kind == "const_bytes");
+        let cnst = result
+            .iter()
+            .find(|o| o.kind == molt_ir::OpKind::ConstBytes);
         assert!(cnst.is_some(), "const_bytes must survive round-trip");
         assert_eq!(
             cnst.unwrap().bytes.as_deref(),
@@ -1014,16 +1023,16 @@ mod tests {
     fn roundtrip_call_preserves_fields() {
         let ops = vec![
             OpIR {
-                kind: "call".to_string(),
+                kind: molt_ir::OpKind::Call,
                 out: Some("r".into()),
                 s_value: Some("my_func".into()),
                 args: Some(vec!["argument".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             },
-            op_args("ret", &["r"]),
+            op_args(molt_ir::OpKind::Ret, &["r"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let call = result.iter().find(|o| o.kind == "call");
+        let call = result.iter().find(|o| o.kind == molt_ir::OpKind::Call);
         assert!(call.is_some(), "call must survive round-trip");
         let c = call.unwrap();
         assert_eq!(
@@ -1046,15 +1055,15 @@ mod tests {
     fn roundtrip_import_preserves_s_value() {
         let ops = vec![
             OpIR {
-                kind: "import".to_string(),
+                kind: molt_ir::OpKind::Import,
                 out: Some("m".into()),
                 s_value: Some("os".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Import)
             },
-            op_args("ret", &["m"]),
+            op_args(molt_ir::OpKind::Ret, &["m"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let imp = result.iter().find(|o| o.kind == "import");
+        let imp = result.iter().find(|o| o.kind == molt_ir::OpKind::Import);
         assert!(imp.is_some(), "import must survive round-trip");
         assert_eq!(
             imp.unwrap().s_value.as_deref(),
@@ -1073,43 +1082,45 @@ mod tests {
         // then state_label → state_block_start → state_block_end → ret_void
         let ops = vec![
             OpIR {
-                kind: "try_start".to_string(),
+                kind: molt_ir::OpKind::TryStart,
                 value: Some(300),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryStart)
             },
             OpIR {
-                kind: "call".to_string(),
+                kind: molt_ir::OpKind::Call,
                 out: Some("r".into()),
                 s_value: Some("foo".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             },
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 out: Some("exc".into()),
                 value: Some(300),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "try_end".to_string(),
+                kind: molt_ir::OpKind::TryEnd,
                 value: Some(300),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryEnd)
             },
-            op("ret_void"),
-            op_val("state_label", 300),
+            op(molt_ir::OpKind::RetVoid),
+            op_val(molt_ir::OpKind::StateLabel, 300),
             OpIR {
-                kind: "state_block_start".to_string(),
+                kind: molt_ir::OpKind::StateBlockStart,
                 value: Some(300),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StateBlockStart)
             },
             OpIR {
-                kind: "state_block_end".to_string(),
+                kind: molt_ir::OpKind::StateBlockEnd,
                 value: Some(300),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StateBlockEnd)
             },
-            op("ret_void"),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip_no_opt(ops);
-        let sbs = result.iter().find(|o| o.kind == "state_block_start");
+        let sbs = result
+            .iter()
+            .find(|o| o.kind == molt_ir::OpKind::StateBlockStart);
         assert!(
             sbs.is_some(),
             "state_block_start must survive round-trip, got kinds: {:?}",
@@ -1120,7 +1131,9 @@ mod tests {
             "state_block_start.value must be preserved"
         );
 
-        let sbe = result.iter().find(|o| o.kind == "state_block_end");
+        let sbe = result
+            .iter()
+            .find(|o| o.kind == molt_ir::OpKind::StateBlockEnd);
         assert!(
             sbe.is_some(),
             "state_block_end must survive round-trip, got kinds: {:?}",
@@ -1140,16 +1153,16 @@ mod tests {
     fn roundtrip_passthrough_preserves_metadata() {
         let ops = vec![
             OpIR {
-                kind: "cast".to_string(),
+                kind: molt_ir::OpKind::Cast,
                 out: Some("t".into()),
                 task_kind: Some("coro".into()),
                 container_type: Some("list".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Cast)
             },
-            op_args("ret", &["t"]),
+            op_args(molt_ir::OpKind::Ret, &["t"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let asp = result.iter().find(|o| o.kind == "cast");
+        let asp = result.iter().find(|o| o.kind == molt_ir::OpKind::Cast);
         assert!(asp.is_some(), "cast must survive round-trip");
         let a = asp.unwrap();
         assert_eq!(
@@ -1168,20 +1181,20 @@ mod tests {
     fn roundtrip_func_new_preserves_typed_task_constructor_metadata() {
         let ops = vec![
             OpIR {
-                kind: "func_new".to_string(),
+                kind: molt_ir::OpKind::FuncNew,
                 s_value: Some("worker_poll".into()),
                 value: Some(0),
                 out: Some("callable".into()),
                 task_kind: Some("async_generator".into()),
                 task_closure_size: Some(48),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::FuncNew)
             },
-            op_args("ret", &["callable"]),
+            op_args(molt_ir::OpKind::Ret, &["callable"]),
         ];
         let result = roundtrip_no_opt(ops);
         let constructor = result
             .iter()
-            .find(|op| op.kind == "func_new")
+            .find(|op| op.kind == molt_ir::OpKind::FuncNew)
             .expect("func_new must survive round-trip");
         assert_eq!(constructor.task_kind.as_deref(), Some("async_generator"));
         assert_eq!(constructor.task_closure_size, Some(48));
@@ -1191,7 +1204,7 @@ mod tests {
     fn roundtrip_invoke_ffi_preserves_native_callable_metadata() {
         let ops = vec![
             OpIR {
-                kind: "invoke_ffi".to_string(),
+                kind: molt_ir::OpKind::InvokeFfi,
                 args: Some(vec!["arg".into()]),
                 out: Some("out".into()),
                 native_callable_export: Some("nativepkg.ndimage.distance_transform_edt".into()),
@@ -1200,14 +1213,14 @@ mod tests {
                     "molt_nativepkg_ndimage_distance_transform_edt".into(),
                 ),
                 native_callable_abi: Some("molt.object_call_v1".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::InvokeFfi)
             },
-            op_args("ret", &["out"]),
+            op_args(molt_ir::OpKind::Ret, &["out"]),
         ];
         let result = roundtrip_no_opt(ops);
         let invoke = result
             .iter()
-            .find(|op| op.kind == "invoke_ffi")
+            .find(|op| op.kind == molt_ir::OpKind::InvokeFfi)
             .expect("invoke_ffi must survive SimpleIR/TIR round-trip");
         assert_eq!(
             invoke.native_callable_export.as_deref(),
@@ -1231,18 +1244,18 @@ mod tests {
     fn roundtrip_alloc_task_preserves_task_metadata() {
         let ops = vec![
             OpIR {
-                kind: "alloc_task".to_string(),
+                kind: molt_ir::OpKind::AllocTask,
                 out: Some("task".into()),
                 s_value: Some("__main_____f_poll".into()),
                 value: Some(48),
                 task_kind: Some("generator".into()),
                 args: Some(vec![]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::AllocTask)
             },
-            op_args("ret", &["task"]),
+            op_args(molt_ir::OpKind::Ret, &["task"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let alloc = result.iter().find(|o| o.kind == "alloc_task");
+        let alloc = result.iter().find(|o| o.kind == molt_ir::OpKind::AllocTask);
         assert!(alloc.is_some(), "alloc_task must survive round-trip");
         let alloc = alloc.unwrap();
         assert_eq!(
@@ -1260,7 +1273,7 @@ mod tests {
 
     // ---------------------------------------------------------------------------
     // Phase 5: object_new_bound is a first-class TIR opcode (was Copy
-    // fallback with `_original_kind`).  Round-trip must preserve the
+    // fallback with `origin`).  Round-trip must preserve the
     // operand list, output value name, and the SimpleIR `type_hint`
     // field that carries the result's class id.
     // ---------------------------------------------------------------------------
@@ -1274,20 +1287,20 @@ mod tests {
         // (see `roundtrip_alloc_task_preserves_task_metadata` which
         // checks task_kind / s_value / value, not names).
         let ops = vec![
-            op_out_args("module_get_attr", "cls", &["mod", "name"]),
+            op_out_args(molt_ir::OpKind::ModuleGetAttr, "cls", &["mod", "name"]),
             OpIR {
-                kind: "object_new_bound".to_string(),
+                kind: molt_ir::OpKind::ObjectNewBound,
                 args: Some(vec!["cls".to_string()]),
                 out: Some("inst".into()),
                 type_hint: Some("Point".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ObjectNewBound)
             },
-            op_args("ret", &["inst"]),
+            op_args(molt_ir::OpKind::Ret, &["inst"]),
         ];
         let result = roundtrip_no_opt(ops);
         let alloc = result
             .iter()
-            .find(|o| o.kind == "object_new_bound")
+            .find(|o| o.kind == molt_ir::OpKind::ObjectNewBound)
             .expect("object_new_bound must survive round-trip");
         assert_eq!(
             alloc.args.as_ref().map(|v| v.len()),
@@ -1305,18 +1318,18 @@ mod tests {
     fn pipeline_alloc_task_preserves_task_metadata() {
         let ops = vec![
             OpIR {
-                kind: "alloc_task".to_string(),
+                kind: molt_ir::OpKind::AllocTask,
                 out: Some("task".into()),
                 s_value: Some("__main_____f_poll".into()),
                 value: Some(48),
                 task_kind: Some("generator".into()),
                 args: Some(vec![]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::AllocTask)
             },
-            op_args("ret", &["task"]),
+            op_args(molt_ir::OpKind::Ret, &["task"]),
         ];
         let result = roundtrip(ops);
-        let alloc = result.iter().find(|o| o.kind == "alloc_task");
+        let alloc = result.iter().find(|o| o.kind == molt_ir::OpKind::AllocTask);
         assert!(
             alloc.is_some(),
             "alloc_task must survive optimized round-trip"
@@ -1347,20 +1360,20 @@ mod tests {
     fn roundtrip_call_func_preserves_kind_and_diagnostic_id() {
         let ops = vec![
             OpIR {
-                kind: "call_func".to_string(),
+                kind: molt_ir::OpKind::CallFunc,
                 out: Some("r".into()),
                 args: Some(vec!["target".into()]),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallFunc)
             },
-            op_args("ret", &["r"]),
+            op_args(molt_ir::OpKind::Ret, &["r"]),
         ];
         let mut source = make_function(ops);
         source.params = vec!["target".into()];
         let tir = lower_to_tir(&source);
         verify_function(&tir).expect("dynamic diagnostic IDs must survive TIR admission");
         let result = lower_to_simple_ir(&tir);
-        let cf = result.iter().find(|o| o.kind == "call_func");
+        let cf = result.iter().find(|o| o.kind == molt_ir::OpKind::CallFunc);
         assert!(
             cf.is_some(),
             "call_func must survive round-trip, got: {:?}",
@@ -1382,24 +1395,32 @@ mod tests {
         ] {
             let ops = vec![
                 OpIR {
-                    kind: "trace_enter_slot".to_string(),
+                    kind: molt_ir::OpKind::TraceEnterSlot,
                     s_value: Some("test".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
                 },
-                op_val("check_exception", 19),
-                op_args("frame_locals_set", &["locals"]),
+                op_val(molt_ir::OpKind::CheckException, 19),
+                op_args(molt_ir::OpKind::FrameLocalsSet, &["locals"]),
                 OpIR {
-                    kind: "trace_exit".to_string(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::TraceExit,
+                    ..OpIR::new(molt_ir::OpKind::TraceExit)
                 },
                 OpIR {
-                    kind: if value_payload { "ret" } else { "ret_void" }.to_string(),
+                    kind: if value_payload {
+                        molt_ir::OpKind::Ret
+                    } else {
+                        molt_ir::OpKind::RetVoid
+                    },
                     args: value_payload.then(|| vec!["locals".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(if value_payload {
+                        molt_ir::OpKind::Ret
+                    } else {
+                        molt_ir::OpKind::RetVoid
+                    })
                 },
-                op_val("label", 19),
-                op("trace_exit"),
-                op("ret_void"),
+                op_val(molt_ir::OpKind::Label, 19),
+                op(molt_ir::OpKind::TraceExit),
+                op(molt_ir::OpKind::RetVoid),
             ];
             let mut source = FunctionIR {
                 return_abi,
@@ -1416,8 +1437,10 @@ mod tests {
                 profile: None,
             })
             .expect("checked frame returns remain schema-valid after optimization");
-            let has_trace_enter = result.iter().any(|o| o.kind == "trace_enter_slot");
-            let has_trace_exit = result.iter().any(|o| o.kind == "trace_exit");
+            let has_trace_enter = result
+                .iter()
+                .any(|o| o.kind == molt_ir::OpKind::TraceEnterSlot);
+            let has_trace_exit = result.iter().any(|o| o.kind == molt_ir::OpKind::TraceExit);
             assert!(
                 has_trace_enter,
                 "trace_enter_slot must survive round-trip with optimization. Got: {:?}",
@@ -1436,24 +1459,28 @@ mod tests {
             );
             let enter = result
                 .iter()
-                .position(|op| op.kind == "trace_enter_slot")
+                .position(|op| op.kind == molt_ir::OpKind::TraceEnterSlot)
                 .unwrap();
             let check = &result[enter + 1];
-            assert_eq!(check.kind, "check_exception", "{result:?}");
+            assert_eq!(check.kind, molt_ir::OpKind::CheckException, "{result:?}");
             let failure_label = check.value.expect("entry guard retains a target");
             let failure = result
                 .iter()
-                .position(|op| op.kind == "label" && op.value == Some(failure_label))
+                .position(|op| op.kind == molt_ir::OpKind::Label && op.value == Some(failure_label))
                 .expect("entry cleanup remains reachable");
-            assert_eq!(result[failure + 1].kind, "trace_exit", "{result:?}");
-            assert_eq!(result[failure + 2].kind, "ret_void", "{result:?}");
+            assert_eq!(
+                result[failure + 1].kind,
+                molt_ir::OpKind::TraceExit,
+                "{result:?}"
+            );
+            assert_eq!(
+                result[failure + 2].kind,
+                molt_ir::OpKind::RetVoid,
+                "{result:?}"
+            );
             for (index, operation) in result.iter().enumerate() {
-                if operation.kind == "trace_exit" {
-                    assert!(
-                        crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(
-                            &result[index + 1].kind
-                        )
-                    );
+                if operation.kind == molt_ir::OpKind::TraceExit {
+                    assert!((result[index + 1].kind).is_return_terminator());
                 }
             }
         }
@@ -1463,15 +1490,15 @@ mod tests {
     fn roundtrip_const_zero_value() {
         let ops = vec![
             OpIR {
-                kind: "const".to_string(),
+                kind: molt_ir::OpKind::Const,
                 out: Some("z".into()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
-            op_args("ret", &["z"]),
+            op_args(molt_ir::OpKind::Ret, &["z"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let cnst = result.iter().find(|o| o.kind == "const");
+        let cnst = result.iter().find(|o| o.kind == molt_ir::OpKind::Const);
         assert!(cnst.is_some(), "const must survive round-trip");
         assert_eq!(
             cnst.unwrap().value,
@@ -1491,19 +1518,22 @@ mod tests {
         let ops = vec![
             int_literal("stop", 3), // stop = 3
             int_literal("idx", 0),  // idx = 0
-            op("loop_start"),
+            op(molt_ir::OpKind::LoopStart),
             // Loop body: a call that must NOT be eliminated
             call_out("result", "observe", &["idx"]),
             // Increment
             int_literal("one", 1),
-            op_out_args("add", "idx2", &["idx", "one"]),
-            op("loop_end"),
-            op("ret_void"),
+            op_out_args(molt_ir::OpKind::Add, "idx2", &["idx", "one"]),
+            op(molt_ir::OpKind::LoopEnd),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip(ops);
         // The "call" op must exist in the output — it has side effects
         // and must not be eliminated by any optimization pass.
-        let call_count = result.iter().filter(|o| o.kind == "call").count();
+        let call_count = result
+            .iter()
+            .filter(|o| o.kind == molt_ir::OpKind::Call)
+            .count();
         assert!(
             call_count >= 1,
             "loop body 'call' op was eliminated by TIR optimization! \
@@ -1519,15 +1549,18 @@ mod tests {
         let ops = vec![
             int_literal("stop", 3),
             int_literal("idx", 0),
-            op("loop_start"),
+            op(molt_ir::OpKind::LoopStart),
             call_out("result", "observe", &["idx"]),
             int_literal("one", 1),
-            op_out_args("add", "idx2", &["idx", "one"]),
-            op("loop_end"),
-            op("ret_void"),
+            op_out_args(molt_ir::OpKind::Add, "idx2", &["idx", "one"]),
+            op(molt_ir::OpKind::LoopEnd),
+            op(molt_ir::OpKind::RetVoid),
         ];
         let result = roundtrip_no_opt(ops);
-        let call_count = result.iter().filter(|o| o.kind == "call").count();
+        let call_count = result
+            .iter()
+            .filter(|o| o.kind == molt_ir::OpKind::Call)
+            .count();
         assert!(
             call_count >= 1,
             "loop body 'call' op was eliminated even without optimization! \

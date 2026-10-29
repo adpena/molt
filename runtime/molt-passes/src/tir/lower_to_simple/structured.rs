@@ -75,16 +75,16 @@ pub(super) fn emit_structured_loop_region(
     // Entry is also a destination when the loop returns to it; its invocation
     // arguments have already been seeded before this label by the runner.
     out.push(OpIR {
-        kind: "label".to_string(),
+        kind: molt_ir::OpKind::Label,
         value: Some(block_label_id(&header)),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Label)
     });
 
     // 2. loop_start — creates loop_block, body_block, after_block in the
     //    native backend and pushes a LoopFrame.
     out.push(OpIR {
-        kind: "loop_start".to_string(),
-        ..OpIR::default()
+        kind: molt_ir::OpKind::LoopStart,
+        ..OpIR::new(molt_ir::OpKind::LoopStart)
     });
 
     // 3. Header block argument loads (phi values from entry/back-edge).
@@ -190,10 +190,10 @@ pub(super) fn emit_structured_loop_region(
                             // Fallthrough → non-raise continuation.
                             let raise_label = block_label_id(guard_then);
                             out.push(OpIR {
-                                kind: "br_if".to_string(),
+                                kind: molt_ir::OpKind::BrIf,
                                 args: Some(vec![value_var(*guard_cond)]),
                                 value: Some(raise_label),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::BrIf)
                             });
                             // Defer the raise-path block emission to
                             // just before loop_end (dead-end blocks).
@@ -221,10 +221,10 @@ pub(super) fn emit_structured_loop_region(
                             // Fallthrough → raise path.
                             let continue_label = block_label_id(&next_bid);
                             out.push(OpIR {
-                                kind: "br_if".to_string(),
+                                kind: molt_ir::OpKind::BrIf,
                                 args: Some(vec![value_var(*guard_cond)]),
                                 value: Some(continue_label),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::BrIf)
                             });
                             // Fallthrough is raise path — emit it inline.
                             // emit_guard_raise_path handles its own
@@ -246,9 +246,9 @@ pub(super) fn emit_structured_loop_region(
                             );
                             // Emit label for the continuation (br_if target).
                             out.push(OpIR {
-                                kind: "label".to_string(),
+                                kind: molt_ir::OpKind::Label,
                                 value: Some(continue_label),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::Label)
                             });
                             emit_block_arg_stores(
                                 *guard_then,
@@ -278,13 +278,13 @@ pub(super) fn emit_structured_loop_region(
     // 6. loop_break_if_X(cond) — the native backend branches to body_block
     //    (continue) or cleanup→after_block (break) based on the condition.
     let break_kind_str = match region.break_kind {
-        LoopBreakKind::BreakIfFalse => "loop_break_if_false",
-        LoopBreakKind::BreakIfTrue => "loop_break_if_true",
+        LoopBreakKind::BreakIfFalse => molt_ir::OpKind::LoopBreakIfFalse,
+        LoopBreakKind::BreakIfTrue => molt_ir::OpKind::LoopBreakIfTrue,
     };
     let break_op = OpIR {
-        kind: break_kind_str.to_string(),
+        kind: break_kind_str,
         args: Some(vec![value_var(region.cond)]),
-        ..OpIR::default()
+        ..OpIR::new(break_kind_str)
     };
     out.push(break_op);
 
@@ -420,9 +420,9 @@ pub(super) fn emit_structured_loop_region(
         // Emit label for non-first body blocks (internal control flow).
         if !is_first_body {
             out.push(OpIR {
-                kind: "label".to_string(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(block_label_id(body_bid)),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             });
         } else {
             loop_inline_blocks.insert(*body_bid);
@@ -448,16 +448,16 @@ pub(super) fn emit_structured_loop_region(
                 // Back-edge → store updated phi values, then loop_continue.
                 emit_block_arg_stores(*target, args, block_param_vars, out);
                 out.push(OpIR {
-                    kind: "loop_continue".to_string(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::LoopContinue,
+                    ..OpIR::new(molt_ir::OpKind::LoopContinue)
                 });
             }
             Terminator::Branch { target, args } if *target == region.exit_block => {
                 // Explicit break (jump to exit) → store exit args, loop_break.
                 emit_block_arg_stores(*target, args, block_param_vars, out);
                 out.push(OpIR {
-                    kind: "loop_break".to_string(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::LoopBreak,
+                    ..OpIR::new(molt_ir::OpKind::LoopBreak)
                 });
             }
             _ => {
@@ -497,8 +497,8 @@ pub(super) fn emit_structured_loop_region(
 
     // 8b. loop_end — seals loop_block, switches to after_block.
     out.push(OpIR {
-        kind: "loop_end".to_string(),
-        ..OpIR::default()
+        kind: molt_ir::OpKind::LoopEnd,
+        ..OpIR::new(molt_ir::OpKind::LoopEnd)
     });
     // 8c. Materialize the post-loop control-flow edge explicitly.
     //
@@ -512,9 +512,9 @@ pub(super) fn emit_structured_loop_region(
     // is not the control edge: an outer header may already have been emitted.
     if !if_inlined_blocks.contains(&region.exit_block) {
         out.push(OpIR {
-            kind: "jump".to_string(),
+            kind: molt_ir::OpKind::Jump,
             value: Some(block_label_id(&region.exit_block)),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         });
     }
 
@@ -527,9 +527,9 @@ pub(super) fn emit_structured_loop_region(
             continue;
         };
         out.push(OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(block_label_id(&body_bid)),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         });
         emit_block_arg_loads(body_block, block_param_vars, out);
         emit_block_ops_inner(
@@ -581,9 +581,9 @@ pub(super) fn emit_guard_raise_path(
 
         // Emit label.
         out.push(OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(block_label_id(&cur)),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         });
 
         // Load block args.
@@ -679,8 +679,8 @@ pub(super) fn emit_block_ops_inner(
 pub(super) fn emit_return_ops(values: &[ValueId], out: &mut Vec<OpIR>) {
     if values.is_empty() {
         out.push(OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::RetVoid,
+            ..OpIR::new(molt_ir::OpKind::RetVoid)
         });
     } else {
         let [value] = values else {
@@ -690,9 +690,9 @@ pub(super) fn emit_return_ops(values: &[ValueId], out: &mut Vec<OpIR>) {
             );
         };
         out.push(OpIR {
-            kind: "ret".to_string(),
+            kind: molt_ir::OpKind::Ret,
             args: Some(vec![value_var(*value)]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         });
     }
 }
@@ -724,9 +724,9 @@ pub(super) fn emit_terminator(
                 // block ends in a check_exception or a plain branch.
             } else {
                 out.push(OpIR {
-                    kind: "jump".to_string(),
+                    kind: molt_ir::OpKind::Jump,
                     value: Some(block_label_id(target)),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 });
             }
         }
@@ -748,72 +748,49 @@ pub(super) fn emit_terminator(
             if needs_trampoline {
                 let trampoline_label = trampoline_label_id(&block.id);
                 out.push(OpIR {
-                    kind: "br_if".to_string(),
+                    kind: molt_ir::OpKind::BrIf,
                     args: Some(vec![value_var(*cond)]),
                     value: Some(trampoline_label),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BrIf)
                 });
                 emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
                 out.push(OpIR {
-                    kind: "jump".to_string(),
+                    kind: molt_ir::OpKind::Jump,
                     value: Some(block_label_id(else_block)),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 });
                 out.push(OpIR {
-                    kind: "label".to_string(),
+                    kind: molt_ir::OpKind::Label,
                     value: Some(trampoline_label),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 });
                 emit_block_arg_stores(*then_block, then_args, block_param_vars, out);
                 out.push(OpIR {
-                    kind: "jump".to_string(),
+                    kind: molt_ir::OpKind::Jump,
                     value: Some(block_label_id(then_block)),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 });
             } else {
                 // No then-args: original pattern is safe.
                 out.push(OpIR {
-                    kind: "br_if".to_string(),
+                    kind: molt_ir::OpKind::BrIf,
                     args: Some(vec![value_var(*cond)]),
                     value: Some(block_label_id(then_block)),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BrIf)
                 });
                 emit_block_arg_stores(*else_block, else_args, block_param_vars, out);
                 out.push(OpIR {
-                    kind: "jump".to_string(),
+                    kind: molt_ir::OpKind::Jump,
                     value: Some(block_label_id(else_block)),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 });
             }
         }
 
-        Terminator::Switch {
-            value,
-            cases,
-            default,
-            default_args,
-        } => {
-            // Emit a chain of br_if checks for each case, then jump to default.
-            for (case_val, target, case_args) in cases {
-                out.push(OpIR {
-                    kind: "switch_case".to_string(),
-                    args: Some(vec![value_var(*value)]),
-                    value: Some(*case_val),
-                    ..OpIR::default()
-                });
-                emit_block_arg_stores(*target, case_args, block_param_vars, out);
-                out.push(OpIR {
-                    kind: "jump".to_string(),
-                    value: Some(block_label_id(target)),
-                    ..OpIR::default()
-                });
-            }
-            emit_block_arg_stores(*default, default_args, block_param_vars, out);
-            out.push(OpIR {
-                kind: "jump".to_string(),
-                value: Some(block_label_id(default)),
-                ..OpIR::default()
-            });
+        Terminator::Switch { .. } => {
+            panic!(
+                "SimpleIR lowering does not support TIR Switch; no registered wire operation represents its case edges"
+            );
         }
 
         Terminator::StateDispatch {
@@ -844,20 +821,20 @@ pub(super) fn emit_terminator(
             }
             emit_block_arg_stores(*default, default_args, block_param_vars, out);
             out.push(OpIR {
-                kind: "state_switch".to_string(),
+                kind: molt_ir::OpKind::StateSwitch,
                 state_targets: Some(
                     cases
                         .iter()
                         .map(|(state, target, _)| (*state, block_label_id(target)))
                         .collect(),
                 ),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StateSwitch)
             });
             // State 0 (initial entry) falls through to the default block.
             out.push(OpIR {
-                kind: "jump".to_string(),
+                kind: molt_ir::OpKind::Jump,
                 value: Some(block_label_id(default)),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             });
         }
 
@@ -866,8 +843,8 @@ pub(super) fn emit_terminator(
                 return;
             }
             out.push(OpIR {
-                kind: "unreachable".to_string(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::Unreachable,
+                ..OpIR::new(molt_ir::OpKind::Unreachable)
             });
         }
     }
@@ -892,10 +869,10 @@ pub(super) fn emit_block_arg_loads(
     );
     for (arg, var_name) in block.args.iter().zip(param_vars) {
         out.push(OpIR {
-            kind: "load_var".to_string(),
+            kind: molt_ir::OpKind::LoadVar,
             var: Some(var_name.clone()),
             out: Some(value_var(arg.id)),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::LoadVar)
         });
     }
 }
@@ -917,10 +894,10 @@ pub(super) fn emit_block_arg_stores(
     );
     for (arg_val, var_name) in args.iter().zip(param_vars) {
         out.push(OpIR {
-            kind: "store_var".to_string(),
+            kind: molt_ir::OpKind::StoreVar,
             var: Some(var_name.clone()),
             args: Some(vec![value_var(*arg_val)]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         });
     }
 }

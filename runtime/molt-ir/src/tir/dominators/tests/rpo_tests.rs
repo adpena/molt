@@ -361,6 +361,7 @@ fn push_check_exception(func: &mut TirFunction, block: BlockId, handler_label: i
     let mut attrs = std::collections::HashMap::new();
     attrs.insert("value".to_string(), AttrValue::Int(handler_label));
     func.blocks.get_mut(&block).unwrap().ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],

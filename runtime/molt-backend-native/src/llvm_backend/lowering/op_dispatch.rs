@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_op(&mut self, source_block: BlockId, op: &crate::tir::ops::TirOp) {
@@ -14,38 +15,38 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::ConstBytes => self.emit_const_bytes(op),
 
             // -- Arithmetic (type-specialized) --
-            OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, "add"),
+            OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, OpKind::Add),
             OpCode::CheckedAdd => self.emit_checked_add(op),
             OpCode::CheckedMul => self.emit_checked_mul(op),
-            OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, "sub"),
-            OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, "mul"),
-            OpCode::Div => self.emit_binary_arith(op, "div"),
-            OpCode::FloorDiv => self.emit_binary_arith(op, "floordiv"),
-            OpCode::Mod => self.emit_binary_arith(op, "mod"),
-            OpCode::Pow => self.emit_binary_arith(op, "pow"),
+            OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, OpKind::Sub),
+            OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, OpKind::Mul),
+            OpCode::Div => self.emit_binary_arith(op, OpKind::Div),
+            OpCode::FloorDiv => self.emit_binary_arith(op, OpKind::Floordiv),
+            OpCode::Mod => self.emit_binary_arith(op, OpKind::Mod),
+            OpCode::Pow => self.emit_binary_arith(op, OpKind::Pow),
 
             // -- Unary --
-            OpCode::Neg => self.emit_unary(op, "neg"),
-            OpCode::Pos => self.emit_unary(op, "pos"),
-            OpCode::Not => self.emit_unary(op, "not"),
+            OpCode::Neg => self.emit_unary(op, OpKind::Neg),
+            OpCode::Pos => self.emit_unary(op, OpKind::Pos),
+            OpCode::Not => self.emit_unary(op, OpKind::Not),
 
             // -- Comparison (type-specialized) --
-            OpCode::Eq => self.emit_comparison(op, "eq"),
-            OpCode::Ne => self.emit_comparison(op, "ne"),
-            OpCode::Lt => self.emit_comparison(op, "lt"),
-            OpCode::Le => self.emit_comparison(op, "le"),
-            OpCode::Gt => self.emit_comparison(op, "gt"),
-            OpCode::Ge => self.emit_comparison(op, "ge"),
+            OpCode::Eq => self.emit_comparison(op, OpKind::Eq),
+            OpCode::Ne => self.emit_comparison(op, OpKind::Ne),
+            OpCode::Lt => self.emit_comparison(op, OpKind::Lt),
+            OpCode::Le => self.emit_comparison(op, OpKind::Le),
+            OpCode::Gt => self.emit_comparison(op, OpKind::Gt),
+            OpCode::Ge => self.emit_comparison(op, OpKind::Ge),
             OpCode::Is | OpCode::IsNot => self.emit_identity(op),
             OpCode::In | OpCode::NotIn => self.emit_containment(op),
 
             // -- Bitwise --
-            OpCode::BitAnd => self.emit_bitwise(op, "bit_and"),
-            OpCode::BitOr => self.emit_bitwise(op, "bit_or"),
-            OpCode::BitXor => self.emit_bitwise(op, "bit_xor"),
-            OpCode::BitNot => self.emit_unary(op, "invert"),
-            OpCode::Shl => self.emit_bitwise(op, "lshift"),
-            OpCode::Shr => self.emit_bitwise(op, "rshift"),
+            OpCode::BitAnd => self.emit_bitwise(op, OpKind::BitAnd),
+            OpCode::BitOr => self.emit_bitwise(op, OpKind::BitOr),
+            OpCode::BitXor => self.emit_bitwise(op, OpKind::BitXor),
+            OpCode::BitNot => self.emit_unary(op, OpKind::Invert),
+            OpCode::Shl => self.emit_bitwise(op, OpKind::Lshift),
+            OpCode::Shr => self.emit_bitwise(op, OpKind::Rshift),
 
             // -- Boolean --
             OpCode::And | OpCode::Or => self.emit_boolean_selection(op),
@@ -188,10 +189,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //   - 1+ operands, 0 results: no-op (side-effect only)
             //   - 1+ operands, 1+ results: pass-through first operand
             OpCode::Copy => {
-                let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                });
+                let original_kind = op.origin;
                 if let Some(kind) = original_kind
                     && self.lower_preserved_simpleir_op(op, kind)
                 {
@@ -201,7 +199,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // tied to the `CopyLowering` single source of truth.
                 //
                 // Reaching here means this `OpCode::Copy` carries an
-                // `_original_kind` that `lower_preserved_simpleir_op` did NOT
+                // `origin` that `lower_preserved_simpleir_op` did NOT
                 // handle — neither a dedicated arm nor the generic
                 // `try_lower_preserved_runtime_call` (`molt_<kind>`) fallback
                 // claimed it. EVERY such op is a SimpleIR op the native/WASM/Luau
@@ -222,7 +220,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 //
                 // SINGLE SOURCE OF TRUTH (the drift the `CopyLowering` classifier
                 // forbids). The drop-insertion pass releases exactly the `Copy`s
-                // whose `_original_kind` is a `CopyLowering::OwnedValue`
+                // whose `origin` is a `CopyLowering::OwnedValue`
                 // (`alias_analysis::copy_kind_mints_owned_value`). If such a
                 // fresh-owned producer reached codegen as a silent operand-0
                 // passthrough, the result would (a) be the wrong value AND (b)
@@ -230,7 +228,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // therefore consults that classifier on every fatal so the table
                 // and the backend cannot drift: a `OwnedValue` reaching here is the
                 // forbidden drift (a fresh-value op missing its explicit LLVM arm),
-                // and the diagnostic names it as such; any other `_original_kind`
+                // and the diagnostic names it as such; any other `origin`
                 // gets the general terminal message with operand/result counts.
                 // Closing a kind = add an arm to `lower_preserved_simpleir_op` (or,
                 // if `molt_<kind>` is a real boxed runtime intrinsic, the generic
@@ -243,7 +241,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         // Not a `OwnedValue` (a transparent-alias / inert-marker
                         // kind whose `molt_<kind>` intrinsic is also absent): the
                         // partner's general terminal state. Still fail loud — an
-                        // unhandled `_original_kind` is never a sound passthrough.
+                        // unhandled `origin` is never a sound passthrough.
                         self.record_fatal(format!(
                             "unhandled preserved SimpleIR op `{kind}` (operands={}, \
                              results={}) reached the LLVM `Copy` passthrough — \
@@ -274,7 +272,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     return;
                 }
 
-                // `_original_kind == None`: a genuine SSA value copy
+                // `origin == None`: a genuine SSA value copy
                 // (`copy`/`copy_var`/`load_var`/`store_var`). Operand-0
                 // passthrough is the correct lowering.
                 if op.results.is_empty() {
@@ -715,7 +713,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
             OpCode::UnpackSequence => {
                 assert!(
-                    self.lower_preserved_container_op(op, "unpack_sequence"),
+                    self.lower_preserved_container_op(op, OpKind::UnpackSequence),
                     "verified UnpackSequence must lower through the canonical runtime ABI"
                 );
             }

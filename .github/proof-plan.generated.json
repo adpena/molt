@@ -125,6 +125,7 @@
     "runtime/molt-backend-luau/src/luau/compile_pipeline.rs",
     "runtime/molt-ir/src/tir/op_kinds.toml",
     "src/molt/rust_source_scan.py",
+    "tools/structural_audit_rust.py",
     "tests/tools/test_gen_luau_support_matrix.py",
     "tools/gen_luau_support_matrix.py",
     "tools/proof_queue_pkg/custody_cas.py",
@@ -9703,6 +9704,8 @@
       "local.runtime-vfs.1": "shared",
       "local.runtime-vfs.pytest": "none",
       "local.rust-clippy-changed.0": "shared",
+      "local.rust-source-scan-consumers.pytest": "none",
+      "local.rust-source-scan.pytest": "none",
       "local.rust-toolchain.0": "none",
       "local.rust-toolchain.pytest": "none",
       "local.source-extension-package-sets.pytest": "none",
@@ -9880,6 +9883,8 @@
       "local.runtime-vfs.1": "cargo test --locked -p molt-runtime-vfs --all-features --no-fail-fast",
       "local.runtime-vfs.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=2.5 tests/test_browser_vfs.py",
       "local.rust-clippy-changed.0": "python tools/check_changed_clippy.py --base {integration_upstream_commit}",
+      "local.rust-source-scan-consumers.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/test_rust_source_scan.py tests/tools/test_gen_luau_support_matrix.py",
+      "local.rust-source-scan.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=0.5 tests/test_rust_source_scan.py",
       "local.rust-toolchain.0": "python tools/check_rust_toolchain.py",
       "local.rust-toolchain.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.75 tests/tools/test_rust_toolchain_contract.py tests/cli/test_backend_manifest_contract.py",
       "local.source-extension-package-sets.pytest": "python -m pytest -q -n auto --molt-worker-memory-gb=1.0 tests/cli/test_source_extension_set_registry.py tests/cli/test_source_extension_manifest_authority.py tests/cli/test_source_extension_link_requirements.py tests/cli/test_source_extension_producer.py tests/cli/test_source_build_environment_probe.py tests/cli/test_source_extension_candidate_attestation.py tests/cli/test_source_extension_candidate_transaction.py tests/cli/test_source_package_seal.py tests/test_exact_json.py tests/cli/test_external_native_scipy_package_seal.py tests/cli/test_atomic_io_authority.py tests/cli/test_python_module_names.py tests/cli/test_source_extension_runtime_imports.py tests/cli/test_source_extension_input_custody.py tests/cli/test_source_extension_target.py tests/cli/test_source_extension_language.py tests/cli/test_source_extension_compiler_target.py tests/cli/test_extension_wheel_retained_inputs.py tests/tools/test_native_link_benchmark.py tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel tests/cli/test_source_extension_invocation.py tests/cli/test_source_extension_compiler_inputs.py",
@@ -11485,6 +11490,7 @@
         "gates": [],
         "globs": [
           "tools/structural_audit.py",
+          "tools/structural_audit_rust.py",
           "tools/structural_audit_rust_admission.py",
           "tools/structural_audit_rust_domains.py",
           "src/molt/rust_source_scan.py",
@@ -11502,12 +11508,52 @@
       },
       {
         "command_ids": [
+          "local.rust-source-scan-consumers.pytest"
+        ],
+        "description": "Structural audit parsers and the shared Rust lexer select every parser consumer.",
+        "gates": [],
+        "globs": [
+          "tools/structural_audit.py",
+          "tools/structural_audit_rust.py",
+          "tools/structural_audit_rust_admission.py",
+          "tools/structural_audit_rust_domains.py",
+          "src/molt/rust_source_scan.py"
+        ],
+        "name": "rust-source-scan-consumers",
+        "pytest": [
+          "tests/test_rust_source_scan.py",
+          "tests/tools/test_gen_luau_support_matrix.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
+          "local.rust-source-scan.pytest"
+        ],
+        "description": "Shared Rust lexical scanner: comment, string and token ranges.",
+        "gates": [],
+        "globs": [
+          "tests/test_rust_source_scan.py"
+        ],
+        "name": "rust-source-scan",
+        "pytest": [
+          "tests/test_rust_source_scan.py"
+        ],
+        "toolchains": [
+          "python"
+        ]
+      },
+      {
+        "command_ids": [
           "local.structural-audit-records.pytest"
         ],
         "description": "Structural audit scan-record replay matches freshly computed results.",
         "gates": [],
         "globs": [
           "tools/structural_audit.py",
+          "tools/structural_audit_rust.py",
           "tools/structural_audit_rust_admission.py",
           "tools/structural_audit_rust_domains.py",
           "src/molt/rust_source_scan.py",
@@ -11532,6 +11578,7 @@
           "tools/generator_manifest.toml",
           "tools/generator_manifest_baseline.json",
           "tools/structural_audit.py",
+          "tools/structural_audit_rust.py",
           "tools/structural_audit_rust_admission.py",
           "tools/structural_audit_rust_domains.py",
           "src/molt/rust_source_scan.py",
@@ -14036,6 +14083,12 @@
         "rustc",
         "cargo",
         "git"
+      ],
+      "local.rust-source-scan-consumers.pytest": [
+        "python"
+      ],
+      "local.rust-source-scan.pytest": [
+        "python"
       ],
       "local.rust-toolchain.0": [
         "python"

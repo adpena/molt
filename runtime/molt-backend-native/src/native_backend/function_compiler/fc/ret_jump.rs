@@ -1,20 +1,21 @@
 use super::super::*;
+use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-/// Single-source kind authority for [`handle_ret_jump_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_ret_jump_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "jump",
-    "br_if",
-    "label",
-    "state_label",
-    "phi",
-    "store_var",
-    "delete_var",
-    "load_var",
-    "copy_var",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Jump,
+    OpKind::BrIf,
+    OpKind::Label,
+    OpKind::StateLabel,
+    OpKind::Phi,
+    OpKind::StoreVar,
+    OpKind::DeleteVar,
+    OpKind::LoadVar,
+    OpKind::CopyVar,
+);
 use super::OpFlow;
 use super::list_index_fast_path::ListIndexFastPathState;
 use super::var_get_boxed_overflow_safe_fn;
@@ -89,7 +90,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
         )
     };
 
-    match op.kind.as_str() {
+    match op.kind {
         kind if matches!(
             crate::tir::op_kinds_generated::simpleir_return_shape(kind),
             crate::tir::op_kinds_generated::SimpleIrReturnShape::Value
@@ -128,7 +129,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             }
             *is_block_filled = true;
         }
-        "jump" => {
+        OpKind::Jump => {
             let target_id = op.value.unwrap_or(0);
             let target_block = label_blocks[&target_id];
             if let Some(block) = builder.current_block() {
@@ -167,7 +168,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             jump_block(&mut *builder, target_block, &transport_args);
             *is_block_filled = true;
         }
-        "br_if" => {
+        OpKind::BrIf => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let target_id = op.value.unwrap_or(0);
             let target_block = label_blocks[&target_id];
@@ -334,7 +335,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
             seal_block_once(&mut *builder, &mut *sealed_blocks, fallthrough_block);
         }
-        "label" | "state_label" => {
+        OpKind::Label | OpKind::StateLabel => {
             let label_id = op.value.unwrap_or(0);
             let block = label_blocks[&label_id];
             let is_function_exception_label = Some(label_id) == function_exception_label_id;
@@ -401,14 +402,14 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
                 }
             }
         }
-        "phi" => {
+        OpKind::Phi => {
             // Phi ops are rewritten to store_var/load_var by
             // rewrite_phi_to_store_load() before compilation.
             // Any residual phi is a no-op (handled by end_if
             // for the non-TIR structured path).
         }
         // TIR round-trip variable ops — wire SSA values between blocks
-        "store_var" => {
+        OpKind::StoreVar => {
             let binding = simple_ir_binding(op).expect("store_var missing target local");
             let name = binding.destination;
             assert!(
@@ -544,7 +545,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             }
             return OpFlow::Continue;
         }
-        "delete_var" => {
+        OpKind::DeleteVar => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let Some(binding) = simple_ir_binding(op) else {
                 panic!("delete_var missing target local");
@@ -616,7 +617,7 @@ pub(in crate::native_backend::function_compiler) fn handle_ret_jump_op(
             }
             return OpFlow::Continue;
         }
-        "load_var" | "copy_var" => {
+        OpKind::LoadVar | OpKind::CopyVar => {
             let source = preanalyze_alias_source(op).expect("variable load source");
             let Some(out) = op.out.as_deref().filter(|out| *out != "none") else {
                 return OpFlow::Continue;

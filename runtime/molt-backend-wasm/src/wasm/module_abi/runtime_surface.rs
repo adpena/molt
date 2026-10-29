@@ -134,13 +134,13 @@ impl WasmRuntimeSurfacePlan {
         defined_function_names: &BTreeSet<&str>,
         known_imports: &BTreeSet<WasmRuntimeImport>,
     ) {
-        let kind = op.kind.as_str();
+        let kind = op.kind;
         // The shared call spill region holds every spilled argument vector.
         // A loaded method call spills its arguments after the loaded pair; a
         // method load's out-parameter uses the region's first word.
         let spilled_arguments = match kind {
-            "call_func" | "invoke_ffi" => 1,
-            "call_loaded_method" => 2,
+            molt_ir::OpKind::CallFunc | molt_ir::OpKind::InvokeFfi => 1,
+            molt_ir::OpKind::CallLoadedMethod => 2,
             _ => 0,
         };
         if spilled_arguments != 0
@@ -149,7 +149,7 @@ impl WasmRuntimeSurfacePlan {
         {
             self.max_call_arity = self.max_call_arity.max(args.len() - spilled_arguments);
         }
-        if kind == "class_def"
+        if kind == molt_ir::OpKind::ClassDef
             && let Some(meta) = op.s_value.as_deref()
         {
             self.max_class_def_words = self
@@ -160,13 +160,13 @@ impl WasmRuntimeSurfacePlan {
             self.required_imports
                 .extend(call.required_imports.iter().copied());
         }
-        if kind == "callargs_push_method_receiver" {
+        if kind == molt_ir::OpKind::CallargsPushMethodReceiver {
             self.required_imports.extend([
                 WasmRuntimeImport::CallargsPushPos,
                 WasmRuntimeImport::DecRefObj,
             ]);
         }
-        if kind == "builtin_func"
+        if kind == molt_ir::OpKind::BuiltinFunc
             && let Some(name) = op.s_value.as_ref()
         {
             if runtime_callable_import(name).is_none() {
@@ -184,7 +184,7 @@ impl WasmRuntimeSurfacePlan {
             }
             self.record_arity(name, manifest_arity, RuntimeArityPlan::BuiltinTrampoline);
         }
-        if kind == "call"
+        if kind == molt_ir::OpKind::Call
             && let Some(target_name) = op.s_value.as_ref()
             && !defined_function_names.contains(target_name.as_str())
         {
@@ -254,15 +254,13 @@ mod tests {
     fn builtin_publication_ir(extra_ops: Vec<OpIR>) -> SimpleIR {
         let mut ops = vec![
             OpIR {
-                kind: "const_str".into(),
                 out: Some("module_name".into()),
                 s_value: Some("builtins".into()),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_cache_set".into(),
                 args: Some(vec!["module_name".into(), "module".into()]),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleCacheSet)
             },
         ];
         ops.extend(extra_ops);
@@ -318,11 +316,10 @@ mod tests {
             1
         );
         let ir = builtin_publication_ir(vec![OpIR {
-            kind: "builtin_func".into(),
             s_value: Some("molt_sqlite3_connect".into()),
             value: Some(1),
             out: Some("value".into()),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
         }]);
         WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Full);
     }
@@ -350,16 +347,14 @@ mod tests {
     fn builtin_namespace_publication_does_not_weaken_mandatory_global_lookup() {
         let ir = builtin_publication_ir(vec![
             OpIR {
-                kind: "const_str".into(),
                 out: Some("lookup_name".into()),
                 s_value: Some("open".into()),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_get_global".into(),
                 args: Some(vec!["module".into(), "lookup_name".into()]),
                 out: Some("value".into()),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
             },
         ]);
         WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
@@ -371,11 +366,10 @@ mod tests {
     )]
     fn builtin_namespace_publication_does_not_weaken_mandatory_materialization() {
         let ir = builtin_publication_ir(vec![OpIR {
-            kind: "builtin_func".into(),
             s_value: Some("molt_open_builtin".into()),
             value: Some(runtime_callable_abi("molt_open_builtin").unwrap().arity as i64),
             out: Some("value".into()),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
         }]);
         WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
     }
@@ -386,14 +380,13 @@ mod tests {
     )]
     fn builtin_namespace_publication_does_not_weaken_mandatory_direct_calls() {
         let ir = builtin_publication_ir(vec![OpIR {
-            kind: "call".into(),
             s_value: Some("molt_open_builtin".into()),
             args: Some(vec![
                 "module".into();
                 runtime_callable_abi("molt_open_builtin").unwrap().arity
             ]),
             out: Some("value".into()),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         }]);
         WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Pure);
     }
@@ -407,22 +400,19 @@ mod tests {
                 params: vec![],
                 ops: vec![
                     OpIR {
-                        kind: "const_str".into(),
                         out: Some("name".into()),
                         s_value: Some("molt_sys_version".into()),
-                        ..Default::default()
+                        ..OpIR::new(molt_ir::OpKind::ConstStr)
                     },
                     OpIR {
-                        kind: "store_var".into(),
                         var: Some("later".into()),
                         args: Some(vec!["name".into()]),
-                        ..Default::default()
+                        ..OpIR::new(molt_ir::OpKind::StoreVar)
                     },
                     OpIR {
-                        kind: "const_str".into(),
                         out: Some("message".into()),
                         s_value: Some("molt_not_a_callable: diagnostic".into()),
-                        ..Default::default()
+                        ..OpIR::new(molt_ir::OpKind::ConstStr)
                     },
                 ],
                 param_types: None,
@@ -457,16 +447,14 @@ mod tests {
                         params: vec!["module".into()],
                         ops: vec![
                             OpIR {
-                                kind: "const_str".into(),
                                 out: Some("name".into()),
                                 s_value: Some(spec.python_name.into()),
-                                ..Default::default()
+                                ..OpIR::new(molt_ir::OpKind::ConstStr)
                             },
                             OpIR {
-                                kind: "module_get_global".into(),
                                 args: Some(vec!["module".into(), "name".into()]),
                                 out: Some("value".into()),
-                                ..Default::default()
+                                ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
                             },
                         ],
                         param_types: None,
@@ -491,16 +479,14 @@ mod tests {
     fn overwritten_lookup_name_does_not_keep_a_stale_constant_root() {
         for mutator in [
             OpIR {
-                kind: "store_var".into(),
                 var: Some("name".into()),
                 args: Some(vec!["computed".into()]),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
             OpIR {
-                kind: "const_str".into(),
                 out: Some("name".into()),
                 s_value: Some("application_global".into()),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
         ] {
             let ir = SimpleIR {
@@ -510,17 +496,15 @@ mod tests {
                     params: vec!["module".into(), "computed".into()],
                     ops: vec![
                         OpIR {
-                            kind: "const_str".into(),
                             out: Some("name".into()),
                             s_value: Some("print".into()),
-                            ..Default::default()
+                            ..OpIR::new(molt_ir::OpKind::ConstStr)
                         },
                         mutator,
                         OpIR {
-                            kind: "module_get_global".into(),
                             args: Some(vec!["module".into(), "name".into()]),
                             out: Some("value".into()),
-                            ..Default::default()
+                            ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
                         },
                     ],
                     param_types: None,

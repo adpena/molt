@@ -8,21 +8,29 @@ pub(crate) enum WasmScalarDirectNumericLane {
     Float,
 }
 
-pub(crate) fn is_shared_drop_fact_marker(kind: &str) -> bool {
-    matches!(kind, "drop_inserted" | "exception_region_drops_inserted")
+pub(crate) fn is_shared_drop_fact_marker(kind: molt_ir::OpKind) -> bool {
+    matches!(
+        kind,
+        molt_ir::OpKind::DropInserted | molt_ir::OpKind::ExceptionRegionDropsInserted
+    )
 }
 
 pub(crate) fn wasm_scalar_integer_fast_path_for_op(
     plan: &ScalarRepresentationPlan,
     op: &OpIR,
 ) -> bool {
-    match op.kind.as_str() {
+    match op.kind {
         // `/=` shares `/`'s int-family fast-path gating: both produce a float on
         // int operands, so the lane is keyed on integer-family operands rather
         // than an integer result.
-        "div" | "inplace_div" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" => {
-            plan.op_args_are_integer_family(op)
-        }
+        molt_ir::OpKind::Div
+        | molt_ir::OpKind::InplaceDiv
+        | molt_ir::OpKind::Lt
+        | molt_ir::OpKind::Le
+        | molt_ir::OpKind::Gt
+        | molt_ir::OpKind::Ge
+        | molt_ir::OpKind::Eq
+        | molt_ir::OpKind::Ne => plan.op_args_are_integer_family(op),
         _ => plan.op_prefers_integer_runtime_lane(op),
     }
 }

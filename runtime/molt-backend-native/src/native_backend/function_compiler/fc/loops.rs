@@ -1,19 +1,20 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_loop_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_loop_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "loop_start",
-    "loop_index_start",
-    "loop_break_if_exception",
-    "loop_break_if_true",
-    "loop_break_if_false",
-    "loop_break",
-    "loop_index_next",
-    "loop_continue",
-    "loop_end",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::LoopStart,
+    OpKind::LoopIndexStart,
+    OpKind::LoopBreakIfException,
+    OpKind::LoopBreakIfTrue,
+    OpKind::LoopBreakIfFalse,
+    OpKind::LoopBreak,
+    OpKind::LoopIndexNext,
+    OpKind::LoopContinue,
+    OpKind::LoopEnd,
+);
 use super::OpFlow;
 use super::list_index_fast_path::{
     ListIndexFastPathState, ListStorageField, emit_loop_list_storage_hoists,
@@ -35,24 +36,24 @@ pub(in crate::native_backend::function_compiler) fn metadata_only_structured_loo
     let mut pending: Vec<PendingLoop> = Vec::new();
     let mut metadata_only = BTreeSet::new();
     for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" if loop_start_has_index_prelude(ops, idx) => {}
-            "loop_start" | "loop_index_start" => {
+        match op.kind {
+            OpKind::LoopStart if loop_start_has_index_prelude(ops, idx) => {}
+            OpKind::LoopStart | OpKind::LoopIndexStart => {
                 let mut frame = PendingLoop::default();
                 frame.controls.insert(idx);
                 pending.push(frame);
             }
-            "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
-            | "loop_break"
-            | "loop_continue"
-            | "loop_index_next" => {
+            OpKind::LoopBreakIfTrue
+            | OpKind::LoopBreakIfFalse
+            | OpKind::LoopBreakIfException
+            | OpKind::LoopBreak
+            | OpKind::LoopContinue
+            | OpKind::LoopIndexNext => {
                 if let Some(frame) = pending.last_mut() {
                     frame.controls.insert(idx);
                 }
             }
-            "loop_end" if pending.pop().is_none() => {
+            OpKind::LoopEnd if pending.pop().is_none() => {
                 metadata_only.insert(idx);
             }
             _ => {}
@@ -136,8 +137,8 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
         )
     };
 
-    match op.kind.as_str() {
-        "loop_start" => {
+    match op.kind {
+        OpKind::LoopStart => {
             let indexed_loop_follows = loop_start_has_index_prelude(&func_ir.ops, op_idx);
             if indexed_loop_follows {
                 // Indexed loops may carry a constant-materialization
@@ -198,7 +199,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
             });
             *loop_depth += 1;
         }
-        "loop_index_start" => {
+        OpKind::LoopIndexStart => {
             let Some(out_name) = op.out.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -215,23 +216,23 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let mut found_backedge = false;
                     let mut nested_loop = false;
                     for i in (op_idx + 1)..ops.len() {
-                        match ops[i].kind.as_str() {
-                            "loop_start" => {
+                        match ops[i].kind {
+                            OpKind::LoopStart => {
                                 if depth == 0 {
                                     nested_loop = true;
                                 }
                                 depth += 1;
                             }
-                            "loop_index_start" => {}
-                            "loop_end" if depth > 0 => {
+                            OpKind::LoopIndexStart => {}
+                            OpKind::LoopEnd if depth > 0 => {
                                 depth -= 1;
                             }
-                            "loop_end" => {
+                            OpKind::LoopEnd => {
                                 // raw carrier preserved across loop iterations (LuaJIT-style)
                                 found_backedge = true;
                                 break;
                             }
-                            "loop_continue" if depth == 0 => {
+                            OpKind::LoopContinue if depth == 0 => {
                                 found_backedge = true;
                                 break;
                             }
@@ -247,11 +248,11 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     // Step 1: forward-scan for loop_index_next output
                     let mut next_out: Option<&str> = None;
                     for fwd in (op_idx + 1)..ops.len() {
-                        if ops[fwd].kind == "loop_index_next" {
+                        if ops[fwd].kind == OpKind::LoopIndexNext {
                             next_out = ops[fwd].out.as_deref();
                             break;
                         }
-                        if ops[fwd].kind == "loop_end" {
+                        if ops[fwd].kind == OpKind::LoopEnd {
                             break;
                         }
                     }
@@ -260,7 +261,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     if let Some(next) = next_out {
                         for fwd in (op_idx + 1)..ops.len() {
                             let f = &ops[fwd];
-                            if f.kind == "store_var"
+                            if f.kind == OpKind::StoreVar
                                 && let (Some(binding), Some(a)) = (simple_ir_binding(f), &f.args)
                                 && binding.destination.starts_with("_bb")
                                 && binding.destination.contains("_arg")
@@ -269,7 +270,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                                 arg_name = Some(binding.destination.to_string());
                                 break;
                             }
-                            if f.kind == "loop_end" {
+                            if f.kind == OpKind::LoopEnd {
                                 break;
                             }
                         }
@@ -278,7 +279,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     if let Some(ref an) = arg_name {
                         for bwd in (0..op_idx).rev() {
                             let b = &ops[bwd];
-                            if b.kind == "load_var"
+                            if b.kind == OpKind::LoadVar
                                 && preanalyze_alias_source(b) == Some(an.as_str())
                                 && let Some(ref out) = b.out
                                 && let Some(v) = var_get_boxed_overflow_safe(
@@ -660,7 +661,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 *loop_depth += 1;
             }
         }
-        "loop_break_if_exception" => {
+        OpKind::LoopBreakIfException => {
             // Control op (no value arg): break the loop when a runtime
             // exception is pending.  Emitted by the frontend after
             // ITER_NEXT in iterator-consumer loops compiled in a
@@ -764,7 +765,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 );
             }
         }
-        "loop_break_if_true" => {
+        OpKind::LoopBreakIfTrue => {
             if loop_stack.is_empty() {
                 *is_block_filled = true;
             } else {
@@ -915,7 +916,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 );
             }
         }
-        "loop_break_if_false" => {
+        OpKind::LoopBreakIfFalse => {
             if loop_stack.is_empty() {
                 *is_block_filled = true;
             } else {
@@ -1080,7 +1081,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 );
             }
         }
-        "loop_break" => {
+        OpKind::LoopBreak => {
             if loop_stack.is_empty() {
                 // break duplicated into an outer exception handler
                 // that sits after the loop boundary — treat as dead.
@@ -1111,7 +1112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 *is_block_filled = true;
             }
         }
-        "loop_index_next" => {
+        OpKind::LoopIndexNext => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let next_idx = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -1157,7 +1158,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 }
             }
         }
-        "loop_continue" => {
+        OpKind::LoopContinue => {
             if loop_stack.is_empty() {
                 // Same as loop_index_next: the continue was
                 // duplicated into an outer exception handler that
@@ -1172,17 +1173,17 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                     let mut depth = 0i32;
                     for scan in (0..op_idx).rev() {
                         let scan_op = &func_ir.ops[scan];
-                        match scan_op.kind.as_str() {
-                            "loop_end" => {
+                        match scan_op.kind {
+                            OpKind::LoopEnd => {
                                 depth += 1;
                             }
-                            "loop_start" | "loop_index_start" => {
+                            OpKind::LoopStart | OpKind::LoopIndexStart => {
                                 if depth == 0 {
                                     break;
                                 }
                                 depth -= 1;
                             }
-                            "store_var" if depth == 0 => {
+                            OpKind::StoreVar if depth == 0 => {
                                 if simple_ir_binding(scan_op)
                                     .is_some_and(|binding| binding.destination == index_name)
                                     && let Some(src_name) =
@@ -1255,7 +1256,7 @@ pub(in crate::native_backend::function_compiler) fn handle_loop_op(
                 *is_block_filled = true;
             }
         }
-        "loop_end" => {
+        OpKind::LoopEnd => {
             if loop_stack.is_empty() {
                 // Orphan loop_end from a duplicated exception
                 // handler path — skip silently.

@@ -16,10 +16,8 @@ use crate::tir::exception_regions::{
     ExceptionBoundaryHandler, ExceptionOpPosition, ExceptionRegionFacts, ExceptionRegions,
 };
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::{
-    opcode_requires_async_work_poll_after_table, simpleir_kind_requires_async_work_poll_after,
-};
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::op_kinds_generated::opcode_requires_async_work_poll_after_table;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
@@ -37,8 +35,8 @@ fn is_call_return_poll(op: &TirOp) -> bool {
     opcode_requires_async_work_poll_after_table(op.opcode)
         || (op.opcode == OpCode::Copy
             && matches!(
-                op.attrs.get("_original_kind"),
-                Some(AttrValue::Str(kind)) if simpleir_kind_requires_async_work_poll_after(kind)
+                op.origin,
+                Some(kind) if (kind).requires_async_work_poll_after()
             ))
 }
 
@@ -384,7 +382,7 @@ fn latch_insertion_index(ir: &FunctionIR, cfg: &CFG, latch: BlockId) -> usize {
         return block.end_op;
     }
     let last = block.end_op - 1;
-    if crate::tir::is_structural(&ir.ops[last].kind) {
+    if crate::tir::is_structural(ir.ops[last].kind) {
         last
     } else {
         block.end_op
@@ -505,12 +503,12 @@ pub(crate) fn materialize_before_ssa(
         original_len + insertion_count + if function_exit.is_some() { 2 } else { 0 },
     );
     let materialized_poll = |target| OpIR {
-        kind: "async_work_poll".into(),
+        kind: molt_ir::OpKind::AsyncWorkPoll,
         value: match target {
             Target::Handler(label) => Some(label),
             Target::FunctionExit => function_exit,
         },
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::AsyncWorkPoll)
     };
     for (index, op) in original_ops.into_iter().enumerate() {
         if insertion_iter.peek().is_some_and(|(at, _)| *at == index) {
@@ -532,13 +530,13 @@ pub(crate) fn materialize_before_ssa(
     );
     if let Some(label) = function_exit {
         materialized_ops.push(OpIR {
-            kind: "label".into(),
+            kind: molt_ir::OpKind::Label,
             value: Some(label),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         });
         materialized_ops.push(OpIR {
-            kind: "ret_void".into(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::RetVoid,
+            ..OpIR::new(molt_ir::OpKind::RetVoid)
         });
     }
     ir.ops = materialized_ops;
@@ -615,12 +613,13 @@ mod tests {
     use crate::tir::analysis::AnalysisManager;
     use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
-    use crate::tir::ops::{AttrDict, Dialect};
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect};
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
 
     fn op(opcode: OpCode) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -683,10 +682,7 @@ mod tests {
 
     fn exception_pop() -> TirOp {
         let mut op = op(OpCode::Copy);
-        op.attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("exception_pop".into()),
-        );
+        op.origin = Some(molt_ir::OpKind::ExceptionPop);
         op
     }
 
@@ -702,102 +698,102 @@ mod tests {
             ],
             ops: vec![
                 OpIR {
-                    kind: "try_start".into(),
+                    kind: molt_ir::OpKind::TryStart,
                     value: Some(93),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::TryStart)
                 },
                 OpIR {
-                    kind: "try_start".into(),
+                    kind: molt_ir::OpKind::TryStart,
                     value: Some(96),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::TryStart)
                 },
                 OpIR {
-                    kind: "try_end".into(),
+                    kind: molt_ir::OpKind::TryEnd,
                     value: Some(96),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::TryEnd)
                 },
                 OpIR {
-                    kind: "jump".into(),
+                    kind: molt_ir::OpKind::Jump,
                     value: Some(97),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 },
                 OpIR {
-                    kind: "label".into(),
+                    kind: molt_ir::OpKind::Label,
                     value: Some(96),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
                 OpIR {
-                    kind: "try_end".into(),
+                    kind: molt_ir::OpKind::TryEnd,
                     value: Some(96),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::TryEnd)
                 },
                 OpIR {
-                    kind: "label".into(),
+                    kind: molt_ir::OpKind::Label,
                     value: Some(97),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
                 OpIR {
-                    kind: "call".into(),
+                    kind: molt_ir::OpKind::Call,
                     s_value: Some("cleanup".into()),
                     out: Some("cleanup_result".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 },
                 OpIR {
-                    kind: FINALLY_PENDING_OBSERVER.into(),
+                    kind: FINALLY_PENDING_OBSERVER,
                     out: Some("cleanup_pending".into()),
-                    ..Default::default()
+                    ..OpIR::new(FINALLY_PENDING_OBSERVER)
                 },
                 OpIR {
-                    kind: "const_none".into(),
+                    kind: molt_ir::OpKind::ConstNone,
                     out: Some("none_value".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "is".into(),
+                    kind: molt_ir::OpKind::Is,
                     args: Some(vec!["cleanup_pending".into(), "none_value".into()]),
                     out: Some("cleanup_succeeded".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "if".into(),
+                    kind: molt_ir::OpKind::If,
                     args: Some(vec!["cleanup_succeeded".into()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::If)
                 },
                 OpIR {
-                    kind: "const_none".into(),
+                    kind: molt_ir::OpKind::ConstNone,
                     out: Some("selected_pending".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "else".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::Else,
+                    ..OpIR::new(molt_ir::OpKind::Else)
                 },
                 OpIR {
-                    kind: "copy_var".into(),
+                    kind: molt_ir::OpKind::CopyVar,
                     var: Some("cleanup_pending".into()),
                     out: Some("selected_pending".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "end_if".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::EndIf,
+                    ..OpIR::new(molt_ir::OpKind::EndIf)
                 },
                 OpIR {
-                    kind: "check_exception".into(),
+                    kind: molt_ir::OpKind::CheckException,
                     value: Some(93),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::CheckException)
                 },
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 },
                 OpIR {
-                    kind: "label".into(),
+                    kind: molt_ir::OpKind::Label,
                     value: Some(93),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
                 OpIR {
-                    kind: "build_tuple".into(),
+                    kind: molt_ir::OpKind::BuildTuple,
                     args: Some(vec![
                         "__molt_closure__".into(),
                         "self".into(),
@@ -805,12 +801,12 @@ mod tests {
                         "exception_stack_depth".into(),
                     ]),
                     out: Some("payload".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::BuildTuple)
                 },
                 OpIR {
-                    kind: "ret".into(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["payload".into()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..Default::default()
@@ -830,7 +826,7 @@ mod tests {
             materialized.transfers_inserted, 0,
             "the existing observer must avoid a second SSA lowering"
         );
-        assert_eq!(ir.ops[7].kind, "call");
+        assert_eq!(ir.ops[7].kind, molt_ir::OpKind::Call);
         assert_eq!(ir.ops[8].kind, FINALLY_PENDING_OBSERVER);
         assert!(ir.ops[8].async_work_poll);
 
@@ -932,50 +928,50 @@ mod tests {
     #[test]
     fn target_lowering_places_call_poll_after_pre_ssa_loop_rewrite() {
         let call = OpIR {
-            kind: "call".into(),
+            kind: molt_ir::OpKind::Call,
             s_value: Some("work".into()),
             out: Some("result".into()),
             source_op_idx: Some(0),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         };
         let ir = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "rewritten_loop_call".into(),
             ops: vec![
                 OpIR {
-                    kind: "const".into(),
+                    kind: molt_ir::OpKind::Const,
                     value: Some(0),
                     out: Some("initial".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "loop_start".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::LoopStart,
+                    ..OpIR::new(molt_ir::OpKind::LoopStart)
                 },
                 OpIR {
-                    kind: "loop_index_start".into(),
+                    kind: molt_ir::OpKind::LoopIndexStart,
                     args: Some(vec!["initial".into()]),
                     out: Some("index".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::LoopIndexStart)
                 },
                 call,
                 OpIR {
-                    kind: "loop_index_next".into(),
+                    kind: molt_ir::OpKind::LoopIndexNext,
                     args: Some(vec!["index".into()]),
                     out: Some("index".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::LoopIndexNext)
                 },
                 OpIR {
-                    kind: "loop_continue".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::LoopContinue,
+                    ..OpIR::new(molt_ir::OpKind::LoopContinue)
                 },
                 OpIR {
-                    kind: "loop_end".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::LoopEnd,
+                    ..OpIR::new(molt_ir::OpKind::LoopEnd)
                 },
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 },
             ],
             ..FunctionIR::default()
@@ -989,10 +985,13 @@ mod tests {
         let round_trip = crate::tir::lower_to_simple::lower_to_simple_ir(&tir);
         let call_index = round_trip
             .iter()
-            .position(|op| op.kind == "call")
+            .position(|op| op.kind == molt_ir::OpKind::Call)
             .expect("call survives target-aware lowering");
         assert_eq!(round_trip[call_index].source_op_idx, Some(0));
-        assert_eq!(round_trip[call_index + 1].kind, "async_work_poll");
+        assert_eq!(
+            round_trip[call_index + 1].kind,
+            molt_ir::OpKind::AsyncWorkPoll
+        );
     }
 
     #[test]
@@ -1003,51 +1002,51 @@ mod tests {
             params: vec!["payload".into()],
             ops: vec![
                 OpIR {
-                    kind: "try_start".into(),
+                    kind: molt_ir::OpKind::TryStart,
                     value: Some(40),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::TryStart)
                 },
                 OpIR {
-                    kind: "loop_start".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::LoopStart,
+                    ..OpIR::new(molt_ir::OpKind::LoopStart)
                 },
                 OpIR {
-                    kind: "copy_var".into(),
+                    kind: molt_ir::OpKind::CopyVar,
                     var: Some("payload".into()),
                     out: Some("iteration_value".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "loop_continue".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::LoopContinue,
+                    ..OpIR::new(molt_ir::OpKind::LoopContinue)
                 },
                 OpIR {
-                    kind: "loop_end".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::LoopEnd,
+                    ..OpIR::new(molt_ir::OpKind::LoopEnd)
                 },
                 OpIR {
-                    kind: "try_end".into(),
+                    kind: molt_ir::OpKind::TryEnd,
                     value: Some(40),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::TryEnd)
                 },
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 },
                 OpIR {
-                    kind: "label".into(),
+                    kind: molt_ir::OpKind::Label,
                     value: Some(40),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
                 OpIR {
-                    kind: "copy_var".into(),
+                    kind: molt_ir::OpKind::CopyVar,
                     var: Some("payload".into()),
                     out: Some("handler_value".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..Default::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 },
             ],
             ..Default::default()
@@ -1062,10 +1061,10 @@ mod tests {
         let inserted = ir
             .ops
             .windows(2)
-            .find(|ops| ops[1].kind == "loop_continue")
+            .find(|ops| ops[1].kind == molt_ir::OpKind::LoopContinue)
             .map(|ops| &ops[0])
             .expect("poll immediately before loop latch transfer");
-        assert_eq!(inserted.kind, "async_work_poll");
+        assert_eq!(inserted.kind, molt_ir::OpKind::AsyncWorkPoll);
         assert_eq!(inserted.value, Some(40));
 
         let mut lowered = crate::tir::lower_from_simple::lower_to_tir(&ir);
@@ -1185,8 +1184,8 @@ mod tests {
                         OpCode::CheckException,
                         "publication must not add an implicit exception transfer"
                     );
-                    if matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
-                        if kind == "exception_match_builtin")
+                    if matches!(op.origin, Some(kind)
+                        if kind == molt_ir::OpKind::ExceptionMatchBuiltin)
                     {
                         return;
                     }
@@ -1279,7 +1278,7 @@ mod tests {
         assert_eq!(
             simple
                 .iter()
-                .filter(|op| op.kind == "async_work_poll")
+                .filter(|op| op.kind == molt_ir::OpKind::AsyncWorkPoll)
                 .count(),
             2,
             "the canonical wire spelling must preserve both generated sites"
@@ -1322,6 +1321,7 @@ mod tests {
             call,
             original_check,
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],
@@ -1342,12 +1342,13 @@ mod tests {
         let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
         let poll_index = simple
             .iter()
-            .position(|op| op.kind == "async_work_poll" && op.value == Some(70))
+            .position(|op| op.kind == molt_ir::OpKind::AsyncWorkPoll && op.value == Some(70))
             .expect("lowered async-work poll");
         let handler_slot = format!("_bb{}_arg0", handler.0);
         assert!(
             simple[..poll_index].iter().any(|op| {
-                op.kind == "store_var" && op.var.as_deref() == Some(handler_slot.as_str())
+                op.kind == molt_ir::OpKind::StoreVar
+                    && op.var.as_deref() == Some(handler_slot.as_str())
             }),
             "lowering must materialize the preserved payload before the poll: {simple:?}"
         );
@@ -1500,9 +1501,7 @@ mod tests {
         let latch = func.entry_block;
         add_handler(&mut func, 70, vec![]);
         let mut transport = op(OpCode::Copy);
-        transport
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+        transport.origin = Some(molt_ir::OpKind::StoreVar);
         let source = ValueId(0);
         let copied = func.fresh_value();
         func.value_types.insert(copied, TirType::DynBox);
@@ -1665,7 +1664,7 @@ mod tests {
         assert!(
             simple
                 .iter()
-                .any(|op| { op.kind == "async_work_poll" && op.value == Some(73) })
+                .any(|op| { op.kind == molt_ir::OpKind::AsyncWorkPoll && op.value == Some(73) })
         );
     }
 
@@ -1932,14 +1931,18 @@ mod tests {
         };
         run_verified(&mut func);
         let simple = crate::tir::lower_to_simple::lower_to_simple_ir(&func);
-        assert!(simple.iter().any(|op| op.kind == "async_work_poll"));
-        assert!(simple.iter().any(|op| op.kind == "label"));
         assert!(
-            simple.iter().any(|op| op.kind == "ret"),
+            simple
+                .iter()
+                .any(|op| op.kind == molt_ir::OpKind::AsyncWorkPoll)
+        );
+        assert!(simple.iter().any(|op| op.kind == molt_ir::OpKind::Label));
+        assert!(
+            simple.iter().any(|op| op.kind == molt_ir::OpKind::Ret),
             "the ordinary value-return path must remain typed"
         );
         assert!(
-            simple.iter().any(|op| op.kind == "ret_void"),
+            simple.iter().any(|op| op.kind == molt_ir::OpKind::RetVoid),
             "an empty TIR Return must lower to the existing return-with-pending backend sentinel"
         );
     }

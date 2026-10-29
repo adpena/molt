@@ -8,6 +8,7 @@ use crate::tir::values::ValueId;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -25,16 +26,18 @@ fn del_op(result: ValueId) -> TirOp {
 
 fn del_call_bind(result: ValueId) -> TirOp {
     let mut o = op(OpCode::Call, vec![], vec![result]);
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    o.origin = Some(molt_ir::OpKind::CallBind);
     o.attrs.insert("defines_del".into(), AttrValue::Bool(true));
     o
 }
 
-fn original_kind_copy(kind: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+fn original_kind_copy(
+    kind: molt_ir::OpKind,
+    operands: Vec<ValueId>,
+    results: Vec<ValueId>,
+) -> TirOp {
     let mut o = op(OpCode::Copy, operands, results);
-    o.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    o.origin = Some(kind);
     o
 }
 
@@ -76,9 +79,7 @@ fn iter_next_unboxed_value_result_root_is_conditionally_valid_without_finalizers
         .ops
         .push(op(OpCode::IterNextUnboxed, vec![iter], vec![value, done]));
     let mut alias = op(OpCode::Copy, vec![value], vec![value_alias]);
-    alias
-        .attrs
-        .insert("_original_kind".into(), AttrValue::Str("copy".into()));
+    alias.origin = Some(molt_ir::OpKind::Copy);
     entry.ops.push(alias);
     entry.terminator = Terminator::Return { values: vec![] };
 
@@ -185,13 +186,15 @@ fn exception_creation_ref_values_select_only_exception_creation_copies() {
     let direct_exception = f.fresh_value();
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops.push(original_kind_copy(
-        "exception_new_builtin_one",
+        molt_ir::OpKind::ExceptionNewBuiltinOne,
         vec![source],
         vec![creation],
     ));
-    entry
-        .ops
-        .push(original_kind_copy("list_new", vec![], vec![plain_copy]));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::ListNew,
+        vec![],
+        vec![plain_copy],
+    ));
     entry
         .ops
         .push(op(OpCode::Call, vec![], vec![direct_exception]));
@@ -211,7 +214,7 @@ fn copy_transparent_alias_obeys_declared_source_shape() {
     let extra = f.fresh_value();
     let fresh_result = f.fresh_value();
 
-    let alias = original_kind_copy("copy_var", vec![source], vec![alias_result]);
+    let alias = original_kind_copy(molt_ir::OpKind::CopyVar, vec![source], vec![alias_result]);
     assert_eq!(
         copy_transparent_alias(&alias),
         Some(NoHeapCopyAlias {
@@ -220,19 +223,28 @@ fn copy_transparent_alias_obeys_declared_source_shape() {
         })
     );
 
-    let non_no_heap = original_kind_copy("list_new", vec![source], vec![fresh_result]);
+    let non_no_heap =
+        original_kind_copy(molt_ir::OpKind::ListNew, vec![source], vec![fresh_result]);
     assert_eq!(copy_transparent_alias(&non_no_heap), None);
 
-    let too_many_operands = original_kind_copy("copy_var", vec![source, extra], vec![alias_result]);
+    let too_many_operands = original_kind_copy(
+        molt_ir::OpKind::CopyVar,
+        vec![source, extra],
+        vec![alias_result],
+    );
     assert_eq!(copy_transparent_alias(&too_many_operands), None);
 
-    let too_many_results = original_kind_copy("copy_var", vec![source], vec![alias_result, extra]);
+    let too_many_results = original_kind_copy(
+        molt_ir::OpKind::CopyVar,
+        vec![source],
+        vec![alias_result, extra],
+    );
     assert_eq!(copy_transparent_alias(&too_many_results), None);
 
     let non_copy = op(OpCode::Call, vec![source], vec![alias_result]);
     assert_eq!(copy_transparent_alias(&non_copy), None);
 
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
         let guard = original_kind_copy(kind, vec![source, extra], vec![alias_result]);
         assert_eq!(
             copy_transparent_alias(&guard),
@@ -270,7 +282,7 @@ fn non_owning_copy_result_roots_are_lattice_facts() {
     let mut f = func();
     let source = f.fresh_value();
     let explicit_alias = f.fresh_value();
-    let unknown_passthrough = f.fresh_value();
+    let borrowed_observation = f.fresh_value();
     let bare_passthrough = f.fresh_value();
     let fresh = f.fresh_value();
     let owned_alias = f.fresh_value();
@@ -279,23 +291,25 @@ fn non_owning_copy_result_roots_are_lattice_facts() {
         .ops
         .push(op(OpCode::ObjectNewBound, vec![], vec![source]));
     entry.ops.push(original_kind_copy(
-        "copy",
+        molt_ir::OpKind::Copy,
         vec![source],
         vec![explicit_alias],
     ));
     entry.ops.push(original_kind_copy(
-        "not_registered_yet",
+        molt_ir::OpKind::FunctionClosureBits,
         vec![source],
-        vec![unknown_passthrough],
+        vec![borrowed_observation],
     ));
     entry
         .ops
         .push(op(OpCode::Copy, vec![source], vec![bare_passthrough]));
-    entry
-        .ops
-        .push(original_kind_copy("list_new", vec![source], vec![fresh]));
     entry.ops.push(original_kind_copy(
-        "binding_alias",
+        molt_ir::OpKind::ListNew,
+        vec![source],
+        vec![fresh],
+    ));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::BindingAlias,
         vec![source],
         vec![owned_alias],
     ));
@@ -308,9 +322,9 @@ fn non_owning_copy_result_roots_are_lattice_facts() {
         "explicit no-heap moves must already share the source root"
     );
     assert_eq!(
-        aliases.root(unknown_passthrough),
-        unknown_passthrough,
-        "unknown passthroughs remain independent roots and need the lattice fact"
+        aliases.root(borrowed_observation),
+        borrowed_observation,
+        "borrowed observations remain independent roots and need the lattice fact"
     );
     assert_eq!(
         aliases.root(bare_passthrough),
@@ -324,8 +338,8 @@ fn non_owning_copy_result_roots_are_lattice_facts() {
     );
     let root_facts = OwnershipRootFacts::compute(&f, &aliases);
     assert!(
-        root_facts.is_non_owning_copy_result_root(unknown_passthrough),
-        "unknown Copy kinds fail closed as non-owning result roots"
+        root_facts.is_non_owning_copy_result_root(borrowed_observation),
+        "borrowed closure observations carry no result owner"
     );
     assert!(
         !root_facts.is_non_owning_copy_result_root(aliases.root(bare_passthrough)),
@@ -396,23 +410,25 @@ fn drop_eligibility_combines_root_facts_and_raw_scalar_filter() {
     let heap = f.fresh_value();
     let heap_alias = f.fresh_value();
     let raw = f.fresh_value();
-    let unknown_passthrough = f.fresh_value();
+    let borrowed_observation = f.fresh_value();
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops.push(op(OpCode::StackAlloc, vec![], vec![stack]));
     entry
         .ops
         .push(op(OpCode::ObjectNewBound, vec![], vec![heap]));
-    entry
-        .ops
-        .push(original_kind_copy("copy", vec![heap], vec![heap_alias]));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::Copy,
+        vec![heap],
+        vec![heap_alias],
+    ));
     entry.ops.push(TirOp {
         attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(27))]),
         ..op(OpCode::ConstInt, vec![], vec![raw])
     });
     entry.ops.push(original_kind_copy(
-        "not_registered_yet",
+        molt_ir::OpKind::FunctionClosureBits,
         vec![heap],
-        vec![unknown_passthrough],
+        vec![borrowed_observation],
     ));
     entry.terminator = Terminator::Return { values: vec![] };
 
@@ -441,7 +457,7 @@ fn drop_eligibility_combines_root_facts_and_raw_scalar_filter() {
         "transparent aliases are not independently droppable"
     );
     assert!(
-        !eligibility.is_droppable(unknown_passthrough),
+        !eligibility.is_droppable(borrowed_observation),
         "self-rooting unknown Copy results fail closed as non-droppable"
     );
 }
@@ -471,25 +487,29 @@ fn python_lifetime_facts_track_bound_slots_and_explicit_releases() {
         .attrs
         .insert("bound_local".into(), AttrValue::Bool(true));
     entry.ops.push(bound_op);
-    entry
-        .ops
-        .push(original_kind_copy("store_var", vec![bound], vec![stored]));
-    entry
-        .ops
-        .push(original_kind_copy("load_var", vec![stored], vec![loaded]));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::StoreVar,
+        vec![bound],
+        vec![stored],
+    ));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::LoadVar,
+        vec![stored],
+        vec![loaded],
+    ));
     entry.ops.push(op(OpCode::DecRef, vec![explicit], vec![]));
     entry
         .ops
         .push(op(OpCode::DeleteVar, vec![missing, loaded], vec![deleted]));
     entry.ops.push(del_op(boundary));
     entry.ops.push(original_kind_copy(
-        "store_var",
+        molt_ir::OpKind::StoreVar,
         vec![boundary],
         vec![boundary_stored],
     ));
     entry.ops.push(op(OpCode::StackAlloc, vec![], vec![stack]));
     entry.ops.push(original_kind_copy(
-        "store_var",
+        molt_ir::OpKind::StoreVar,
         vec![stack],
         vec![stack_stored],
     ));
@@ -511,7 +531,7 @@ fn python_lifetime_facts_track_bound_slots_and_explicit_releases() {
         .insert("bound_local".into(), AttrValue::Bool(true));
     entry.ops.push(iter_next);
     entry.ops.push(original_kind_copy(
-        "store_var",
+        molt_ir::OpKind::StoreVar,
         vec![conditional_value],
         vec![conditional_stored],
     ));
@@ -607,7 +627,7 @@ fn statement_release_plan_filters_and_sorts_boundary_roots() {
         .push(op(OpCode::BuildList, vec![], vec![statement_list]));
     entry.ops.push(del_op(statement));
     entry.ops.push(original_kind_copy(
-        "list_append",
+        molt_ir::OpKind::ListAppend,
         vec![statement_list, statement],
         vec![],
     ));
@@ -616,12 +636,12 @@ fn statement_release_plan_filters_and_sorts_boundary_roots() {
         .push(op(OpCode::BuildList, vec![], vec![local_list]));
     entry.ops.push(del_op(local));
     entry.ops.push(original_kind_copy(
-        "store_var",
+        molt_ir::OpKind::StoreVar,
         vec![local],
         vec![local_slot],
     ));
     entry.ops.push(original_kind_copy(
-        "list_append",
+        molt_ir::OpKind::ListAppend,
         vec![local_list, local],
         vec![],
     ));
@@ -631,7 +651,7 @@ fn statement_release_plan_filters_and_sorts_boundary_roots() {
     entry.ops.push(del_op(explicit));
     entry.ops.push(op(OpCode::DecRef, vec![explicit], vec![]));
     entry.ops.push(original_kind_copy(
-        "list_append",
+        molt_ir::OpKind::ListAppend,
         vec![explicit_list, explicit],
         vec![],
     ));
@@ -700,7 +720,7 @@ fn container_absorbing_finalizer_object_is_sensitive() {
 
 #[test]
 fn copy_list_new_absorbing_finalizer_object_is_sensitive() {
-    // Real SimpleIR lowering preserves `list_new` as Copy{_original_kind}
+    // Real SimpleIR lowering preserves `list_new` as Copy{origin}
     // rather than canonicalizing it to BuildList. The generated
     // result-absorption fact must cover that spelling without aliasing it.
     let mut f = func();
@@ -708,9 +728,11 @@ fn copy_list_new_absorbing_finalizer_object_is_sensitive() {
     let list = f.fresh_value();
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops.push(del_op(a));
-    entry
-        .ops
-        .push(original_kind_copy("list_new", vec![a], vec![list]));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::ListNew,
+        vec![a],
+        vec![list],
+    ));
     entry.terminator = Terminator::Return { values: vec![] };
 
     let lat = lattice(&f);
@@ -737,7 +759,7 @@ fn copy_class_def_absorbs_descriptor_into_class_owner() {
     let entry = f.blocks.get_mut(&entry_id).unwrap();
     entry.ops.push(del_op(descriptor));
     entry.ops.push(original_kind_copy(
-        "class_def",
+        molt_ir::OpKind::ClassDef,
         vec![name, descriptor],
         vec![class_obj],
     ));
@@ -773,9 +795,11 @@ fn call_bind_defines_del_into_list_new_is_sensitive() {
     let list = f.fresh_value();
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops.push(del_call_bind(a));
-    entry
-        .ops
-        .push(original_kind_copy("list_new", vec![a], vec![list]));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::ListNew,
+        vec![a],
+        vec![list],
+    ));
     entry.terminator = Terminator::Return { values: vec![] };
 
     let lat = lattice(&f);
@@ -798,7 +822,7 @@ fn call_bind_defines_del_into_list_new_is_sensitive() {
 #[test]
 fn slice_construction_absorbs_finalizer_bounds_in_both_spellings() {
     // `slice(A(), None)` keeps its bound alive until the slice dies. Real
-    // SimpleIR keeps `slice_new` as Copy{_original_kind}; first-class
+    // SimpleIR keeps `slice_new` as Copy{origin}; first-class
     // BuildSlice, which admits omitted bounds, shares the generated fact.
     for first_class in [false, true] {
         let mut f = func();
@@ -811,7 +835,7 @@ fn slice_construction_absorbs_finalizer_bounds_in_both_spellings() {
         entry.ops.push(if first_class {
             op(OpCode::BuildSlice, vec![a], vec![slice])
         } else {
-            original_kind_copy("slice_new", vec![a, stop, step], vec![slice])
+            original_kind_copy(molt_ir::OpKind::SliceNew, vec![a, stop, step], vec![slice])
         });
         entry.terminator = Terminator::Return { values: vec![] };
 
@@ -839,11 +863,13 @@ fn list_append_absorbs_producer_into_existing_container() {
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops.push(op(OpCode::BuildList, vec![], vec![list]));
     entry.ops.push(del_op(a));
-    entry
-        .ops
-        .push(original_kind_copy("copy", vec![a], vec![a_alias]));
     entry.ops.push(original_kind_copy(
-        "list_append",
+        molt_ir::OpKind::Copy,
+        vec![a],
+        vec![a_alias],
+    ));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::ListAppend,
         vec![list, a_alias],
         vec![],
     ));
@@ -883,9 +909,11 @@ fn module_set_attr_absorbs_value_into_module_storage() {
     let entry_id = f.entry_block;
     let entry = f.blocks.get_mut(&entry_id).unwrap();
     entry.ops.push(del_op(a));
-    entry
-        .ops
-        .push(original_kind_copy("list_new", vec![a], vec![list]));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::ListNew,
+        vec![a],
+        vec![list],
+    ));
     entry
         .ops
         .push(op(OpCode::ModuleSetAttr, vec![module, name, list], vec![]));
@@ -919,12 +947,16 @@ fn list_pop_result_inherits_finalizer_sensitivity_from_container() {
     let popped = f.fresh_value();
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops.push(del_op(a));
-    entry
-        .ops
-        .push(original_kind_copy("list_new", vec![a], vec![list]));
-    entry
-        .ops
-        .push(original_kind_copy("list_pop", vec![list], vec![popped]));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::ListNew,
+        vec![a],
+        vec![list],
+    ));
+    entry.ops.push(original_kind_copy(
+        molt_ir::OpKind::ListPop,
+        vec![list],
+        vec![popped],
+    ));
     entry.terminator = Terminator::Return { values: vec![] };
 
     let lat = lattice(&f);
@@ -1008,8 +1040,7 @@ fn declared_custody_owns_transferred_parameters_and_adopts_operands() {
         "typed custody adopts each position, a repeated root included"
     );
     let mut bind = op(OpCode::Call, vec![borrowed, builder], vec![]);
-    bind.attrs
-        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    bind.origin = Some(molt_ir::OpKind::CallBind);
     assert_eq!(
         op_transferred_operands(&bind),
         [Borrowed, Consumed],
@@ -1089,13 +1120,18 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
     guard
         .attrs
         .insert("expected_type".into(), AttrValue::Str("str".into()));
-    let mut borrowed_view = original_kind_copy("frame_home_load", vec![], vec![borrowed]);
+    let mut borrowed_view =
+        original_kind_copy(molt_ir::OpKind::FrameHomeLoad, vec![], vec![borrowed]);
     borrowed_view
         .attrs
         .insert("value".into(), AttrValue::Int(0));
     let mut replaced = vec![
         op(OpCode::Call, vec![text], vec![owned]),
-        original_kind_copy("dict_get", vec![text, text, text], vec![lookup]),
+        original_kind_copy(
+            molt_ir::OpKind::DictGet,
+            vec![text, text, text],
+            vec![lookup],
+        ),
         borrowed_view,
         guard,
         op(OpCode::Call, vec![text], vec![unread]),
@@ -1138,15 +1174,15 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
         entry.ops[index] = op(OpCode::Copy, vec![text], vec![result]);
     }
     owners.finish(&mut f, None);
-    let kinds: Vec<Option<&str>> = f.blocks[&f.entry_block].ops[1..=replaced.len()]
+    let kinds: Vec<Option<molt_ir::OpKind>> = f.blocks[&f.entry_block].ops[1..=replaced.len()]
         .iter()
         .map(original_kind)
         .collect();
     assert_eq!(
         kinds,
         [
-            Some("binding_alias"),
-            Some("binding_alias"),
+            Some(molt_ir::OpKind::BindingAlias),
+            Some(molt_ir::OpKind::BindingAlias),
             None,
             None,
             None
@@ -1189,8 +1225,11 @@ fn binding_views_join_through_block_arguments() {
     use crate::tir::blocks::TirBlock;
     use crate::tir::values::TirValue;
     assert!(
-        crate::tir::op_kinds_generated::copy_kind_is_binding_view_table("frame_home_store")
-            && crate::tir::op_kinds_generated::copy_kind_is_binding_view_table("frame_home_load"),
+        crate::tir::op_kinds_generated::copy_kind_is_binding_view_table(
+            molt_ir::OpKind::FrameHomeStore
+        ) && crate::tir::op_kinds_generated::copy_kind_is_binding_view_table(
+            molt_ir::OpKind::FrameHomeLoad
+        ),
         "needs the frame overlay's generated classifier_binding_view \
          (frame-slot-custody COORDINATION §3)"
     );
@@ -1219,9 +1258,9 @@ fn binding_views_join_through_block_arguments() {
         f.fresh_block(),
     );
     f.label_id_map.insert(handler.0, 61);
-    let mut store = original_kind_copy("frame_home_store", vec![value], vec![first]);
+    let mut store = original_kind_copy(molt_ir::OpKind::FrameHomeStore, vec![value], vec![first]);
     store.attrs.insert("value".into(), AttrValue::Int(0));
-    let mut load = original_kind_copy("frame_home_load", vec![], vec![rebound]);
+    let mut load = original_kind_copy(molt_ir::OpKind::FrameHomeLoad, vec![], vec![rebound]);
     load.attrs.insert("value".into(), AttrValue::Int(0));
     let mut check = op(OpCode::CheckException, vec![first], vec![]);
     check.attrs.insert("value".into(), AttrValue::Int(61));
@@ -1336,7 +1375,11 @@ fn explicit_release_projection_selects_operands_and_canonicalizes_roots_once() {
         .get_mut(&function.entry_block)
         .unwrap()
         .ops
-        .push(original_kind_copy("copy", vec![first], vec![alias]));
+        .push(original_kind_copy(
+            molt_ir::OpKind::Copy,
+            vec![first],
+            vec![alias],
+        ));
     for (opcode, operands, expected) in [
         (OpCode::DecRef, vec![alias, second], vec![alias, second]),
         (OpCode::DeleteVar, vec![first, second], vec![second]),

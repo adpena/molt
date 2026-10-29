@@ -866,6 +866,7 @@ mod tests {
 
     fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -973,6 +974,7 @@ mod tests {
         attrs.insert("s_value".into(), AttrValue::Str("callee".into()));
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],

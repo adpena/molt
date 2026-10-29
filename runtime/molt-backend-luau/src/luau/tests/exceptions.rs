@@ -14,10 +14,7 @@ fn test_compile_checked_keeps_ordinary_programs_available() {
             codegen_partition: false,
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
         }],
         profile: None,
     };
@@ -32,20 +29,18 @@ fn test_compile_checked_keeps_ordinary_programs_available() {
 fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boundary() {
     let cases = [
         (
-            "async_work_poll",
+            molt_ir::OpKind::AsyncWorkPoll,
             OpIR {
-                kind: "async_work_poll".to_string(),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::AsyncWorkPoll)
             },
         ),
         (
-            "exception_finally_pending_observer",
+            molt_ir::OpKind::ExceptionFinallyPendingObserver,
             OpIR {
-                kind: "exception_finally_pending_observer".to_string(),
                 out: Some("pending".to_string()),
                 async_work_poll: true,
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionFinallyPendingObserver)
             },
         ),
     ];
@@ -62,13 +57,12 @@ fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boun
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: if kind == "async_work_poll" {
+                ops: if kind == molt_ir::OpKind::AsyncWorkPoll {
                     vec![
                         op,
                         OpIR {
-                            kind: "label".to_string(),
                             value: Some(0),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::Label)
                         },
                     ]
                 } else {
@@ -82,7 +76,7 @@ fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boun
             .compile_checked(&ir)
             .expect_err("Luau must not erase an async-work observation");
         assert!(
-            err.contains(kind),
+            err.contains(kind.as_str()),
             "diagnostic must name the carrier `{kind}`: {err}"
         );
         assert!(
@@ -92,90 +86,120 @@ fn test_compile_checked_rejects_async_work_poll_runtime_requirement_without_boun
     }
 }
 
-fn exception_op(kind: &str, args: &[&str], out: Option<&str>, value: Option<i64>) -> OpIR {
+fn exception_op(
+    kind: molt_ir::OpKind,
+    args: &[&str],
+    out: Option<&str>,
+    value: Option<i64>,
+) -> OpIR {
     OpIR {
-        kind: kind.into(),
         args: Some(args.iter().map(|arg| (*arg).into()).collect()),
         out: out.map(str::to_string),
         value,
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 #[test]
 fn exception_captures_wrap_throwing_operations_not_try_intervals() {
     let ops = vec![
-        exception_op("try_start", &[], None, Some(5)),
-        exception_op("const_int", &[], Some("v0"), Some(1)),
-        exception_op("call_func", &["callback", "v0"], Some("v1"), None),
-        exception_op("check_exception", &[], None, Some(2)),
-        exception_op("try_end", &[], None, Some(5)),
-        exception_op("exception_last_pending", &[], Some("caught"), None),
-        exception_op("try_end", &[], None, Some(5)),
+        exception_op(molt_ir::OpKind::TryStart, &[], None, Some(5)),
+        exception_op(molt_ir::OpKind::ConstInt, &[], Some("v0"), Some(1)),
+        exception_op(
+            molt_ir::OpKind::CallFunc,
+            &["callback", "v0"],
+            Some("v1"),
+            None,
+        ),
+        exception_op(molt_ir::OpKind::CheckException, &[], None, Some(2)),
+        exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(5)),
+        exception_op(
+            molt_ir::OpKind::ExceptionLastPending,
+            &[],
+            Some("caught"),
+            None,
+        ),
+        exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(5)),
     ];
     let lowered = lower_exception_captures(&ops);
     let begin = lowered
         .iter()
-        .position(|op| op.kind == "pcall_wrap_begin")
+        .position(|op| op.kind == molt_ir::OpKind::PcallWrapBegin)
         .unwrap();
     assert_eq!(
         lowered[begin].args.as_deref(),
         Some(&["v1".to_string()][..])
     );
-    assert_eq!(lowered[begin + 1].kind, "call_func");
-    assert_eq!(lowered[begin + 2].kind, "pcall_wrap_end");
+    assert_eq!(lowered[begin + 1].kind, molt_ir::OpKind::CallFunc);
+    assert_eq!(lowered[begin + 2].kind, molt_ir::OpKind::PcallWrapEnd);
     assert_eq!(lowered[begin + 2].value, lowered[begin].value);
     assert_eq!(
         lowered
             .iter()
-            .filter(|op| op.kind == "pcall_wrap_begin")
+            .filter(|op| op.kind == molt_ir::OpKind::PcallWrapBegin)
             .count(),
         1
     );
     assert!(
         !lowered
             .iter()
-            .any(|op| matches!(op.kind.as_str(), "try_start" | "try_end"))
+            .any(|op| matches!(op.kind, molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd))
     );
 }
 
 #[test]
 fn exception_captures_preserve_explicit_handler_edges_and_pending_reads() {
     let ops = vec![
-        exception_op("try_start", &[], None, Some(5)),
-        exception_op("call_func", &["callback"], Some("result"), None),
-        exception_op("check_exception", &[], None, Some(2)),
-        exception_op("raise", &["exc"], None, None),
-        exception_op("jump", &[], None, Some(2)),
-        exception_op("try_end", &[], None, Some(5)),
-        exception_op("label", &[], None, Some(2)),
-        exception_op("exception_last_pending", &[], Some("caught"), None),
-        exception_op("try_end", &[], None, Some(5)),
+        exception_op(molt_ir::OpKind::TryStart, &[], None, Some(5)),
+        exception_op(
+            molt_ir::OpKind::CallFunc,
+            &["callback"],
+            Some("result"),
+            None,
+        ),
+        exception_op(molt_ir::OpKind::CheckException, &[], None, Some(2)),
+        exception_op(molt_ir::OpKind::Raise, &["exc"], None, None),
+        exception_op(molt_ir::OpKind::Jump, &[], None, Some(2)),
+        exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(5)),
+        exception_op(molt_ir::OpKind::Label, &[], None, Some(2)),
+        exception_op(
+            molt_ir::OpKind::ExceptionLastPending,
+            &[],
+            Some("caught"),
+            None,
+        ),
+        exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(5)),
     ];
     let lowered = lower_exception_captures(&ops);
     assert!(
         lowered
             .iter()
-            .any(|op| op.kind == "check_exception" && op.value == Some(2))
+            .any(|op| op.kind == molt_ir::OpKind::CheckException && op.value == Some(2))
     );
     assert!(
         lowered
             .iter()
-            .any(|op| op.kind == "jump" && op.value == Some(2))
+            .any(|op| op.kind == molt_ir::OpKind::Jump && op.value == Some(2))
     );
     let pending = lowered
         .iter()
-        .find(|op| op.kind == "exception_last_pending")
+        .find(|op| op.kind == molt_ir::OpKind::ExceptionLastPending)
         .unwrap();
     assert_eq!(
         pending.value, None,
         "handler reads runtime pending state, not a capture identity"
     );
-    assert_eq!(lowered.iter().filter(|op| op.kind == "label").count(), 1);
+    assert_eq!(
+        lowered
+            .iter()
+            .filter(|op| op.kind == molt_ir::OpKind::Label)
+            .count(),
+        1
+    );
 }
 
 pub(super) fn luau_tir_roundtrip_function(mut func: FunctionIR) -> FunctionIR {
-    if func.ops.iter().any(|op| op.kind == "phi") {
+    if func.ops.iter().any(|op| op.kind == molt_ir::OpKind::Phi) {
         molt_tir::ir_rewrites::rewrite_phi_to_store_load(&mut func.ops);
     }
     let target_info = crate::tir::target_info::TargetInfo::luau_release_fast();
@@ -196,33 +220,63 @@ fn path_local_exception_fixture() -> SimpleIR {
             name: "path_local_catch".into(),
             params: vec!["callback".into(), "condition".into()],
             ops: vec![
-                exception_op("exception_stack_enter", &[], Some("baseline"), None),
-                exception_op("exception_push", &[], None, None),
-                exception_op("try_start", &[], None, Some(10)),
-                exception_op("loop_start", &[], None, None),
-                exception_op("if", &["condition"], None, None),
-                exception_op("call_func", &["callback"], Some("left"), None),
-                exception_op("check_exception", &[], None, Some(10)),
-                exception_op("try_end", &[], None, Some(10)),
-                exception_op("else", &[], None, None),
-                exception_op("call_func", &["callback"], Some("right"), None),
-                exception_op("check_exception", &[], None, Some(10)),
-                exception_op("try_end", &[], None, Some(10)),
-                exception_op("end_if", &[], None, None),
-                exception_op("loop_break", &[], None, None),
-                exception_op("loop_end", &[], None, None),
-                exception_op("exception_pop", &[], None, None),
-                exception_op("exception_stack_exit", &["baseline"], None, None),
-                exception_op("const_none", &[], Some("success"), None),
-                exception_op("ret", &["success"], None, None),
-                exception_op("label", &[], None, Some(10)),
-                exception_op("try_end", &[], None, Some(10)),
-                exception_op("exception_last_pending", &[], Some("caught"), None),
-                exception_op("exception_context_set", &["caught"], None, None),
-                exception_op("exception_clear", &[], None, None),
-                exception_op("exception_pop", &[], None, None),
-                exception_op("exception_stack_exit", &["baseline"], None, None),
-                exception_op("ret", &["caught"], None, None),
+                exception_op(
+                    molt_ir::OpKind::ExceptionStackEnter,
+                    &[],
+                    Some("baseline"),
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::ExceptionPush, &[], None, None),
+                exception_op(molt_ir::OpKind::TryStart, &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::LoopStart, &[], None, None),
+                exception_op(molt_ir::OpKind::If, &["condition"], None, None),
+                exception_op(molt_ir::OpKind::CallFunc, &["callback"], Some("left"), None),
+                exception_op(molt_ir::OpKind::CheckException, &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::Else, &[], None, None),
+                exception_op(
+                    molt_ir::OpKind::CallFunc,
+                    &["callback"],
+                    Some("right"),
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::CheckException, &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::EndIf, &[], None, None),
+                exception_op(molt_ir::OpKind::LoopBreak, &[], None, None),
+                exception_op(molt_ir::OpKind::LoopEnd, &[], None, None),
+                exception_op(molt_ir::OpKind::ExceptionPop, &[], None, None),
+                exception_op(
+                    molt_ir::OpKind::ExceptionStackExit,
+                    &["baseline"],
+                    None,
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::ConstNone, &[], Some("success"), None),
+                exception_op(molt_ir::OpKind::Ret, &["success"], None, None),
+                exception_op(molt_ir::OpKind::Label, &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(10)),
+                exception_op(
+                    molt_ir::OpKind::ExceptionLastPending,
+                    &[],
+                    Some("caught"),
+                    None,
+                ),
+                exception_op(
+                    molt_ir::OpKind::ExceptionContextSet,
+                    &["caught"],
+                    None,
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::ExceptionClear, &[], None, None),
+                exception_op(molt_ir::OpKind::ExceptionPop, &[], None, None),
+                exception_op(
+                    molt_ir::OpKind::ExceptionStackExit,
+                    &["baseline"],
+                    None,
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::Ret, &["caught"], None, None),
             ],
             ..FunctionIR::default()
         }],
@@ -255,123 +309,123 @@ fn checked_path_local_closes_keep_operation_captures_and_explicit_observers() {
 #[test]
 fn capture_results_remain_in_the_original_lexical_scope() {
     let ops = vec![
-        exception_op("try_start", &[], None, Some(10)),
-        exception_op("if", &["condition"], None, None),
-        exception_op("call_func", &["callback"], Some("result"), None),
-        exception_op("check_exception", &[], None, Some(10)),
-        exception_op("call_func", &["consume", "result"], None, None),
-        exception_op("try_end", &[], None, Some(10)),
-        exception_op("end_if", &[], None, None),
+        exception_op(molt_ir::OpKind::TryStart, &[], None, Some(10)),
+        exception_op(molt_ir::OpKind::If, &["condition"], None, None),
+        exception_op(
+            molt_ir::OpKind::CallFunc,
+            &["callback"],
+            Some("result"),
+            None,
+        ),
+        exception_op(molt_ir::OpKind::CheckException, &[], None, Some(10)),
+        exception_op(
+            molt_ir::OpKind::CallFunc,
+            &["consume", "result"],
+            None,
+            None,
+        ),
+        exception_op(molt_ir::OpKind::TryEnd, &[], None, Some(10)),
+        exception_op(molt_ir::OpKind::EndIf, &[], None, None),
     ];
     let lowered = lower_exception_captures(&ops);
     let begin = lowered
         .iter()
-        .position(|op| op.kind == "pcall_wrap_begin")
+        .position(|op| op.kind == molt_ir::OpKind::PcallWrapBegin)
         .unwrap();
-    assert_eq!(lowered[begin - 1].kind, "if");
+    assert_eq!(lowered[begin - 1].kind, molt_ir::OpKind::If);
     assert_eq!(
         lowered[begin].args.as_deref(),
         Some(&["result".to_string()][..])
     );
-    assert_eq!(lowered[begin + 2].kind, "pcall_wrap_end");
-    assert_eq!(lowered[begin + 3].kind, "check_exception");
-    assert_eq!(lowered.last().unwrap().kind, "end_if");
+    assert_eq!(lowered[begin + 2].kind, molt_ir::OpKind::PcallWrapEnd);
+    assert_eq!(lowered[begin + 3].kind, molt_ir::OpKind::CheckException);
+    assert_eq!(lowered.last().unwrap().kind, molt_ir::OpKind::EndIf);
 }
 
 #[test]
 fn operation_capture_preserves_explicit_exception_edge_store_order() {
     let ops = vec![
         OpIR {
-            kind: "call".into(),
             out: Some("v_call".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         },
         OpIR {
-            kind: "store_var".into(),
             var: Some("_bb1_arg0".into()),
             args: Some(vec!["module_obj".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
         OpIR {
-            kind: "check_exception".into(),
             value: Some(5),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
     ];
 
     let captured = lower_exception_captures(&ops);
 
-    assert_eq!(captured[0].kind, "pcall_wrap_begin");
-    assert_eq!(captured[1].kind, "call");
-    assert_eq!(captured[2].kind, "pcall_wrap_end");
-    assert_eq!(captured[3].kind, "store_var");
-    assert_eq!(captured[4].kind, "check_exception");
+    assert_eq!(captured[0].kind, molt_ir::OpKind::PcallWrapBegin);
+    assert_eq!(captured[1].kind, molt_ir::OpKind::Call);
+    assert_eq!(captured[2].kind, molt_ir::OpKind::PcallWrapEnd);
+    assert_eq!(captured[3].kind, molt_ir::OpKind::StoreVar);
+    assert_eq!(captured[4].kind, molt_ir::OpKind::CheckException);
 }
 
 #[test]
 fn pending_raise_preserves_explicit_exception_edge_store_order() {
     let ops = vec![
         OpIR {
-            kind: "raise".into(),
             args: Some(vec!["exc".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Raise)
         },
         OpIR {
-            kind: "store_var".into(),
             var: Some("_bb5_arg0".into()),
             args: Some(vec!["caught".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
         OpIR {
-            kind: "store_var".into(),
             var: Some("_bb5_arg1".into()),
             args: Some(vec!["limit".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
         OpIR {
-            kind: "jump".into(),
             value: Some(5),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         },
     ];
 
     let captured = lower_exception_captures(&ops);
 
-    assert_eq!(captured[0].kind, "raise");
-    assert_eq!(captured[1].kind, "store_var");
+    assert_eq!(captured[0].kind, molt_ir::OpKind::Raise);
+    assert_eq!(captured[1].kind, molt_ir::OpKind::StoreVar);
     assert_eq!(captured[1].var.as_deref(), Some("_bb5_arg0"));
-    assert_eq!(captured[2].kind, "store_var");
+    assert_eq!(captured[2].kind, molt_ir::OpKind::StoreVar);
     assert_eq!(captured[2].var.as_deref(), Some("_bb5_arg1"));
-    assert_eq!(captured[3].kind, "jump");
+    assert_eq!(captured[3].kind, molt_ir::OpKind::Jump);
 }
 
 #[test]
 fn captured_result_store_executes_before_exception_observer() {
     let ops = vec![
         OpIR {
-            kind: "call".into(),
             out: Some("v_call".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         },
         OpIR {
-            kind: "store_var".into(),
             var: Some("_bb1_arg0".into()),
             args: Some(vec!["v_call".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
         OpIR {
-            kind: "check_exception".into(),
             value: Some(5),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
     ];
 
     let captured = lower_exception_captures(&ops);
 
-    assert_eq!(captured[1].kind, "call");
-    assert_eq!(captured[2].kind, "pcall_wrap_end");
-    assert_eq!(captured[3].kind, "store_var");
-    assert_eq!(captured[4].kind, "check_exception");
+    assert_eq!(captured[1].kind, molt_ir::OpKind::Call);
+    assert_eq!(captured[2].kind, molt_ir::OpKind::PcallWrapEnd);
+    assert_eq!(captured[3].kind, molt_ir::OpKind::StoreVar);
+    assert_eq!(captured[4].kind, molt_ir::OpKind::CheckException);
 }
 
 #[test]
@@ -389,32 +443,25 @@ fn test_luau_exception_region_module_global_ops_use_module_dict_helpers() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_str".into(),
                     out: Some("name".into()),
                     s_value: Some("exc".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "dict_new".into(),
                     out: Some("module".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictNew)
                 },
                 OpIR {
-                    kind: "module_get_global".into(),
                     args: Some(vec!["module".into(), "name".into()]),
                     out: Some("value".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
                 },
                 OpIR {
-                    kind: "module_del_global_if_present".into(),
                     args: Some(vec!["module".into(), "name".into()]),
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ModuleDelGlobalIfPresent)
                 },
-                OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -451,28 +498,22 @@ fn test_luau_exception_region_type_of_uses_python_descriptor_helper() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "exception_new_builtin_empty".into(),
                     out: Some("exc".into()),
                     s_value: Some("NameError".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ExceptionNewBuiltinEmpty)
                 },
                 OpIR {
-                    kind: "type_of".into(),
                     args: Some(vec!["exc".into()]),
                     out: Some("typ".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::TypeOf)
                 },
                 OpIR {
-                    kind: "get_attr_generic_obj".into(),
                     args: Some(vec!["typ".into()]),
                     out: Some("name".into()),
                     s_value: Some("__name__".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetAttrGenericObj)
                 },
-                OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -501,58 +542,40 @@ fn test_pcall_try_except_compile() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
+                OpIR::new(molt_ir::OpKind::TryStart),
                 OpIR {
-                    kind: "try_start".into(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const_int".into(),
                     value: Some(1),
                     out: Some("v0".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "const_int".into(),
                     value: Some(0),
                     out: Some("v1".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "div".into(),
                     args: Some(vec!["v0".into(), "v1".into()]),
                     out: Some("v2".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Div)
                 },
+                OpIR::new(molt_ir::OpKind::TryEnd),
                 OpIR {
-                    kind: "try_end".into(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_last".into(),
                     out: Some("v3".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ExceptionLast)
                 },
                 OpIR {
-                    kind: "const_int".into(),
                     value: Some(42),
                     out: Some("v4".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
+                OpIR::new(molt_ir::OpKind::TryEnd),
                 OpIR {
-                    kind: "try_end".into(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "call_function".into(),
                     s_value: Some("print".into()),
                     args: Some(vec!["print".into(), "v4".into()]),
                     out: Some("v5".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallFunction)
                 },
-                OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -592,29 +615,23 @@ fn test_no_duplicate_local_declarations() {
             ops: vec![
                 // First definition of v0 — should get `local v0 = 1`
                 OpIR {
-                    kind: "const_int".into(),
                     value: Some(1),
                     out: Some("v0".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
                 // Second definition of v0 — must NOT emit `local` again
                 OpIR {
-                    kind: "const_int".into(),
                     value: Some(2),
                     out: Some("v0".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "call_function".into(),
                     s_value: Some("print".into()),
                     args: Some(vec!["print".into(), "v0".into()]),
                     out: Some("v1".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallFunction)
                 },
-                OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -636,7 +653,7 @@ fn alternative_nested_try_closes_never_capture_lexical_control() {
     let captures: Vec<_> = lowered
         .iter()
         .enumerate()
-        .filter(|(_, op)| op.kind == "pcall_wrap_begin")
+        .filter(|(_, op)| op.kind == molt_ir::OpKind::PcallWrapBegin)
         .collect();
     assert_eq!(
         captures.len(),
@@ -644,18 +661,23 @@ fn alternative_nested_try_closes_never_capture_lexical_control() {
         "two callback operations, not a lexical TRY count"
     );
     for (index, begin) in captures {
-        assert_eq!(lowered[index + 1].kind, "call_func");
-        assert_eq!(lowered[index + 2].kind, "pcall_wrap_end");
+        assert_eq!(lowered[index + 1].kind, molt_ir::OpKind::CallFunc);
+        assert_eq!(lowered[index + 2].kind, molt_ir::OpKind::PcallWrapEnd);
         assert_eq!(lowered[index + 2].value, begin.value);
     }
     let control_kinds = |ops: &[OpIR]| {
         ops.iter()
             .filter_map(|op| {
                 matches!(
-                    op.kind.as_str(),
-                    "loop_start" | "loop_end" | "if" | "else" | "end_if" | "ret"
+                    op.kind,
+                    molt_ir::OpKind::LoopStart
+                        | molt_ir::OpKind::LoopEnd
+                        | molt_ir::OpKind::If
+                        | molt_ir::OpKind::Else
+                        | molt_ir::OpKind::EndIf
+                        | molt_ir::OpKind::Ret
                 )
-                .then_some(op.kind.clone())
+                .then_some(op.kind)
             })
             .collect::<Vec<_>>()
     };
@@ -675,10 +697,25 @@ fn structured_return_keeps_explicit_exception_cleanup() {
                 "baseline".into(),
             ],
             ops: vec![
-                exception_op("store_index", &["slot", "index", "value"], None, None),
-                exception_op("exception_stack_exit", &["baseline"], None, None),
-                exception_op("index", &["slot", "index"], Some("loaded"), None),
-                exception_op("ret", &["loaded"], None, None),
+                exception_op(
+                    molt_ir::OpKind::StoreIndex,
+                    &["slot", "index", "value"],
+                    None,
+                    None,
+                ),
+                exception_op(
+                    molt_ir::OpKind::ExceptionStackExit,
+                    &["baseline"],
+                    None,
+                    None,
+                ),
+                exception_op(
+                    molt_ir::OpKind::Index,
+                    &["slot", "index"],
+                    Some("loaded"),
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::Ret, &["loaded"], None, None),
             ],
             ..FunctionIR::default()
         }],
@@ -712,17 +749,13 @@ fn lune_oracle_checked_exception_flow_executes_nested_edges_calls_cleanup_and_co
         ]
         .into_iter()
         .map(|name| OpIR {
-            kind: "call_internal".into(),
             s_value: Some(name.into()),
             args: Some(Vec::new()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CallInternal)
         })
         .chain([
-            exception_op("missing", &[], Some("omitted_cause"), None),
-            OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
-            },
+            exception_op(molt_ir::OpKind::Missing, &[], Some("omitted_cause"), None),
+            OpIR::new(molt_ir::OpKind::RetVoid),
         ])
         .collect(),
         ..FunctionIR::default()
@@ -733,13 +766,23 @@ fn lune_oracle_checked_exception_flow_executes_nested_edges_calls_cleanup_and_co
             name: "loop_pending_observer".into(),
             params: vec!["callback".into(), "cleanup".into()],
             ops: vec![
-                exception_op("loop_start", &[], None, None),
-                exception_op("call_func", &["callback"], Some("called"), None),
-                exception_op("loop_break_if_exception", &[], None, None),
-                exception_op("loop_break", &[], None, None),
-                exception_op("loop_end", &[], None, None),
-                exception_op("call_func", &["cleanup"], Some("cleaned"), None),
-                exception_op("ret_void", &[], None, None),
+                exception_op(molt_ir::OpKind::LoopStart, &[], None, None),
+                exception_op(
+                    molt_ir::OpKind::CallFunc,
+                    &["callback"],
+                    Some("called"),
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::LoopBreakIfException, &[], None, None),
+                exception_op(molt_ir::OpKind::LoopBreak, &[], None, None),
+                exception_op(molt_ir::OpKind::LoopEnd, &[], None, None),
+                exception_op(
+                    molt_ir::OpKind::CallFunc,
+                    &["cleanup"],
+                    Some("cleaned"),
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::RetVoid, &[], None, None),
             ],
             ..FunctionIR::default()
         },
@@ -748,12 +791,12 @@ fn lune_oracle_checked_exception_flow_executes_nested_edges_calls_cleanup_and_co
             name: "terminal_observer".into(),
             params: vec!["handled".into()],
             ops: vec![
-                exception_op("jump", &[], None, Some(20)),
-                exception_op("label", &[], None, Some(10)),
-                exception_op("exception_clear", &[], None, None),
-                exception_op("ret", &["handled"], None, None),
-                exception_op("label", &[], None, Some(20)),
-                exception_op("check_exception", &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::Jump, &[], None, Some(20)),
+                exception_op(molt_ir::OpKind::Label, &[], None, Some(10)),
+                exception_op(molt_ir::OpKind::ExceptionClear, &[], None, None),
+                exception_op(molt_ir::OpKind::Ret, &["handled"], None, None),
+                exception_op(molt_ir::OpKind::Label, &[], None, Some(20)),
+                exception_op(molt_ir::OpKind::CheckException, &[], None, Some(10)),
             ],
             ..FunctionIR::default()
         },
@@ -761,8 +804,8 @@ fn lune_oracle_checked_exception_flow_executes_nested_edges_calls_cleanup_and_co
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "bare_reraise".into(),
             ops: vec![
-                exception_op("raise", &[], None, None),
-                exception_op("ret_void", &[], None, None),
+                exception_op(molt_ir::OpKind::Raise, &[], None, None),
+                exception_op(molt_ir::OpKind::RetVoid, &[], None, None),
             ],
             ..FunctionIR::default()
         },
@@ -771,13 +814,23 @@ fn lune_oracle_checked_exception_flow_executes_nested_edges_calls_cleanup_and_co
             name: "cleanup_override".into(),
             params: vec!["saved".into(), "replacement".into()],
             ops: vec![
-                exception_op("exception_stack_enter", &[], Some("baseline"), None),
-                exception_op("exception_push", &[], None, None),
-                exception_op("exception_context_set", &["saved"], None, None),
-                exception_op("raise", &["replacement"], None, None),
-                exception_op("exception_pop", &[], None, None),
-                exception_op("exception_stack_exit", &["baseline"], None, None),
-                exception_op("ret_void", &[], None, None),
+                exception_op(
+                    molt_ir::OpKind::ExceptionStackEnter,
+                    &[],
+                    Some("baseline"),
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::ExceptionPush, &[], None, None),
+                exception_op(molt_ir::OpKind::ExceptionContextSet, &["saved"], None, None),
+                exception_op(molt_ir::OpKind::Raise, &["replacement"], None, None),
+                exception_op(molt_ir::OpKind::ExceptionPop, &[], None, None),
+                exception_op(
+                    molt_ir::OpKind::ExceptionStackExit,
+                    &["baseline"],
+                    None,
+                    None,
+                ),
+                exception_op(molt_ir::OpKind::RetVoid, &[], None, None),
             ],
             ..FunctionIR::default()
         },
@@ -785,16 +838,16 @@ fn lune_oracle_checked_exception_flow_executes_nested_edges_calls_cleanup_and_co
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "loop_resume_state".into(),
             ops: vec![
-                exception_op("const_bool", &[], Some("done"), Some(0)),
-                exception_op("loop_start", &[], None, None),
-                exception_op("loop_break_if_true", &["done"], None, None),
-                exception_op("check_exception", &[], None, Some(40)),
-                exception_op("not", &["done"], Some("done"), None),
-                exception_op("loop_continue", &[], None, None),
-                exception_op("loop_end", &[], None, None),
-                exception_op("ret", &["done"], None, None),
-                exception_op("label", &[], None, Some(40)),
-                exception_op("ret_void", &[], None, None),
+                exception_op(molt_ir::OpKind::ConstBool, &[], Some("done"), Some(0)),
+                exception_op(molt_ir::OpKind::LoopStart, &[], None, None),
+                exception_op(molt_ir::OpKind::LoopBreakIfTrue, &["done"], None, None),
+                exception_op(molt_ir::OpKind::CheckException, &[], None, Some(40)),
+                exception_op(molt_ir::OpKind::Not, &["done"], Some("done"), None),
+                exception_op(molt_ir::OpKind::LoopContinue, &[], None, None),
+                exception_op(molt_ir::OpKind::LoopEnd, &[], None, None),
+                exception_op(molt_ir::OpKind::Ret, &["done"], None, None),
+                exception_op(molt_ir::OpKind::Label, &[], None, Some(40)),
+                exception_op(molt_ir::OpKind::RetVoid, &[], None, None),
             ],
             ..FunctionIR::default()
         },

@@ -15,39 +15,31 @@ fn test_bool_arithmetic_coerces_bool_operands() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_bool".to_string(),
                     value: Some(1),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "const_bool".to_string(),
                     value: Some(0),
                     out: Some("v1".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "add".to_string(),
                     args: Some(vec!["v0".to_string(), "v1".to_string()]),
                     out: Some("v2".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Add)
                 },
                 OpIR {
-                    kind: "sub".to_string(),
                     args: Some(vec!["v0".to_string(), "v1".to_string()]),
                     out: Some("v3".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Sub)
                 },
                 OpIR {
-                    kind: "mul".to_string(),
                     args: Some(vec!["v0".to_string(), "v1".to_string()]),
                     out: Some("v4".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Mul)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -79,16 +71,14 @@ fn test_result_type_hint_does_not_prove_luau_not_operand_bool() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "not".to_string(),
                     args: Some(vec!["x".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("bool".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Not)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -121,23 +111,20 @@ fn test_result_type_hint_does_not_prove_luau_and_or_operands_bool() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "and".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("bool".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::And)
                 },
                 OpIR {
-                    kind: "or".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("v1".to_string()),
                     type_hint: Some("bool".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Or)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v1".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -174,16 +161,14 @@ fn test_result_type_hint_does_not_force_luau_numeric_add() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "add".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("int".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Add)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -216,16 +201,14 @@ fn test_transport_hints_do_not_force_luau_numeric_add() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "add".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("int".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Add)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -258,16 +241,14 @@ fn test_type_hint_int_does_not_force_luau_integer_index() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "get_item".to_string(),
                     args: Some(vec!["xs".to_string(), "key".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("int".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetItem)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -300,15 +281,13 @@ fn test_container_transport_hints_do_not_force_luau_list_dispatch() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "get_item".to_string(),
                     args: Some(vec!["xs".to_string(), "key".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("list".to_string()),
                     container_type: Some("list".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetItem)
                 },
                 OpIR {
-                    kind: "set_item".to_string(),
                     args: Some(vec![
                         "xs".to_string(),
                         "key".to_string(),
@@ -316,12 +295,11 @@ fn test_container_transport_hints_do_not_force_luau_list_dispatch() {
                     ]),
                     type_hint: Some("list".to_string()),
                     container_type: Some("list".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::SetItem)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -360,16 +338,14 @@ fn test_len_transport_hint_does_not_force_luau_raw_length() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "len".to_string(),
                     args: Some(vec!["xs".to_string()]),
                     out: Some("n".to_string()),
                     type_hint: Some("list".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Len)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["n".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -403,15 +379,13 @@ fn test_len_uses_tir_container_fact_for_packed_sequence_length() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "len".to_string(),
                     args: Some(vec!["xs".to_string()]),
                     out: Some("n".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Len)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["n".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -445,15 +419,13 @@ fn test_typed_string_len_uses_unicode_codepoint_authority() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "len".to_string(),
                     args: Some(vec!["text".to_string()]),
                     out: Some("n".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Len)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["n".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -482,15 +454,13 @@ fn test_typed_list_truthiness_uses_packed_sequence_length_for_not() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "not".to_string(),
                     args: Some(vec!["xs".to_string()]),
                     out: Some("empty".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Not)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["empty".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -527,15 +497,13 @@ fn test_typed_dict_truthiness_uses_ordered_dict_size_authority() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "or".to_string(),
                     args: Some(vec!["d".to_string(), "fallback".to_string()]),
                     out: Some("selected".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Or)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["selected".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],

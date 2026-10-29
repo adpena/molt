@@ -96,7 +96,7 @@ mod tests {
     fn sourced_fixture(name: &str, source: Option<&str>, ops: usize) -> FunctionIR {
         FunctionIR {
             source_file: source.map(str::to_owned),
-            ops: vec![molt_backend::OpIR::default(); ops],
+            ops: vec![molt_backend::OpIR::new(molt_ir::OpKind::Nop); ops],
             ..fixture(name)
         }
     }

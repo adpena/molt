@@ -22,13 +22,16 @@ from molt.rust_source_scan import (
     rust_delimiter_end as _closing,
     rust_block_region as _block,
     rust_match_arms as match_arms,
-    rust_literal_pattern_names as _literal_pattern,
 )
 from tools.structural_audit_rust_admission import (
     AdmittedWireDomain,
     _body,
     _compact,
-    _generated_literal_table,
+)
+from tools.structural_audit_rust import (
+    generated_kind_table,
+    kind_pattern_names,
+    op_kind_wire_names,
 )
 
 
@@ -62,26 +65,27 @@ def _unshadowed(text: str, names: tuple[str, ...]) -> bool:
 
 
 def _bool_table(text: str, name: str) -> frozenset[str] | None:
-    body = _body(text, name)
-    if body is None:
-        return None
-    tokens = _words(body)
-    if tokens[:5] != ("matches", "!", "(", "kind", ",") or tokens[-1:] != (")",):
-        return None
-    return _literal_pattern(" ".join(tokens[5:-1]))
+    table = generated_kind_table(
+        _body(text, name), r"(?P<value>true)", "false", op_kind_wire_names(text)
+    )
+    return frozenset(table) if table is not None else None
 
 
 def _enum_table(text: str, name: str, enum: str, default: str) -> dict[str, str] | None:
-    return _generated_literal_table(
-        _body(text, name), rf"{enum}::(?P<value>[A-Za-z]+)", f"_=>{enum}::{default},"
+    return generated_kind_table(
+        _body(text, name),
+        rf"{enum}::(?P<value>[A-Za-z]+)",
+        f"{enum}::{default}",
+        op_kind_wire_names(text),
     )
 
 
 def _literal_shapes(generated: str, literal: str) -> dict[str, str] | None:
-    kinds = _generated_literal_table(
+    kinds = generated_kind_table(
         _body(generated, "kind_to_opcode_table"),
         r"Some\(OpCode::(?P<value>[A-Za-z0-9]+)\)",
-        "_=>None,",
+        "None",
+        op_kind_wire_names(generated),
     )
     body = _body(generated, "opcode_literal_payload_kind_table")
     arms = match_arms(body or "", "opcode")
@@ -120,7 +124,7 @@ def _literal_shapes(generated: str, literal: str) -> dict[str, str] | None:
     owner = _block(literal, "impl<'a> SimpleLiteral<'a>")
     constructor = _body(literal[slice(*owner)] if owner else "", "from_simple")
     if _compact(constructor or "") != _compact("""
-        let Some(shape) = kind_to_opcode_table(&op.kind).and_then(opcode_literal_payload_kind_table)
+        let Some(shape) = kind_to_opcode_table(op.kind).and_then(opcode_literal_payload_kind_table)
         else { return Ok(None); };
         let literal = match shape {
             LiteralPayloadKind::Int => Self::Int(op.value.ok_or_else(|| format!("", op.kind))?,),
@@ -198,28 +202,28 @@ def _normalized_flow_contract(
 ) -> bool:
     # This only checks continuity with the canonical producer. It does not
     # grant any additional admitted wire kinds or tail-flow exclusions.
-    if _bool_table(generated, "simpleir_kind_is_pre_ssa_rewritten") != normalized_kinds:
+    if _bool_table(generated, "is_pre_ssa_rewritten") != normalized_kinds:
         return False
     if not _same(
         _body(schema, "validate_normalized_simple_ir_ops"),
         """
-        for (op_index, op) in ops.iter().enumerate() {
-            if simpleir_kind_is_pre_ssa_rewritten(&op.kind) {
-                return Err(FunctionOpShapeDiagnostic {
-                    function: function.into(),
-                    op_index,
-                    shape: OpShapeDiagnostic {
-                        family: "normalization",
-                        kind: op.kind.clone(),
-                        violation: OpShapeViolation::Unnormalized {
-                            source_op_idx: op.source_op_idx,
-                        },
+    for (op_index, op) in ops.iter().enumerate() {
+        if op.kind.is_pre_ssa_rewritten() {
+            return Err(FunctionOpShapeDiagnostic {
+                function: function.into(),
+                op_index,
+                shape: OpShapeDiagnostic {
+                    family: "normalization",
+                    kind: op.kind.to_string(),
+                    violation: OpShapeViolation::Unnormalized {
+                        source_op_idx: op.source_op_idx,
                     },
-                });
-            }
+                },
+            });
         }
-        Ok(())
-        """,
+    }
+    Ok(())
+""",
     ):
         return False
     return True
@@ -232,8 +236,8 @@ def _flow_exclusion(
     normalized_kinds: frozenset[str],
     domain: AdmittedWireDomain,
 ) -> tuple[int, int] | None:
-    references = _bool_table(generated, "simpleir_kind_is_verifier_label_reference")
-    definitions = _bool_table(generated, "simpleir_kind_is_verifier_label_definition")
+    references = _bool_table(generated, "is_verifier_label_reference")
+    definitions = _bool_table(generated, "is_verifier_label_definition")
     if (
         references is None
         or definitions is None
@@ -245,8 +249,7 @@ def _flow_exclusion(
         body,
         """
         let dispatch = func.ops.iter().any(|op| {
-            molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_reference(&op.kind)
-            || molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_definition(&op.kind,)
+            op.kind.is_verifier_label_reference() || op.kind.is_verifier_label_definition()
         });
     """,
     )
@@ -343,7 +346,6 @@ class BranchProjection:
     excluded: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
     dispatch: list[tuple[int, int]] = field(default_factory=list)
     inbound: dict[str, frozenset[str]] = field(default_factory=dict)
-    residual: frozenset[str] | None = None
 
     def add(self, method: str, region: tuple[int, int]) -> None:
         self.excluded.setdefault(method, []).append(region)
@@ -362,8 +364,12 @@ def _dispatch_projection(
     domain: AdmittedWireDomain,
     projection: BranchProjection,
 ) -> None:
-    arms = match_arms(body, "op.kind.as_str()")
-    if arms is None or _block(body, "match op.kind.as_str()", depth=0) is None:
+    arms = match_arms(body, "op.kind")
+    if arms is None or _block(body, "match op.kind", depth=0) is None:
+        return
+    names = op_kind_wire_names(generated) or {}
+    typed_arms = [(arm, kind_pattern_names(arm.pattern, names)) for arm in arms]
+    if any(kinds is None for _, kinds in typed_arms):
         return
     possible = set(domain.possible)
     # The helper consumes Some and Err and returns false only for Ok(None).
@@ -409,36 +415,7 @@ def _dispatch_projection(
         and _block(body, "if self.emit_op_literal(op)", depth=0) is not None
     ):
         possible.difference_update(shapes)
-    returns = _enum_table(
-        generated, "simpleir_return_shape", "SimpleIrReturnShape", "NotReturn"
-    )
-    unknown_guard = False
-    for index, arm in enumerate(arms):
-        kinds = _literal_pattern(arm.pattern)
-        if kinds is None:
-            for shape in ("Value", "Void"):
-                if returns is not None and _same(
-                    arm.pattern,
-                    f"""
-                    kind if molt_ir::tir::op_kinds_generated::simpleir_return_shape(kind)
-                    == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::{shape}
-                """,
-                ):
-                    kinds = frozenset(
-                        kind for kind, value in returns.items() if value == shape
-                    )
-                    break
-        if (
-            kinds is None
-            and _same(arm.pattern, "_")
-            and index == len(arms) - 1
-            and not unknown_guard
-        ):
-            kinds = frozenset(possible)
-            projection.residual = kinds
-        if kinds is None:
-            unknown_guard = True
-            continue
+    for arm, kinds in typed_arms:
         inbound = frozenset(possible & kinds)
         if not inbound:
             projection.dispatch.append((arm.start, arm.end))
@@ -461,28 +438,28 @@ def _value_contract(schema: str) -> bool:
     ) == _compact("""
         use crate::tir::op_kinds_generated::{
             copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
-            opcode_fixed_result_count_table, simpleir_kind_is_structural,
+            opcode_fixed_result_count_table,
         };
         use crate::tir::simple_def_use::{
             simple_ir_binding, visit_simple_ir_reads, visit_simple_ir_result_names,
         };
-        let binding = simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Definition;
+        let binding = simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Definition;
         if binding {
             let destination = simple_ir_binding(op).map(|binding| binding.destination);
             if destination.is_none_or(|name| name.is_empty() || name == "none") {
                 return Err(format!("", op.kind));
             }
         }
-        if copy_kind_is_explicit_no_heap_move_table(&op.kind)
-            || copy_kind_mints_owned_alias_ref_table(&op.kind)
+        if copy_kind_is_explicit_no_heap_move_table(op.kind)
+            || copy_kind_mints_owned_alias_ref_table(op.kind)
         {
-            let expected = simpleir_op_shape(&op.kind).map_or(1, |shape| shape.operands);
+            let expected = simpleir_op_shape(op.kind).map_or(1, |shape| shape.operands);
             let mut actual = 0;
             visit_simple_ir_reads(op, |_| actual += 1);
             if actual != expected { return Err(format!("", op.kind)); }
         }
-        if simpleir_kind_is_structural(&op.kind)
-            || kind_to_opcode_table(&op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
+        if op.kind.is_structural()
+            || kind_to_opcode_table(op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
         {
             let mut result = false;
             visit_simple_ir_result_names(op, |_| result = true);
@@ -493,73 +470,82 @@ def _value_contract(schema: str) -> bool:
 
 
 def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
-    # Registration is a dominating fallible check, not a second shape table.
-    # Bind its current producer too: accepting only the call spelling would
-    # conceal a producer changed to admit every kind or discard its error.
-    registered = _bool_table(generated, "simpleir_kind_is_registered")
-    if registered is None or not _same(
-        _body(schema, "validate_registered_op_kind"),
-        """
-        validate_op_not_retired(kind)?;
-        if !simpleir_kind_is_registered(kind) {
-            return Err(OpShapeDiagnostic {
-                family: "registration", kind: kind.into(),
-                violation: OpShapeViolation::UnregisteredKind,
-            });
-        }
-        Ok(())
-    """,
-    ):
-        return None
     if not _same(
         _body(schema, "validate_op_shape"),
         """
-        validate_op_not_retired(kind)?;
-        if matches!(
-            kind,
-            "call" | "call_internal" | "code_slot_set" | "trace_enter_slot" | "module_slot"
-        ) && value.is_some()
-        {
-            return Err(OpShapeDiagnostic {
-                family: if kind == "module_slot" { "module_registry" } else { "code_metadata" },
-                kind: kind.into(),
-                violation: OpShapeViolation::ForbiddenValue,
-            });
-        }
-        let Some(shape) = simpleir_op_shape(kind) else { return Ok(()); };
-        let violation = if operands.unwrap_or(0) != shape.operands {
-            Some(OpShapeViolation::OperandCount { expected: shape.operands, actual: operands, })
-        } else if shape.value_rule == SimpleIrOpValueRule::NonNegative
-            && value.is_none_or(|value| value < 0)
-        { Some(OpShapeViolation::NonNegativeValue { actual: value }) }
-        else { None };
-        match violation {
-            Some(violation) => Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind.into(), violation, }),
-            None => Ok(()),
-        }
-    """,
+    if matches!(
+        kind,
+        crate::OpKind::Call
+            | crate::OpKind::CallInternal
+            | crate::OpKind::CodeSlotSet
+            | crate::OpKind::TraceEnterSlot
+            | crate::OpKind::ModuleSlot
+    ) && value.is_some()
+    {
+        return Err(OpShapeDiagnostic {
+            family: if kind == crate::OpKind::ModuleSlot {
+                "module_registry"
+            } else {
+                "code_metadata"
+            },
+            kind: kind.to_string(),
+            violation: OpShapeViolation::ForbiddenValue,
+        });
+    }
+    let Some(shape) = simpleir_op_shape(kind) else {
+        return Ok(());
+    };
+    let violation = if operands.unwrap_or(0) != shape.operands {
+        Some(OpShapeViolation::OperandCount {
+            expected: shape.operands,
+            actual: operands,
+        })
+    } else if shape.value_rule == SimpleIrOpValueRule::NonNegative
+        && value.is_none_or(|value| value < 0)
+    {
+        Some(OpShapeViolation::NonNegativeValue { actual: value })
+    } else {
+        None
+    };
+    match violation {
+        Some(violation) => Err(OpShapeDiagnostic {
+            family: shape.family,
+            kind: shape.kind.to_string(),
+            violation,
+        }),
+        None => Ok(()),
+    }
+""",
     ) or not _same(
         _body(schema, "validate_simple_op_shape"),
         """
-        validate_registered_op_kind(&op.kind)?;
-        validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
-        validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;
-        validate_class_definition_symbol(&op.kind, op.class_definition.as_deref())?;
-        if op.kind == "module_slot"
-            && op.out.as_deref().is_none_or(|out| out.is_empty() || out == "none")
-        {
-            return Err(OpShapeDiagnostic {
-                family: "module_registry",
-                kind: op.kind.clone(),
-                violation: OpShapeViolation::MissingResult,
-            });
-        }
-        if let Some(shape) = simpleir_op_shape(&op.kind)
-            && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
-            && op.var.is_some()
-        { return Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind.into(), violation: OpShapeViolation::ForbiddenVar, }); }
-        Ok(())
-    """,
+    validate_op_shape(op.kind, op.args.as_ref().map(Vec::len), op.value)?;
+    validate_program_slot_symbol(op.kind, op.s_value.as_deref())?;
+    validate_class_definition_symbol(op.kind, op.class_definition.as_deref())?;
+    if op.kind == crate::OpKind::ModuleSlot
+        && op
+            .out
+            .as_deref()
+            .is_none_or(|out| out.is_empty() || out == "none")
+    {
+        return Err(OpShapeDiagnostic {
+            family: "module_registry",
+            kind: op.kind.to_string(),
+            violation: OpShapeViolation::MissingResult,
+        });
+    }
+    if let Some(shape) = simpleir_op_shape(op.kind)
+        && simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Forbidden
+        && op.var.is_some()
+    {
+        return Err(OpShapeDiagnostic {
+            family: shape.family,
+            kind: shape.kind.to_string(),
+            violation: OpShapeViolation::ForbiddenVar,
+        });
+    }
+    Ok(())
+""",
     ):
         return None
     prefix = _locate(generated, "pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[")
@@ -570,23 +556,21 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
         return None
     rows = generated[prefix[1] : closing - 1]
     pattern = re.compile(
-        r'SimpleIrOpShape\s*\{\s*kind:\s*"(?P<kind>[a-z_][a-z0-9_]*)",\s*family:\s*"[a-z_]+",\s*operands:\s*(?P<arity>\d+),\s*value_rule:\s*SimpleIrOpValueRule::(?:Unconstrained|NonNegative),\s*\},'
+        r'SimpleIrOpShape\s*\{\s*kind:\s*OpKind::(?P<variant>[A-Za-z_][A-Za-z0-9_]*),\s*family:\s*"[a-z_]+",\s*operands:\s*(?P<arity>\d+),\s*value_rule:\s*SimpleIrOpValueRule::(?:Unconstrained|NonNegative),\s*\},'
     )
+    names = op_kind_wire_names(generated) or {}
     values = list(pattern.finditer(rows))
     if pattern.sub("", rows).strip():
         return None
-    table = _generated_literal_table(
+    table = generated_kind_table(
         _body(generated, "simpleir_op_shape"),
         r"Some\(&SIMPLEIR_OP_SHAPES\[(?P<value>\d+)\]\)",
-        "_=>None,",
+        "None",
+        op_kind_wire_names(generated),
     )
-    if (
-        table is None
-        or not table.keys() <= registered
-        or any(
-            int(index) >= len(values) or values[int(index)]["kind"] != kind
-            for kind, index in table.items()
-        )
+    if table is None or any(
+        int(index) >= len(values) or names.get(values[int(index)]["variant"]) != kind
+        for kind, index in table.items()
     ):
         return None
     return {kind: int(values[int(index)]["arity"]) for kind, index in table.items()}
@@ -603,7 +587,7 @@ def _unary_reads(defuse: str, generated: str, unary: frozenset[str]) -> frozense
         """,
         "simple_ir_read_fields": """
             let arg_count = op.args.as_ref().map_or(0, Vec::len);
-            let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+            let read_arity = simpleir_first_trailing_result_arg_table(op.kind)
                 .unwrap_or(arg_count).min(arg_count);
             (0..read_arity).map(SimpleIrReadField::Arg).chain(
                 (simple_ir_var_field_is_read(op) && op.var.is_some()).then_some(SimpleIrReadField::Var),
@@ -627,10 +611,11 @@ def _unary_reads(defuse: str, generated: str, unary: frozenset[str]) -> frozense
     roles = _enum_table(
         generated, "simpleir_var_field_role_table", "SimpleIrVarFieldRole", "Read"
     )
-    trailing = _generated_literal_table(
+    trailing = generated_kind_table(
         _body(generated, "simpleir_first_trailing_result_arg_table"),
         r"Some\((?P<value>\d+)\)",
-        "_=>None,",
+        "None",
+        op_kind_wire_names(generated),
     )
     if roles is None or trailing is None:
         return frozenset()
@@ -645,7 +630,7 @@ def _unary_reads(defuse: str, generated: str, unary: frozenset[str]) -> frozense
 def _resultless_out(
     defuse: str, generated: str, backend: str, helpers: str
 ) -> frozenset[str]:
-    structural = _bool_table(generated, "simpleir_kind_is_structural")
+    structural = _bool_table(generated, "is_structural")
     metadata = _bool_table(generated, "simpleir_out_field_is_metadata")
     roles = _enum_table(
         generated, "simpleir_var_field_role_table", "SimpleIrVarFieldRole", "Read"
@@ -671,15 +656,15 @@ def _resultless_out(
     if not _same(
         _body(defuse, "visit_simple_ir_results"),
         """
-        if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Result {
+        if simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Result {
             visit(SimpleIrResult { name: op.var.as_deref().filter(|name| *name != "none"), field: SimpleIrResultField::Var, });
         }
-        if !simpleir_out_field_is_metadata(op.kind.as_str()) {
+        if !simpleir_out_field_is_metadata(op.kind) {
             let name = if let Some(binding) = simple_ir_binding(op) { binding.result }
             else { op.out.as_deref().filter(|name| *name != "none") };
             visit(SimpleIrResult { name, field: SimpleIrResultField::Out, });
         }
-        if let Some(first_result) = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+        if let Some(first_result) = simpleir_first_trailing_result_arg_table(op.kind)
             && let Some(args) = op.args.as_deref()
         {
             for (index, name) in args.iter().enumerate().skip(first_result) {
@@ -690,7 +675,7 @@ def _resultless_out(
     ) or not _starts(
         _body(defuse, "simple_ir_binding") or "",
         """
-        if simpleir_var_field_role_table(op.kind.as_str()) != SimpleIrVarFieldRole::Definition { return None; }
+        if simpleir_var_field_role_table(op.kind) != SimpleIrVarFieldRole::Definition { return None; }
     """,
     ):
         return frozenset()

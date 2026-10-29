@@ -21,21 +21,27 @@ fn extern_function(name: &str, arity: usize, returns_value: bool) -> FunctionIR 
 
 fn extern_linkage_ir() -> SimpleIR {
     let call_void = OpIR {
-        kind: "call_internal".to_string(),
         s_value: Some("stdlib_void".to_string()),
         out: Some("void_none".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::CallInternal)
     };
-    let mut call_value = wasm_test_op("call_internal", Some("external"), vec!["arg0", "arg1"]);
+    let mut call_value = wasm_test_op(
+        molt_ir::OpKind::CallInternal,
+        Some("external"),
+        vec!["arg0", "arg1"],
+    );
     call_value.s_value = Some("stdlib_value".to_string());
-    let mut call_local = wasm_test_op("call_internal", Some("answer"), vec!["external"]);
+    let mut call_local = wasm_test_op(
+        molt_ir::OpKind::CallInternal,
+        Some("answer"),
+        vec!["external"],
+    );
     call_local.s_value = Some("local_body".to_string());
     let guarded_void = OpIR {
-        kind: "call_guarded".to_string(),
         s_value: Some("stdlib_void".to_string()),
         args: Some(vec!["guarded_callee".to_string()]),
         out: Some("guarded_none".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::CallGuarded)
     };
 
     SimpleIR {
@@ -45,14 +51,14 @@ fn extern_linkage_ir() -> SimpleIR {
                 vec![],
                 None,
                 vec![
-                    wasm_test_op("const_none", Some("arg0"), vec![]),
-                    wasm_test_op("const_none", Some("arg1"), vec![]),
-                    wasm_test_op("const_none", Some("guarded_callee"), vec![]),
+                    wasm_test_op(molt_ir::OpKind::ConstNone, Some("arg0"), vec![]),
+                    wasm_test_op(molt_ir::OpKind::ConstNone, Some("arg1"), vec![]),
+                    wasm_test_op(molt_ir::OpKind::ConstNone, Some("guarded_callee"), vec![]),
                     call_void,
                     guarded_void,
                     call_value,
                     call_local,
-                    wasm_test_op("ret", None, vec!["answer"]),
+                    wasm_test_op(molt_ir::OpKind::Ret, None, vec!["answer"]),
                 ],
             ),
             extern_function("stdlib_void", 0, false),
@@ -60,7 +66,7 @@ fn extern_linkage_ir() -> SimpleIR {
                 "local_body",
                 vec!["value"],
                 None,
-                vec![wasm_test_op("ret", None, vec!["value"])],
+                vec![wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"])],
             ),
             extern_function("stdlib_value", 2, true),
         ],
@@ -289,9 +295,8 @@ fn malformed_extern_declaration_is_rejected_by_shared_validation() {
     malformed.ops.insert(
         0,
         OpIR {
-            kind: "const_none".to_string(),
             out: Some("body_value".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstNone)
         },
     );
     let error = crate::validate_simple_ir(&SimpleIR {

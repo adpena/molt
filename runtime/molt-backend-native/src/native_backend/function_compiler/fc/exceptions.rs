@@ -1,27 +1,28 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_exception_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_exception_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "exception_match_builtin",
-    "exception_last",
-    "exception_last_pending",
-    "exception_finally_pending_observer",
-    "exception_active",
-    "exception_current",
-    "exception_new",
-    "exception_new_builtin",
-    "exception_new_builtin_empty",
-    "exception_new_builtin_one",
-    "exception_new_from_class",
-    "exceptiongroup_match",
-    "exceptiongroup_combine",
-    "exception_clear",
-    "exception_class",
-    "exception_set_last",
-    "exception_context_set",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::ExceptionMatchBuiltin,
+    OpKind::ExceptionLast,
+    OpKind::ExceptionLastPending,
+    OpKind::ExceptionFinallyPendingObserver,
+    OpKind::ExceptionActive,
+    OpKind::ExceptionCurrent,
+    OpKind::ExceptionNew,
+    OpKind::ExceptionNewBuiltin,
+    OpKind::ExceptionNewBuiltinEmpty,
+    OpKind::ExceptionNewBuiltinOne,
+    OpKind::ExceptionNewFromClass,
+    OpKind::ExceptiongroupMatch,
+    OpKind::ExceptiongroupCombine,
+    OpKind::ExceptionClear,
+    OpKind::ExceptionClass,
+    OpKind::ExceptionSetLast,
+    OpKind::ExceptionContextSet,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for exception-object ops: construction (`exception_new`/`exception_new_builtin*`/`exception_new_from_class`), field access (`class`/`last`/`active`/`current`), mutation (`set_last`/`context_set`/`clear`), and matching (`match_builtin`/`exceptiongroup_match`/`exceptiongroup_combine`).
@@ -72,8 +73,8 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "exception_match_builtin" => {
+    match op.kind {
+        OpKind::ExceptionMatchBuiltin => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let exc_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -104,7 +105,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_last" => {
+        OpKind::ExceptionLast => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -119,9 +120,9 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_last_pending" | "exception_finally_pending_observer" => {
+        OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
             let symbol = crate::exception_observer_abi::pending_exception_observer_runtime_symbol(
-                &op.kind,
+                op.kind,
                 op.is_async_work_poll(),
             )
             .expect("pending-exception observer kind must have a runtime projection");
@@ -139,7 +140,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_active" => {
+        OpKind::ExceptionActive => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -154,7 +155,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_current" => {
+        OpKind::ExceptionCurrent => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -169,7 +170,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_new" => {
+        OpKind::ExceptionNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let kind = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -207,7 +208,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_new_builtin" => {
+        OpKind::ExceptionNewBuiltin => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let tag = op.value.expect("exception_new_builtin missing tag value");
             let tag_val = builder.ins().iconst(types::I64, tag);
@@ -236,7 +237,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_new_builtin_empty" => {
+        OpKind::ExceptionNewBuiltinEmpty => {
             let tag = op
                 .value
                 .expect("exception_new_builtin_empty missing tag value");
@@ -255,7 +256,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_new_builtin_one" => {
+        OpKind::ExceptionNewBuiltinOne => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let tag = op
                 .value
@@ -286,7 +287,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_new_from_class" => {
+        OpKind::ExceptionNewFromClass => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let class_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -324,7 +325,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exceptiongroup_match" => {
+        OpKind::ExceptiongroupMatch => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let exc = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -362,7 +363,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exceptiongroup_combine" => {
+        OpKind::ExceptiongroupCombine => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let items = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -389,7 +390,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_clear" => {
+        OpKind::ExceptionClear => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -404,7 +405,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_class" => {
+        OpKind::ExceptionClass => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let kind = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -431,7 +432,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_set_last" => {
+        OpKind::ExceptionSetLast => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let exc = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -458,7 +459,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_context_set" => {
+        OpKind::ExceptionContextSet => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let exc = var_get_boxed_overflow_safe(
                 &mut *module,

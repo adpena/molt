@@ -12,14 +12,14 @@ fn method_receiver_prefix_executes_null_present_and_failed_push_custody() {
         vec!["builder", "receiver"],
         Some(vec!["dyn", "dyn"]),
         vec![
-            wasm_test_op("drop_inserted", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::DropInserted, None, vec![]),
             wasm_test_op(
-                "callargs_push_method_receiver",
+                molt_ir::OpKind::CallargsPushMethodReceiver,
                 None,
                 vec!["builder", "receiver"],
             ),
-            wasm_test_op("const_none", Some("nothing"), vec![]),
-            wasm_test_op("ret", None, vec!["nothing"]),
+            wasm_test_op(molt_ir::OpKind::ConstNone, Some("nothing"), vec![]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["nothing"]),
         ],
     );
     function.parameter_custody = vec![
@@ -102,9 +102,9 @@ fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut cases = Vec::new();
     for (kind, insert, width) in [
-        ("dict_new", "dict_set", 2),
-        ("set_new", "set_add", 1),
-        ("frozenset_new", "frozenset_add", 1),
+        (molt_ir::OpKind::DictNew, "dict_set", 2),
+        (molt_ir::OpKind::SetNew, "set_add", 1),
+        (molt_ir::OpKind::FrozensetNew, "frozenset_add", 1),
     ] {
         for (shape, out) in [
             ("absent", None),
@@ -121,7 +121,11 @@ fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
                         None,
                         vec![
                             wasm_test_op(kind, out, vec!["value"; 2 * width]),
-                            wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                            wasm_test_op(
+                                molt_ir::OpKind::Ret,
+                                None,
+                                vec![if bound { "result" } else { "none" }],
+                            ),
                         ],
                     )],
                     profile: None,
@@ -133,7 +137,7 @@ fn hash_constructor_execution_preserves_owner_and_failure_atomicity() {
             let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
             let path = temp.join(format!("{kind}-{shape}.wasm"));
             fs::write(&path, wasm).unwrap();
-            cases.push(json!({"name":format!("{kind}/{shape}"), "constructor":if width == 2 { "dict_from_pairs" } else { kind },
+            cases.push(json!({"name":format!("{kind}/{shape}"), "constructor":if width == 2 { "dict_from_pairs" } else { kind.as_str() },
                 "insert":insert, "width":width, "bound":bound, "path":path,
                 "memory_pages":memory_pages, "table_entries":table_entries}));
         }
@@ -251,17 +255,23 @@ fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
     let params = vec!["p0", "p1", "p2", "p3", "p4"];
     let mut cases = Vec::new();
     for (kind, args) in [
-        ("list_new", vec![]),
-        ("list_new", vec!["p2"]),
-        ("list_new", vec!["p0", "p1", "p2", "p3", "p4"]),
-        ("tuple_new", vec![]),
-        ("tuple_new", vec!["p2"]),
-        ("tuple_new", vec!["p0", "p1", "p2", "p3", "p4"]),
-        ("dict_new", vec![]),
-        ("dict_new", vec!["p2", "p4"]),
-        ("dict_new", vec!["p0", "p1", "p2", "p1"]),
-        ("dataclass_new_values", vec!["p0", "p1", "p2"]),
-        ("dataclass_new_values", vec!["p0", "p1", "p2", "p3", "p4"]),
+        (molt_ir::OpKind::ListNew, vec![]),
+        (molt_ir::OpKind::ListNew, vec!["p2"]),
+        (molt_ir::OpKind::ListNew, vec!["p0", "p1", "p2", "p3", "p4"]),
+        (molt_ir::OpKind::TupleNew, vec![]),
+        (molt_ir::OpKind::TupleNew, vec!["p2"]),
+        (
+            molt_ir::OpKind::TupleNew,
+            vec!["p0", "p1", "p2", "p3", "p4"],
+        ),
+        (molt_ir::OpKind::DictNew, vec![]),
+        (molt_ir::OpKind::DictNew, vec!["p2", "p4"]),
+        (molt_ir::OpKind::DictNew, vec!["p0", "p1", "p2", "p1"]),
+        (molt_ir::OpKind::DataclassNewValues, vec!["p0", "p1", "p2"]),
+        (
+            molt_ir::OpKind::DataclassNewValues,
+            vec!["p0", "p1", "p2", "p3", "p4"],
+        ),
     ] {
         for (shape, out) in [
             ("absent", None),
@@ -278,7 +288,11 @@ fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
                         None,
                         vec![
                             wasm_test_op(kind, out, args.clone()),
-                            wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                            wasm_test_op(
+                                molt_ir::OpKind::Ret,
+                                None,
+                                vec![if bound { "result" } else { "none" }],
+                            ),
                         ],
                     )],
                     profile: None,
@@ -452,12 +466,12 @@ fn call_count(operators: &[String], function_index: u32) -> usize {
 
 #[test]
 fn raw_allocations_publish_before_binding_or_releasing_the_result() {
-    for kind in ["alloc", "alloc_class"] {
+    for kind in [molt_ir::OpKind::Alloc, molt_ir::OpKind::AllocClass] {
         for result in [None, Some("none"), Some("result")] {
             let mut allocation = wasm_test_op(
                 kind,
                 result,
-                if kind == "alloc_class" {
+                if kind == molt_ir::OpKind::AllocClass {
                     vec!["class"]
                 } else {
                     vec![]
@@ -469,13 +483,13 @@ fn raw_allocations_publish_before_binding_or_releasing_the_result() {
                 vec![
                     allocation,
                     wasm_test_op(
-                        "ret",
+                        molt_ir::OpKind::Ret,
                         None,
                         vec![result.filter(|name| *name != "none").unwrap_or("none")],
                     ),
                 ],
             );
-            let allocate = imports[kind];
+            let allocate = imports[kind.as_str()];
             let publish = imports["object_publish_initialized"];
             let position = operators
                 .iter()
@@ -501,46 +515,46 @@ fn raw_allocations_publish_before_binding_or_releasing_the_result() {
 #[test]
 fn owned_runtime_and_constructor_results_release_every_discard_shape() {
     for (kind, argc, temporary_releases) in [
-        ("list_new", 0, 0),
-        ("tuple_new", 0, 0),
-        ("tuple_new", 2, 0),
-        ("dict_new", 0, 0),
-        ("set_new", 0, 0),
-        ("frozenset_new", 0, 0),
-        ("dataclass_new", 4, 0),
-        ("dataclass_new_values", 3, 0),
-        ("tuple_index", 2, 0),
-        ("get_attr_name", 2, 0),
-        ("gen_send", 2, 0),
-        ("gen_throw", 2, 0),
-        ("gen_close", 1, 0),
-        ("iter_next", 1, 0),
-        ("gpu_thread_id", 0, 0),
+        (molt_ir::OpKind::ListNew, 0, 0),
+        (molt_ir::OpKind::TupleNew, 0, 0),
+        (molt_ir::OpKind::TupleNew, 2, 0),
+        (molt_ir::OpKind::DictNew, 0, 0),
+        (molt_ir::OpKind::SetNew, 0, 0),
+        (molt_ir::OpKind::FrozensetNew, 0, 0),
+        (molt_ir::OpKind::DataclassNew, 4, 0),
+        (molt_ir::OpKind::DataclassNewValues, 3, 0),
+        (molt_ir::OpKind::TupleIndex, 2, 0),
+        (molt_ir::OpKind::GetAttrName, 2, 0),
+        (molt_ir::OpKind::GenSend, 2, 0),
+        (molt_ir::OpKind::GenThrow, 2, 0),
+        (molt_ir::OpKind::GenClose, 1, 0),
+        (molt_ir::OpKind::IterNext, 1, 0),
+        (molt_ir::OpKind::GpuThreadId, 0, 0),
         // Independent 3 receiver × 4 method × 2 bound-shape contract.
-        ("string_find", 2, 0),
-        ("string_find_slice", 6, 0),
-        ("string_startswith", 2, 0),
-        ("string_startswith_slice", 6, 0),
-        ("string_endswith", 2, 0),
-        ("string_endswith_slice", 6, 0),
-        ("string_count", 2, 0),
-        ("string_count_slice", 6, 0),
-        ("bytes_find", 2, 0),
-        ("bytes_find_slice", 6, 0),
-        ("bytes_startswith", 2, 0),
-        ("bytes_startswith_slice", 6, 0),
-        ("bytes_endswith", 2, 0),
-        ("bytes_endswith_slice", 6, 0),
-        ("bytes_count", 2, 0),
-        ("bytes_count_slice", 6, 0),
-        ("bytearray_find", 2, 0),
-        ("bytearray_find_slice", 6, 0),
-        ("bytearray_startswith", 2, 0),
-        ("bytearray_startswith_slice", 6, 0),
-        ("bytearray_endswith", 2, 0),
-        ("bytearray_endswith_slice", 6, 0),
-        ("bytearray_count", 2, 0),
-        ("bytearray_count_slice", 6, 0),
+        (molt_ir::OpKind::StringFind, 2, 0),
+        (molt_ir::OpKind::StringFindSlice, 6, 0),
+        (molt_ir::OpKind::StringStartswith, 2, 0),
+        (molt_ir::OpKind::StringStartswithSlice, 6, 0),
+        (molt_ir::OpKind::StringEndswith, 2, 0),
+        (molt_ir::OpKind::StringEndswithSlice, 6, 0),
+        (molt_ir::OpKind::StringCount, 2, 0),
+        (molt_ir::OpKind::StringCountSlice, 6, 0),
+        (molt_ir::OpKind::BytesFind, 2, 0),
+        (molt_ir::OpKind::BytesFindSlice, 6, 0),
+        (molt_ir::OpKind::BytesStartswith, 2, 0),
+        (molt_ir::OpKind::BytesStartswithSlice, 6, 0),
+        (molt_ir::OpKind::BytesEndswith, 2, 0),
+        (molt_ir::OpKind::BytesEndswithSlice, 6, 0),
+        (molt_ir::OpKind::BytesCount, 2, 0),
+        (molt_ir::OpKind::BytesCountSlice, 6, 0),
+        (molt_ir::OpKind::BytearrayFind, 2, 0),
+        (molt_ir::OpKind::BytearrayFindSlice, 6, 0),
+        (molt_ir::OpKind::BytearrayStartswith, 2, 0),
+        (molt_ir::OpKind::BytearrayStartswithSlice, 6, 0),
+        (molt_ir::OpKind::BytearrayEndswith, 2, 0),
+        (molt_ir::OpKind::BytearrayEndswithSlice, 6, 0),
+        (molt_ir::OpKind::BytearrayCount, 2, 0),
+        (molt_ir::OpKind::BytearrayCountSlice, 6, 0),
     ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let retained = result == Some("result");
@@ -548,7 +562,11 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
                 vec!["value"],
                 vec![
                     wasm_test_op(kind, result, vec!["value"; argc]),
-                    wasm_test_op("ret", None, vec![if retained { "result" } else { "none" }]),
+                    wasm_test_op(
+                        molt_ir::OpKind::Ret,
+                        None,
+                        vec![if retained { "result" } else { "none" }],
+                    ),
                 ],
             );
             let releases = imports
@@ -591,7 +609,11 @@ fn numeric_runtime_results_follow_generated_ownership_for_every_result_shape() {
                         None,
                         vec![
                             wasm_test_op(spec.kind, out, vec!["value"; params.len()]),
-                            wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                            wasm_test_op(
+                                molt_ir::OpKind::Ret,
+                                None,
+                                vec![if bound { "result" } else { "none" }],
+                            ),
                         ],
                     )],
                     profile: None,
@@ -678,18 +700,26 @@ for (const test of config.cases) {
 
 #[test]
 fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
-    for (kind, argc) in [("call", 1), ("guard_tag", 2), ("guard_type", 2)] {
+    for (kind, argc) in [
+        (molt_ir::OpKind::Call, 1),
+        (molt_ir::OpKind::GuardTag, 2),
+        (molt_ir::OpKind::GuardType, 2),
+    ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let retained = result == Some("result");
             let mut operation = wasm_test_op(kind, result, vec!["value"; argc]);
-            if kind == "call" {
+            if kind == molt_ir::OpKind::Call {
                 operation.s_value = Some("molt_int_as_i64".into());
             }
             let (operators, imports) = compile_literal_body(
                 vec!["value"],
                 vec![
                     operation,
-                    wasm_test_op("ret", None, vec![if retained { "result" } else { "none" }]),
+                    wasm_test_op(
+                        molt_ir::OpKind::Ret,
+                        None,
+                        vec![if retained { "result" } else { "none" }],
+                    ),
                 ],
             );
             let releases = imports
@@ -711,27 +741,38 @@ fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
 #[test]
 fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
     for (kind, argc, import) in [
-        ("closure_load", 1, "closure_load"),
-        ("closure_store", 2, "closure_store"),
-        ("load", 1, "object_field_get"),
-        ("guarded_load", 1, "object_field_get"),
-        ("store", 2, "object_field_set"),
-        ("guarded_field_get", 2, "guarded_field_get"),
-        ("guarded_field_set", 3, "guarded_field_set"),
+        (molt_ir::OpKind::ClosureLoad, 1, "closure_load"),
+        (molt_ir::OpKind::ClosureStore, 2, "closure_store"),
+        (molt_ir::OpKind::Load, 1, "object_field_get"),
+        (molt_ir::OpKind::GuardedLoad, 1, "object_field_get"),
+        (molt_ir::OpKind::Store, 2, "object_field_set"),
+        (molt_ir::OpKind::GuardedFieldGet, 2, "guarded_field_get"),
+        (molt_ir::OpKind::GuardedFieldSet, 3, "guarded_field_set"),
     ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
-            let bound = result == Some("result") && !matches!(kind, "store" | "guarded_field_set");
+            let bound = result == Some("result")
+                && !matches!(
+                    kind,
+                    molt_ir::OpKind::Store | molt_ir::OpKind::GuardedFieldSet
+                );
             let mut op = wasm_test_op(kind, result, vec!["value"; argc]);
             op.value = Some(0);
             op.s_value = Some("attribute".into());
-            if kind.starts_with("guarded_field") {
+            if matches!(
+                kind,
+                molt_ir::OpKind::GuardedFieldGet | molt_ir::OpKind::GuardedFieldSet
+            ) {
                 op.class_definition = Some("class:m:Owner".into());
             }
             let (operators, imports) = compile_literal_body(
                 vec!["value"],
                 vec![
                     op,
-                    wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                    wasm_test_op(
+                        molt_ir::OpKind::Ret,
+                        None,
+                        vec![if bound { "result" } else { "none" }],
+                    ),
                 ],
             );
             let call = format!("Call {{ function_index: {} }}", imports[import]);
@@ -762,13 +803,13 @@ fn manual_field_and_closure_consumers_obey_selected_import_ownership() {
 #[test]
 fn representation_aliases_retain_only_observable_results() {
     for kind in [
-        "box",
-        "unbox",
-        "cast",
-        "widen",
-        "binding_alias",
-        "and",
-        "or",
+        molt_ir::OpKind::Box,
+        molt_ir::OpKind::Unbox,
+        molt_ir::OpKind::Cast,
+        molt_ir::OpKind::Widen,
+        molt_ir::OpKind::BindingAlias,
+        molt_ir::OpKind::And,
+        molt_ir::OpKind::Or,
     ] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let bound = result == Some("result");
@@ -778,9 +819,20 @@ fn representation_aliases_retain_only_observable_results() {
                     wasm_test_op(
                         kind,
                         result,
-                        vec!["value"; if matches!(kind, "and" | "or") { 2 } else { 1 }],
+                        vec![
+                            "value";
+                            if matches!(kind, molt_ir::OpKind::And | molt_ir::OpKind::Or) {
+                                2
+                            } else {
+                                1
+                            }
+                        ],
                     ),
-                    wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                    wasm_test_op(
+                        molt_ir::OpKind::Ret,
+                        None,
+                        vec![if bound { "result" } else { "none" }],
+                    ),
                 ],
             );
             let retains = imports
@@ -798,15 +850,18 @@ fn representation_aliases_retain_only_observable_results() {
 #[test]
 fn effect_output_metadata_cannot_publish_a_runtime_value() {
     for (kind, argc, import, borrowed) in [
-        ("store_index", 3, "store_index", true),
-        ("store", 2, "object_field_set", false),
-        ("set_attr_name", 3, "set_attr_name", false),
+        (molt_ir::OpKind::StoreIndex, 3, "store_index", true),
+        (molt_ir::OpKind::Store, 2, "object_field_set", false),
+        (molt_ir::OpKind::SetAttrName, 3, "set_attr_name", false),
     ] {
         let mut effect = wasm_test_op(kind, Some("value"), vec!["value"; argc]);
         effect.value = Some(0);
         let (operators, imports) = compile_literal_body(
             vec!["value"],
-            vec![effect, wasm_test_op("ret", None, vec!["value"])],
+            vec![
+                effect,
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
+            ],
         );
         let call = format!("Call {{ function_index: {} }}", imports[import]);
         let expected = if borrowed {
@@ -830,13 +885,16 @@ fn effect_output_metadata_cannot_publish_a_runtime_value() {
 
 #[test]
 fn effect_refcount_metadata_never_overwrites_an_existing_local() {
-    for (kind, import) in [("inc_ref", "inc_ref_obj"), ("dec_ref", "dec_ref_obj")] {
+    for (kind, import) in [
+        (molt_ir::OpKind::IncRef, "inc_ref_obj"),
+        (molt_ir::OpKind::DecRef, "dec_ref_obj"),
+    ] {
         for output in [None, Some("none"), Some("value")] {
             let (operators, imports) = compile_literal_body(
                 vec!["value"],
                 vec![
                     wasm_test_op(kind, output, vec!["value"]),
-                    wasm_test_op("ret", None, vec!["value"]),
+                    wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
                 ],
             );
             assert_eq!(call_count(&operators, imports[import]), 1, "{kind}");
@@ -853,14 +911,20 @@ fn effect_refcount_metadata_never_overwrites_an_existing_local() {
 
 #[test]
 fn final_fixture_rejects_counted_pseudo_ops_before_emission() {
-    for kind in ["loop_index_start", "loop_index_next"] {
+    for kind in [
+        molt_ir::OpKind::LoopIndexStart,
+        molt_ir::OpKind::LoopIndexNext,
+    ] {
         for output in [None, Some("none"), Some("unused"), Some("result")] {
             let outcome = std::panic::catch_unwind(|| {
                 let mut carrier = wasm_test_op(kind, output, vec!["value"]);
                 carrier.source_op_idx = Some(73);
                 compile_literal_body(
                     vec!["value"],
-                    vec![carrier, wasm_test_op("ret", None, vec!["none"])],
+                    vec![
+                        carrier,
+                        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["none"]),
+                    ],
                 );
             });
             let error = outcome.expect_err("raw counted transport is not final executable IR");
@@ -874,7 +938,7 @@ fn final_fixture_rejects_counted_pseudo_ops_before_emission() {
                 "{message}"
             );
             assert!(
-                message.contains(kind) && message.contains("source op#73"),
+                message.contains(kind.as_str()) && message.contains("source op#73"),
                 "{message}"
             );
         }
@@ -884,14 +948,44 @@ fn final_fixture_rejects_counted_pseudo_ops_before_emission() {
 #[test]
 fn direct_calls_release_only_owned_value_results() {
     for (kind, target, argc, owns_result, returns_value) in [
-        ("call", "molt_classmethod_new", 1, true, true),
-        ("call", "molt_function_closure_bits", 1, false, true),
-        ("call", "molt_print_newline", 0, false, false),
-        ("call", "owned_call_target", 1, true, true),
-        ("call_internal", "owned_call_target", 1, true, true),
-        ("call", "external_owned_target", 1, true, true),
-        ("call_internal", "external_owned_target", 1, true, true),
-        ("call_internal", "external_void_target", 0, false, false),
+        (molt_ir::OpKind::Call, "molt_classmethod_new", 1, true, true),
+        (
+            molt_ir::OpKind::Call,
+            "molt_function_closure_bits",
+            1,
+            false,
+            true,
+        ),
+        (molt_ir::OpKind::Call, "molt_print_newline", 0, false, false),
+        (molt_ir::OpKind::Call, "owned_call_target", 1, true, true),
+        (
+            molt_ir::OpKind::CallInternal,
+            "owned_call_target",
+            1,
+            true,
+            true,
+        ),
+        (
+            molt_ir::OpKind::Call,
+            "external_owned_target",
+            1,
+            true,
+            true,
+        ),
+        (
+            molt_ir::OpKind::CallInternal,
+            "external_owned_target",
+            1,
+            true,
+            true,
+        ),
+        (
+            molt_ir::OpKind::CallInternal,
+            "external_void_target",
+            0,
+            false,
+            false,
+        ),
     ] {
         for result in [None, Some("none"), Some("result")] {
             let bound = result == Some("result");
@@ -904,14 +998,14 @@ fn direct_calls_release_only_owned_value_results() {
                 "external_owned_target",
                 vec!["arg"],
                 None,
-                vec![wasm_test_op("ret", None, vec!["arg"])],
+                vec![wasm_test_op(molt_ir::OpKind::Ret, None, vec!["arg"])],
             );
             external_owned.externalize_with_signature().unwrap();
             let mut external_void = wasm_test_function(
                 "external_void_target",
                 vec![],
                 None,
-                vec![wasm_test_op("ret_void", None, vec![])],
+                vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
             );
             external_void.return_abi = molt_ir::FunctionReturnAbi::Void;
             external_void.externalize_with_signature().unwrap();
@@ -924,9 +1018,9 @@ fn direct_calls_release_only_owned_value_results() {
                             None,
                             vec![
                                 call,
-                                wasm_test_op("const_none", Some("nothing"), vec![]),
+                                wasm_test_op(molt_ir::OpKind::ConstNone, Some("nothing"), vec![]),
                                 wasm_test_op(
-                                    "ret",
+                                    molt_ir::OpKind::Ret,
                                     None,
                                     vec![if bound { "result" } else { "nothing" }],
                                 ),
@@ -936,7 +1030,7 @@ fn direct_calls_release_only_owned_value_results() {
                             "owned_call_target",
                             vec!["arg"],
                             None,
-                            vec![wasm_test_op("ret", None, vec!["arg"])],
+                            vec![wasm_test_op(molt_ir::OpKind::Ret, None, vec!["arg"])],
                         ),
                         external_owned,
                         external_void,
@@ -985,11 +1079,11 @@ fn runtime_bootstrap_does_not_retain_live_locals() {
     let compile = |bootstrap: bool| {
         let mut ops = Vec::new();
         if bootstrap {
-            let mut init = wasm_test_op("call", None, vec![]);
+            let mut init = wasm_test_op(molt_ir::OpKind::Call, None, vec![]);
             init.s_value = Some("molt_runtime_init".into());
             ops.push(init);
         }
-        ops.push(wasm_test_op("ret", None, vec!["value"]));
+        ops.push(wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]));
         let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
             SimpleIR {
                 functions: vec![wasm_test_function("molt_main", vec!["value"], None, ops)],
@@ -1014,40 +1108,64 @@ fn runtime_bootstrap_does_not_retain_live_locals() {
 #[test]
 fn dynamic_calls_release_discarded_owned_results() {
     for (kind, argc, target) in [
-        ("call_func", 1, None),
-        ("call_bind", 2, None),
-        ("call_indirect", 2, None),
-        ("call_guarded", 2, Some("owned_call_target")),
-        ("call_method", 1, None),
-        ("call_method", 1, Some("BoundMethod:str:upper")),
-        ("call_method", 1, Some("BoundMethod:str:lower")),
-        ("call_method", 1, Some("BoundMethod:str:strip")),
-        ("call_method", 2, Some("BoundMethod:list:append")),
-        ("call_method", 2, Some("BoundMethod:str:join")),
-        ("call_method", 2, Some("BoundMethod:str:startswith")),
-        ("call_method", 3, Some("BoundMethod:dict:get")),
-        ("call_loaded_method", 2, None),
-        ("invoke_ffi", 1, None),
+        (molt_ir::OpKind::CallFunc, 1, None),
+        (molt_ir::OpKind::CallBind, 2, None),
+        (molt_ir::OpKind::CallIndirect, 2, None),
+        (molt_ir::OpKind::CallGuarded, 2, Some("owned_call_target")),
+        (molt_ir::OpKind::CallMethod, 1, None),
+        (
+            molt_ir::OpKind::CallMethod,
+            1,
+            Some("BoundMethod:str:upper"),
+        ),
+        (
+            molt_ir::OpKind::CallMethod,
+            1,
+            Some("BoundMethod:str:lower"),
+        ),
+        (
+            molt_ir::OpKind::CallMethod,
+            1,
+            Some("BoundMethod:str:strip"),
+        ),
+        (
+            molt_ir::OpKind::CallMethod,
+            2,
+            Some("BoundMethod:list:append"),
+        ),
+        (molt_ir::OpKind::CallMethod, 2, Some("BoundMethod:str:join")),
+        (
+            molt_ir::OpKind::CallMethod,
+            2,
+            Some("BoundMethod:str:startswith"),
+        ),
+        (molt_ir::OpKind::CallMethod, 3, Some("BoundMethod:dict:get")),
+        (molt_ir::OpKind::CallLoadedMethod, 2, None),
+        (molt_ir::OpKind::InvokeFfi, 1, None),
     ] {
         for result in [None, Some("none"), Some("result")] {
             let bound = result == Some("result");
             let mut call = wasm_test_op(kind, result, vec!["value"; argc]);
             call.s_value = target.map(str::to_string);
             let mut body = Vec::new();
-            if kind == "call_loaded_method" {
+            if kind == molt_ir::OpKind::CallLoadedMethod {
                 // CALL after a method load is always a source call: it adopts
                 // every operand, so the final IR is drop-inserted and retains
                 // the borrowed parameter once per adopting position.
                 call.argument_custody = Some(vec![molt_ir::ParameterCustody::Transferred; argc]);
-                body.push(wasm_test_op("drop_inserted", None, vec![]));
+                body.push(wasm_test_op(molt_ir::OpKind::DropInserted, None, vec![]));
                 for _ in 0..argc {
-                    body.push(wasm_test_op("inc_ref", None, vec!["value"]));
+                    body.push(wasm_test_op(molt_ir::OpKind::IncRef, None, vec!["value"]));
                 }
             }
             body.extend([
                 call,
-                wasm_test_op("const_none", Some("nothing"), vec![]),
-                wasm_test_op("ret", None, vec![if bound { "result" } else { "nothing" }]),
+                wasm_test_op(molt_ir::OpKind::ConstNone, Some("nothing"), vec![]),
+                wasm_test_op(
+                    molt_ir::OpKind::Ret,
+                    None,
+                    vec![if bound { "result" } else { "nothing" }],
+                ),
             ]);
             let output = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
                 SimpleIR {
@@ -1057,7 +1175,7 @@ fn dynamic_calls_release_discarded_owned_results() {
                             "owned_call_target",
                             vec!["arg"],
                             None,
-                            vec![wasm_test_op("ret", None, vec!["arg"])],
+                            vec![wasm_test_op(molt_ir::OpKind::Ret, None, vec!["arg"])],
                         ),
                     ],
                     profile: None,
@@ -1099,7 +1217,7 @@ fn native_symbol_results_release_only_discarded_owned_results() {
     ] {
         for result in [None, Some("none"), Some("result")] {
             let bound = result == Some("result");
-            let mut call = wasm_test_op("invoke_ffi", result, vec!["value"; argc]);
+            let mut call = wasm_test_op(molt_ir::OpKind::InvokeFfi, result, vec!["value"; argc]);
             call.native_callable_export = Some("native.probe".into());
             call.native_callable_binding = Some("direct_symbol".into());
             call.native_callable_symbol = Some("native_probe".into());
@@ -1112,9 +1230,9 @@ fn native_symbol_results_release_only_discarded_owned_results() {
                         None,
                         vec![
                             call,
-                            wasm_test_op("const_none", Some("nothing"), vec![]),
+                            wasm_test_op(molt_ir::OpKind::ConstNone, Some("nothing"), vec![]),
                             wasm_test_op(
-                                "ret",
+                                molt_ir::OpKind::Ret,
                                 None,
                                 vec![if bound { "result" } else { "nothing" }],
                             ),
@@ -1144,8 +1262,8 @@ fn native_symbol_results_release_only_discarded_owned_results() {
 #[test]
 fn direct_calls_reject_runtime_void_outputs_and_internal_runtime_targets() {
     for (kind, target, argc) in [
-        ("call", "molt_print_newline", 0),
-        ("call_internal", "molt_classmethod_new", 1),
+        (molt_ir::OpKind::Call, "molt_print_newline", 0),
+        (molt_ir::OpKind::CallInternal, "molt_classmethod_new", 1),
     ] {
         let outcome = std::panic::catch_unwind(|| {
             let mut call = wasm_test_op(kind, Some("result"), vec!["arg"; argc]);
@@ -1156,7 +1274,10 @@ fn direct_calls_reject_runtime_void_outputs_and_internal_runtime_targets() {
                         "molt_main",
                         vec!["arg"],
                         None,
-                        vec![call, wasm_test_op("ret", None, vec!["result"])],
+                        vec![
+                            call,
+                            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"]),
+                        ],
                     )],
                     profile: None,
                 },
@@ -1173,25 +1294,28 @@ fn direct_calls_reject_runtime_void_outputs_and_internal_runtime_targets() {
 #[test]
 fn callable_constructors_release_only_discarded_owned_results() {
     for (kind, argc) in [
-        ("func_new", 0),
-        ("func_new_closure", 1),
-        ("builtin_func", 0),
-        ("builtin_func", 1),
-        ("code_new", 9),
-        ("callargs_new", 0),
-        ("classmethod_new", 1),
-        ("staticmethod_new", 1),
-        ("property_new", 3),
-        ("bound_method_new", 2),
-        ("asyncgen_new", 1),
+        (molt_ir::OpKind::FuncNew, 0),
+        (molt_ir::OpKind::FuncNewClosure, 1),
+        (molt_ir::OpKind::BuiltinFunc, 0),
+        (molt_ir::OpKind::BuiltinFunc, 1),
+        (molt_ir::OpKind::CodeNew, 9),
+        (molt_ir::OpKind::CallargsNew, 0),
+        (molt_ir::OpKind::ClassmethodNew, 1),
+        (molt_ir::OpKind::StaticmethodNew, 1),
+        (molt_ir::OpKind::PropertyNew, 3),
+        (molt_ir::OpKind::BoundMethodNew, 2),
+        (molt_ir::OpKind::AsyncgenNew, 1),
     ] {
         for result in [None, Some("none"), Some("created")] {
             let bound = result == Some("created");
             let mut constructor = wasm_test_op(kind, result, vec!["value"; argc]);
-            if matches!(kind, "func_new" | "func_new_closure") {
+            if matches!(
+                kind,
+                molt_ir::OpKind::FuncNew | molt_ir::OpKind::FuncNewClosure
+            ) {
                 constructor.s_value = Some("callable_result_target".into());
                 constructor.value = Some(0);
-            } else if kind == "builtin_func" {
+            } else if kind == molt_ir::OpKind::BuiltinFunc {
                 // Builtin constructors target the runtime callable manifest,
                 // not a compiled FunctionIR body. The optional local supplies
                 // a name to FuncNewBuiltinNamed, not another callable argument.
@@ -1204,21 +1328,28 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 None,
                 vec![
                     constructor,
-                    wasm_test_op("ret", None, vec![if bound { "created" } else { "value" }]),
+                    wasm_test_op(
+                        molt_ir::OpKind::Ret,
+                        None,
+                        vec![if bound { "created" } else { "value" }],
+                    ),
                 ],
             )];
-            if matches!(kind, "func_new" | "func_new_closure") {
+            if matches!(
+                kind,
+                molt_ir::OpKind::FuncNew | molt_ir::OpKind::FuncNewClosure
+            ) {
                 functions.push(wasm_test_function(
                     "callable_result_target",
-                    if kind == "func_new_closure" {
+                    if kind == molt_ir::OpKind::FuncNewClosure {
                         vec![crate::MOLT_CLOSURE_PARAM_NAME]
                     } else {
                         vec![]
                     },
                     None,
                     vec![
-                        wasm_test_op("const_none", Some("nothing"), vec![]),
-                        wasm_test_op("ret", None, vec!["nothing"]),
+                        wasm_test_op(molt_ir::OpKind::ConstNone, Some("nothing"), vec![]),
+                        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["nothing"]),
                     ],
                 ));
             }
@@ -1233,7 +1364,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 .unwrap_or_else(|error| panic!("{kind}, bound={bound}: {error}"));
             let operators = wasm_operator_debug_for_export(&output.wasm, "molt_main");
             let imports = wasm_function_import_indices(&output.wasm);
-            let symbol = if kind == "builtin_func" {
+            let symbol = if kind == molt_ir::OpKind::BuiltinFunc {
                 assert!(imports.contains_key("abs_builtin"));
                 if argc == 0 {
                     "func_new_builtin"
@@ -1241,7 +1372,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
                     "func_new_builtin_named"
                 }
             } else {
-                kind
+                kind.as_str()
             };
             assert_eq!(
                 call_count(&operators, imports[symbol]),
@@ -1282,11 +1413,11 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
                 vec!["callee"],
                 None,
                 vec![
-                    wasm_test_op("function_closure_bits", result, vec!["callee"]),
+                    wasm_test_op(molt_ir::OpKind::FunctionClosureBits, result, vec!["callee"]),
                     if bound {
-                        wasm_test_op("ret", None, vec!["closure"])
+                        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["closure"])
                     } else {
-                        wasm_test_op("ret_void", None, vec![])
+                        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])
                     },
                 ],
             )],
@@ -1357,25 +1488,25 @@ pub(super) fn assert_single_anchor_epilogue(operators: &[String], dec_ref_index:
 
 #[test]
 fn jumpful_literals_share_one_anchor_and_mint_each_dynamic_result_owner() {
-    let mut first = wasm_test_op("const_str", Some("first"), vec![]);
+    let mut first = wasm_test_op(molt_ir::OpKind::ConstStr, Some("first"), vec![]);
     first.s_value = Some("shared-payload".to_string());
-    let mut branch = wasm_test_op("br_if", None, vec!["cond"]);
+    let mut branch = wasm_test_op(molt_ir::OpKind::BrIf, None, vec!["cond"]);
     branch.value = Some(7);
-    let mut second = wasm_test_op("const_str", Some("second"), vec![]);
+    let mut second = wasm_test_op(molt_ir::OpKind::ConstStr, Some("second"), vec![]);
     second.s_value = Some("shared-payload".to_string());
-    let mut label = wasm_test_op("label", None, vec![]);
+    let mut label = wasm_test_op(molt_ir::OpKind::Label, None, vec![]);
     label.value = Some(7);
 
     let (operators, imports) = compile_literal_body(
         vec!["cond"],
         vec![
             first,
-            wasm_test_op("dec_ref", None, vec!["first"]),
+            wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["first"]),
             branch,
             second,
-            wasm_test_op("dec_ref", None, vec!["second"]),
+            wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["second"]),
             label,
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
 
@@ -1392,11 +1523,14 @@ fn jumpful_literals_share_one_anchor_and_mint_each_dynamic_result_owner() {
 #[test]
 fn discarded_literal_results_release_their_owner_without_writing_none() {
     for out in ["unused", "none"] {
-        let mut literal = wasm_test_op("const_str", Some(out), vec![]);
+        let mut literal = wasm_test_op(molt_ir::OpKind::ConstStr, Some(out), vec![]);
         literal.s_value = Some("discarded-payload".into());
         let (operators, imports) = compile_literal_body(
             vec![],
-            vec![literal, wasm_test_op("ret", None, vec!["none"])],
+            vec![
+                literal,
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["none"]),
+            ],
         );
         assert_eq!(call_count(&operators, imports["inc_ref_obj"]), 1);
         assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
@@ -1410,14 +1544,14 @@ fn discarded_literal_results_release_their_owner_without_writing_none() {
 
 #[test]
 fn full_i64_const_uses_fallible_anchor_instead_of_inline_47_truncation() {
-    let mut wide = wasm_test_op("const", Some("wide"), vec![]);
+    let mut wide = wasm_test_op(molt_ir::OpKind::Const, Some("wide"), vec![]);
     wide.value = Some(i64::MAX);
     let (operators, imports) = compile_literal_body(
         vec![],
         vec![
             wide,
-            wasm_test_op("dec_ref", None, vec!["wide"]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["wide"]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
 
@@ -1441,16 +1575,16 @@ fn anchor_cleanup_size_is_independent_of_return_site_count() {
         for return_count in [1, 16] {
             let mut ops = Vec::new();
             for index in 0..constant_count {
-                let mut literal = wasm_test_op("const_str", Some("unused"), vec![]);
+                let mut literal = wasm_test_op(molt_ir::OpKind::ConstStr, Some("unused"), vec![]);
                 literal.s_value = Some(format!("distinct-payload-{index}"));
                 ops.push(literal);
             }
             for _ in 0..return_count {
-                ops.push(wasm_test_op("if", None, vec!["cond"]));
-                ops.push(wasm_test_op("ret_void", None, vec![]));
-                ops.push(wasm_test_op("end_if", None, vec![]));
+                ops.push(wasm_test_op(molt_ir::OpKind::If, None, vec!["cond"]));
+                ops.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
+                ops.push(wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]));
             }
-            ops.push(wasm_test_op("ret_void", None, vec![]));
+            ops.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
             let (operators, imports) = compile_literal_body(vec!["cond"], ops);
             assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
             assert_eq!(
@@ -1476,15 +1610,15 @@ fn shared_anchor_epilogue_executes_branches_and_partial_construction_failures() 
     let (temp, _remove_temp) = wasm_test_temp_dir();
     let mut ops = Vec::new();
     for index in 0..3 {
-        let mut literal = wasm_test_op("const_str", Some("unused"), vec![]);
+        let mut literal = wasm_test_op(molt_ir::OpKind::ConstStr, Some("unused"), vec![]);
         literal.s_value = Some(format!("anchor-{index}"));
         ops.push(literal);
     }
     ops.extend([
-        wasm_test_op("if", None, vec!["cond"]),
-        wasm_test_op("ret", None, vec!["cond"]),
-        wasm_test_op("end_if", None, vec![]),
-        wasm_test_op("ret_void", None, vec![]),
+        wasm_test_op(molt_ir::OpKind::If, None, vec!["cond"]),
+        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["cond"]),
+        wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
     ]);
     let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         SimpleIR {

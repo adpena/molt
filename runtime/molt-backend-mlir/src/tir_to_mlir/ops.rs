@@ -299,24 +299,21 @@ pub(super) fn emit_tir_op<'c, 'a>(
 
         // ---- Copy (SSA forwarding) ----
         (_, OpCode::Copy) => {
-            let original_kind = match op.attrs.get("_original_kind") {
-                Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-                _ => None,
-            };
-            if matches!(original_kind, Some(kind) if kind != "binding_alias") {
+            let original_kind = op.origin;
+            if matches!(original_kind, Some(kind) if kind != molt_backend::OpKind::BindingAlias) {
                 // The TIR mapper preserves not-yet-enumerated SimpleIR kinds as
-                // Copy plus _original_kind. They are semantic operations, not
+                // Copy plus its typed origin. They are semantic operations, not
                 // SSA copies, and must retain their operands/results and name.
                 emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
             } else {
                 if op.operands.len() != 1 || op.results.len() != 1 {
                     return Err(format!(
                         "malformed {:?} copy requires one operand and one result",
-                        original_kind.unwrap_or("SSA")
+                        original_kind.map_or("SSA", molt_backend::OpKind::as_str)
                     ));
                 }
                 let val = resolve_value(value_map, op.operands[0])?;
-                if original_kind == Some("binding_alias") {
+                if original_kind == Some(molt_backend::OpKind::BindingAlias) {
                     block.append_operation(
                         OperationBuilder::new("molt.inc_ref", location)
                             .add_operands(&[val])
@@ -488,10 +485,40 @@ pub(super) fn emit_tir_op<'c, 'a>(
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 
-        // ---- Catch-all for any dialect/opcode combination not handled above ----
-        // This covers cases like SCF ops appearing with non-Scf dialects,
-        // or future op additions. Emitted as opaque molt ops.
-        _ => {
+        // These operations retain their typed identity for progressive Molt
+        // dialect lowering. Keep this domain explicit so a new opcode or
+        // dialect requires a deliberate lowering decision.
+        (
+            TirDialect::Molt
+            | TirDialect::Scf
+            | TirDialect::Gpu
+            | TirDialect::Par
+            | TirDialect::Simd,
+            OpCode::CheckedAdd
+            | OpCode::CheckedMul
+            | OpCode::ObjectNewBound
+            | OpCode::DeleteVar
+            | OpCode::OrdAt
+            | OpCode::DelBoundary
+            | OpCode::ExceptionPending
+            | OpCode::FunctionDefaultsVersion
+            | OpCode::ModuleSlot
+            | OpCode::ConstBigInt
+            | OpCode::ModuleCacheGet
+            | OpCode::ModuleCacheSet
+            | OpCode::ModuleCacheDel
+            | OpCode::ModuleGetAttr
+            | OpCode::ModuleImportFrom
+            | OpCode::ModuleGetGlobal
+            | OpCode::ModuleGetName
+            | OpCode::ModuleSetAttr
+            | OpCode::ModuleDelGlobal
+            | OpCode::ModuleDelGlobalIfPresent,
+        )
+        | (
+            TirDialect::Molt | TirDialect::Gpu | TirDialect::Par | TirDialect::Simd,
+            OpCode::ScfIf | OpCode::ScfFor | OpCode::ScfWhile | OpCode::ScfYield,
+        ) => {
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
     }
