@@ -124,3 +124,16 @@ def test_worker_fails_a_test_that_molt_refuses_to_compile(
         "MOLT_COMPAT_ERROR: call to non-allowlisted function "
         "@ Lib/test/support/__init__.py:1:1"
     )
+
+
+def test_worker_names_the_diagnostic_that_ended_a_failed_build(
+    tmp_path: Path, capsys
+) -> None:
+    failure = (
+        "import sys; print('molt: Preparing build', file=sys.stderr); "
+        "print('Compiler cache identity: boom', file=sys.stderr); sys.exit(2)"
+    )
+    result, row = _worker(tmp_path, capsys, failure, timeout=60)
+
+    assert result["state"] == "FAILED"
+    assert row["reason"] == "molt rc=2: Compiler cache identity: boom"
