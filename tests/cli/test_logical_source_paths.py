@@ -55,7 +55,6 @@ def _graph(checkout: Path, program: Path) -> dict[str, Path]:
         # A program inside the checkout but outside the compiler package, as
         # the differential corpus is.
         "prog": checkout / "tests" / "prog.py",
-        "ns": checkout / "generated" / "ns.py",
     }
 
 
@@ -65,10 +64,8 @@ def _logical_paths(
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(checkout))
     logical, *_ = module_graph._build_module_lowering_metadata(
         _graph(checkout, program),
-        generated_module_source_paths={"ns": "/__molt_generated__/ns.py"},
         entry_module="app",
         entry_execution_kind="script",
-        namespace_module_names={"ns"},
     )
     return logical
 
@@ -98,10 +95,9 @@ def test_toolchain_modules_report_one_path_from_every_checkout(
         "molt.gpu": "/__molt__/gpu/__init__.py",
         "decoy": str(first / "src" / "molt_extra" / "decoy.py"),
         "prog": str(first / "tests" / "prog.py"),
-        "ns": "/__molt_generated__/ns.py",
     }
     relocated = _logical_paths(monkeypatch, second, program)
-    independent = {"app", "molt", "os", "json", "molt.gpu", "ns"}
+    independent = {"app", "molt", "os", "json", "molt.gpu"}
     assert {name: relocated[name] for name in independent} == {
         name: logical[name] for name in independent
     }
@@ -182,16 +178,15 @@ def test_module_registry_origins_are_the_reported_paths(
     metadata = module_graph._build_module_graph_metadata(
         {name: graph[name] for name in order},
         stdlib_root=first / "src" / "molt" / "stdlib",
-        generated_module_source_paths={},
         entry_module="app",
         entry_execution_kind="script",
-        namespace_module_names=(),
+        namespace_portions_by_module={},
     )
     registry = backend_ir._build_module_registry(
         entry_module="app",
         module_graph={name: graph[name] for name in order},
         logical_source_path_by_module=logical,
-        module_is_namespace_by_module=metadata.module_is_namespace_by_module,
+        namespace_portions_by_module={},
         module_source_role_by_module=metadata.module_source_role_by_module,
         module_order=order,
         runtime_import_dispatch_roots=set(order),

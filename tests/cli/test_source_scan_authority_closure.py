@@ -9,7 +9,6 @@ import ast
 import hashlib
 import json
 import sys
-import types
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -746,46 +745,6 @@ def test_native_slice_preserves_original_source_for_both_scan_projections(
     assert counts["native_support_source_prunes"] == 1
 
 
-def test_generated_sources_are_content_addressed_without_self_referential_identity(
-    tmp_path: Path,
-) -> None:
-    first = graphs._write_generated_module_source("generated", "VALUE = 1\n", tmp_path)
-    assert (
-        graphs._write_generated_module_source("generated", "VALUE = 1\n", tmp_path)
-        == first
-    )
-    second = graphs._write_generated_module_source("generated", "VALUE = 2\n", tmp_path)
-    assert first != second
-    assert first.read_text(encoding="utf-8") == "VALUE = 1\n"
-    namespace = graphs._write_namespace_module("pkg", ["/source/pkg"], tmp_path)
-    assert graphs._write_namespace_module("pkg", ["/source/pkg"], tmp_path) == namespace
-    for path in (first, second, namespace):
-        assert path.name not in path.read_text(encoding="utf-8")
-
-
-def test_generated_source_reuse_preserves_bytes_and_repairs_newlines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from molt import file_publication
-
-    source = "VALUE = 1\n"
-    path = graphs._write_generated_module_source("generated", source, tmp_path)
-    publish = file_publication.atomic_write_bytes
-    writes = []
-
-    def record(destination, data, **kwargs):
-        writes.append((destination, data))
-        publish(destination, data, **kwargs)
-
-    monkeypatch.setattr(file_publication, "atomic_write_bytes", record)
-    assert graphs._write_generated_module_source("generated", source, tmp_path) == path
-    assert writes == []
-    path.write_bytes(b"VALUE = 1\r\n")
-    assert graphs._write_generated_module_source("generated", source, tmp_path) == path
-    assert writes == [(path, b"VALUE = 1\n")]
-    assert path.read_bytes() == b"VALUE = 1\n"
-
-
 @pytest.mark.parametrize("source_name", ["support.py", "support/__init__.py"])
 def test_native_view_growth_reuses_one_live_solver_and_preserves_later_source_key(
     tmp_path: Path,
@@ -1256,12 +1215,8 @@ def test_graph_cache_binds_admitted_source_generation(
 ) -> None:
     entry = _source(tmp_path / "entry.py", "import support\n")
     original = _source(tmp_path / "support.py", "SHOULD_NOT_BE_SELECTED = True\n")
-    first = graphs._write_generated_module_source(
-        "support", "VALUE = 1\n", tmp_path / "generated"
-    )
-    second = graphs._write_generated_module_source(
-        "support", "VALUE = 2\n", tmp_path / "generated"
-    )
+    first = _source(tmp_path / "generated-a" / "support.py", "VALUE = 1\n")
+    second = _source(tmp_path / "generated-b" / "support.py", "VALUE = 2\n")
     monkeypatch.setattr(
         graph_cache, "_frontend_semantic_tooling_fingerprint", lambda: "generation"
     )
@@ -1368,11 +1323,7 @@ def test_generated_package_graph_cache_validates_source_role_authority(
     entry = _source(tmp_path / "entry.py", "import pkg\n")
     _source(tmp_path / "pkg" / "__init__.py", "ORIGINAL = True\n")
     child = _source(tmp_path / "pkg" / "child.py", "pass\n")
-    generated = graphs._write_generated_module_source(
-        "pkg",
-        "from . import child\n",
-        tmp_path / "generated",
-    )
+    generated = _source(tmp_path / "generated" / "pkg.py", "from . import child\n")
     authority = _ModuleSourceScanAuthority(
         "pkg",
         generated,
@@ -1660,8 +1611,7 @@ def test_materialized_namespace_package_identity_matches_cpython(
         full_scan_roots=True,
     )
     assert initial.discovery is not None
-    # The writer has no source path for its namespace receiver until the real
-    # package materialization joins this same discovery operation.
+    # Namespace packages are metadata-only catalog entries, with no source body.
     assert "hf226_namespace" not in initial.graph
     prepared = _PreparedEntryModuleGraph(
         discovery=initial.discovery,
@@ -1716,28 +1666,16 @@ def test_materialized_namespace_package_identity_matches_cpython(
     )
     paths, spec_paths, shared_locations, marker = json.loads(reference.stdout)
     assert marker is namespace_writer
-    owner = plan.scan_authority.by_module["hf226_namespace"]
-    assert owner.is_package
-    assert [str(path) for path in owner.package_paths] == paths == spec_paths
-    assert (
-        owner.source_sha256
-        == hashlib.sha256(owner.source_path.read_bytes()).hexdigest()
-    )
-    assert owner.namespace_premise == PythonNamespacePremise(
-        ("alpha", "beta", "marker") if namespace_writer else ("alpha", "beta"),
-        0,
-    )
-    metadata = plan.module_graph_metadata
-    assert metadata.module_is_package_by_module["hf226_namespace"]
-    assert metadata.module_is_namespace_by_module["hf226_namespace"]
-    spec = types.SimpleNamespace(submodule_search_locations=None)
-    namespace = {"__spec__": spec}
-    exec(owner.source_path.read_bytes(), namespace)
-    assert namespace["__path__"] == paths
-    # CPython's namespace module and spec share one locations object.
+    portions = plan.namespace_portions_by_module["hf226_namespace"]
+    assert list(portions) == paths == spec_paths
     assert shared_locations is True
-    assert spec.submodule_search_locations is namespace["__path__"]
-    assert (
-        metadata.logical_source_path_by_module["hf226_namespace"]
-        == "/__molt_generated__/hf226_namespace.py"
-    )
+    assert plan.namespace_module_names == {"hf226_namespace"}
+    assert "hf226_namespace" in plan.known_modules
+    assert "hf226_namespace" not in plan.module_graph
+    assert "hf226_namespace" not in plan.compile_modules
+    assert "hf226_namespace" not in plan.direct_call_modules
+    assert "hf226_namespace" not in plan.scan_authority.by_module
+    metadata = plan.module_graph_metadata
+    assert metadata.namespace_portions_by_module == plan.namespace_portions_by_module
+    assert "hf226_namespace" not in metadata.logical_source_path_by_module
+    assert not tuple((tmp_path / "artifacts").glob("_molt_generated_*.py"))

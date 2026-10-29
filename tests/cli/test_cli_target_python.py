@@ -453,7 +453,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         entry_module="__main__",
         module_graph={"__main__": source_path},
         logical_source_path_by_module={"__main__": str(source_path)},
-        module_is_namespace_by_module={"__main__": False},
+        namespace_portions_by_module={},
         known_modules={"__main__"},
         stdlib_allowlist=set(),
         integration_state=integration_state,

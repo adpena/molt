@@ -76,7 +76,6 @@ from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSI
 @dataclass(frozen=True)
 class _ModuleLoweringMetadataView:
     logical_source_path: str
-    module_is_namespace: bool
     is_package: bool
     module_execution_kind: ModuleExecutionKind
     module_source_role: ModuleSourceRole
@@ -684,9 +683,6 @@ def _module_lowering_metadata_view(
             module_name
         ],
         logical_source_path=module_graph_metadata.logical_source_path_by_module[
-            module_name
-        ],
-        module_is_namespace=module_graph_metadata.module_is_namespace_by_module[
             module_name
         ],
         is_package=module_graph_metadata.module_is_package_by_module[module_name],
@@ -1303,7 +1299,6 @@ def _module_lowering_context_payload(
     native_python_exports: Collection[str] | None = None,
     native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     module_deps: dict[str, set[str]],
-    module_is_namespace: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -1371,7 +1366,6 @@ def _module_lowering_context_payload(
         "module_name": module_name,
         "logical_source_path": logical_source_path,
         "is_package": is_package,
-        "module_is_namespace": module_is_namespace,
         "module_execution_kind": module_execution_kind,
         "module_source_role": module_source_role,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
@@ -1550,7 +1544,6 @@ def _module_lowering_context_digest_for_module(
     native_python_exports: Collection[str] | None = None,
     native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     module_deps: dict[str, set[str]],
-    module_is_namespace: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -1591,7 +1584,6 @@ def _module_lowering_context_digest_for_module(
             native_support_function_roots_by_module
         ),
         module_deps=module_deps,
-        module_is_namespace=module_is_namespace,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
@@ -1834,7 +1826,6 @@ def _load_cached_module_lowering_result(
     native_python_exports: Collection[str] | None = None,
     native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
     module_deps: dict[str, set[str]],
-    module_is_namespace: bool,
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -1878,7 +1869,6 @@ def _load_cached_module_lowering_result(
                 native_support_function_roots_by_module
             ),
             module_deps=module_deps,
-            module_is_namespace=module_is_namespace,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=optimization_profile,
@@ -1929,7 +1919,6 @@ def _module_worker_payload(
     logical_source_path: str,
     source_lease: _ModuleSourceLease,
     type_hint_policy: TypeHintPolicy,
-    module_is_namespace: bool,
     module_execution_kind: ModuleExecutionKind,
     module_source_role: ModuleSourceRole,
     type_facts: TypeFacts | None,
@@ -1998,7 +1987,6 @@ def _module_worker_payload(
         "logical_source_path": logical_source_path,
         "source_lease": source_lease.worker_payload(),
         "type_hint_policy": type_hint_policy,
-        "module_is_namespace": module_is_namespace,
         "module_execution_kind": module_execution_kind,
         "module_source_role": module_source_role,
         "enable_phi": enable_phi,

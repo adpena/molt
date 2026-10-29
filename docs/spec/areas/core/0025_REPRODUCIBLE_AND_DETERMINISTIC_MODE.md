@@ -66,7 +66,7 @@ assigns it once per module graph.
 | --- | --- | --- |
 | Program module | the absolute file it was compiled from | CPython: `__main__.__file__` is absolute since 3.9, and imported modules report the file the path finder found |
 | Toolchain-owned module: a file of the compiler's own `molt` package (the bundled stdlib, `molt.gpu`, `molt.lib`, `molt`) | `/__molt__/<path in the package>`, for example `/__molt__/stdlib/json/__init__.py` | rustc's std paths `/rustc/<commit>/library/...`; Go `-trimpath` |
-| Generated module (namespace stub) | `/__molt_generated__/<name>.py` | the same rule, for modules without a source file |
+| Namespace package | no source origin; its typed registry row carries ordered directory portions | no generated source or body; the spec origin is `None` |
 
 Every emitted module location is a projection of that path: `__file__`,
 `__spec__.origin`, the package `__path__`, the module and function

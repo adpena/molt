@@ -194,8 +194,8 @@ def _run_build_pipeline(
                 logical_source_path_by_module=(
                     prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.logical_source_path_by_module
                 ),
-                module_is_namespace_by_module=(
-                    prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.module_is_namespace_by_module
+                namespace_portions_by_module=(
+                    prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.namespace_portions_by_module
                 ),
                 module_source_role_by_module=(
                     prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata.module_source_role_by_module

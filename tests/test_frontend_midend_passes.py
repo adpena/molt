@@ -3269,7 +3269,6 @@ def test_module_chunks_share_the_enclosing_python_execution_frame() -> None:
         "app",
         "__main__",
         "package",
-        "namespace",
     ],
 )
 def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
@@ -3278,13 +3277,10 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
     gen = SimpleTIRGenerator(
         module_name=module_name,
         source_path=(
-            None
-            if module_name == "namespace"
-            else "/modules/package/__init__.py"
+            "/modules/package/__init__.py"
             if module_name == "package"
             else f"/modules/{module_name}.py"
         ),
-        module_is_namespace=module_name == "namespace",
         module_execution_kind="script" if module_name == "__main__" else "imported",
         known_modules=(
             {"sys", "builtins", "importlib", "importlib.machinery", "app"}
