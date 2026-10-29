@@ -926,7 +926,7 @@ def test_only_named_products_are_excluded_and_explicit_inputs_win(
         ("directory", observed(scratch)),
     }
     build_record.resolve_observed(
-        ledger, (selected(scratch),), published_output=selected(output)
+        ledger, (selected(scratch),), published_outputs=(selected(output),)
     )
     assert set(ledger.files) == {observed(source), observed(sibling)}
     assert set(ledger.directories) == {observed(source.parent)}
@@ -936,7 +936,7 @@ def test_only_named_products_are_excluded_and_explicit_inputs_win(
     explicit.file(product, input_report.stat_token(product), None)
     explicit.observed = ledger.observed.copy()
     build_record.resolve_observed(
-        explicit, (selected(scratch),), published_output=selected(output)
+        explicit, (selected(scratch),), published_outputs=(selected(output),)
     )
     assert {os.fspath(output), os.fspath(product)} <= explicit.files.keys()
 
@@ -982,7 +982,7 @@ def test_the_outputs_publication_custody_is_a_product(
     selected_output = (
         Path("\\\\?\\" + str(output).upper()) if extended_side == "products" else output
     )
-    build_record.resolve_observed(ledger, (), published_output=selected_output)
+    build_record.resolve_observed(ledger, (), published_outputs=(selected_output,))
     # Another destination's receipt stays an input; nothing records the
     # directory the publication changed.
     assert set(ledger.files) == {os.fspath(other_receipt)}
@@ -992,7 +992,7 @@ def test_the_outputs_publication_custody_is_a_product(
     explicit = _future_ledger()
     explicit.directory(output.parent, input_report.stat_token(output.parent))
     explicit.observed = {("directory", os.fspath(output.parent))}
-    build_record.resolve_observed(explicit, (), published_output=selected_output)
+    build_record.resolve_observed(explicit, (), published_outputs=(selected_output,))
     assert set(explicit.directories) == {os.fspath(output.parent)}
 
 
@@ -2000,7 +2000,7 @@ def test_fresh_consumed_source_reuses_without_a_future_process_clock(
         with build_record.recording(transient) as ledger:
             snapshot = PythonSourceSnapshot.capture(source)
             output.write_text(f"binary of {snapshot.text}", encoding="utf-8")
-        build_record.resolve_observed(ledger, (), published_output=output)
+        build_record.resolve_observed(ledger, (), published_outputs=(output,))
         record, reason = _write(tmp_path, ledger, output)
         assert reason is None
         assert _current(record, output), "the next observation reuses immediately"
@@ -2213,3 +2213,66 @@ def test_native_result_rejects_changed_bytes_despite_equal_public_token(
         expected.sha256
         == hashlib.sha256(f"original {role}".encode("utf-8")).hexdigest()
     )
+
+
+def test_a_stage_of_an_output_stage_is_publication_custody(tmp_path: Path) -> None:
+    """The WASM backend output is staged beside its module, and a copy is
+    staged for that stage. Both removed stages belong to the module's
+    publication; a removed stage of a file that is no product stays an input
+    boundary."""
+    from molt.artifact_publication import staged_output_path
+
+    out = tmp_path / "web"
+    out.mkdir()
+    output = out / "output.wasm"
+    output.write_bytes(b"module")
+    first = staged_output_path(output, purpose="backend-output", suffix=".wasm")
+    nested = staged_output_path(first, purpose="copy")
+    foreign = staged_output_path(out / "notes.txt", purpose="copy")
+    ledger = _future_ledger()
+    ledger.observed = {
+        ("file", os.fspath(first)),
+        ("file", os.fspath(nested)),
+        ("file", os.fspath(foreign)),
+    }
+    build_record.resolve_observed(ledger, (), published_outputs=(output,))
+    assert os.fspath(first) not in ledger.probes
+    assert os.fspath(nested) not in ledger.probes
+    assert os.fspath(foreign) in ledger.probes, "a foreign stage is no product"
+    assert os.fspath(out) in ledger.directories
+
+
+@pytest.mark.parametrize(
+    "payload,error",
+    [
+        ({"consumer": "/web/a.wasm", "products": {}}, "at least one file"),
+        ({"consumer": "/web/b.wasm", "products": {"wasm": "/web/a.wasm"}}, "consumer"),
+        ({"consumer": "/web/a.wasm", "products": {"wasm": "web/a.wasm"}}, "absolute"),
+        ({"consumer": "/web/a.wasm", "products": {"": "/web/a.wasm"}}, "role"),
+        ({"products": {"wasm": "/web/a.wasm"}}, "invalid build products"),
+    ],
+)
+def test_build_products_refuse_an_unverifiable_family(
+    payload: dict[str, object], error: str
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        build_record.BuildProducts.from_payload(payload)
+    ledger = _future_ledger()
+    ledger.build_products(payload)
+    assert ledger.products is None
+    assert ledger.refusals and "unreportable build products" in ledger.refusals[0]
+
+
+def test_conflicting_product_families_refuse_the_record() -> None:
+    ledger = _future_ledger()
+    ledger.build_products(
+        {"consumer": "/web/a.wasm", "products": {"wasm": "/web/a.wasm"}}
+    )
+    ledger.build_products(
+        {"consumer": "/web/a.wasm", "products": {"wasm": "/web/a.wasm"}}
+    )
+    assert not ledger.refusals, "an equal repeat is the same family"
+    ledger.build_products(
+        {"consumer": "/web/c.wasm", "products": {"wasm": "/web/c.wasm"}}
+    )
+    assert ledger.refusals == ["build published conflicting products"]
