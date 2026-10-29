@@ -434,7 +434,16 @@ def _assert_forwarded_image_lifetime(tmp_path, selection, *, omit_command):
         if os.name == "nt":
             shutil.copyfile(python, alias)
         else:
-            alias.symlink_to(python)
+            # A launcher, not a symlink: CPython on Linux finds itself from a
+            # bare argv[0] only through PATH, so under the empty PATH case a
+            # symlinked interpreter loses its venv (sys.executable == '').
+            # The launcher execs the image's python by path, with shell
+            # builtins only, so every case still runs the image interpreter.
+            alias.write_text(
+                '#!/bin/sh\nd=${0%/*}\n[ "$d" = "$0" ] && d=.\nexec "$d/python" "$@"\n',
+                encoding="utf-8",
+            )
+            alias.chmod(0o755)
     checkout_state.record_checkout_owner(
         image.root, owner=owner, kind="python-environment"
     )

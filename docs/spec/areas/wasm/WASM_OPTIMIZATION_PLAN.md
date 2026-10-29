@@ -119,8 +119,9 @@ recorded source snapshots, not the current candidate's performance.
   require measurements on the integrated candidate.
 - **No instruction combining**: Adjacent load/store pairs, redundant boxing/unboxing sequences, and constant folding opportunities are not exploited at the WASM level.
 - **Dispatch structure**: Dense dispatch uses `br_table`; sparse remaps use the
-  state-dispatch planner. Further changes require observed state distributions
-  and engine measurements.
+  state-dispatch planner. Functions with deeply overlapping far-targeted
+  scopes route through a bounded scope tree (§1.7). Further changes require
+  observed state distributions and engine measurements.
 - **No peephole optimization**: Patterns like `i64.const 0; i64.eq` (test for zero) could be simplified.
 - **Redundant type checks**: Tag checks for NaN-boxed values are emitted inline at every use site rather than being hoisted or eliminated when type information is available from the IR.
 
@@ -186,6 +187,71 @@ keep one local per name, because the shared CFG does not model dispatch
 re-entry or the index-continue target. The earlier linear coalescer admitted
 only `__tmp`/`__v` spellings. Current frontend and TIR back-conversion output
 does not use those spellings, so frames kept one local per value name.
+
+### 1.7 Bounded Control Nesting
+
+The non-linear control emitter (`wasm/state_dispatch/`, Jumpful and Stateful
+frames) gives every physical block a `block` scope whose `end` precedes it, so
+a forward transfer is one `br`. Most of those scopes are reached only from the
+adjacent block, and an optimizer folds them away. A scope reached from farther
+away stays open from its first such transfer to its block. The Falcon OCR
+driver's largest module body has 16,333 blocks. Its 3,412 exception checks
+enter one LIFO cleanup ladder that releases up to 185 owned locals, so 3,077
+far-targeted scopes overlap. Binaryen 133 `-Oz` rebuilt them as 3,182 nested
+`if`s. `BinaryenIRWriter::visit` recurses once per `if`, and the 544 KiB stack
+of a macOS worker thread overflowed at 2,128 levels (HF-546). The writer walks
+first-position `block` chains iteratively, so the flat chain itself was safe.
+
+**Rule.** The plan measures the overlap of far-targeted scopes from its own
+forward edges and dispatch targets: CFGStackify's minimal nesting for the block
+order. A function keeps the flat layout, and its exact bytes, while at most
+1,024 far scopes overlap (about half the measured overflow depth) and it has at
+most 8,192 blocks (half WABT's 16,384-label reader cap). Otherwise its scopes
+form a radix tree of 128-way nodes (`state_dispatch/scope_tree.rs`). A transfer
+between blocks of one level-1 node keeps its direct `br`. A transfer into
+another node stores the destination's radix digits below the common node in an
+i32 routing local and branches to the end of the destination child's scope;
+each node it enters selects its child with a `br_table` over one digit, and
+only nodes that some transfer enters at a child other than the first emit a
+selector. The root of a dispatching tree loads physical block indices from the
+existing operation map, so backward edges and stateful resumes take the same
+descent; a key outside the map traps. Three levels (387 scopes) cover every
+function body within the JS API's 7,654,321-byte limit.
+`wasm/tests/control_nesting.rs` checks both bounds with oracles computed from
+the emitted bytes, the boundary of each limit, and the executed paths of
+forward-only, dispatching and stateful frames at the production shape and at a
+4-way shape that reaches six levels.
+
+**Sources.** The core specification lets implementations limit "the nesting
+depth of structured control instructions" (Appendix, Implementation
+Limitations). WABT raised that limit from 1,024 to 16,384 because clang output
+exceeded 1,400 (WebAssembly/wabt PR 2170). LLVM's `WebAssemblyCFGStackify`
+places one `block` per forward-branch target and lowers a switch to a
+`br_table` over a nested block chain; Go's wasm backend dispatches through one
+`br_table` over up to 65,536 resume points (`cmd/internal/obj/wasm`). Neither
+bounds depth. Binaryen's `wasm-stack.h` (version_133) handles first-position
+block chains iteratively and recurses through every other structure. Molt
+deviates from the flat layout only past the measured limits above.
+
+**Measured (macOS arm64, Binaryen 133, Node 26, 2026-10-28).** Linked Falcon
+driver; the base module was optimized single-threaded only to compare it;
+timings are medians of nine interleaved processes.
+
+| Layout | `wasm-opt -Oz` | Deepest writer recursion | App functions changed | App code | Linked `-Oz` raw | gzip -9 | `ocr_tokens` 1st / 2nd / 3rd |
+|---|---|---|---|---|---|---|---|
+| Flat (base) | SIGBUS at 25.8 s | 3,182 | — | 13,781,595 | 17,496,022 | 4,664,180 | 69 / 42 / 39 ms |
+| Tree above 512 blocks | 17.9 s | 95 | 254 | +656,863 | +1,488,404 | +568,139 | 77 / 42 / 39 ms |
+| Tree above 1,024 far scopes | 18.0 s | 1,061 | 2 | +39,641 | +84,958 | +42,382 | 69 / 41 / 38 ms |
+
+The deepest writer recursion counts structured levels outside first-position
+block chains in the optimized module. `bench_sum` emits the same bytes as base.
+A 20M-iteration loop inside a 400-statement function, which crosses the far
+scope limit and whose backedge descends one more `br_table`, runs 3.09 -> 3.22
+s (+4.4%). Placing each single-predecessor cleanup pad beside its check does
+not help this shape: on the exact block graph of the largest body it lowers the
+overlap from 3,077 to 2,527, still above the overflow depth, leaves all 3,216
+far targets, and raises the overlap of 4 of the 10 deepest functions. Shorter
+owned live ranges in module bodies would shorten the ladders at their source.
 
 ### 1.3 Missing Features
 
@@ -430,7 +496,7 @@ Relocatable `WasmProfile::Auto` cannot use that final serialized-module strip
 phase, so it declares a conservative pre-emission frontier for `wasm-ld` and
 lets linker garbage collection own final reachability. `WasmProfile::Pure`
 remains a compile-time capability profile that omits IO/ASYNC/TIME-style import
-families and emits deterministic traps for unsupported use.
+families and fails closed when retained calls require an unsupported family.
 
 ### 4.2 Optimization Pipeline
 
@@ -544,10 +610,54 @@ cache identity instead of requiring a documentation recipe to stay in sync.
 
 ### 4.5 Size Targets
 
+`Cargo.toml` owns the shipping WASM runtime policy: fat LTO, one codegen unit,
+no debug information and abort semantics. All four hot runtime crates retain
+opt-s. The shared-runtime producer selects wasm-ld `--compress-relocations` only
+when the effective final runtime package strips debug information, including
+package, configuration, environment and explicit rustc overrides. Retained DWARF
+keeps its original offsets. The selected response file enters the captured Cargo
+plan and member identity; response rebinding retains SDK custody and repins the
+resource generation. Native shipping keeps its separately measured ThinLTO/16
+policy. Invalid artifacts fail closed without an alternate-profile retry.
+
+The October 2026 codec correction made Unicode name tables reachable from generic
+named escapes and runtime-selected error handlers. Those semantics and the core
+parser-validation builtin remain supported. Removing either name table without
+reconciling Unicode versions and exact versus loose matching would change behavior.
+The recovery mechanism combines whole-runtime cross-crate optimization with
+removal of relocation LEB padding at the linker. It adds no application-link
+optimizer pass and keeps the shared runtime app-independent and cacheable.
+
+Matched October 23/24 artifacts attribute 835,800 new data bytes to the Unicode
+name arrays and 1,139,456 to generated property pages and version indexes. The
+property page array appeared seven times after that migration. The later main
+artifact contains six copies of the same 152,832 bytes; fat LTO/one unit merges
+them to one, retaining every version index. This recovers 764,160 raw bytes of
+redundant pages while preserving all target-version semantics.
+
+The local macOS arm64 micro coordinate (Rust 1.99.1, WASI SDK 34, Node 26) measured:
+
+| Runtime producer | Raw bytes | Gzip-9 bytes |
+| --- | ---: | ---: |
+| ThinLTO/16, hot crates opt-s | 13,109,858 | 3,621,900 |
+| Fat LTO/1, hot crates opt-s | 11,193,076 | 3,418,228 |
+| Fat LTO/1, opt-s, compressed relocations | 10,525,517 | 3,359,846 |
+
+The final transfer is 3.204 MiB against the unchanged 3.25 MiB budget. A rejected
+hub opt-z candidate reached 2.975 MiB but increased representative runtime-heavy
+CPU time by 23%; the shipping policy retains opt-s. Seven alternating paired
+whole-program Node runs over integer, container and Unicode/codec work matched
+the CPython output oracle on every execution. Median user CPU fell from 3.10 to
+2.83 seconds and process peak RSS from 163,905,536 to 135,168,000 bytes. These
+are local development observations, not release acceptance or qualification of
+other engines, profiles, Python versions or CI-host build memory.
+[Cargo's profile contract](https://doc.rust-lang.org/cargo/reference/profiles.html)
+describes cross-crate LTO and opt-s/opt-z; measurements determine the selection.
+
 | Artifact | Current | Target (v0.1) | Target (v1.0) |
 |---|---|---|---|
 | Minimal hello-world `.wasm` (linked) | ~2 MB | < 500 KB | < 200 KB |
-| Runtime `.wasm` (molt_runtime.wasm) | ~8 MB | < 4 MB | < 2 MB |
+| Runtime `.wasm` (molt_runtime.wasm) | micro: 10.53 MB raw / 3.204 MiB gzip | < 4 MB | < 2 MB |
 | Typical app `.wasm` (linked, stripped) | ~13 MB | < 3 MB | < 1 MB |
 | Compressed (brotli) | N/A | < 1 MB | < 300 KB |
 

@@ -163,44 +163,6 @@ pub(super) fn extension_loader_resolution(
     }
 }
 
-pub(super) fn sourceless_loader_resolution(
-    module_name: &str,
-    path: &str,
-    spec_is_package: bool,
-) -> SourceLoaderResolution {
-    let sep = bootstrap_path_sep();
-    let basename = path_basename_text(path, sep).to_ascii_lowercase();
-    let dirname = path_dirname_text(path, sep);
-    let dirname_base = path_basename_text(&dirname, sep).to_ascii_lowercase();
-    let is_cache_init = dirname_base == "__pycache__"
-        && basename.starts_with("__init__.")
-        && basename.ends_with(".pyc");
-    let is_init = basename == "__init__.pyc" || is_cache_init;
-    let is_package = spec_is_package || is_init;
-    let module_package = if is_package {
-        module_name.to_string()
-    } else {
-        module_name
-            .rsplit_once('.')
-            .map(|(prefix, _)| prefix.to_string())
-            .unwrap_or_default()
-    };
-    let package_root = if is_package {
-        if is_cache_init {
-            Some(path_dirname_text(&dirname, sep))
-        } else {
-            Some(path_dirname_text(path, sep))
-        }
-    } else {
-        None
-    };
-    SourceLoaderResolution {
-        is_package,
-        module_package,
-        package_root,
-    }
-}
-
 #[cfg(feature = "stdlib_archive")]
 pub(super) fn zip_archive_open(
     path: &str,

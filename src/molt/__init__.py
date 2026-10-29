@@ -32,10 +32,8 @@ __all__: list[str] = []
 
 def __getattr__(name: str):
     if name == "__version__":
-        # Resolved on first use. Compiled guests import `molt.gpu` and other
-        # subpackages through this module; an eager lookup would run the
-        # host's package-metadata and file-system probe at guest import time
-        # and pull importlib.metadata into every guest's module closure.
+        # The generated version contains no host metadata or filesystem probes.
+        # Even lazy function imports belong to a standalone guest's closure.
         from molt._version import version
 
         return version()

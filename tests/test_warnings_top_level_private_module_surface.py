@@ -45,8 +45,11 @@ def _load_module(name, path_text):
     return module
 
 
-_warnings_mod = _load_module("warnings", {str(STDLIB_ROOT / "warnings.py")!r})
+# `_warnings` is the provider and never imports `warnings`, its consumer.
+sys.modules.pop("warnings", None)
 _private = _load_module("_warnings", {str(STDLIB_ROOT / "_warnings.py")!r})
+_provider_loaded_consumer = "warnings" in sys.modules
+_warnings_mod = _load_module("warnings", {str(STDLIB_ROOT / "warnings.py")!r})
 
 rows = [
     (name, type(value).__name__, bool(callable(value)))
@@ -66,6 +69,7 @@ checks = {{
         and _private.warn_explicit is _warnings_mod.warn_explicit
     ),
     "filters": isinstance(_private.filters, list),
+    "provider_loaded_consumer": _provider_loaded_consumer,
     "warn": _private.warn("hello", UserWarning, 2) is None,
     "warn_explicit": _private.warn_explicit("boom", UserWarning, "file.py", 7) is None,
     "warnings_module_private_handles_hidden": (
@@ -111,6 +115,7 @@ def test__warnings_public_surface_matches_expected_shape() -> None:
     assert checks == {
         "aliases": "True",
         "filters": "True",
+        "provider_loaded_consumer": "False",
         "warn": "True",
         "warn_explicit": "True",
         "warnings_module_private_handles_hidden": "True",

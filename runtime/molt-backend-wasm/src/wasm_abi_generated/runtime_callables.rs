@@ -1673,11 +1673,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 5,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_importlib_stabilize_module_state",
-        import: WasmRuntimeImport::ImportlibStabilizeModuleState,
-        arity: 6,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_validate_resource_name",
         import: WasmRuntimeImport::ImportlibValidateResourceName,
         arity: 1,
@@ -6685,12 +6680,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_sourcefileloader_exec_module",
         import: WasmRuntimeImport::ImportlibSourcefileloaderExecModule,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_zip_source_loader_exec_module",
         import: WasmRuntimeImport::ImportlibZipSourceLoaderExecModule,
-        arity: 5,
+        arity: 4,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_extension_loader_create_module",
@@ -6700,12 +6695,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_extension_loader_exec_module",
         import: WasmRuntimeImport::ImportlibExtensionLoaderExecModule,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_sourceless_loader_exec_module",
         import: WasmRuntimeImport::ImportlibSourcelessLoaderExecModule,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_resources_reader_open_resource_bytes_from_roots",
@@ -12969,9 +12964,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
             Some(WasmRuntimeImport::ImportlibSpecFromFileLocation)
         }
         "molt_importlib_spec_from_loader" => Some(WasmRuntimeImport::ImportlibSpecFromLoader),
-        "molt_importlib_stabilize_module_state" => {
-            Some(WasmRuntimeImport::ImportlibStabilizeModuleState)
-        }
         "molt_importlib_validate_resource_name" => {
             Some(WasmRuntimeImport::ImportlibValidateResourceName)
         }

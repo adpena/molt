@@ -1324,9 +1324,7 @@ def select_cargo_native_units(
 ) -> list[dict[str, object]]:
     """Resolve declared role/language pairs without compiler probes or hashing."""
     from tools.proof_plan import cargo_native_units
-    from molt.cli.runtime_cargo_plan import (
-        _resolve_c_build_resources,
-    )
+    from molt.cli.runtime_c_resources import _resolve_c_build_resources
     from molt.cargo_execution_policy import cargo_c_tool_environment_names
     from molt.cli.runtime_tool_selection import runtime_c_tool_selection
 

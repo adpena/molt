@@ -95,7 +95,7 @@ state, grep/read-verified this session:
 | **`function_compiler.rs`** | **28,147 lines** (down from 39,043), `fc/` subtree of 39 handler files; M1.1–M1.16 function-extraction LANDED (arith/compare/calls/loops/indexing/…). | `STRUCTURAL_AUDIT_BOARD.md:26,82`; `21a` §"M1.1-M1.16 now landed" |
 | **`cli.py` → `cli/` package** | **DONE through 21d Phase 0+.** `src/molt/cli.py` no longer exists; `src/molt/cli/__init__.py` (~41K lines, the residual engine) + `wasm.py`, `deps.py`, `native_toolchain.py`, `completion.py`, `arg_helpers.py`, `maintenance.py`, `debug_helpers.py`. `cli/__main__.py` present (preserves `-m molt.cli`). | `src/molt/cli/*.py` glob; audit board still flags `src/molt/cli.py` 41641 — **board path is STALE** (the line count moved into `cli/__init__.py`) |
 | **Frontend mixin split** | **IN FLIGHT** (21c). `frontend/__init__.py` now 27,940 lines (was 44,620); `frontend/visitors/calls.py` (8,733), `frontend/visitors/classes.py` (3,977), `frontend/lowering/serialization.py` (4,413) extracted. | `STRUCTURAL_AUDIT_BOARD.md:26,32,89,113,115`; git status shows `frontend/visitors/classes.py` + `lowering/serialization.py` modified |
-| **Cargo profiles** | **MATURE.** `dev`, `dev-fast` (cgu=256, lto=off), `release-fast` (lto=off), one shipping authority across `release-output`/`release-size`/`wasm-release` (ThinLTO, cgu=16, debug=0, abort), and symbol-bearing `dev-release`. The alternate WASM profile, package-local CGU overrides, combined-build kill switches, and sequential retry lane are deleted. | `Cargo.toml`; `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md` |
+| **Cargo profiles** | **MATURE.** `dev`, `dev-fast` (cgu=256, lto=off), `release-fast` (lto=off), target-specific shipping policies in `Cargo.toml` (native ThinLTO/16, WASM fat LTO/1, debug=0, abort), and symbol-bearing `dev-release`. The alternate WASM profile, package-local CGU overrides, combined-build kill switches, and sequential retry lane are deleted. | `Cargo.toml`; `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md` |
 | **Session isolation** | **LANDED, opt-in.** Caller-pinned `MOLT_SESSION_ID` / `--session-id` maps to `target/sessions/<component>` for perf, benchmark, test-shard, and proof-isolation lanes. `session_artifact_component` keeps an ID of up to 32 letters, digits, `-` or `_` as it is and gives any other ID a 15-character prefix plus 16 hex digits of its SHA-256, so two sessions never share a target or a backend-daemon label; ordinary generated RunContext custody ids keep Cargo on the persistent selected-root `target` so warm incremental state survives. | `src/molt/dx.py`; `tests/test_dx_run_context.py` |
 | **sccache + artifact roots** | Wiring LANDED. `molt dx env` / `RunContext.dx_env` now resolve `SCCACHE_DIR=$MOLT_EXT_ROOT/.sccache` and `SCCACHE_CACHE_SIZE=10G` cross-platform; dev/guarded Cargo builds install the same defaults before enabling `RUSTC_WRAPPER=sccache`. The DX resolver selects checkout-family custody or explicit operator roots independently of drive letters and directory names. This is a developer control-plane rule, not the public compile contract: real users may build in place, use Cargo defaults, or pass target/output flags. Ordinary developer Cargo output is the persistent `$MOLT_EXT_ROOT/target`; caller-pinned isolation lanes use `$MOLT_EXT_ROOT/target/sessions/<session component>`; explicit `CARGO_TARGET_DIR` remains the operator-owned escape hatch. `tools/throughput_env.sh` is a POSIX compatibility wrapper over the Python DX resolver, not the cache-policy authority. | code-verified |
 | **DX toolchain check** | `molt dx check` is the cross-platform preflight for developer toolchain facts and reuses the setup-validation authority. It reports the Windows LLVM failure mode where `clang` is installed from `C:\Program Files\LLVM\bin` but `llvm-config.exe` is absent, so `llvm-sys` cannot build even though LLVM itself is on PATH. | code-verified |
@@ -1555,8 +1555,10 @@ The design extends `molt.checkout_state`; it adds no second authority.
    under every scope root's `tmp`, expired scratch retirements, terminal
    agent evidence under every checkout's `logs/agents` (item 2) and
    integration receipts. Each family's walks rotate across the whole scope,
-   and each family gets its own 30 seconds of walk time per pass, so one
-   family cannot spend another's budget. Each caller passes its own walk:
+   and each family gets its own 180 seconds of walk time per pass, so one
+   family cannot spend another's budget. The daily pass runs detached and
+   pressure reclaim never uses this rotation, so the budget is sized to hold
+   the slowest root's plan and recheck walks, cold (HF-537). Each caller passes its own walk:
    `disk_guard._scratch_inventory`, `disk_guard._receipt_inventory`, and,
    for evidence, `coordination_records._evidence_inventory` and the task's
    text checks (decoding and object-store queries); every bounded step of
@@ -1599,8 +1601,14 @@ The design extends `molt.checkout_state`; it adds no second authority.
    were never evaluated. An applied pass retires a walked root only when
    its plan and recheck walks fit one pass, so the six roots between 15 and
    30 seconds (10.1 GiB) and the seven over 30 seconds stay kept and
-   reported. A 150-second budget would admit every measured root; the
-   budget stays 30 seconds until the owner accepts that cost.
+   reported. A 150-second budget would admit every measured root. The
+   integrator accepted that cost under the owner's standing authority on
+   2026-10-29 (HF-537): the budget is 180 seconds, about 20% over the
+   slowest cold plan-and-recheck pair. A warm re-measurement that day walked
+   1,624 entries in 537 seconds; the slowest took 48 seconds (14.5 GiB), four
+   exceeded 30 seconds and none exceeded 60. A root that still exceeds the
+   budget stays reported and kept. Stamped roots need no walk, so once the
+   legacy roots are retired the daily pass stays short.
 
    Cost: a stamped root's decision costs 100 metadata calls whatever its
    size (52 `lstat`, 43 `stat`, three bounded record and lock opens and two
@@ -1608,9 +1616,10 @@ The design extends `molt.checkout_state`; it adds no second authority.
    the scratch container. A walked root costs one listing per directory and
    one `lstat` per entry, plus a constant about 150 calls (1,755 calls with
    1,600 files). Byte estimates of other classes keep one 30-second
-   deadline, and a partial estimate decides nothing. So a pass walks for at
-   most 4 x 30 seconds plus that deadline and constant work per entry,
-   against one shared 30 seconds before: the named price of a progress
+   deadline, and a partial estimate decides nothing. So a detached daily
+   pass walks for at most 4 x 180 seconds plus that deadline and constant
+   work per entry (about 12.5 minutes while legacy roots remain), against
+   one shared 30 seconds before: the named price of a progress
    guarantee for each family. Families with nothing to walk cost nothing;
    on 2026-10-28 the internal root's 1,125 evidence entries took 6.3
    seconds of evidence walks and 3.0 seconds of receipt walks in one dry

@@ -553,7 +553,12 @@ class ImportLoweringMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
-    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset({"builtins"})
+    # `_warnings` is the import protocol's warning provider: the runtime loads
+    # it to report an empty `sys.meta_path`, so its body cannot ask the public
+    # finders (possibly none) for its own dependencies.
+    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset(
+        {"builtins", "_warnings"}
+    )
 
     def _source_imports_use_transaction(self) -> bool:
         bootstrap_body = self._is_module_entry() or (

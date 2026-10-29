@@ -16,6 +16,7 @@ from tests import proof_queue_owned_roots
 from tests.proof_queue_custody_test_support import (
     assert_execution_context_rejects_substitutions,
     publish_receipt_custody,
+    report_refused_cell,
     synthetic_python_toolchain,
 )
 from tools.proof_queue_pkg import supervisor_custody, supervisor_generation
@@ -262,12 +263,12 @@ def test_native_execution_context_rehashes_nonce_custody_and_transcript_artifact
             binary=binary, mode="leaf", cwd=tmp_path, env={}
         )
     except supervisor_custody.SupervisorPrelaunchRefused as refusal:
-        # An actual planner refusal proves only prelaunch ineligibility. A
-        # later eligible launch failure must still fail this execution test.
+        # An actual planner refusal proves only prelaunch ineligibility, never
+        # this execution test: it skips an unsupported cell or fails (HF-552).
         assert refusal.capability["admission"]["state"] == "ineligible"
         assert refusal.capability["admission"]["reason"]
         assert not list(tmp_path.iterdir())
-        return
+        report_refused_cell((refusal,))
     factory = partial(
         publish_receipt_custody,
         supervisor_binary=binary,
@@ -291,7 +292,7 @@ def test_native_verifier_binds_consumer_to_raw_receipt_generation(
     except supervisor_custody.SupervisorPrelaunchRefused as refusal:
         assert refusal.capability["admission"]["state"] == "ineligible"
         assert not list(tmp_path.iterdir())
-        return
+        report_refused_cell((refusal,))
 
     def execute(command: list[str]) -> None:
         run_custody_subject_process(command, check=True)

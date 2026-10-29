@@ -17,6 +17,7 @@ sys.modules[_HELPER_SPEC.name] = _HELPERS
 _HELPER_SPEC.loader.exec_module(_HELPERS)
 
 ROOT = _HELPERS.ROOT
+ARTIFACT_ROOT = _HELPERS.ARTIFACT_ROOT
 _build_and_run_with_env = _HELPERS._build_and_run_with_env
 _build_native_binary_with_env = _HELPERS._build_native_binary_with_env
 run_native_test_process = _HELPERS.run_native_test_process
@@ -43,7 +44,7 @@ def test_native_sourcefileloader_exec_module_transaction_preserves_body_mutation
         ),
         "sourcefileloader_exec_module_transaction",
         session_id="pytest-native-importlib-loader-exec-transaction",
-        cache_dir=ROOT / ".molt_cache-importlib-loader-exec-transaction",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-importlib-loader-exec-transaction",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={
@@ -86,7 +87,7 @@ def test_native_sourcefileloader_exec_module_is_source_free_after_link(
         ),
         "sourcefileloader_exec_source_free",
         session_id="pytest-native-importlib-loader-exec-source-free",
-        cache_dir=ROOT / ".molt_cache-importlib-loader-exec-source-free",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-importlib-loader-exec-source-free",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={"runtime_site/sealed_loader_target.py": "value = 707\n"},

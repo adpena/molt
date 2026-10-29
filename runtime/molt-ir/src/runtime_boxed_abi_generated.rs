@@ -5590,7 +5590,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_importlib_extension_loader_exec_module",
-        arity: 4,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5965,12 +5965,12 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_importlib_sourcefileloader_exec_module",
-        arity: 4,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_importlib_sourceless_loader_exec_module",
-        arity: 4,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5981,11 +5981,6 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_importlib_spec_from_loader",
         arity: 5,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
-        symbol: "molt_importlib_stabilize_module_state",
-        arity: 6,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -6015,7 +6010,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_importlib_zip_source_loader_exec_module",
-        arity: 5,
+        arity: 4,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -13099,14 +13094,14 @@ pub fn runtime_boxed_op_abi(kind: &str) -> Option<&'static RuntimeBoxedAbi> {
         "bytes_find_slice" => Some(&RUNTIME_BOXED_ABIS[240]),
         "bytes_startswith" => Some(&RUNTIME_BOXED_ABIS[246]),
         "bytes_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[247]),
-        "string_count" => Some(&RUNTIME_BOXED_ABIS[2171]),
-        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2172]),
-        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2173]),
-        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2174]),
-        "string_find" => Some(&RUNTIME_BOXED_ABIS[2176]),
-        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2177]),
-        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2199]),
-        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2200]),
+        "string_count" => Some(&RUNTIME_BOXED_ABIS[2170]),
+        "string_count_slice" => Some(&RUNTIME_BOXED_ABIS[2171]),
+        "string_endswith" => Some(&RUNTIME_BOXED_ABIS[2172]),
+        "string_endswith_slice" => Some(&RUNTIME_BOXED_ABIS[2173]),
+        "string_find" => Some(&RUNTIME_BOXED_ABIS[2175]),
+        "string_find_slice" => Some(&RUNTIME_BOXED_ABIS[2176]),
+        "string_startswith" => Some(&RUNTIME_BOXED_ABIS[2198]),
+        "string_startswith_slice" => Some(&RUNTIME_BOXED_ABIS[2199]),
         _ => None,
     }
 }

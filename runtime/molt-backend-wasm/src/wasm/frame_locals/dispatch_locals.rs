@@ -12,6 +12,23 @@ pub(in crate::wasm) struct WasmDispatchFrameLocals {
 }
 
 impl WasmFrameLocals {
+    /// The routing local of a multi-level scope tree. Forward-only functions
+    /// need it without any dispatch state.
+    pub(in crate::wasm) fn allocate_route_local(
+        &mut self,
+        needs_route: bool,
+        local_types: &mut Vec<ValType>,
+        local_count: &mut u32,
+    ) -> Option<u32> {
+        needs_route.then(|| {
+            self.allocate_anonymous(
+                WasmFrameAnonymousLocal::DispatchRoute,
+                local_types,
+                local_count,
+            )
+        })
+    }
+
     pub(in crate::wasm) fn allocate_dispatch_locals(
         &mut self,
         stateful: bool,

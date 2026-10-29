@@ -893,6 +893,7 @@ def test_import_transaction_implementation_modules_use_bootstrap_imports() -> No
         ("builtins", "stdlib"),
         ("importlib", "stdlib"),
         ("importlib.util", "stdlib"),
+        ("_warnings", "stdlib"),
     ],
 )
 def test_bootstrap_module_functions_still_use_public_import_transactions(
@@ -921,7 +922,8 @@ def test_bootstrap_module_functions_still_use_public_import_transactions(
 
 
 @pytest.mark.parametrize(
-    "module_name", ["builtins", "_molt_importer", "importlib", "importlib.util"]
+    "module_name",
+    ["builtins", "_molt_importer", "importlib", "importlib.util", "_warnings"],
 )
 @pytest.mark.parametrize("explicit_role", [False, True])
 def test_user_module_bootstrap_spelling_keeps_public_import_transactions(
@@ -976,6 +978,8 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
     assert "importlib.machinery" in prepared.module_graph
     assert "runtime_import_support" in module_reasons["importlib.util"]
     assert "runtime_import_support" in module_reasons["importlib.machinery"]
+    # The meta-path walk loads the warning provider for an empty sys.meta_path.
+    assert "runtime_import_support" in module_reasons["_warnings"]
     assert "import_support" not in module_reasons["importlib.util"]
     assert "import_support" not in module_reasons["importlib.machinery"]
     # Unknown metadata selects from the existing dispatch surface, not all

@@ -21,7 +21,7 @@ ENVIRONMENT_BYTECODE_DIRECTORY: Final = "bytecode"
 
 PYTHON_ENVIRONMENT_IDENTITY_SCHEMA: Final = "molt.python-environment-closure.v7"
 PYTHON_ENVIRONMENT_LOCATION_SCHEMA: Final = "molt.python-environment-location.v2"
-PYTHON_RUNTIME_IDENTITY_SCHEMA: Final = "molt.python-runtime-closure.v7"
+PYTHON_RUNTIME_IDENTITY_SCHEMA: Final = "molt.python-runtime-closure.v8"
 UV_LOCK_GROUP_CLOSURE_SCHEMA: Final = "molt.uv-lock-group-closure.v4"
 PYTHON_WHEEL_TARGET_SCHEMA: Final = "molt.python-wheel-target.v1"
 

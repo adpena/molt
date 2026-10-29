@@ -587,14 +587,46 @@ def _verified_supervisor_event_artifact(
     )
 
 
+# The native authorities a closure mode needs before any launch attempt.
+_CLOSURE_MODE_AUTHORITIES: dict[str, tuple[str, ...]] = {
+    "leaf": ("pre_entry_exec_authority", "pre_entry_process_create_authority"),
+    "declared-tree": ("pre_entry_exec_authority", "recursive_descendant_authority"),
+    "inventory-tree": ("pre_entry_exec_authority", "recursive_descendant_authority"),
+}
+
+
+def missing_closure_authorities(
+    capability: Mapping[str, object], mode: str
+) -> tuple[str, ...]:
+    """Name each authority ``mode`` needs that the native backend lacks.
+
+    A backend that lacks one cannot be admitted on any host: the cell is
+    unsupported by implementation (every macOS mode, HF-07). A backend that
+    holds them all can still be refused by its host, for example by Yama.
+    """
+    return tuple(
+        name for name in _CLOSURE_MODE_AUTHORITIES[mode] if capability[name] is not True
+    )
+
+
 class SupervisorPrelaunchRefused(ValueError):
+    """A typed native refusal before launch; it never records an execution."""
+
     def __init__(self, capability: dict[str, object]) -> None:
         self.capability = dict(capability)
         admission = capability["admission"]
         assert isinstance(admission, dict)
-        super().__init__(
-            "native supervisor prelaunch refused: " + str(admission["reason"])
+        self.missing_authorities = missing_closure_authorities(
+            capability, str(capability["mode"])
         )
+        detail = str(admission["reason"])
+        if self.missing_authorities:
+            detail = (
+                f"unsupported process-closure cell {capability['platform']}/"
+                f"{capability['mode']}: backend {capability['backend']} lacks "
+                f"{', '.join(self.missing_authorities)}: {detail}"
+            )
+        super().__init__("native supervisor prelaunch refused: " + detail)
 
 
 def decode_supervisor_capability(
@@ -683,13 +715,7 @@ def decode_supervisor_capability(
         valid = False
     if not valid or context == "prelaunch" and state == "admitted":
         raise ValueError("native supervisor admission state or context is malformed")
-    if state != "ineligible" and (
-        capability["pre_entry_exec_authority"] is not True
-        or mode == "leaf"
-        and capability["pre_entry_process_create_authority"] is not True
-        or mode != "leaf"
-        and capability["recursive_descendant_authority"] is not True
-    ):
+    if state != "ineligible" and missing_closure_authorities(capability, mode):
         raise ValueError("native supervisor planned backend lacks process custody")
     required = capability.get("required_environment")
     if not isinstance(required, dict):

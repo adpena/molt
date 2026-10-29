@@ -209,7 +209,8 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
         'const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";'
         in worker_js
     )
-    assert "[WEBGPU_DISPATCH_HOST_IMPORT]: () => -38," in worker_js
+    assert "[WEBGPU_DISPATCH_HOST_IMPORT]: () => -ENOSYS," in worker_js
+    assert "const { ENOSYS," in worker_js
     assert "const planReservedRuntimeDispatch = ({" in worker_js
     assert "appOwnsReservedTrampoline" not in worker_js
     assert "dispatchReservedRuntimeCallable" in worker_js
@@ -540,12 +541,15 @@ def test_run_cmd_timeout_gracefully_collects_sigterm_output(tmp_path: Path) -> N
     )
 
     res = bench_wasm._run_cmd(
-        [sys.executable, str(script)],
+        [sys.executable, "-B", "-I", "-S", str(script)],
         env=os.environ.copy(),
         capture=True,
         tty=False,
         log=None,
-        timeout_s=0.1,
+        # Test graceful shutdown after handler installation, allowing process
+        # startup under the supported parallel proof load. A 100ms deadline
+        # could kill the interpreter before it installed the handler.
+        timeout_s=2.0,
     )
 
     assert res.timed_out is True
@@ -732,7 +736,7 @@ class TestSplitRuntimeArtifacts:
     def test_repeated_build_preserves_complete_generation_and_executes(
         self, split_build_a, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Reuse the admitted generation, then prove a real rebuild and execution."""
+        """Reuse the admitted generation with unchanged inputs and execute it."""
         from molt.cli.link_fingerprints import _read_link_fingerprint
         from molt.artifact_publication import publication_receipt_path
         from molt.cli.static_archive_identity import artifact_content_identity
