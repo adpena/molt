@@ -3,7 +3,6 @@ use super::{
     RUNTIME_STATIC_NAME_SLOT_COUNT, RuntimeStaticNames, clear_method_cache,
     clear_runtime_static_names, intern_runtime_static_name,
 };
-use crate::BuiltinExc;
 use crate::{MoltObject, alloc_string, runtime_state};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +18,7 @@ fn bridge_name_failure_is_distinct_from_an_unsupported_name() {
         );
         crate::raise_exception::<u64>(
             py,
-            BuiltinExc::MemoryError,
+            crate::BuiltinExc::MemoryError,
             "original bridge allocation failure",
         );
         let original = crate::exception_last_bits_noinc(py);
