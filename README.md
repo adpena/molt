@@ -183,8 +183,9 @@ no progress chatter.
 ## Status
 
 Current detailed state lives in [docs/spec/STATUS.md](docs/spec/STATUS.md).
-Forward priorities and near-term sequencing live in
-[ROADMAP.md](ROADMAP.md#current-priorities). Correctness, installed compile
+Forward direction lives in [ROADMAP.md](ROADMAP.md); open findings and the
+burn-down order live in the
+[findings ledger](docs/agent/V1_HANDOFF_FINDINGS.md). Correctness, installed compile
 latency, generated-program performance, memory, startup, and delivered size
 remain release priorities; a passing demonstration does not qualify v1.0.
 

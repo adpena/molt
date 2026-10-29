@@ -56,3 +56,12 @@ verify selective conversion, original index mapping around externs, authored
 metadata, ABI refusal, and source-file custody. Backend tests exercise the real
 wrapper consumers. These source contracts do not substitute for the release
 acceptance matrix or target execution evidence.
+
+## No ambient off switch
+
+Legality, profitability and external-linkage facts decide whether a call is
+inlined. There is no process-global switch that turns the production inliner
+into a no-op. An inliner regression is fixed in a pass predicate, a
+representation fact or a backend consumer, or by reverting the code. The
+bigint oracle in `tests/differential/basic/inline_llvm_module_phase_activation.py`
+guards the case where an inlined body could unbox a value that needs a bigint.

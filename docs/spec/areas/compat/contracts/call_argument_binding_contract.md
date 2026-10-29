@@ -1067,4 +1067,4 @@ Performance gate target (initial):
 - `docs/spec/areas/wasm/0005-wasm-interop.md` (WASM strategy)
 - `docs/spec/areas/tooling/0012_MOLT_COMMANDS.md` (TFA and tooling hooks)
 - `docs/spec/STATUS.md` (canonical current status)
-- `ROADMAP.md` and `OPTIMIZATIONS_PLAN.md` (priorities and perf gating patterns)
+- `ROADMAP.md` (direction) and `tools/PERF_AUTHORITY.md` (perf gating)

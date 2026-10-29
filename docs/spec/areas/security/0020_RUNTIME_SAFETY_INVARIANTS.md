@@ -78,8 +78,7 @@ entrypoints used to validate them.
 - TODO(runtime-provenance, owner:runtime, milestone:RT2, priority:P2, status:planned): audit remaining pointer
   registries/handles for explicit release on shutdown and on error paths.
 - TODO(runtime-provenance, owner:runtime, milestone:RT1, priority:P2, status:partial): benchmark sharded registry
-  and evaluate lock-free alternatives once correctness is locked in
-  (see OPT-0003 in `OPTIMIZATIONS_PLAN.md`).
+  and evaluate lock-free alternatives once correctness is locked in.
 
 ## 8. Validation Entry Points
 Use `tools/runtime_safety.py` for standardized checks:

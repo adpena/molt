@@ -13,9 +13,9 @@
 - **Enforcement:** use `molt.capabilities` to check or require capability tokens in stdlib shims.
 - **Implementation statuses (spec 0016):** a compiled binary may import any implemented stdlib module: `intrinsic-backed`, `intrinsic-partial`, `intrinsic-support`, or `python-compiled` (Molt compiles the module's own Python source; no host interpreter runs). A `stub` raises the canonical gap error on any attribute until lowered. Intrinsic status counts only intrinsics a module reads; see `stdlib_intrinsics_audit.generated.md`.
 - **Import-only stubs (tooling-only):** stubs may be used for dependency tracking in tooling, but are forbidden in compiled binaries.
-- **CPython union coverage:** Molt must include one top-level stdlib module/package for each CPython stdlib entry and one `.py` submodule/subpackage for each CPython stdlib submodule entry in the 3.12/3.13/3.14 union baseline (`tools/stdlib_module_union.py`), enforced by `tools/check_stdlib_intrinsics.py`. Update process: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md).
+- **CPython union coverage:** Molt must include one top-level stdlib module/package for each CPython stdlib entry and one `.py` submodule/subpackage for each CPython stdlib submodule entry in the 3.12/3.13/3.14 union baseline (`tools/stdlib_module_union.py`), enforced by `tools/check_stdlib_intrinsics.py`. Update process: [docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md](stdlib_union_baseline.md).
 - **Status ratchet:** the `intrinsic-partial` and `stub` counts must remain at or below `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`, `max_stub`), enforced by `tools/check_stdlib_intrinsics.py`.
-- **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
+- **Execution sequencing:** blocker-first lowering order and tranche acceptance criteria are tracked in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](../../plans/stdlib_lowering_plan.md).
 
 ## 0.1 Call and execution policy
 - **Binding and effects:** direct-call specialization requires the current compiler's binding, mutation and effect proofs. Otherwise supported calls retain runtime dispatch; this matrix is not an identity proof or a blanket exemption from observable mutation.
@@ -52,7 +52,7 @@
 
 ## 3. Compatibility Matrix
 Program sequencing for full Rust lowering (core first, then stdlib) is tracked
-in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md).
+in [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](../../plans/stdlib_lowering_plan.md).
 
 | Module | Tier | Status | Priority | Milestone | Owner | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -392,7 +392,7 @@ Scope is based on the compatibility matrix and current stubs in `src/molt/stdlib
 - Acceptance: Parity for supported features; deterministic runtime.
 
 ### 3.2 Cross-cutting Requirements
-- Update [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) and [docs/ROADMAP.md](docs/ROADMAP.md) as each module lands.
+- Update this matrix as each module lands.
 - TODO(docs, owner:docs, milestone:SL1, priority:P3, status:planned): add `TODO(stdlib-compat, ...)` markers for interim gaps.
 - Ensure capability gating for I/O-adjacent pieces (if introduced).
 - Add differential tests in `tests/differential/` as required.
@@ -427,7 +427,7 @@ Shared sorting costs O(n log n) comparisons and O(n) retained
 storage; no independent JSON comparator or performance improvement is claimed.
 This mechanism does not qualify the remaining JSON parity matrix.
 
-## 6. TODOs (tracked in ROADMAP.md)
+## 6. TODOs
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `functools` fast paths (`lru_cache`, `partial`, `reduce`).
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:planned): `itertools` + `operator` core-adjacent intrinsics.
 - TODO(stdlib-compat, owner:stdlib, milestone:SL1, priority:P1, status:partial): fill out remaining `math` intrinsics (determinism policy).

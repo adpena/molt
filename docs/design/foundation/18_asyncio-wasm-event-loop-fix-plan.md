@@ -12,7 +12,7 @@ import-closure claims require fresh proof against current code.
 
 ## Part 0: Test Corpus Baseline
 
-The differential asyncio test corpus sits in `tests/differential/stdlib/asyncio_*.py` (100+ files, including `asyncio_basic.py` and `asyncio_cancel.py`). None of the files in this corpus carry `pytest.mark.skip` or any WASM gating annotation — the skip machinery is entirely in the test harness runner (`src/molt/cli.py`) and in conftest logic, not in the test source files. The specific "4/5 runtime-heavy" tests are not identified with a stable marker in the source tree; they are a category referenced in the audit narrative rather than a named test set. The four named blockers must therefore be traced by analyzing what the WASM build path actually does or cannot do, not by searching for explicit skip annotations.
+The differential asyncio test corpus sits in `tests/differential/stdlib/asyncio_*.py` (100+ files, including `asyncio_basic.py` and `asyncio_cancel.py`). None of the files in this corpus carry `pytest.mark.skip` or any WASM gating annotation — the skip machinery is entirely in the test harness runner (the CLI WASM bundler (then `cli.py`, now the `src/molt/cli/` package)) and in conftest logic, not in the test source files. The specific "4/5 runtime-heavy" tests are not identified with a stable marker in the source tree; they are a category referenced in the audit narrative rather than a named test set. The four named blockers must therefore be traced by analyzing what the WASM build path actually does or cannot do, not by searching for explicit skip annotations.
 
 The following analysis identifies the real failure mode for each of the four claimed blockers.
 
@@ -84,17 +84,17 @@ The zipimport claim from the audit is listed as a blocker but there is no `zipim
 
 The actual mechanism: when a WASM Molt binary is loaded in a browser or via wasmtime, every executable stdlib module is compiler-emitted into the binary image and normal imports, importlib loaders, and runpy enter the same compiled-module dispatcher. On WASM, the `asyncio` package import chain imports `asyncio/__init__.py`, which itself imports `asyncio.events`, `asyncio.tasks`, `asyncio.futures`, and other submodules. If any submodule is absent from the compiled closure, the canonical importer raises `ModuleNotFoundError`; there is no restricted source interpreter or secondary fallback lane.
 
-The specific gap: `asyncio/__init__.py` at line 36-37 imports `contextvars` and at line 25 imports `concurrent`, which in turn imports `concurrent.futures`. If `concurrent/futures/__init__.py` or `concurrent/futures/_base.py` is not embedded in the WASM virtual filesystem, the asyncio import fails. The bundler's import graph walk is driven by the AST-level static import analysis in `src/molt/cli.py`. Dynamic imports via `__import__` or `importlib.import_module` are not followed. The asyncio `__init__.py` does not have dynamic imports, but the test harness itself might.
+The specific gap: `asyncio/__init__.py` at line 36-37 imports `contextvars` and at line 25 imports `concurrent`, which in turn imports `concurrent.futures`. If `concurrent/futures/__init__.py` or `concurrent/futures/_base.py` is not embedded in the WASM virtual filesystem, the asyncio import fails. The bundler's import graph walk is driven by the AST-level static import analysis in the CLI WASM bundler (then `cli.py`, now the `src/molt/cli/` package). Dynamic imports via `__import__` or `importlib.import_module` are not followed. The asyncio `__init__.py` does not have dynamic imports, but the test harness itself might.
 
 More precisely: the "zipimport gap" refers not to literal zipimport (zip-archive imports) but to the fact that the WASM bundler's module resolution uses a zip-archive-like virtual filesystem backed by a `Dict[str, bytes]` of embedded source files. If a module is missing from this virtual bundle, the import raises `ModuleNotFoundError`, which surfaces as a test failure whose error message mentions the module name and can be confusingly attributed to "zipimport."
 
 ### Structural Fix
 
-**Phase 3a — Transitive closure bundler.** The WASM bundler at `src/molt/cli.py` must compute the full transitive import closure of the user program rather than a one-shot AST walk. The current approach visits each import statement and adds the corresponding module path. The fix: run the closure computation to a fixed point — when a new module is added to the bundle, immediately parse its imports and add those too, until no new modules are found. The implementation lives in the WASM module-embedding section of `cli.py` (search for `_wasm_embed_stdlib_sources` or equivalent).
+**Phase 3a — Transitive closure bundler.** The WASM bundler at the CLI WASM bundler (then `cli.py`, now the `src/molt/cli/` package) must compute the full transitive import closure of the user program rather than a one-shot AST walk. The current approach visits each import statement and adds the corresponding module path. The fix: run the closure computation to a fixed point — when a new module is added to the bundle, immediately parse its imports and add those too, until no new modules are found. The implementation lives in the WASM module-embedding section of `cli.py` (search for `_wasm_embed_stdlib_sources` or equivalent).
 
 **Phase 3b — asyncio package guard.** Add an explicit declaration in the bundler that `asyncio` is a "heavyweight package" that always bundles its entire directory (all 35 `.py` files in `src/molt/stdlib/asyncio/`). This is a special case for packages whose `__init__.py` does conditional sub-module imports based on runtime attributes (version, OS, capabilities) that are not statically analyzable. The mechanism: a `HEAVYWEIGHT_PACKAGES` list in `cli.py` that bundles the full directory of any package in the list regardless of the import graph analysis.
 
-**Files to touch:** `src/molt/cli.py` (WASM bundler, transitive closure + heavyweight package list).
+**Files to touch:** the CLI WASM bundler (then `cli.py`, now the `src/molt/cli/` package) (WASM bundler, transitive closure + heavyweight package list).
 
 ---
 
@@ -177,7 +177,7 @@ For each phase, the acceptance criterion is differential parity: `molt build --t
 
 **Phase 4 acceptance tests:**
 - `tests/differential/stdlib/asyncio_executor_run_in_executor.py` — exercises `run_in_executor(None, blocking_fn, arg)`. Must produce `42` and `11` on both platforms.
-- New differential: `tests/differential/stdlib/asyncio_executor_wasm_sync_fallback.py` — verifies that on WASM, `run_in_executor(None, fn)` executes synchronously and returns the correct value (not raises `RuntimeError`).
+- Proposed differential (never created): `asyncio_executor_wasm_sync_fallback` — verifies that on WASM, `run_in_executor(None, fn)` executes synchronously and returns the correct value (not raises `RuntimeError`).
 
 **Phase 2 acceptance tests:**
 - Run the full asyncio differential corpus against the WASM target. Any `indirect call type mismatch` or `out of bounds table access` runtime errors indicate unfixed table-ref issues.

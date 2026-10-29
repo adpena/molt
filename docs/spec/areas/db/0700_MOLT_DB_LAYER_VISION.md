@@ -1,6 +1,9 @@
 # Molt DB Layer Vision: Async-First, High-Throughput, Django-Friendly
 **Spec ID:** 0700
-**Status:** Draft (product + architecture)
+**Status:** Draft (product + architecture). Awaiting an owner decision: the
+Django-style adapter and query builder may act as a substitute for upstream
+packages, which the current direction in [ROADMAP.md](../../../../ROADMAP.md)
+excludes. The `runtime/molt-db` crate is live code.
 **Priority:** P0 for service usefulness
 **Audience:** runtime engineers, DB engineers
 **Goal:** Deliver a Molt-native async DB layer (starting with Postgres) that enables Go-class concurrency for web services and provides a practical Django adapter/migration path—without rewriting the Django ORM.
