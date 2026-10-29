@@ -14,6 +14,7 @@ from typing import cast
 from molt import python_environment_contract as _contract
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.python_file_node_custody import (
+    PYTHON_RUNTIME_DISTRIBUTION_COMPONENTS,
     PYTHON_RUNTIME_PRUNED_COMPONENTS,
     PythonFileCaptureContext,
     _FileNodePool,
@@ -325,7 +326,7 @@ def _base_runtime_paths() -> dict[str, Path]:
 def _is_runtime_import_path(path: Path, base_prefix: Path) -> bool:
     return path.is_relative_to(base_prefix) and not (
         {part.casefold() for part in path.relative_to(base_prefix).parts}
-        & PYTHON_RUNTIME_PRUNED_COMPONENTS
+        & PYTHON_RUNTIME_DISTRIBUTION_COMPONENTS
     )
 
 

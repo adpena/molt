@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from molt import python_environment_contract as _contract
+from molt import python_file_node_custody as files
 from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
@@ -109,6 +110,42 @@ def test_runtime_import_candidates_exclude_environment_distribution_roots(
     )
     assert directories == [("import-directory-0", stdlib.resolve(), 0)]
     assert archives == []
+
+
+def test_runtime_root_inventory_ignores_bytecode_caches_but_not_sources(
+    tmp_path: Path,
+) -> None:
+    stdlib = tmp_path / "lib"
+    cache = stdlib / "__pycache__"
+    cache.mkdir(parents=True)
+    source = stdlib / "mod.py"
+    source.write_bytes(b"value = 1\n")
+    (cache / "mod.cpython-312.pyc").write_bytes(b"cache")
+    # A sourceless legacy module is importable on its own and stays attested.
+    (stdlib / "legacy.pyc").write_bytes(b"sourceless")
+
+    def capture() -> tuple[dict[str, object], object]:
+        # The closure digests the tree with its content nodes.
+        pool = files._FileNodePool()
+        tree, _paths, _metadata = files._stable_tree_inventory(
+            stdlib,
+            root_id="runtime-root-0",
+            label="Python runtime",
+            pool=pool,
+            pruned_components=files.PYTHON_RUNTIME_PRUNED_COMPONENTS,
+        )
+        return tree, pool.nodes
+
+    before = capture()
+    paths = {str(row["path"]) for row in before[0]["entries"]}
+    assert {"mod.py", "legacy.pyc"} <= paths
+    assert not any("__pycache__" in path for path in paths)
+    # Another process on the host writes optimized caches into the shared base
+    # install (HF-536); the attested runtime closure must not change.
+    (cache / "mod.cpython-312.opt-2.pyc").write_bytes(b"optimized")
+    assert capture() == before
+    source.write_bytes(b"value = 2\n")
+    assert capture() != before
 
 
 @pytest.mark.parametrize("version", ["3.14.4", "3.15.0"])
