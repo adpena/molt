@@ -1649,13 +1649,16 @@ def compact_evidence(
     keep: Iterable[Path] = (),
     companions: Sequence[Path] = (),
     remove_source: bool = True,
+    index_retained_source: bool = False,
 ) -> Path:
     """Losslessly compact evidence, publishing its recovery index before removal.
 
     The caller holds exclusive producer custody. Every archived regular file
     is independently hashed from the archive before any source is removed.
     A crash can leave duplicate bytes, never unindexed lost evidence. This is
-    deliberately separate from regenerable-state retirement.
+    deliberately separate from regenerable-state retirement. Retained snapshots
+    opt into a source recovery index with index_retained_source; checkout
+    retirement snapshots otherwise publish only the external recovery index.
     """
     import tarfile
     import uuid
@@ -1828,11 +1831,13 @@ def compact_evidence(
         # External sidecar survives even a failed checkout-index publication.
         external_index = archive.with_suffix(".index.json")
         write_exact(external_index, record)
-        if not remove_source:
+        if not remove_source and not index_retained_source:
             return archive
         write_exact(
             index, {key: value for key, value in record.items() if key != "files"}
         )
+        if not remove_source:
+            return archive
         from .file_deletion import delete_path
 
         # Remove maximal represented subtrees through the canonical sealed-tree
