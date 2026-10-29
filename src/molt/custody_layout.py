@@ -102,6 +102,15 @@ class StorageRule:
     retention: Regenerable | DurableEvidence
 
 
+@dataclass(frozen=True)
+class StorageLocation:
+    """A resolved placement, including a provider's checkout-custody default."""
+
+    kind: StorageClass
+    path: Path
+    rule: StorageRule
+
+
 def storage_rule(kind: StorageClass) -> StorageRule:
     """The volume, producer and retention of every Molt state class.
 

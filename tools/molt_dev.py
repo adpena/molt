@@ -1345,7 +1345,7 @@ def _integrate_exclusive(
         f"gates ({len(gate_cmds)} selected for {len(touched)} touched path(s); "
         f"matched rules: {', '.join(r.name for r in matched_rules) or 'none'})"
     )
-    env = gate_environment(repo, session_id=args.session_id, create_dirs=not dry)
+    env = gate_environment(repo, session_id=args.session_id, create_dirs=False)
     progress.environments = {(): GateEnvironment(ProcessEnvironment(env), None, False)}
     cargo_outputs: dict[tuple[str, ...], tuple[Path, ...]] = {}
     capacity_requirements: dict[tuple[str, ...], int] = {}
@@ -1370,6 +1370,12 @@ def _integrate_exclusive(
             raise DriverError(
                 f"selected output capacity failed; executed=0: {exc}"
             ) from exc
+        from molt.dx import RunContext
+
+        for context in environments.values():
+            RunContext(repo).materialize_environment(
+                context.environment, protected_python_root=context.python_root
+            )
         _assert_integration_source(git, selected_commit)
     gate_seconds: list[tuple[float, str]] = []
     if dry:

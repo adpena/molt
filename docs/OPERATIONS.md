@@ -587,8 +587,9 @@ standing policy; `CLAUDE.md` imports it.
 ## Storage authority and auxiliary retention (HF-582)
 
 The closed `molt.custody_layout.StorageClass` and exhaustive `storage_rule`
-assign state to its DX-selected volume, producer and lifetime. Use
-`molt.dx.storage_path`; a private root is not a new storage class. The
+own defaults, producer and lifetime. DX resolves `StorageLocation` with its
+selected volume and path, including the existing unbound SDK user-state
+selection. Use `molt.dx.storage_path`; a private root is not a new storage class. The
 [storage design](design/storage_authority.md) records placement, the measured
 toolchain exception and upstream retention protocols.
 
@@ -607,6 +608,8 @@ receipt/hash validation, with external locks covering publication and readers.
 Controller source/environments, the landing sandbox, lane payloads and gate
 receipts now project onto the artifact root. Gate subprocesses receive the
 canonical run context, including provider caches and scratch temp roots.
+The runner admits output capacity before materializing that captured context;
+it does not reselect the prepared image or create outputs on refusal.
 The shared sccache server keeps stable provider temp beside its cache. When
 that path exceeds the startup socket limit, DX records an artifact-root
 assignment for a new cache under a cache-adjacent lock; every later client

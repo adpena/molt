@@ -1,8 +1,8 @@
 # Molt storage authority (HF-582)
 
 `molt.custody_layout.StorageClass` is the closed state identity. Its exhaustive
-`storage_rule` owns volume assignment, producer and retention. `molt.dx` owns
-volume selection and `storage_path` projects that identity. The existing
+`storage_rule` owns default volume assignment, producer and retention. `molt.dx`
+resolves `StorageLocation`, and `storage_path` projects its path. The existing
 checkout-state table is a projection of these rules, not a second inventory.
 `molt.disk_capacity` remains the admission boundary, `molt.checkout_state`
 owns lifetime locks and last-use records, and `tools/molt_dev.py storage` is
@@ -14,7 +14,7 @@ when a capacity-selected output volume changes.
 | State | Placement | Lifetime |
 | --- | --- | --- |
 | Cargo outputs, product store | Existing DX target and product selectors | Existing build-output retention and 25 GiB admission floor |
-| Compile cache | Artifact root `.molt_cache` | Existing entry locks and last-use byte/age budget |
+| Compile cache | Artifact root `.molt_cache`; unbound SDK user-cache selection has checkout custody | Existing entry locks and last-use byte/age budget |
 | uv, pip, Ruff, sccache caches | Artifact root provider directories | Provider protocols; never unlink uv internals |
 | Development environments | Artifact root existing checkout-addressed layout | Existing shared-use locks and last-use policy |
 | Browser/Edgebox package environments | Existing checkout-provisioning paths | Lock-file producer admission, shared use through child closure, last-use budget |
@@ -121,8 +121,12 @@ native tools or emitted user programs.
 Landing gates receive `RunContext.canonical_env`, including `UV_CACHE_DIR`,
 `MOLT_CACHE`, provider caches and scratch `TMPDIR`/`TMP`/`TEMP`. Their interpreter
 and bytecode policy still come from the existing gate/image owner.
-Actual gate preparation materializes provider roots with producer provenance;
-the dry-run projection does not create them.
+Actual gate preparation materializes the admitted environment snapshot after
+capacity checks, including provider provenance, without reselecting its image
+or roots. A dry run and a capacity refusal do not create output directories.
+The SDK and DX use the same memoized user-state selector; no second cache
+default lives in the inventory. Installation home keeps its original user
+custody rather than following a new binding for regenerable cache.
 
 ## Upstream decisions reused
 
