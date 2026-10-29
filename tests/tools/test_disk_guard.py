@@ -1156,7 +1156,9 @@ def test_owner_retirement_skips_the_idle_window_never_a_lock_or_protection():
 
 
 @pytest.mark.parametrize("name", ["ordinary", "OneDrive - selected artifacts"])
-def test_root_selection_requires_explicit_custody(tmp_path, name):
+def test_root_selection_requires_explicit_custody(
+    tmp_path, name, unbound_checkout_family
+):
     selected = tmp_path / name
     selected.mkdir()
     unrelated = tmp_path / "unrelated"
