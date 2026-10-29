@@ -6680,12 +6680,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_sourcefileloader_exec_module",
         import: WasmRuntimeImport::ImportlibSourcefileloaderExecModule,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_zip_source_loader_exec_module",
         import: WasmRuntimeImport::ImportlibZipSourceLoaderExecModule,
-        arity: 5,
+        arity: 4,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_extension_loader_create_module",
@@ -6695,12 +6695,12 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_extension_loader_exec_module",
         import: WasmRuntimeImport::ImportlibExtensionLoaderExecModule,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_sourceless_loader_exec_module",
         import: WasmRuntimeImport::ImportlibSourcelessLoaderExecModule,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_importlib_resources_reader_open_resource_bytes_from_roots",

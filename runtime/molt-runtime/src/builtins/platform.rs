@@ -1760,30 +1760,6 @@ fn importlib_find_spec_object_bits(
     Ok(spec_bits)
 }
 
-fn importlib_single_item_list_bits(_py: &PyToken<'_>, value_bits: u64) -> Result<u64, u64> {
-    let list_ptr = alloc_list(_py, &[value_bits]);
-    if list_ptr.is_null() {
-        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-    }
-    Ok(MoltObject::from_ptr(list_ptr).bits())
-}
-
-fn importlib_require_package_root_bits(
-    _py: &PyToken<'_>,
-    package_root_bits: u64,
-) -> Result<(), u64> {
-    if obj_from_bits(package_root_bits).is_none()
-        || string_obj_to_owned(obj_from_bits(package_root_bits)).is_none()
-    {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "invalid importlib package root for package module",
-        ));
-    }
-    Ok(())
-}
-
 fn importlib_module_support_bits(
     _py: &PyToken<'_>,
     modules_ptr: *mut u8,

@@ -294,18 +294,6 @@ pub(super) fn importlib_import_module_resolved_name(
     importlib_resolve_join(_py, &name, &package_name)
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct ImportlibModuleStateArgs {
-    pub(super) module_bits: u64,
-    pub(super) module_name_bits: u64,
-    pub(super) loader_bits: u64,
-    pub(super) origin_bits: u64,
-    pub(super) is_package: bool,
-    pub(super) module_package_bits: u64,
-    pub(super) package_root_bits: u64,
-    pub(super) module_spec_cls_bits: u64,
-}
-
 pub(in super::super) enum ImportlibTransactionReturn<'a> {
     Leaf,
     Dunder {
