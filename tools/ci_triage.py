@@ -5,7 +5,10 @@ For every failed job the report names the failed proof commands, each unique
 failing test with its first assertion or panic line, and the Cargo errors. A
 failure is marked NEW unless the newest completed run of the same workflow on
 `main` fails the same test in a job of the same name, and each failure names
-the open ledger rows (`docs/agent/V1_HANDOFF_FINDINGS.md`) that mention it.
+its owning open ledger row (`docs/agent/V1_HANDOFF_FINDINGS.md`). A test whose
+expectation names a finding (a `@finding` test, a `finding=` program or a
+`finding` manifest entry; `tools/finding_coverage.py`) is owned by that
+finding exactly. Any other failure names the open rows whose text mentions it.
 
 Completed job logs are immutable, so the tool caches them by job ID under the
 system temporary directory and downloads each log at most once.
@@ -30,6 +33,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +45,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.finding_status import STATE_OPEN, project  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "docs" / "agent" / "V1_HANDOFF_FINDINGS.md"
@@ -159,20 +164,30 @@ def parse_job_log(name: str, text: str) -> JobReport:
 
 
 def open_ledger_rows(ledger_text: str) -> list[tuple[str, str]]:
-    """(ID, row text) for every open finding row; a "Fixed" section closes rows."""
-    rows: list[tuple[str, str]] = []
-    open_section = True
-    for line in ledger_text.splitlines():
-        if line.startswith("## "):
-            open_section = not line[3:].startswith("Fixed")
-            continue
-        if open_section and (match := re.match(r"^\| ((?:HF|V1)-F?\d+) \|", line)):
-            rows.append((match.group(1), line))
-    return rows
+    """(key, row text) for every open finding row, by the ledger's one reader."""
+    lines = ledger_text.splitlines()
+    return [
+        (row.key, lines[row.line - 1])
+        for row in project(ledger_text).rows
+        if row.state == STATE_OPEN
+    ]
 
 
-def ledger_owners(failure: str, rows: list[tuple[str, str]]) -> list[str]:
-    """Open rows that mention the failure's test function or proof command."""
+def expectation_owners() -> dict[str, str]:
+    """The finding that each expectation-carrying test names, keyed by test id."""
+    from tools.finding_coverage import citations
+
+    return {citation.test: citation.finding for citation in citations()}
+
+
+def ledger_owners(
+    failure: str,
+    rows: list[tuple[str, str]],
+    owners: Mapping[str, str] | None = None,
+) -> list[str]:
+    """The finding a failure's expectation names, else open rows mentioning it."""
+    if owners and (owner := owners.get(failure.split(" - ", 1)[0])):
+        return [owner]
     needle = failure.split(": ", 1)[0]
     needle = needle.rsplit("::", 1)[-1].split("[", 1)[0]
     if len(needle) < 8:
@@ -194,6 +209,7 @@ def classify(
     reports: list[JobReport],
     baseline: list[JobReport] | None,
     ledger_rows: list[tuple[str, str]],
+    owners: Mapping[str, str] | None = None,
 ) -> list[Classified]:
     """Mark each failure NEW unless the baseline job of that name has it too."""
     known = {report.name: report.failure_keys() for report in baseline or []}
@@ -209,7 +225,12 @@ def classify(
             new = None if baseline is None else key not in seen
             out.append(
                 Classified(
-                    report.name, kind, key, detail, new, ledger_owners(key, ledger_rows)
+                    report.name,
+                    kind,
+                    key,
+                    detail,
+                    new,
+                    ledger_owners(key, ledger_rows, owners),
                 )
             )
     return out
@@ -344,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_run = _run(base_id)
             baseline, _ = _failed_reports(baseline_run)
     ledger = LEDGER.read_text(encoding="utf-8") if LEDGER.is_file() else ""
-    items = classify(reports, baseline, open_ledger_rows(ledger))
+    items = classify(reports, baseline, open_ledger_rows(ledger), expectation_owners())
     verification = None
     if args.verify:
         from tools.ci_proof_evidence import verify_run

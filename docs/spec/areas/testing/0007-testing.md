@@ -229,6 +229,53 @@ merge redundant cases without losing their unique contract coverage. Report the
 actual checks, results, omitted surfaces and evidence paths through the existing
 handoff/proof records; do not add a second checklist or per-test receipt system.
 
+### Finding tests: the executable ledger
+
+A finding test states the behavior that an open row of
+[the findings ledger](../../../agent/V1_HANDOFF_FINDINGS.md) violates, with an
+independent oracle (for runtime behavior, the target CPython), and fails today
+because of that row's defect. It is the ledger's executable form, after rustc's
+`known-bug` UI tests, Go's `test/fixedbugs/issueNNNN.go`, LLVM `lit` `XFAIL`
+and CPython's `expectedFailure` tests named for their issue.
+
+- **One typed identity.** `tools/gen_finding_ids.py` projects the ledger
+  (through `tools/finding_status.py`) into `tests/findings/finding_ids.py`:
+  `OpenFindingId` and `FixedFindingId` are closed `Literal` types, and
+  `ty check src tests/findings` rejects a citation of a missing or closed row.
+  Every record site validates the same set at run time.
+- **Three record sites, one meaning.** Each expectation sits beside the test it
+  owns and names exactly one open finding:
+  - a pytest test under `tests/findings/` carries `@finding("HF-n")`
+    (`tests/findings/__init__.py`); `tests/conftest.py` makes it a strict
+    expected failure that must fail with an `AssertionError`;
+  - a differential program declares
+    `# MOLT_META: expect_fail=molt expect_fail_reason=open_finding finding=HF-n`
+    with `expect_molt_returncode` and `expect_molt_stdout_sha256`, which pin how
+    Molt fails today (`tools/compat/test_policy.py`);
+  - an entry of `tools/suite_honesty/differential_expectations.json` names its
+    owner as `finding`; its `regrtest` block keys CPython's own tests as
+    `test.<module>[::<Class>::<method>]` per `<backend>@<version>` dimension,
+    and `tools/cpython_regrtest.py` classifies each run against it.
+- **Strict in both directions.** A failure that the expectation owns passes the
+  run. A different failure (another exception, another exit status or stdout,
+  a test with no owning entry) fails it as a new defect. A pass fails it as an
+  unexpected pass. A timeout, a worker failure or an expectation the run cannot
+  confirm never passes.
+- **Closing a row.** A finding row closes when its finding tests pass and the
+  change that closes it removes their markers, `MOLT_META` keys and manifest
+  entries. The regenerated identity type then rejects any citation left
+  behind, so the row, the tests and the type change together.
+- **Coverage and burn-down.** `tests/findings/families.py` declares the open
+  findings of each enforced family. `python tools/finding_coverage.py --check`
+  fails when a member has no expectation, when an expectation names a row that
+  is not open, or when the family's local lane (`findings.<family>.native` in
+  `tools/proof_plan.toml`) does not run exactly the family's finding programs.
+  Its report counts the remaining expected failures per finding and family.
+- **Not a waiver.** An expectation makes a known failure visible and owned; it
+  does not accept it. The finding stays open in the release scope until the
+  behavior matches the oracle. Never record a failure under a finding whose row
+  does not describe it; write the row first.
+
 ### Sources and limits
 
 - OpenAI's [Astra prompting guidance](https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra#testing-and-verification)

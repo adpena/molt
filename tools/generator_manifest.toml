@@ -84,6 +84,18 @@ sync_test = "tests/cli/test_cli_version.py"
 closed_domains = []
 discovery_only = false
 
+[[generator]]
+tool = "tools/gen_finding_ids.py"
+outputs = ["tests/findings/finding_ids.py"]
+source = "docs/agent/V1_HANDOFF_FINDINGS.md + tools/finding_status.py"
+check_mode = true
+check_command = "tools/gen_finding_ids.py --check"
+toolchains = []
+idempotent = true
+sync_test = "tests/tools/test_finding_tests.py"
+closed_domains = []
+discovery_only = false
+
 # ===========================================================================
 # Generators (one row per tools/gen_*.py)
 # ===========================================================================

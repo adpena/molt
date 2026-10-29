@@ -9095,6 +9095,10 @@ def test_differential_proofs_select_their_host_compiler_profile_explicitly() -> 
         for lane in PLAN.named_lanes
         if lane.id.startswith("r6.target-version-parity.")
     )
+    # A finding family's lane pins how the development compiler fails today.
+    expected.update(
+        (lane.id, "dev") for lane in PLAN.named_lanes if lane.id.startswith("findings.")
+    )
     actual = {}
     for command in (*PLAN.commands, *PLAN.named_lanes):
         if "tests/molt_diff.py" not in command.argv:
