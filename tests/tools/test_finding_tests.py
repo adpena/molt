@@ -467,7 +467,7 @@ _PRIOR_ART = "# Prior art\n\n## A. Typed ABI\n\ntext\n\n## B. Binding flow\n\nte
 
 
 def test_every_open_finding_sits_in_one_dependency_family_with_prior_art() -> None:
-    from tools import finding_coverage, finding_status
+    from tools import finding_status
 
     complete = finding_status.project(_DAG_LEDGER.format(b_rows="HF-3"))
     assert [family.title for family in complete.dependency_families] == [
@@ -494,9 +494,7 @@ def test_every_open_finding_sits_in_one_dependency_family_with_prior_art() -> No
         "dependency family B. Binding flow has no section in "
         "docs/design/findings_prior_art.md"
     ]
-    bare = finding_status.project(
-        _DAG_LEDGER.split("## Open:")[1].join(["## Open:", ""])
-    )
+    bare = finding_status.project("## Open:" + _DAG_LEDGER.split("## Open:", 1)[1])
     assert finding_coverage.dependency_order_problems(bare, _PRIOR_ART) == [
         "the ledger has no family dependency order table"
     ]
