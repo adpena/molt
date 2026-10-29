@@ -830,10 +830,8 @@ def record_path(state_root: Path, key: str) -> Path:
     return state_root / "build_records" / key[:2] / f"{key}.json"
 
 
-def _publication_custody(
-    observed: set[tuple[str, str]], outputs: tuple[Path, ...]
-) -> set[str]:
-    """The observed paths the outputs' publications own: never inputs.
+def _publication_custody(paths: set[str], outputs: tuple[Path, ...]) -> set[str]:
+    """The resolved observed paths the outputs' publications own: never inputs.
 
     An output's family (the output, its receipt, lock, journals and stages)
     is custody. A publication can also stage a stage, as the WASM backend
@@ -842,7 +840,8 @@ def _publication_custody(
     custody path, or lies inside an owned stage directory, joins the custody
     until nothing changes. Only reserved staging names whose key names a
     custody path in the same directory qualify, by the staging-name
-    authority; nothing is opened.
+    authority; nothing is opened. Stages live beside what they stage, so only
+    paths under an output's directory are examined, and each walk stops there.
     """
     from molt.artifact_publication import is_publication_family_member
     from molt.file_publication import (
@@ -855,21 +854,10 @@ def _publication_custody(
     def owner_key(path: Path) -> tuple[str, str]:
         return resolved_host_path_key(path.parent), staging_destination_key(path)
 
-    paths = {os.path.realpath(name) for _kind, name in observed}
-    custody = {
-        path
-        for path in paths
-        if any(is_publication_family_member(Path(path), output) for output in outputs)
-    }
-    owners = {owner_key(path) for path in (*outputs, *map(Path, custody))}
-    # Stages live beside what they stage, so only paths under an output's
-    # directory can be custody; the walk stops at that directory.
     roots = {resolved_host_path_key(output.parent) for output in outputs}
+    prefixes = tuple(root.rstrip(os.sep) + os.sep for root in roots)
 
-    def staged_nodes(path: str) -> list[Path]:
-        key = resolved_host_path_key(path)
-        if not any(key.startswith(root.rstrip(os.sep) + os.sep) for root in roots):
-            return []
+    def nodes_below_root(path: str) -> list[Path]:
         nodes: list[Path] = []
         for node in (Path(path), *Path(path).parents):
             if resolved_host_path_key(node) in roots:
@@ -877,17 +865,26 @@ def _publication_custody(
             nodes.append(node)
         return []
 
+    candidates = {
+        path: nodes
+        for path in sorted(paths)
+        if resolved_host_path_key(path).startswith(prefixes)
+        and (nodes := nodes_below_root(path))
+    }
+    custody = {
+        path
+        for path in candidates
+        if any(is_publication_family_member(Path(path), output) for output in outputs)
+    }
+    owners = {owner_key(path) for path in (*outputs, *map(Path, custody))}
     pending = [
-        (path, nodes)
-        for path in sorted(paths - custody)
-        if (nodes := staged_nodes(path))
+        (path, nodes) for path, nodes in candidates.items() if path not in custody
     ]
     changed = True
     while changed:
         changed = False
         remaining = []
         for path, nodes in pending:
-            candidate = Path(path)
             if any(
                 is_staged_file_path(node)
                 and (
@@ -898,7 +895,7 @@ def _publication_custody(
                 for node in nodes
             ):
                 custody.add(path)
-                owners.add(owner_key(candidate))
+                owners.add(owner_key(Path(path)))
                 changed = True
             else:
                 remaining.append((path, nodes))
@@ -928,7 +925,9 @@ def resolve_observed(
 
     outputs = tuple(Path(os.path.realpath(path)) for path in published_outputs)
     output_parents = {resolved_host_path_key(output.parent) for output in outputs}
-    custody = _publication_custody(ledger.observed, outputs)
+    observed = sorted(ledger.observed)
+    resolved_paths = {name: os.path.realpath(name) for _kind, name in observed}
+    custody = _publication_custody(set(resolved_paths.values()), outputs)
     roots = tuple(
         {
             resolved_host_path_key(os.path.realpath(root)).rstrip(os.sep) + os.sep
@@ -970,8 +969,8 @@ def resolve_observed(
             name = parent
         completed_lookups.update(chain)
 
-    for kind, name in sorted(ledger.observed):
-        resolved = os.path.realpath(name)
+    for kind, name in observed:
+        resolved = resolved_paths[name]
         real = resolved_host_path_key(resolved)
         if resolved in custody or (kind == "directory" and real in output_parents):
             continue
