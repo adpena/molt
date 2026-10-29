@@ -145,20 +145,6 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
             ("stateful", stateful_guest(FORWARD, STATE)),
         ]
     };
-    // 512 blocks stay flat; 515 blocks take the tree at its smallest size.
-    for (statements, flat) in [(170, true), (171, false)] {
-        let wasm = forward_guest(statements);
-        let depth = max_control_depth(&wasm);
-        assert!(
-            depth <= NESTING_BOUND,
-            "{statements} statements nest {depth} deep"
-        );
-        assert_eq!(
-            depth > 3 * statements as usize,
-            flat,
-            "{statements} statements nest {depth} deep"
-        );
-    }
     // Production shape: 128-way nodes above 512 blocks, two levels for these
     // 1,202-block guests. A shape of four reaches six levels in the same
     // guests, so every selector depth executes.
@@ -183,6 +169,20 @@ fn control_nesting_stays_bounded_across_dispatch_modes() {
                 "{name}: forward routing between scope nodes must not add a loop"
             );
         }
+    }
+    // 512 blocks stay flat; 515 blocks take the tree at its smallest size.
+    for (statements, flat) in [(170, true), (171, false)] {
+        let wasm = forward_guest(statements);
+        let depth = max_control_depth(&wasm);
+        assert!(
+            depth <= NESTING_BOUND,
+            "{statements} statements nest {depth} deep"
+        );
+        assert_eq!(
+            depth > 3 * statements as usize,
+            flat,
+            "{statements} statements nest {depth} deep"
+        );
     }
 
     let node = PathBuf::from("node");
