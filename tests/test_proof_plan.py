@@ -9883,7 +9883,8 @@ def test_benchmark_fixture_and_producer_have_distinct_proof_obligations(producer
             "tests/tools/test_proof_queue.py",
         } <= selected
     else:
-        assert "native-link-benchmark-tests" in names
+        # The dependency graph selects an edited test file itself; no rule
+        # restates that, and no producer's proof boundary joins it.
         assert not extension_rules & names
         assert selected == {
             "tests/tools/test_native_link_benchmark.py",

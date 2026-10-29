@@ -446,6 +446,49 @@ To test Tier 1:
 - Create "Bait" tests that trigger deoptimization (e.g., passing a `float` to a function that was specialized for `int`).
 - Verify that the runtime correctly switches to the slow path without crashing or losing state.
 
+## Landing test selection
+
+A landing runs every test file that depends on a changed path.
+`tools/test_dependency_graph.py` derives the relation from the tracked sources
+of the candidate commit; `GateConfig.select` (`tools/molt_dev_policy.py`) runs
+each selected file under its own proof cell. Prior art: Pants dependency
+inference (imports, string assets, conftest files), Bazel
+`rdeps(universe, set)`, Buck2's target determinator and pytest-testmon.
+
+- **Imports.** Every `import` outside `if TYPE_CHECKING:`, literal
+  `importlib.import_module` names, and (in a test file) dotted names it patches
+  or launches. `from m import f` binds the module's module-level code and the
+  named top-level function, closed over the functions its body references; a
+  parent package binds only its module-level code.
+- **Paths.** String constants and folded path joins (`ROOT / "a" / "b"`,
+  `Path(__file__).parents[k]`, `os.path.join`, f-string prefixes) that name a
+  tracked file, or a tracked directory below the top level. A test binds the
+  paths named by its own module, its `tests/` helpers and the modules they
+  import directly; a deeper module's path constant is a detail of a call. A
+  join onto an unknown root (`tmp_path / "src/molt"`) names files only. A test
+  file is never another test's data.
+- **Harness.** A test binds the module-level code, hooks and autouse fixtures
+  of each `conftest.py` above it, the fixtures it requests, and the `-p`
+  plugins in `pyproject.toml`. Edits to that harness closure select the suite.
+- **Generators.** A manifest generator's `sync_test` executes the generator.
+  The always gate `tools/generators.py check` re-renders every reproducible
+  check-mode generator, so a checked output's readers are selected by the
+  output's own edit; an unchecked output also follows its generator's edit.
+- **Envelopes.** A selected file runs under its `pre-push` cell that needs no
+  compiler build (targets, toolchains, memory unit). A file whose cells need
+  builds or run later is reported as deferred to those cells. A rule that
+  requests the file keeps its prerequisites; a rule cohort the graph runs whole
+  under the same tools is not run twice.
+
+Facts are cached by Git blob id under the Molt cache, so a warm selection
+parses only changed blobs (about 1.5 s for 3,900 Python files; a cold parse
+takes about 12 s). Rules remain for gates, for curated cohorts of build-owned
+files and for edges the graph cannot derive; a rule whose tests the graph
+selects for every path it globs is deleted. `tools/check_cargo_test_truth.py`
+also fails when a `[[test]]` target's `required-features` are enabled by no
+plan `cargo test`, except the entries of
+`tools/cargo_gated_test_targets_baseline.json`, which may only shrink.
+
 ## 5. Continuous Integration Gates
 - **Rust**: `cargo test` (runtime + core unit tests).
 - **Python**: `uv run --python 3.12 pytest` (unit and integration tests under `tests/`).
