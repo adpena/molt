@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use super::super::alias_analysis::{AliasAnalysisResult, MemRegion};
 use super::*;
-use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -961,4 +961,89 @@ fn use_node_carries_region_and_reaching_def() {
     // The Use node's accessor helpers agree.
     assert_eq!(use_node.defined_version(), None, "a Use defines no version");
     assert_eq!(use_node.block(), func.entry_block);
+}
+
+/// Memory versions are numbered in the established terminator-first order.
+/// Canonical CFG order is also deterministic, but would exchange these phis.
+#[test]
+fn exception_join_phi_numbers_preserve_memory_ssa_order() {
+    let mut func = TirFunction::new(
+        "two_exception_joins".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    for id in 1..6 {
+        func.blocks.insert(
+            BlockId(id),
+            TirBlock {
+                id: BlockId(id),
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    func.label_id_map.insert(4, 40);
+    func.label_id_map.insert(5, 50);
+    for id in 0..4 {
+        let block = func.blocks.get_mut(&BlockId(id)).unwrap();
+        if id == 1 || id == 3 {
+            block.ops.push(store(ValueId(0), ValueId(1), 0));
+        }
+        let mut check = op(OpCode::CheckException, vec![], vec![]);
+        check
+            .attrs
+            .insert("value".into(), AttrValue::Int(if id < 2 { 40 } else { 50 }));
+        block.ops.push(check);
+        if id < 3 {
+            block.terminator = Terminator::Branch {
+                target: BlockId(id + 1),
+                args: vec![],
+            };
+        }
+    }
+    let canonical = crate::tir::dominators::executable_reverse_postorder(&func);
+    assert_eq!(canonical, [0, 1, 2, 3, 5, 4].map(BlockId));
+    let reachable = canonical.iter().copied().collect();
+    assert_eq!(
+        super::cfg::reverse_postorder(&func, &reachable),
+        [0, 1, 4, 2, 3, 5].map(BlockId)
+    );
+    for _ in 0..4 {
+        // Fresh maps vary hash seeds. Numeric identities and incoming versions
+        // must stay exact, rather than comparing modulo a version renaming.
+        let mut copy = func.clone();
+        copy.blocks = func
+            .blocks
+            .iter()
+            .map(|(&id, block)| (id, block.clone()))
+            .collect();
+        copy.label_id_map = func
+            .label_id_map
+            .iter()
+            .map(|(&id, &label)| (id, label))
+            .collect();
+        let memory = compute_standalone(&copy, &alias_of(&copy));
+        assert_eq!(memory.block_phis[&BlockId(4)], MemVersion(1));
+        assert_eq!(memory.block_phis[&BlockId(5)], MemVersion(2));
+        assert_eq!(memory.block_phis.len(), 2);
+        for (id, expected) in [
+            (
+                4,
+                vec![(BlockId(0), MemVersion(0)), (BlockId(1), MemVersion(3))],
+            ),
+            (
+                5,
+                vec![(BlockId(2), MemVersion(3)), (BlockId(3), MemVersion(4))],
+            ),
+        ] {
+            let Some(MemAccess::Phi { incoming, .. }) =
+                memory.access(memory.block_phis[&BlockId(id)])
+            else {
+                panic!("expected phi");
+            };
+            assert_eq!(*incoming, expected);
+        }
+    }
 }

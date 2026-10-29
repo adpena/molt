@@ -26,7 +26,7 @@ pub use super::traversal::reverse_postorder_by;
 pub use indexed::IndexedDominance;
 pub use points::{ProgramPointDominance, ProgramPointGraph};
 pub use simple_points::{SimpleExecutionDominance, SimpleProgramPoint};
-pub use tree::DominatorTree;
+pub use tree::{DominanceGraph, DominatorTree};
 
 // ---------------------------------------------------------------------------
 // Helpers
