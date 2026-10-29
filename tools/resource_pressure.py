@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 from molt import host_capacity
+from molt.guard_scope import require_guard_stem
 
 if __package__:
     from . import memory_guard
@@ -190,7 +191,7 @@ def plan_resource_pressure(
     diff_mem_per_job_gb: float | None = None,
 ) -> ResourcePressurePlan:
     env = os.environ if environ is None else environ
-    normalized_prefix = prefix.strip().upper().rstrip("_") or "MOLT"
+    normalized_prefix = require_guard_stem(prefix) or "MOLT"
     cpus = max(
         1, int(cpu_count if cpu_count is not None else host_capacity.cpu_count())
     )

@@ -40,7 +40,7 @@ from molt.cli import build_command as cli_build_command
 from molt.cli.build_request import BuildRequest
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 def _managed_tool(directory: Path, name: str) -> Path:

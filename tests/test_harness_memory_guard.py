@@ -624,7 +624,7 @@ def test_serial_nested_guard_budget_preserves_the_admitted_tree(
     admitted = outer.current_memory_limits(env)
     assert admitted.max_total_rss_gb == pytest.approx(5.82, abs=1 / 1024**2)
     prefixes = (
-        ("MOLT_WASM_TEST", "MOLT_WASM_LINK", "MOLT_BACKEND")
+        ("MOLT_WASM_TEST", "MOLT_WASM_LINK", "MOLT_BUILD")
         if rotate_prefix
         else ("MOLT_WASM_TEST",)
     )
@@ -1002,7 +1002,7 @@ for name in ('TMPDIR', 'TMP', 'TEMP'):
         stream.write(name.encode('ascii'))
 """
     if route == "executor":
-        run = CommandExecutor.for_file(__file__).run
+        run = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST").run
         kwargs = {"text": True, "capture_output": True}
     else:
         run = (
@@ -2321,7 +2321,9 @@ def test_guarded_completed_process_reports_actionable_violation(
     assert "elapsed=2.50s" in result.stderr
     assert "scope=process_tree" in result.stderr
     assert "limit=3.00GB" in result.stderr
-    assert "MOLT_PYTEST_MAX_PROCESS_RSS_GB/MOLT_PYTEST_MAX_TOTAL_RSS_GB" in result.stderr
+    assert (
+        "MOLT_PYTEST_MAX_PROCESS_RSS_GB/MOLT_PYTEST_MAX_TOTAL_RSS_GB" in result.stderr
+    )
 
 
 def test_guarded_completed_process_reports_actionable_timeout(

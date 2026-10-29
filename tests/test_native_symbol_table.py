@@ -34,7 +34,7 @@ from tests.native_artifact_fixtures import native_relocatable_object
 from tools.command_execution import CommandExecutor
 
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 def _rows(data: bytes, *, architecture: str | None = None) -> list[tuple]:

@@ -38,7 +38,7 @@ def test_executor_preserves_rule_through_real_guard_context(
     monkeypatch.setenv("MOLT_PYTEST_MEMORY_GUARD_POLL_SEC", "0.11")
     monkeypatch.setenv("MOLT_SESSION_ID", "ambient-session")
     values = {
-        "molt_test_memory_guard_poll_sec": "0.37",
+        "molt_pytest_memory_guard_poll_sec": "0.37",
         "MOLT_SESSION_ID": "canonical-session",
         "molt_session_id": "pinned-session",
         "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
@@ -91,7 +91,7 @@ def test_executor_routes_only_bounded_metadata_to_direct_probe(monkeypatch) -> N
         "_process_guard_authority",
         lambda _root: authority,
     )
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
     executor.run(
         ["git", "status", "--porcelain"],
@@ -121,7 +121,7 @@ def test_executor_rejects_loaded_molt_from_another_repo(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "molt", foreign)
 
     with pytest.raises(RuntimeError, match="repository import custody mismatch"):
-        command_execution.CommandExecutor.for_file(__file__)
+        command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
 
 def test_owned_wait_escalates_only_its_exact_process() -> None:
@@ -140,7 +140,7 @@ def test_owned_wait_escalates_only_its_exact_process() -> None:
         def kill(self):
             calls.append(("kill", None))
 
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
     with pytest.raises(subprocess.TimeoutExpired):
         executor.wait_owned(Process(), timeout=1.0, terminate_timeout=0.5)  # type: ignore[arg-type]
 
@@ -154,13 +154,13 @@ def test_owned_wait_escalates_only_its_exact_process() -> None:
 
 
 def test_executor_rejects_shell_text() -> None:
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
     with pytest.raises(TypeError, match="typed argv"):
         executor.run("git status")  # type: ignore[arg-type]
 
 
 def test_executor_rejects_capture_output_with_explicit_stream() -> None:
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
     with pytest.raises(ValueError, match="capture_output cannot be combined"):
         executor.run(
             ["git", "status"],
@@ -292,7 +292,7 @@ def test_executor_routes_git_query_forms_without_weakening_recorded_custody(
         "_process_guard_authority",
         lambda _root: SimpleNamespace(run_completed_command=run),
     )
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
     capture = {} if recorded is None else {recorded: tmp_path / "evidence"}
     executor.run(command, capture_output=True, **capture)
     ((arguments, kwargs),) = observed
@@ -392,7 +392,7 @@ def test_git_transfer_http_bound_keeps_a_tighter_user_value(
 def test_git_config_append_accepts_git_zero_count_forms(tmp_path, count):
     from tools.git_identity import add_git_config
 
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
     environment = dict(os.environ)
     environment["GIT_CONFIG_COUNT"] = count
     accepted = executor.run(
@@ -425,7 +425,7 @@ def test_git_config_append_accepts_git_zero_count_forms(tmp_path, count):
 def test_git_config_append_refuses_invalid_inherited_count(tmp_path, count):
     from tools.git_identity import add_git_config
 
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
     environment = dict(os.environ)
     environment["GIT_CONFIG_COUNT"] = count
     result = executor.run(
@@ -746,7 +746,7 @@ def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
     install_module_view(
         monkeypatch, "subprocess", subprocess, command_execution, Popen=FakePopen
     )
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
 
     executor.start_owned(
         ["cargo", "metadata", "--no-deps"],
@@ -776,7 +776,7 @@ def test_owned_cargo_epoch_admission_uses_child_cwd(
     install_module_view(
         monkeypatch, "subprocess", subprocess, command_execution, Popen=FakePopen
     )
-    executor = command_execution.CommandExecutor.for_file(__file__)
+    executor = command_execution.CommandExecutor.for_file(__file__, stem="MOLT_PYTEST")
     env = {"CC": "sccache gcc", "SOURCE_DATE_EPOCH": "1"}
     if exact_child_file:
         executor.start_owned(["cargo", "metadata"], cwd=child, env=env)
@@ -890,7 +890,9 @@ def test_bound_executor_retains_source_owner_with_foreign_compiler_inputs(
 
         monkeypatch.setattr(authority.ProcessStateUse, "__enter__", enter)
         command = ["git", "rev-parse", "--show-toplevel"]
-    result = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT).run(
+    result = command_execution.CommandExecutor(
+        prefix="MOLT_PYTEST", repo_root=ROOT
+    ).run(
         command,
         env=dict(os.environ),
         cwd=ROOT,
@@ -1111,9 +1113,7 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
     )
     env, managed_roots = _managed_command_roots(tmp_path)
     env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "guard-state")
-    executor = command_execution.CommandExecutor(
-        prefix="MOLT_PYTEST", repo_root=ROOT
-    )
+    executor = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT)
     with tempfile.TemporaryFile(mode="w+b") as stderr:
         owned = executor.start_guarded(
             [sys.executable, "-B", str(child_script), str(pidfile)],

@@ -1700,7 +1700,7 @@ def batch_process_group_kwargs(
     *,
     env: Mapping[str, str] | None = None,
 ) -> ProcessGroupKwargs:
-    resolved_limits = limits or limits_from_env("MOLT", env)
+    resolved_limits = limits or limits_from_env(None, env)
     if os.name == "nt":
         return detached_process_group_kwargs(
             windows=True,
@@ -2452,7 +2452,7 @@ def repo_process_sentinel(
         repo_root=repo_root,
         artifact_root=artifact_root,
         label=label,
-        limits=limits or limits_from_env("MOLT"),
+        limits=limits or limits_from_env(None),
         drain_on_exit=drain_on_exit,
         drain_grace_sec=drain_grace_sec,
         drain_until_clean_sec=drain_until_clean_sec,

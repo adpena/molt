@@ -218,7 +218,6 @@ def test_build_role_preserves_family_custody_and_uses_shared_default(
 @pytest.mark.parametrize(
     ("env", "expected"),
     [
-        ({"MOLT_WASM_TEST_BUILD_TIMEOUT_SEC": "111"}, 111),
         ({"MOLT_WASM_TEST_TIMEOUT_SEC": "222", "MOLT_BUILD_TIMEOUT_SEC": "333"}, 222),
         ({"MOLT_BUILD_TIMEOUT_SEC": "333"}, 333),
         ({"MOLT_TEST_PROCESS_TIMEOUT_SEC": "444"}, 444),
