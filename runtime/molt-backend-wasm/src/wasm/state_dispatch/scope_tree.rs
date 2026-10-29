@@ -1,14 +1,19 @@
 //! Bounded-depth geometry of the physical block scopes (HF-546).
 //!
 //! A forward transfer in structured WASM needs an enclosing label that ends
-//! right before its destination. One `block` per physical block nests as deep
-//! as the function has blocks: a 16,334-block module body reached Binaryen's
-//! recursive stack writer at 3,182 nested `if`s after `-Oz` and overflowed a
-//! 544 KiB macOS worker stack. A function of at most [`FLAT_SCOPE_LIMIT`]
-//! blocks keeps one scope per block, which costs no routing. A larger one
-//! lays its scopes out as a radix tree: each node holds at most
-//! `2^SCOPE_FANOUT_LOG2` child scopes, so it nests about `levels * fanout`
-//! deep, not one level per block.
+//! right before its destination. The flat layout gives every physical block
+//! one `block` scope. Most of those scopes are reached only from the adjacent
+//! block, and an optimizer folds them away; a scope reached from farther away
+//! stays open from its first transfer to its block. Binaryen 133 `-Oz` turned
+//! the 3,077 overlapping far-targeted scopes of one 16,333-block module body
+//! into 3,182 nested `if`s, and its recursive stack writer overflowed a
+//! 544 KiB macOS worker stack at 2,128 levels.
+//!
+//! A function keeps the flat layout, and its exact bytes, while at most
+//! [`FLAT_NESTING_LIMIT`] far-targeted scopes overlap and it has at most
+//! [`FLAT_BLOCK_LIMIT`] blocks. Otherwise its scopes form a radix tree: each
+//! node holds at most `2^SCOPE_FANOUT_LOG2` child scopes, so it nests about
+//! `levels * fanout` deep, not one level per block or far target.
 //!
 //! A transfer between leaves of one level-1 node keeps its direct `br`. A
 //! transfer into another node stores the destination's digits below the
@@ -17,37 +22,64 @@
 //! `br_table` over one radix digit. The design and its sources are in
 //! docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md section 1.7.
 
-/// Most blocks a function may keep in the flat one-scope-per-block layout:
-/// at most 512 nested scopes, a quarter of the 2,128 levels that overflowed
-/// Binaryen's writer, and 1/32 of WABT's 16,384-label reader cap.
-pub(super) const FLAT_SCOPE_LIMIT: usize = 512;
+/// Most overlapping far-targeted scopes a flat function may keep: about half
+/// of the 2,128 levels that overflowed Binaryen's writer on a macOS worker.
+pub(super) const FLAT_NESTING_LIMIT: usize = 1024;
+/// Most blocks a flat function may keep: its emitted nesting stays at half of
+/// WABT's 16,384-label binary reader cap.
+pub(super) const FLAT_BLOCK_LIMIT: usize = 8192;
 /// Log2 of the child-scope fan-out of one tree node: 128 children. Three
 /// levels (387 nested scopes) cover every function body the JS API admits.
 pub(super) const SCOPE_FANOUT_LOG2: u32 = 7;
 
+/// When a function leaves the flat layout, and the tree it takes instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScopeShape {
+    nesting_limit: usize,
+    block_limit: usize,
+    fanout_log2: u32,
+}
+
+const PRODUCTION_SHAPE: ScopeShape = ScopeShape {
+    nesting_limit: FLAT_NESTING_LIMIT,
+    block_limit: FLAT_BLOCK_LIMIT,
+    fanout_log2: SCOPE_FANOUT_LOG2,
+};
+
 #[cfg(not(test))]
-fn scope_shape() -> (usize, u32) {
-    (FLAT_SCOPE_LIMIT, SCOPE_FANOUT_LOG2)
+fn scope_shape() -> ScopeShape {
+    PRODUCTION_SHAPE
 }
 
 #[cfg(test)]
 thread_local! {
-    static TEST_SCOPE_SHAPE: std::cell::Cell<(usize, u32)> =
-        const { std::cell::Cell::new((FLAT_SCOPE_LIMIT, SCOPE_FANOUT_LOG2)) };
+    static TEST_SCOPE_SHAPE: std::cell::Cell<ScopeShape> =
+        const { std::cell::Cell::new(PRODUCTION_SHAPE) };
 }
 
 #[cfg(test)]
-fn scope_shape() -> (usize, u32) {
+fn scope_shape() -> ScopeShape {
     TEST_SCOPE_SHAPE.with(std::cell::Cell::get)
 }
 
-/// Plan the scopes of every function compiled inside `body` with a flat
-/// limit and fan-out of `2^log2`, so small fixtures reach the multi-level
-/// routing of huge production functions. Emission is single-threaded.
+/// Plan the scopes of every function compiled inside `body` with small
+/// limits (`nesting_limit` far scopes, `block_limit` blocks) and a fan-out of
+/// `2^fanout_log2`, so small fixtures reach the routing of huge production
+/// functions. Emission is single-threaded per backend.
 #[cfg(test)]
-pub(in crate::wasm) fn with_test_scope_fanout_log2<R>(log2: u32, body: impl FnOnce() -> R) -> R {
-    assert!((1..=SCOPE_FANOUT_LOG2).contains(&log2));
-    let previous = TEST_SCOPE_SHAPE.with(|cell| cell.replace((1 << log2, log2)));
+pub(in crate::wasm) fn with_test_scope_shape<R>(
+    nesting_limit: usize,
+    block_limit: usize,
+    fanout_log2: u32,
+    body: impl FnOnce() -> R,
+) -> R {
+    assert!((1..=SCOPE_FANOUT_LOG2).contains(&fanout_log2));
+    let shape = ScopeShape {
+        nesting_limit,
+        block_limit,
+        fanout_log2,
+    };
+    let previous = TEST_SCOPE_SHAPE.with(|cell| cell.replace(shape));
     let result = body();
     TEST_SCOPE_SHAPE.with(|cell| cell.set(previous));
     result
@@ -73,20 +105,27 @@ pub(super) struct ForwardScopeExit {
 }
 
 impl ScopeTree {
-    pub(super) fn new(block_count: usize) -> Self {
-        let (flat_limit, fanout_log2) = scope_shape();
-        Self::with_shape(block_count, flat_limit, fanout_log2)
+    /// The layout for a function of `block_count` blocks whose flat layout
+    /// would keep `far_nesting` far-targeted scopes open at once.
+    pub(super) fn new(block_count: usize, far_nesting: usize) -> Self {
+        let shape = scope_shape();
+        if far_nesting <= shape.nesting_limit && block_count <= shape.block_limit {
+            Self::flat(block_count)
+        } else {
+            Self::radix(block_count, shape.fanout_log2)
+        }
     }
 
-    fn with_shape(block_count: usize, flat_limit: usize, fanout_log2: u32) -> Self {
-        if block_count <= flat_limit {
-            // One node holds every block; its radix covers the whole function.
-            return Self {
-                block_count,
-                levels: 1,
-                fanout_log2: block_count.max(2).next_power_of_two().trailing_zeros(),
-            };
+    /// One node holds every block; its radix covers the whole function.
+    pub(super) fn flat(block_count: usize) -> Self {
+        Self {
+            block_count,
+            levels: 1,
+            fanout_log2: block_count.max(2).next_power_of_two().trailing_zeros(),
         }
+    }
+
+    fn radix(block_count: usize, fanout_log2: u32) -> Self {
         let mut levels = 1;
         while block_count > 1usize << (fanout_log2 * levels) {
             levels += 1;
@@ -262,17 +301,16 @@ mod tests {
 
     #[test]
     fn scope_tree_matches_emitted_label_geometry() {
+        for block_count in [1, 2, 127, 300, 512, 8_192] {
+            check_geometry(ScopeTree::flat(block_count));
+        }
         let cases = [
-            (
-                FLAT_SCOPE_LIMIT,
-                SCOPE_FANOUT_LOG2,
-                [1, 2, 127, 300, 512, 513, 16_384, 16_385, 40_000],
-            ),
-            (4, 2, [1, 3, 4, 5, 16, 17, 64, 65, 1_000]),
+            (SCOPE_FANOUT_LOG2, vec![129, 300, 16_384, 16_385, 40_000]),
+            (2, vec![5, 16, 17, 64, 65, 1_000]),
         ];
-        for (flat_limit, fanout_log2, block_counts) in cases {
+        for (fanout_log2, block_counts) in cases {
             for block_count in block_counts {
-                check_geometry(ScopeTree::with_shape(block_count, flat_limit, fanout_log2));
+                check_geometry(ScopeTree::radix(block_count, fanout_log2));
             }
         }
     }
@@ -283,10 +321,6 @@ mod tests {
         let (stacks, max_depth) = emitted_geometry(tree);
         assert!(
             max_depth <= tree.levels() as usize * fanout,
-            "{block_count} blocks nest {max_depth} deep"
-        );
-        assert!(
-            max_depth <= FLAT_SCOPE_LIMIT,
             "{block_count} blocks nest {max_depth} deep"
         );
         for (block, stack) in stacks.iter().enumerate() {
@@ -323,9 +357,17 @@ mod tests {
 
     #[test]
     fn scope_tree_levels_bound_engine_sized_functions() {
-        let levels = |blocks| ScopeTree::new(blocks).levels();
-        assert_eq!(levels(FLAT_SCOPE_LIMIT), 1);
-        assert_eq!(levels(FLAT_SCOPE_LIMIT + 1), 2);
+        // Either limit moves a function from the flat layout to the tree.
+        assert_eq!(
+            ScopeTree::new(FLAT_BLOCK_LIMIT, FLAT_NESTING_LIMIT).levels(),
+            1
+        );
+        assert_eq!(ScopeTree::new(FLAT_BLOCK_LIMIT + 1, 0).levels(), 2);
+        assert_eq!(
+            ScopeTree::new(FLAT_NESTING_LIMIT + 2, FLAT_NESTING_LIMIT + 1).levels(),
+            2
+        );
+        let levels = |blocks| ScopeTree::radix(blocks, SCOPE_FANOUT_LOG2).levels();
         assert_eq!(levels(128 * 128), 2);
         assert_eq!(levels(128 * 128 + 1), 3);
         // The JS API caps a function body at 7,654,321 bytes; a block needs
