@@ -220,6 +220,12 @@ def build_junit_xml(
     )
 
 
+def failure_reason(returncode: int, stderr: str) -> str:
+    """The exit status and the last diagnostic line, which names the failure."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return f"molt rc={returncode}: {lines[-1]}" if lines else f"molt rc={returncode}"
+
+
 def compat_refusal(stdout: str, stderr: str) -> str | None:
     text = "\n".join([stdout, stderr])
     if "MOLT_COMPAT_ERROR:" not in text:
@@ -334,7 +340,7 @@ def run_molt_test(
         # a CPython skip: it fails, and an expectation must name its finding.
         refusal = compat_refusal(result.stdout, result.stderr)
         state = "FAILED"
-        reason = refusal or f"molt rc={result.returncode}"
+        reason = refusal or failure_reason(result.returncode, result.stderr)
         errors = [
             (
                 test_name,

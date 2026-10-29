@@ -6781,6 +6781,17 @@ timeout_seconds = 3600
 
 [[named_lane]]
 cache_domain = "cargo-workspace"
+id = "regrtest.import-system.native"
+description = "Run CPython's own import tests (test_importlib, test_import, test_pkgutil, test_zipimport, from the pinned source of config/cpython_regrtest_sources.toml) compiled by Molt natively, and classify every outcome against the regrtest expectations of tools/suite_honesty/differential_expectations.json: a failure passes only when an entry names its open finding; a new failure, an unexpected pass, an unconfirmed entry or a worker error fails the lane (HF-488). On lane/finding-tests-pilot (2026-10-29, macOS arm64, --workers 4) the lane takes 23 s and all four tests fail before any case runs: every build stops at 'Compiler cache identity: ... surrogates not allowed' because libregrtest gives each worker an undecodable environment value. Built directly, outside libregrtest, test.test_importlib.test_lazy still stops after 453 s at a MOLT_COMPAT_ERROR in test.support (call to non-allowlisted function 'temp_cwd'). Neither failure has an owning row yet, so the lane fails. Linux and WASM are unverified."
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/cpython_regrtest.py", "--clone", "--no-diff", "--workers", "4", "--timeout", "1800", "test_importlib", "test_import", "test_pkgutil", "test_zipimport"]
+toolchains = ["python", "uv", "rustc", "cargo", "git"]
+cargo_native_units = { target = ["c", "c++"] }
+resource_family = "native-build"
+contention_key = "cargo-native-runtime"
+timeout_seconds = 7200
+
+[[named_lane]]
+cache_domain = "cargo-workspace"
 id = "native.jit-aot-twins"
 description = "Run the JIT-AOT twin cases under the AOT and JIT tiers (HF-371): both must match CPython, and the exact twins must agree on exit status, stdout and stderr and on build success. The 484 cases are the basic programs that passed under both tiers on main 9e0f94f11 (2026-10-21: 480 of 514; 33 fail CPython identically under both, named by HF-295 and HF-446 to HF-453, and multiprocessing_pool_apply_async diverges because its 5 s result timeout expires while the spawned JIT worker compiles), the process-state cases closed_pipe_write_signal, native_stack_exhaustion, closed_stderr_start and file_size_limit_write_signal (expected failures that pin the exact exit status and stdout, a marker line printed before the probed operation, that both tiers must end with; a divergence fails whatever the mark), reexec_keeps_parent_environment, start_ignores_caller_file_state (an unusable TMPDIR, ulimit -f 0 and an empty current directory) and the spawn-mode multiprocessing_pool_imap. On the lane tip (2026-10-22, main c5f7dbb25, macOS arm64, 46.5 min at --jobs 4 and host load 12-14) all 484 pass under both tiers on the first run, the four pinned expected failures ending exactly as pinned, with no backend-daemon lock timeout (the three runs before HF-462 one daemon per program lost 2, 1 and 8 cases to them, HF-388). The proof queue refuses this lane on macOS, its only admitted host, because the macOS proof supervisor admits no process closure (HF-07); run the argv detached with REAPER_KEEPALIVE=1 and keep the log. Linux is unverified."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--compiler-profile", "dev", "--build-profile", "dev", "--target", "native,jit", "--jobs", "4", "--json"]
