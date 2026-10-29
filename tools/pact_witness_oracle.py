@@ -26,7 +26,7 @@ from molt.scientific_stack_versions import PACT_WITNESS_DEPENDENCY_GROUP  # noqa
 
 from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_WITNESS_ITER")
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_ROOT = ROOT / "collab" / "pact" / "pact_witness_kernel"

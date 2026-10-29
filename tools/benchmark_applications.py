@@ -487,7 +487,7 @@ def main() -> int:
             str(prepared.seal.payload_root / app.driver),
             *app.run_args,
         ],
-        prefix="MOLT_BENCH_ORACLE",
+        prefix="MOLT_BENCH",
         cwd=prepared.seal.payload_root,
         env=env,
         capture_output=True,
@@ -495,7 +495,7 @@ def main() -> int:
         encoding="utf-8",
         errors="surrogateescape",
         timeout=60,
-        limits=harness_memory_guard.limits_from_env("MOLT_BENCH_ORACLE", env),
+        limits=harness_memory_guard.limits_from_env("MOLT_BENCH", env),
     )
     from tools.safe_run import observed_run_outcome
 

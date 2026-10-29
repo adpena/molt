@@ -49,7 +49,7 @@ from molt.verified_subset import load_verified_subset_policy  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXECUTOR = CommandExecutor.for_file(__file__)
+EXECUTOR = CommandExecutor.for_file(__file__, stem="MOLT_CI")
 PLAN_SCHEMA = "molt.nightly-shard-plan.v2"
 EVIDENCE_SCHEMA = "molt.nightly-shard-evidence.v2"
 AGGREGATE_SCHEMA = "molt.nightly-shard-aggregate.v3"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.process_environment import ProcessEnvironment
+from molt.guard_stems_generated import GuardStem
 
 import datetime as dt
 import os
@@ -821,7 +822,7 @@ def _planned_validate_steps(
     return selected
 
 
-def _validate_guard_prefix(step: _ValidationStep) -> str:
+def _validate_guard_prefix(step: _ValidationStep) -> GuardStem:
     if step.category == "benchmark":
         return "MOLT_BENCH"
     if step.category == "conformance":

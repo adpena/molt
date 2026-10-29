@@ -9,6 +9,7 @@ from typing import Protocol
 
 from tools import memory_guard
 from molt.file_publication import atomic_write_bytes
+from molt.guard_scope import require_guard_stem
 
 
 class HarnessLimitsView(Protocol):
@@ -36,7 +37,7 @@ def limit_text(limit_gb: float | None) -> str:
 
 
 def rss_limit_hint(prefix: str) -> str:
-    normalized = memory_guard.normalize_env_prefix(prefix) or "MOLT"
+    normalized = require_guard_stem(prefix) or "MOLT"
     if normalized == "MOLT":
         return "MOLT_MAX_PROCESS_RSS_GB/MOLT_MAX_TOTAL_RSS_GB"
     return (
@@ -46,7 +47,7 @@ def rss_limit_hint(prefix: str) -> str:
 
 
 def timeout_hint(prefix: str) -> str:
-    normalized = memory_guard.normalize_env_prefix(prefix) or "MOLT"
+    normalized = require_guard_stem(prefix) or "MOLT"
     return f"{normalized}_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC"
 
 

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import os
 
 from molt import host_capacity
+from molt.guard_scope import require_guard_stem
 
 
 DEFAULT_MAX_RSS_GB = 12.0
@@ -62,24 +63,12 @@ class ResolvedMemoryLimits:
         return self.max_global_rss_kb / (1024 * 1024)
 
 
-def normalize_env_prefix(prefix: str | None) -> str:
-    """The guard scope stem for ``prefix``: upper-cased, no trailing underscore.
-
-    One authority for every ``<STEM>_<SUFFIX>`` environment name the guards
-    compose (see ``[[family]]`` in ``src/molt/environment_registry.toml``).
-    """
-
-    if not prefix:
-        return ""
-    return prefix.strip().upper().rstrip("_")
-
-
 def _prefixed_names(prefix: str | None, suffix: str) -> list[str]:
     """``<STEM>_<suffix>`` then the root fallback ``MOLT_<suffix>``."""
 
-    normalized = normalize_env_prefix(prefix)
+    normalized = require_guard_stem(prefix)
     names: list[str] = []
-    if normalized and normalized != "MOLT":
+    if normalized:
         names.append(f"{normalized}_{suffix}")
     names.append(f"MOLT_{suffix}")
     return names

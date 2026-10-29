@@ -80,7 +80,7 @@ from tools.toolchain_env import (  # noqa: E402
     toolchain_environment,
 )
 
-COMMANDS = CommandExecutor.for_file(__file__)
+COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 LOCAL_TIER = "pre-push"
 WORKSPACE_INPUTS = frozenset({"Cargo.toml", "Cargo.lock"})
 TOOLCHAIN_INPUTS = frozenset({"rust-toolchain.toml", "clippy.toml"})

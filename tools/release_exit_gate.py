@@ -50,7 +50,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 SCHEMA_VERSION = 4
 KIND = "molt-release-exit"
 STATUS_PASS = "PASS"

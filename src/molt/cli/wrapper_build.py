@@ -6,6 +6,7 @@ from molt.compilation_target import TargetKind, is_wasm_target
 from molt.cli.build_request import BuildRequest, build_request_values
 from molt.cli.build_request_resolution import resolve_build_arguments
 from molt.process_environment import ProcessEnvironment
+from molt.guard_stems_generated import GuardStem
 
 import hashlib
 import json
@@ -607,7 +608,7 @@ def _run_wrapper_build(
     command: str,
     verbose: bool,
     resolved_build_entry: _ResolvedBuildEntry | None = None,
-    memory_guard_prefix: str | None = _CLI_MEMORY_GUARD_PREFIX,
+    memory_guard_prefix: GuardStem | None = _CLI_MEMORY_GUARD_PREFIX,
 ) -> tuple[_WrapperBuildContract | None, float, int | None]:
     # Anchor the caller's lexical file selector before the child changes cwd.
     # Keep symlinks unresolved so each fence observes live selector resolution.

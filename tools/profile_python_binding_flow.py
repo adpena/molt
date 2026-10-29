@@ -47,7 +47,7 @@ from molt.compiler_analysis.python_source_keys import python_source_digest  # no
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(
-    IMPLEMENTATION_ROOT / "tools" / Path(__file__).name
+    IMPLEMENTATION_ROOT / "tools" / Path(__file__).name, stem="MOLT_BENCH"
 )
 
 

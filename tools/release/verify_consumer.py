@@ -81,7 +81,7 @@ from tools.release.binary_compatibility import (  # noqa: E402
 )
 from tools.release.runtime_cells import declared_cell_keys, inventory_cell_keys  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 
 
 _HOST_PROBE = (
