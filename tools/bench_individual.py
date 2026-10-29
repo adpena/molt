@@ -906,9 +906,9 @@ def _main(workload_custody: ExitStack) -> None:
         raise SystemExit("--samples must be >= 1")
     if args.warmup < 0:
         raise SystemExit("--warmup must be >= 0")
-    from tools.bench_evidence import benchmark_evidence_root
+    from molt.dx import storage_path
 
-    results_dir = benchmark_evidence_root(REPO_ROOT, os.environ)
+    results_dir = storage_path(REPO_ROOT, "benchmark-evidence", os.environ)
     results_dir.mkdir(parents=True, exist_ok=True)
     BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
