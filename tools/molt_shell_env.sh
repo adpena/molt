@@ -27,15 +27,21 @@ molt_select_python() {
     printf '%s\n' "$root/.venv/bin/python"
     return
   fi
-  if command -v python3 >/dev/null 2>&1; then
-    command -v python3
+  # uv selects for the project's requires-python, as every documented command
+  # does. A PATH interpreter can be older (macOS ships python3 3.9).
+  local found candidate
+  if command -v uv >/dev/null 2>&1 && found="$(cd "$root" && uv python find 2>/dev/null)" && [ -n "$found" ]; then
+    printf '%s\n' "$found"
     return
   fi
-  if command -v python >/dev/null 2>&1; then
-    command -v python
-    return
-  fi
-  echo "Molt shell wrappers require Python; none was found on PATH or in .venv." >&2
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+      && "$candidate" -B -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+  done
+  echo "Molt shell wrappers require CPython 3.12 or newer; install uv or put one on PATH." >&2
   return 127
 }
 
@@ -124,7 +130,7 @@ molt_scratch_dir() {
   python="${MOLT_PYTHON:-$(molt_select_python "$root")}"
   host_root="$(molt_host_path_for_python "$root" "$python")"
   PYTHONPATH="$host_root/src${PYTHONPATH:+:$PYTHONPATH}" \
-    "$python" -c 'import sys; from pathlib import Path; from molt.dx import scratch_dir; print(scratch_dir(Path(sys.argv[1]), sys.argv[2]))' \
+    "$python" -B -c 'import sys; from pathlib import Path; from molt.dx import scratch_dir; print(scratch_dir(Path(sys.argv[1]), sys.argv[2]))' \
     "$host_root" "$purpose"
 }
 
@@ -138,5 +144,5 @@ molt_run_context_env() {
     set -- --session-id "$MOLT_SESSION_ID" "$@"
   fi
   PYTHONPATH="$host_root/src${PYTHONPATH:+:$PYTHONPATH}" \
-    "$python" "$host_root/tools/run_context_env.py" --root "$host_root" "$@"
+    "$python" -B "$host_root/tools/run_context_env.py" --root "$host_root" "$@"
 }
