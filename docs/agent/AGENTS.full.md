@@ -1228,7 +1228,6 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md): architecture map, layer ownership, and integration checklist.
 - [docs/spec/areas/core/0000-vision.md](docs/spec/areas/core/0000-vision.md) and [docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md): vision, scope, and explicit break policy.
 - [docs/spec/STATUS.md](docs/spec/STATUS.md) and [ROADMAP.md](ROADMAP.md): canonical current scope/limits and the active forward-looking plan.
-- [docs/ROADMAP.md](docs/ROADMAP.md): detailed archive/reference roadmap context.
 - [docs/architecture/gpu-primitive-stack.md](docs/architecture/gpu-primitive-stack.md) and [docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md): GPU primitive, ShapeTracker, fusion, reduction-domain, MLIR/MIL, and renderer contracts.
 - [docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md](docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md): minimum must-pass gate matrix and mandatory memory-guard custody for test execution.
 - [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md): determinism/security enforcement checklist.
@@ -1606,7 +1605,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - The `tests/differential/basic/bytes_codec.py` case requires `msgpack` + `cbor2` (install via `uv sync --group dev`); otherwise the diff harness will skip it.
 - Use `tools/cpython_regrtest.py` to track CPython regression parity; it uses `tools/molt_regrtest_shim.py` to run tests via `--molt-cmd`. Keep skip reasons in `tools/cpython_regrtest_skip.txt`, and review `summary.md` (in each `logs/cpython_regrtest/<run>/`) + `junit.xml` in `logs/cpython_regrtest/`.
 - `--coverage` now combines host regrtest + Molt subprocess coverage (requires `coverage` and a Python-based `--molt-cmd`; non-Python commands log a warning and skip Molt coverage).
-- Regrtest runs set `MOLT_CAPABILITIES=fs.read,env.read` by default; override with `--molt-capabilities` if you need stricter or broader access.
+- Regrtest runs set `MOLT_CAPABILITY_TIER=full` by default, the host access CPython's tests assume; `--molt-capability-tier` selects another tier and `--molt-capabilities` grants more names.
 - The regrtest shim marks `MOLT_COMPAT_ERROR` results as skipped; check `junit.xml` for reasons and codify intentional exclusions in `tools/cpython_regrtest_skip.txt`.
 - The regrtest shim forces `MOLT_PROJECT_ROOT` to the repo so compiled runs link against the Molt runtime even for `third_party/` test sources.
 - The regrtest shim sets `MOLT_MODULE_ROOTS` (and `MOLT_REGRTEST_CPYTHON_DIR`) to the CPython `Lib` directory so `test.*` resolves to CPython sources; avoid exporting that path via `PYTHONPATH` to the host Python.
@@ -1742,7 +1741,7 @@ stubs, compatibility shims, or debt.
 
 ## Optimization Planning
 - When focusing on optimization tasks, closely measure allocations and apply rigorous profiling when it can clarify behavior; this has unlocked major speedups in synchronous functions.
-- When a potential optimization is discovered but is complex, risky, or time-intensive, add a fully specced entry to [OPTIMIZATIONS_PLAN.md](OPTIMIZATIONS_PLAN.md).
+- When a potential optimization is discovered but is complex, risky, or time-intensive, add a fully specced entry to its owning design (the performance compression ladder, `docs/design/foundation/65_perf_compression_ladder.md`).
 - The plan must include: problem statement, hypotheses, alternative implementations, algorithmic references/research (papers preferred), perf evaluation matrix (benchmarks + expected deltas), risk/rollback, and integration steps.
 - Compare alternatives with explicit tradeoffs and include checklists for validation and regression prevention.
 

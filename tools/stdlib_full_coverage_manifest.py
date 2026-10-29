@@ -54,6 +54,7 @@ STDLIB_FULLY_COVERED_MODULES: tuple[str, ...] = (
     "selectors",
     "socket",
     "struct",
+    "sysconfig",
     "this",
     "time",
     "types",
@@ -536,6 +537,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_struct_unpack",
         "molt_struct_unpack_from",
     ),
+    "sysconfig": ("molt_platform_processor", "molt_sys_abiflags"),
     "this": ("molt_this_payload",),
     "time": (
         "molt_time_altzone",

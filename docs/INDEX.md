@@ -58,6 +58,7 @@ the source of truth.
 - Luau backend optimization and generated support: [spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md), [spec/areas/compiler/luau_support_matrix.generated.md](spec/areas/compiler/luau_support_matrix.generated.md)
 - Stdlib intrinsic audit and platform availability: [spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md), [spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md)
 - Stdlib intrinsic loading/default metadata contract: [spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md](spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md)
+- `sysconfig` build values read from the running binary (HF-273): [design/sysconfig_build_values.md](design/sysconfig_build_values.md)
 
 ## Compiler Foundation Routing
 
@@ -72,6 +73,7 @@ the source of truth.
 - Codebase decomposition program: [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md), including the crate-graph per-move execution spec [21f](design/foundation/21f_crate_graph_smove_execution_specs.md)
 - Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [design/parallel_build_architecture.md](design/parallel_build_architecture.md), [architecture/compilation-model.md](architecture/compilation-model.md)
 - Verified namespace premises (binding-flow precision across callbacks: `TYPE_CHECKING`, relative-import metadata, canonical members; HF-226): [design/verified_namespace_premises.md](design/verified_namespace_premises.md)
+- Typed identity, state machines and formalization (the standing rule AGENTS.md points to): [design/foundation/typed_identity_state_machines.md](design/foundation/typed_identity_state_machines.md)
 - Typed suspension state machines (generator/coroutine frames as typed, liveness-sized slots; leading practice from Rust, LLVM, CPython, V8, Kotlin, C#, Swift, WasmFX; HF-229, HF-230): [design/typed_suspension_state_machines.md](design/typed_suspension_state_machines.md)
 - Backend compile daemon (concurrent requests, request-scoped settings, single flight, retirement): [design/backend_compile_daemon.md](design/backend_compile_daemon.md)
 - Host capacity and scheduling (one CPU and memory authority, declared per-unit needs, one scheduler; HF-334): [design/host_capacity.md](design/host_capacity.md)
@@ -91,6 +93,10 @@ the source of truth.
   [design/foundation/44b_frontend_hot_pass_profile.md](design/foundation/44b_frontend_hot_pass_profile.md)
 - Import bedrock PR2 one-store cutover map:
   [design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md](design/foundation/import_bedrock_pr2_sys_modules_view_cutover.md)
+- Function-level imports in a closed-world build (HF-557):
+  [design/foundation/function_level_imports.md](design/foundation/function_level_imports.md)
+- Findings prior art (sourced precedent for each ledger family A to T, what to adopt or refuse, and the cheapest confirming experiment):
+  [design/findings_prior_art.md](design/findings_prior_art.md)
 
 ## Workspace Guides
 
@@ -103,9 +109,9 @@ the source of truth.
 
 - Active roadmap: [../ROADMAP.md](../ROADMAP.md)
 - Planning authority manifest: [design/foundation/authority_manifest.toml](design/foundation/authority_manifest.toml)
-- Long-horizon north star and compression ladder: [design/foundation/51_ten_year_roadmap.md](design/foundation/51_ten_year_roadmap.md)
+- Product vision: [spec/areas/core/0000-vision.md](spec/areas/core/0000-vision.md)
+- Long-horizon engineering plan and phase exits: [design/CENTURY_SYSTEMS_PLAN.md](design/CENTURY_SYSTEMS_PLAN.md)
 - Autonomous operating doctrine and 5/10/50-year gap map: [design/foundation/52_autonomous_operating_charter.md](design/foundation/52_autonomous_operating_charter.md)
 - 100-year portfolio route cluster: throughput and async [54](design/foundation/54_throughput_concurrency_async.md), ownership lattice [55](design/foundation/55_memory_safety_ownership_lattice.md), DX/build speed [56](design/foundation/56_dx_buildspeed_tooling.md), UX/diagnostics [57](design/foundation/57_ux_cli_errors_onboarding.md), killer demos [58](design/foundation/58_killer_demos.md), semantic fact plane [59](design/foundation/59_semantic_fact_plane.md), whole-program DCE [60](design/foundation/60_tree_shaking_whole_program_dce.md), size plane [61](design/foundation/61_binary_size_and_output_optimization.md), cold start [62](design/foundation/62_startup_cold_start.md), deforestation/fusion [63](design/foundation/63_deforestation_fusion.md), scoreboards [64](design/foundation/64_perf_scoreboards_and_harness.md), perf compression [65](design/foundation/65_perf_compression_ladder.md), CPython parity [66](design/foundation/66_compat_cpython_parity.md), tinygrad/DFlash fidelity [67](design/foundation/67_compat_tinygrad_dflash.md), and ShapeFacts class layout [68](design/foundation/68_shapefacts_rung4_class_layout.md).
 - WASM, WebGPU, WebNN, BLAS/LAPACK/GSL, and tensor interchange acceleration plan: [71](design/foundation/71_wasm_webgpu_numeric_acceleration.md); binding determinism-first lowering contract: [WEBGPU_LOWERING](design/foundation/WEBGPU_LOWERING.md).
-- 90-day execution slice: [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md)
-- Roadmap archive: [ROADMAP.md](ROADMAP.md)
+- Open findings and the v1.0 burn-down order: [agent/V1_HANDOFF_FINDINGS.md](agent/V1_HANDOFF_FINDINGS.md)

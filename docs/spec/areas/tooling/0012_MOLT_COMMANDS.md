@@ -443,7 +443,8 @@ Key flags:
 - `--clone` (fetch the exact tag and verify the full commit SHA declared by
   `config/cpython_regrtest_sources.toml`)
 - `--molt-cmd <cmd...>` (command used by `tools/molt_regrtest_shim.py` to run each test file; defaults to `python -m molt.cli run`)
-- `--molt-capabilities <csv>` (comma-separated `MOLT_CAPABILITIES` for Molt test runs; default `fs.read,env.read`)
+- `--molt-capability-tier <tier>` (`MOLT_CAPABILITY_TIER` for Molt test runs; default `full`, the host access CPython's tests assume)
+- `--molt-capabilities <csv>` (comma-separated `MOLT_CAPABILITIES` granted beyond the tier; default none)
 - `--molt-shim <path>` (override the shim path)
 - `--skip-file <path>` (skip list, one module per line)
 - `--coverage` (coverage run + HTML/JSON output)

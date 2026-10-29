@@ -810,7 +810,11 @@ def _collect_imports(
                     for ref in refs
                     if ref.source[-1] == "Module" and ref.phase == "escape"
                 )
-            if result.exposes_module_globals:
+            if result.exposes_module_globals and phase not in {"read", "factory"}:
+                # Acquiring a namespace is not publishing its contents. In
+                # particular, the call-result read below reaches argument
+                # transfers without exposing globals() used by a key-limited
+                # lookup or mutation. Actual consumers retain their demands.
                 _source_demands.append(
                     _SourceValueDemand(python_node_source_key(tree), "expose", None)
                 )

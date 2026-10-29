@@ -1,6 +1,10 @@
 # Molt DataFrame Vision: Pandas-Useful Fast Path, Long-Term Modern Compatibility
 **Spec ID:** 0500
-**Status:** Draft (product + architecture)
+**Status:** Draft (product + architecture). Awaiting an owner decision: a
+Molt-owned DataFrame API and pandas-core compatibility layer conflict with the
+current direction in [ROADMAP.md](../../../../ROADMAP.md). Molt gains ecosystem
+support through C-API/ABI and source-built extensions, and does not reimplement
+upstream packages.
 **Priority:** P0 (usefulness), P1 (long-term compatibility)
 **Audience:** runtime/compiler engineers, data engineers
 

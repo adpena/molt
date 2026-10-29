@@ -53,6 +53,21 @@ limits need host-level backstops. Molt keeps its existing compiler/runtime
 policy and AOT extension/ABI model rather than embedding or duplicating Monty's
 interpreter implementation.
 
+## Execution lanes never grant authority
+
+An execution strategy is not a capability. A future interpreter lane (for
+example, one built on Monty's interpreter and sandbox ideas) or a tier-up from
+interpreted to compiled code consumes the same resolved policy and generated
+operation IDs as AOT code. It adds no second grant registry, manifest parser or
+compatibility token. If tier selection becomes a product feature, it gets its
+own typed execution-plan authority that references the immutable
+resolved-policy digest. A runtime audit wire format (for example, a protobuf
+schema through Buffa) is one checked-in schema with a lossless conversion from
+the runtime audit event; measured size, encode/decode time and allocations
+choose the shipped sink. Before such a lane ships, it proves the same policy
+digest and the same denial behavior on every host it claims: native, WASI,
+browser and Cloudflare Workers.
+
 ## Generated registry
 
 The exact built-in capability IDs, profile expansions, runtime tiers,
