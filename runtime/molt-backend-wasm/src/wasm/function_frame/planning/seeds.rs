@@ -15,8 +15,11 @@ pub(in crate::wasm::function_frame) struct FrameConstAnchor {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum FrameConstAnchorKey {
-    RuntimeSingleton(String),
-    Literal { kind: String, bytes: Vec<u8> },
+    RuntimeSingleton(molt_ir::OpKind),
+    Literal {
+        kind: molt_ir::OpKind,
+        bytes: Vec<u8>,
+    },
     Integer(Vec<u8>),
 }
 
@@ -114,7 +117,7 @@ impl FrameConstSeedPlan {
 
 fn anchor_key(policy: WasmConstOpPolicy, op: &OpIR) -> FrameConstAnchorKey {
     match policy.literal_payload() {
-        None if op.kind == "const" => FrameConstAnchorKey::Integer(
+        None if op.kind == molt_ir::OpKind::Const => FrameConstAnchorKey::Integer(
             molt_ir::literal_payload::integer_literal_bytes(i128::from(
                 op.value
                     .unwrap_or_else(|| panic!("const requires an i64 payload")),
@@ -123,10 +126,10 @@ fn anchor_key(policy: WasmConstOpPolicy, op: &OpIR) -> FrameConstAnchorKey {
         Some(OwnedLiteralPayloadKind::BigintBytes) => {
             FrameConstAnchorKey::Integer(policy.required_simple_ir_literal_bytes(op).to_vec())
         }
-        None => FrameConstAnchorKey::RuntimeSingleton(op.kind.clone()),
+        None => FrameConstAnchorKey::RuntimeSingleton(op.kind),
         Some(OwnedLiteralPayloadKind::String | OwnedLiteralPayloadKind::Bytes) => {
             FrameConstAnchorKey::Literal {
-                kind: op.kind.clone(),
+                kind: op.kind,
                 bytes: policy.required_simple_ir_literal_bytes(op).to_vec(),
             }
         }
@@ -139,12 +142,11 @@ mod tests {
     use crate::FunctionIR;
     use crate::wasm::function_frame::WasmFunctionFramePlan;
 
-    fn literal(kind: &str, out: &str, payload: &str) -> OpIR {
+    fn literal(kind: molt_ir::OpKind, out: &str, payload: &str) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
             out: Some(out.to_string()),
             s_value: Some(payload.to_string()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
@@ -160,8 +162,8 @@ mod tests {
     #[test]
     fn equal_literal_payloads_share_anchor() {
         let plan = WasmFunctionFramePlan::for_codegen_fixture(&function(vec![
-            literal("const_str", "first", "same"),
-            literal("const_str", "second", "same"),
+            literal(molt_ir::OpKind::ConstStr, "first", "same"),
+            literal(molt_ir::OpKind::ConstStr, "second", "same"),
         ]));
         let (_, frame) = plan.into_function_and_frame();
 
@@ -171,10 +173,10 @@ mod tests {
 
     #[test]
     fn full_i64_gets_anchor_while_inline_i47_stays_immediate() {
-        let mut inline = literal("const", "inline", "");
+        let mut inline = literal(molt_ir::OpKind::Const, "inline", "");
         inline.s_value = None;
         inline.value = Some(7);
-        let mut wide = literal("const", "wide", "");
+        let mut wide = literal(molt_ir::OpKind::Const, "wide", "");
         wide.s_value = None;
         wide.value = Some(i64::MAX);
         let plan = WasmFunctionFramePlan::for_codegen_fixture(&function(vec![inline, wide]));
@@ -187,16 +189,15 @@ mod tests {
 
     #[test]
     fn equivalent_full_i64_and_bigint_share_one_owner() {
-        let mut wide = literal("const", "wide", "");
+        let mut wide = literal(molt_ir::OpKind::Const, "wide", "");
         wide.s_value = None;
         wide.value = Some(i64::MAX);
         let bigint = OpIR {
-            kind: "const_bigint".into(),
             out: Some("big".into()),
             bytes: Some(molt_ir::literal_payload::integer_literal_bytes(i128::from(
                 i64::MAX,
             ))),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstBigint)
         };
         for ops in [vec![wide.clone(), bigint.clone()], vec![bigint, wide]] {
             let (_, frame) = WasmFunctionFramePlan::for_codegen_fixture(&function(ops))

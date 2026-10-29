@@ -12,9 +12,7 @@ use crate::ir::FunctionIR;
 
 use super::blocks::{BlockId, Terminator};
 use super::function::TirFunction;
-use super::op_kinds_generated::{
-    opcode_has_exception_label_attr_table, simpleir_kind_uses_function_label_id,
-};
+use super::op_kinds_generated::opcode_has_exception_label_attr_table;
 use super::ops::{AttrDict, AttrValue, TirOp};
 use super::values::ValueId;
 
@@ -65,7 +63,7 @@ impl LabelAllocator {
         Self::after_labels(
             func.ops
                 .iter()
-                .filter(|op| simpleir_kind_uses_function_label_id(&op.kind))
+                .filter(|op| op.kind.uses_function_label_id())
                 .filter_map(|op| op.value),
         )
     }
@@ -253,19 +251,19 @@ mod tests {
             return_abi: crate::FunctionReturnAbi::Value,
             ops: vec![
                 crate::ir::OpIR {
-                    kind: "label".into(),
+                    kind: crate::OpKind::Label,
                     value: Some(3),
-                    ..Default::default()
+                    ..crate::OpIR::new(crate::OpKind::Label)
                 },
                 crate::ir::OpIR {
-                    kind: "check_exception".into(),
+                    kind: crate::OpKind::CheckException,
                     value: Some(41),
-                    ..Default::default()
+                    ..crate::OpIR::new(crate::OpKind::CheckException)
                 },
                 crate::ir::OpIR {
-                    kind: "state_yield".into(),
+                    kind: crate::OpKind::StateYield,
                     value: Some(53),
-                    ..Default::default()
+                    ..crate::OpIR::new(crate::OpKind::StateYield)
                 },
             ],
             ..Default::default()

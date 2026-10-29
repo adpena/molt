@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 mod cargo_test_artifacts {
     include!(concat!(
@@ -96,40 +97,42 @@ impl OperandConstructor {
         results: Vec<ValueId>,
     ) -> TirOp {
         let words = vec![first, first, second];
-        let preserved =
-            |kind: &str| AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]);
+        let origin = match self {
+            Self::Tuple | Self::List | Self::Slice => None,
+            Self::PreservedTuple => Some(OpKind::TupleNew),
+            Self::PreservedList => Some(OpKind::ListNew),
+            Self::PreservedSlice => Some(OpKind::SliceNew),
+            Self::DirectSlice => Some(OpKind::Call),
+            Self::DataclassValues => Some(OpKind::DataclassNewValues),
+            Self::DataclassTuple => Some(OpKind::DataclassNew),
+            Self::Class => Some(OpKind::ClassDef),
+        };
         let (opcode, operands, attrs) = match self {
             Self::Tuple => (OpCode::BuildTuple, words, AttrDict::new()),
             Self::List => (OpCode::BuildList, words, AttrDict::new()),
-            Self::PreservedTuple => (OpCode::Copy, words, preserved("tuple_new")),
-            Self::PreservedList => (OpCode::Copy, words, preserved("list_new")),
+            Self::PreservedTuple => (OpCode::Copy, words, AttrDict::new()),
+            Self::PreservedList => (OpCode::Copy, words, AttrDict::new()),
             Self::Slice => (OpCode::BuildSlice, words, AttrDict::new()),
-            Self::PreservedSlice => (OpCode::Copy, words, preserved("slice_new")),
+            Self::PreservedSlice => (OpCode::Copy, words, AttrDict::new()),
             Self::DirectSlice => (
                 OpCode::Call,
                 words,
-                AttrDict::from([
-                    ("_original_kind".into(), AttrValue::Str("call".into())),
-                    ("s_value".into(), AttrValue::Str("molt_slice_new".into())),
-                ]),
+                AttrDict::from([("s_value".into(), AttrValue::Str("molt_slice_new".into()))]),
             ),
             Self::DataclassValues => (
                 OpCode::Copy,
                 [vec![none; 3], words].concat(),
-                preserved("dataclass_new_values"),
+                AttrDict::new(),
             ),
-            Self::DataclassTuple => (
-                OpCode::Copy,
-                [vec![none], words].concat(),
-                preserved("dataclass_new"),
-            ),
+            Self::DataclassTuple => (OpCode::Copy, [vec![none], words].concat(), AttrDict::new()),
             Self::Class => {
-                let mut attrs = preserved("class_def");
+                let mut attrs = AttrDict::new();
                 attrs.insert("s_value".into(), AttrValue::Str("1,1,16,1,0".into()));
                 (OpCode::Copy, [vec![none], words].concat(), attrs)
             }
         };
         TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -142,6 +145,7 @@ impl OperandConstructor {
 
 fn slice_operation(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildSlice,
         operands,
@@ -405,6 +409,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
     // Every operation below runs in a block that may execute repeatedly.
     let mut ops = vec![
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstStr,
             operands: vec![],
@@ -413,6 +418,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
             source_span: None,
         },
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::IterNextUnboxed,
             operands: vec![none],
@@ -425,17 +431,12 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
         ops.push(constructor.operation(first, second, none, vec![result]));
     }
     ops.push(TirOp {
+        origin: Some(OpKind::UnpackSequence),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![constructed[0]],
         results: vec![unpacked],
-        attrs: AttrDict::from([
-            (
-                "_original_kind".into(),
-                AttrValue::Str("unpack_sequence".into()),
-            ),
-            ("value".into(), AttrValue::Int(1)),
-        ]),
+        attrs: AttrDict::from([("value".into(), AttrValue::Int(1))]),
         source_span: None,
     });
     func.blocks.insert(
@@ -1864,11 +1865,13 @@ fn family_function_with_params(
 
 fn family_op(
     opcode: OpCode,
+    origin: Option<OpKind>,
     operands: Vec<ValueId>,
     results: Vec<ValueId>,
     attrs: &[(&str, AttrValue)],
 ) -> TirOp {
     TirOp {
+        origin,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -1881,25 +1884,23 @@ fn family_op(
     }
 }
 
-fn kind(value: &str) -> (&'static str, AttrValue) {
-    ("_original_kind", AttrValue::Str(value.into()))
-}
-
-fn home_op(kind_name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+fn home_op(kind_name: OpKind, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     family_op(
         OpCode::Copy,
+        Some(kind_name),
         operands,
         results,
-        &[kind(kind_name), ("value", AttrValue::Int(0))],
+        &[("value", AttrValue::Int(0))],
     )
 }
 
 fn home_call(name: &str, operands: Vec<ValueId>) -> TirOp {
     family_op(
         OpCode::Call,
+        Some(OpKind::Call),
         operands,
         vec![],
-        &[kind("call"), ("s_value", AttrValue::Str(name.into()))],
+        &[("s_value", AttrValue::Str(name.into()))],
     )
 }
 
@@ -1939,25 +1940,25 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             let rebound = func.fresh_value();
             let taken = func.fresh_value();
             vec![
-                home_op("frame_home_store", vec![first], vec![view]),
+                home_op(OpKind::FrameHomeStore, vec![first], vec![view]),
                 {
-                    let mut copy = family_op(OpCode::Copy, vec![view], vec![alias], &[]);
+                    let mut copy = family_op(OpCode::Copy, None, vec![view], vec![alias], &[]);
                     copy.set_source_op_index(7);
                     copy
                 },
                 home_call("fam_home_capture", vec![view, alias]),
                 home_call("fam_home_check", vec![alias]),
-                home_op("frame_home_load", vec![], vec![loaded]),
+                home_op(OpKind::FrameHomeLoad, vec![], vec![loaded]),
                 home_call("fam_home_check", vec![loaded]),
                 // An independently owned alias remains valid when the home changes.
-                family_op(OpCode::IncRef, vec![alias], vec![], &[]),
-                home_op("frame_home_store", vec![second], vec![rebound]),
+                family_op(OpCode::IncRef, None, vec![alias], vec![], &[]),
+                home_op(OpKind::FrameHomeStore, vec![second], vec![rebound]),
                 home_call("fam_home_rebound", vec![alias, rebound]),
-                family_op(OpCode::DecRef, vec![alias], vec![], &[]),
-                home_op("frame_home_take", vec![], vec![taken]),
+                family_op(OpCode::DecRef, None, vec![alias], vec![], &[]),
+                home_op(OpKind::FrameHomeTake, vec![], vec![taken]),
                 home_call("fam_home_taken", vec![rebound, taken]),
-                family_op(OpCode::DecRef, vec![taken], vec![], &[]),
-                home_op("frame_home_clear", vec![], vec![]),
+                family_op(OpCode::DecRef, None, vec![taken], vec![], &[]),
+                home_op(OpKind::FrameHomeClear, vec![], vec![]),
                 home_call("fam_home_release_held", vec![]),
             ]
         },
@@ -1970,7 +1971,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             let loaded = func.fresh_value();
             vec![
                 home_op(
-                    "frame_home_store",
+                    OpKind::FrameHomeStore,
                     vec![first],
                     if raw_view { vec![view] } else { vec![] },
                 ),
@@ -1978,10 +1979,10 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
                     "fam_home_raw_check",
                     vec![if raw_view { view } else { first }],
                 ),
-                home_op("frame_home_load", vec![], vec![loaded]),
+                home_op(OpKind::FrameHomeLoad, vec![], vec![loaded]),
                 home_call("fam_home_capture", vec![loaded, loaded]),
                 home_call("fam_home_check", vec![loaded]),
-                home_op("frame_home_clear", vec![], vec![]),
+                home_op(OpKind::FrameHomeClear, vec![], vec![]),
                 home_call("fam_home_release_held", vec![]),
             ]
         });
@@ -2003,10 +2004,10 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
         let view = func.fresh_value();
         vec![
             const_int_def(five, 5),
-            home_op("frame_home_store", vec![five], vec![view]),
+            home_op(OpKind::FrameHomeStore, vec![five], vec![view]),
             home_call("fam_home_capture", vec![view, view]),
             home_call("fam_home_check", vec![view]),
-            home_op("frame_home_clear", vec![], vec![]),
+            home_op(OpKind::FrameHomeClear, vec![], vec![]),
             home_call("fam_home_release_held", vec![]),
         ]
     }));
@@ -2027,12 +2028,13 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
                     ops: vec![
                         family_op(
                             OpCode::TryEnd,
+                            None,
                             vec![],
                             vec![],
                             &[("value", AttrValue::Int(51))],
                         ),
                         home_call("fam_home_store_failed", vec![]),
-                        home_op("frame_home_clear", vec![], vec![]),
+                        home_op(OpKind::FrameHomeClear, vec![], vec![]),
                     ],
                     terminator: Terminator::Return { values: vec![] },
                 },
@@ -2040,32 +2042,35 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             vec![
                 family_op(
                     OpCode::TryStart,
+                    None,
                     vec![],
                     vec![],
                     &[("value", AttrValue::Int(51))],
                 ),
-                home_op("frame_home_store", vec![params[0]], vec![]),
-                home_op("frame_home_store", vec![first], vec![view]),
+                home_op(OpKind::FrameHomeStore, vec![params[0]], vec![]),
+                home_op(OpKind::FrameHomeStore, vec![first], vec![view]),
                 family_op(
                     OpCode::CheckException,
+                    None,
                     vec![],
                     vec![],
                     &[("value", AttrValue::Int(51))],
                 ),
                 family_op(
                     OpCode::TryEnd,
+                    None,
                     vec![],
                     vec![],
                     &[("value", AttrValue::Int(51))],
                 ),
                 home_call("fam_home_store_check", vec![view]),
-                home_op("frame_home_clear", vec![], vec![]),
+                home_op(OpKind::FrameHomeClear, vec![], vec![]),
             ]
         },
     ));
     for (name, kind_name) in [
-        ("fam_home_cell", "frame_home_cell"),
-        ("fam_home_private_cell", "frame_home_private_cell"),
+        ("fam_home_cell", OpKind::FrameHomeCell),
+        ("fam_home_private_cell", OpKind::FrameHomePrivateCell),
     ] {
         functions.push(family_function_with_params(
             name,
@@ -2076,10 +2081,10 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
                 let taken = func.fresh_value();
                 vec![
                     home_op(kind_name, vec![params[0]], vec![view]),
-                    home_op("frame_home_take", vec![], vec![taken]),
+                    home_op(OpKind::FrameHomeTake, vec![], vec![taken]),
                     home_call("fam_home_cell_check", vec![view, taken]),
                     home_op(kind_name, vec![taken], vec![]),
-                    home_op("frame_home_clear", vec![], vec![]),
+                    home_op(OpKind::FrameHomeClear, vec![], vec![]),
                 ]
             },
         ));
@@ -2100,10 +2105,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
         }
         let facts = crate::representation_plan::LlvmReprFacts::build(func);
         for op in func.blocks.values().flat_map(|block| &block.ops) {
-            if matches!(
-                op.attrs.get("_original_kind"),
-                Some(AttrValue::Str(name)) if name == "frame_home_store"
-            ) {
+            if matches!(op.origin, Some(OpKind::FrameHomeStore)) {
                 for &view in &op.results {
                     assert!(
                         !facts.is_full_deopt_int(view),
@@ -2138,18 +2140,19 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
     let failure = numeric.fresh_block();
     let entry = numeric.blocks.get_mut(&numeric.entry_block).unwrap();
     entry.ops.extend([
-        home_op("frame_home_store", vec![wide], vec![view]),
-        family_op(OpCode::Copy, vec![view], vec![alias], &[]),
+        home_op(OpKind::FrameHomeStore, vec![wide], vec![view]),
+        family_op(OpCode::Copy, None, vec![view], vec![alias], &[]),
         const_int_def(step, 1),
         const_int_def(expected, FIRST_RAW + 1),
         family_op(
             OpCode::CheckedAdd,
+            None,
             vec![alias, step],
             vec![sum, overflow],
             &[],
         ),
-        family_op(OpCode::Not, vec![alias], vec![wide_is_zero], &[]),
-        family_op(OpCode::BitAnd, vec![alias, step], vec![masked], &[]),
+        family_op(OpCode::Not, None, vec![alias], vec![wide_is_zero], &[]),
+        family_op(OpCode::BitAnd, None, vec![alias, step], vec![masked], &[]),
     ]);
     entry.terminator = Terminator::CondBranch {
         cond: wide_is_zero,
@@ -2178,7 +2181,13 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
         TirBlock {
             id: compare,
             args: vec![],
-            ops: vec![family_op(OpCode::Eq, vec![sum, expected], vec![equal], &[])],
+            ops: vec![family_op(
+                OpCode::Eq,
+                None,
+                vec![sum, expected],
+                vec![equal],
+                &[],
+            )],
             terminator: Terminator::CondBranch {
                 cond: equal,
                 then_block: check_mask,
@@ -2195,6 +2204,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
             args: vec![],
             ops: vec![family_op(
                 OpCode::Not,
+                None,
                 vec![masked],
                 vec![masked_is_zero],
                 &[],
@@ -2219,7 +2229,7 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
                 args: vec![],
                 ops: vec![
                     home_call(provider, vec![]),
-                    home_op("frame_home_clear", vec![], vec![]),
+                    home_op(OpKind::FrameHomeClear, vec![], vec![]),
                 ],
                 terminator: Terminator::Return { values: vec![] },
             },
@@ -2241,8 +2251,53 @@ fn binding_home_functions(backend: &mut LlvmBackend<'_>) -> Vec<TirFunction> {
     functions
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CallCase {
+    Direct,
+    DirectExtracted,
+    CallFunc,
+    CallGuarded,
+    CallMethod,
+    CallLoadedMethod,
+    CallableAlias,
+    CallBind,
+    CallIndirect,
+    OwnedCallBind,
+    OwnedCallIndirect,
+}
+impl CallCase {
+    const fn kind(self) -> OpKind {
+        match self {
+            Self::Direct | Self::DirectExtracted => OpKind::Call,
+            Self::CallFunc | Self::CallableAlias => OpKind::CallFunc,
+            Self::CallGuarded => OpKind::CallGuarded,
+            Self::CallMethod => OpKind::CallMethod,
+            Self::CallLoadedMethod => OpKind::CallLoadedMethod,
+            Self::CallBind | Self::OwnedCallBind => OpKind::CallBind,
+            Self::CallIndirect | Self::OwnedCallIndirect => OpKind::CallIndirect,
+        }
+    }
+}
+impl std::fmt::Display for CallCase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Direct => "direct",
+            Self::DirectExtracted => "direct_extracted",
+            Self::CallFunc => "call_func",
+            Self::CallGuarded => "call_guarded",
+            Self::CallMethod => "call_method",
+            Self::CallLoadedMethod => "call_loaded_method",
+            Self::CallableAlias => "callable_alias",
+            Self::CallBind => "call_bind",
+            Self::CallIndirect => "call_indirect",
+            Self::OwnedCallBind => "owned_call_bind",
+            Self::OwnedCallIndirect => "owned_call_indirect",
+        })
+    }
+}
+
 fn adopted_call_op(
-    shape: &str,
+    shape: CallCase,
     [first, second, _]: [ValueId; 3],
     existing: ValueId,
     other: ValueId,
@@ -2251,57 +2306,64 @@ fn adopted_call_op(
     use crate::ir::ParameterCustody::{Borrowed, Transferred};
     let args = vec![existing, first, first, second, existing, other];
     let mut op = match shape {
-        "direct" => family_op(
+        CallCase::Direct => family_op(
             OpCode::Call,
+            Some(OpKind::Call),
             vec![
                 first, first, first, second, existing, existing, other, first, second,
             ],
             results,
-            &[
-                kind("call"),
-                ("s_value", AttrValue::Str("fam_owned_target".into())),
-            ],
+            &[("s_value", AttrValue::Str("fam_owned_target".into()))],
         ),
-        "direct_extracted" => family_op(
+        CallCase::DirectExtracted => family_op(
             OpCode::Call,
+            Some(OpKind::Call),
             vec![first, first, second, existing, existing, other],
             results,
-            &[
-                kind("call"),
-                ("s_value", AttrValue::Str("fam_extracted_target".into())),
-            ],
+            &[("s_value", AttrValue::Str("fam_extracted_target".into()))],
         ),
-        "call_func" | "call_guarded" | "call_method" => family_op(
-            if shape == "call_method" {
+        CallCase::CallFunc | CallCase::CallGuarded | CallCase::CallMethod => family_op(
+            if shape == CallCase::CallMethod {
                 OpCode::CallMethod
             } else {
                 OpCode::Call
             },
+            Some(shape.kind()),
             args,
             results,
-            &[kind(shape)],
+            &[],
         ),
-        "call_loaded_method" => family_op(OpCode::CallLoadedMethod, args, results, &[kind(shape)]),
-        "callable_alias" => family_op(
+        CallCase::CallLoadedMethod => family_op(
+            OpCode::CallLoadedMethod,
+            Some(shape.kind()),
+            args,
+            results,
+            &[],
+        ),
+        CallCase::CallableAlias => family_op(
             OpCode::Call,
+            Some(OpKind::CallFunc),
             vec![first, first, first, second, existing, existing, other],
             results,
-            &[kind("call_func")],
+            &[],
         ),
-        "call_bind" | "call_indirect" | "owned_call_bind" | "owned_call_indirect" => {
-            let spelling = shape.strip_prefix("owned_").unwrap_or(shape);
+        CallCase::CallBind
+        | CallCase::CallIndirect
+        | CallCase::OwnedCallBind
+        | CallCase::OwnedCallIndirect => {
+            let spelling = shape.kind();
             family_op(
                 OpCode::Call,
+                Some(spelling),
                 vec![first, existing],
                 results,
-                &[kind(spelling)],
+                &[],
             )
         }
-        _ => panic!("unknown executable call shape {shape}"),
     };
     let mut custody = vec![Transferred; op.operands.len()];
     match shape {
-        "direct" => {
+        CallCase::Direct => {
             custody = vec![
                 Borrowed,
                 Transferred,
@@ -2314,7 +2376,7 @@ fn adopted_call_op(
                 Borrowed,
             ];
         }
-        "direct_extracted" | "call_bind" | "call_indirect" => {
+        CallCase::DirectExtracted | CallCase::CallBind | CallCase::CallIndirect => {
             custody[0] = Borrowed;
         }
         _ => {}
@@ -2326,7 +2388,11 @@ fn adopted_call_op(
 fn adopted_call_loop() -> TirFunction {
     let mut func = family_function("fam_adopt_loop", false, |_, values, results| {
         vec![adopted_call_op(
-            "direct", values, values[2], values[2], results,
+            CallCase::Direct,
+            values,
+            values[2],
+            values[2],
+            results,
         )]
     });
     let repeat = func.fresh_value();
@@ -2339,12 +2405,14 @@ fn adopted_call_loop() -> TirFunction {
     entry.ops.extend([
         family_op(
             OpCode::ConstBool,
+            None,
             vec![],
             vec![repeat],
             &[("value", AttrValue::Bool(true))],
         ),
         family_op(
             OpCode::ConstBool,
+            None,
             vec![],
             vec![stop],
             &[("value", AttrValue::Bool(false))],
@@ -2450,26 +2518,29 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
                 const_int_def(five, 5),
                 family_op(
                     OpCode::Copy,
+                    Some(OpKind::Isinstance),
                     vec![five, none],
                     results,
-                    &[kind("isinstance")],
+                    &[],
                 ),
             ]
         }),
         family_function("fam_abs", true, |_, [first, _, _], results| {
             vec![family_op(
                 OpCode::Copy,
+                Some(OpKind::Abs),
                 vec![first],
                 results,
-                &[kind("abs")],
+                &[],
             )]
         }),
         family_function("fam_abs_discard", false, |_, [first, _, _], results| {
             vec![family_op(
                 OpCode::Copy,
+                Some(OpKind::Abs),
                 vec![first],
                 results,
-                &[kind("abs")],
+                &[],
             )]
         }),
         family_function(
@@ -2478,9 +2549,10 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
             |_, [first, second, none], results| {
                 vec![family_op(
                     OpCode::Call,
+                    Some(OpKind::Call),
                     vec![none, first, first, second],
                     results,
-                    &[kind("call")],
+                    &[],
                 )]
             },
         ),
@@ -2491,18 +2563,26 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
                 let builder = func.fresh_value();
                 let pushed = func.fresh_value();
                 vec![
-                    family_op(OpCode::Copy, vec![], vec![builder], &[kind("callargs_new")]),
                     family_op(
                         OpCode::Copy,
+                        Some(OpKind::CallargsNew),
+                        vec![],
+                        vec![builder],
+                        &[],
+                    ),
+                    family_op(
+                        OpCode::Copy,
+                        Some(OpKind::CallargsPushPos),
                         vec![builder, first],
                         vec![pushed],
-                        &[kind("callargs_push_pos")],
+                        &[],
                     ),
                     family_op(
                         OpCode::Call,
+                        Some(OpKind::CallBind),
                         vec![none, builder],
                         results,
-                        &[kind("call_bind")],
+                        &[],
                     ),
                 ]
             },
@@ -2510,6 +2590,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         family_function("fam_dict", true, |_, [first, second, _], results| {
             vec![family_op(
                 OpCode::BuildDict,
+                None,
                 vec![first, first, second, first],
                 results,
                 &[],
@@ -2521,6 +2602,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
             |_, [first, second, _], results| {
                 vec![family_op(
                     OpCode::BuildDict,
+                    None,
                     vec![first, first, second, first],
                     results,
                     &[],
@@ -2530,9 +2612,10 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         family_function("fam_alias", true, |_, [first, _, none], results| {
             vec![family_op(
                 OpCode::Copy,
+                Some(OpKind::DictUpdateMissing),
                 vec![first, none, none],
                 results,
-                &[kind("dict_update_missing")],
+                &[],
             )]
         }),
         family_function(
@@ -2541,15 +2624,17 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
             |_, [first, _, none], results| {
                 vec![family_op(
                     OpCode::Copy,
+                    Some(OpKind::DictUpdateMissing),
                     vec![first, none, none],
                     results,
-                    &[kind("dict_update_missing")],
+                    &[],
                 )]
             },
         ),
         family_function("fam_task", true, |_, [first, _, _], results| {
             vec![family_op(
                 OpCode::AllocTask,
+                None,
                 vec![first, first],
                 results,
                 &[
@@ -2562,32 +2647,38 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         family_function("fam_direct_call", true, |_, [first, _, _], results| {
             vec![family_op(
                 OpCode::Call,
+                Some(OpKind::Call),
                 vec![first],
                 results,
-                &[
-                    kind("call"),
-                    ("s_value", AttrValue::Str("fam_target".into())),
-                ],
+                &[("s_value", AttrValue::Str("fam_target".into()))],
             )]
         }),
     ];
     for (name, shape) in [
-        ("fam_adopt_direct", "direct"),
-        ("fam_adopt_extracted", "direct_extracted"),
-        ("fam_adopt_func", "call_func"),
-        ("fam_adopt_guarded", "call_guarded"),
-        ("fam_adopt_method", "call_method"),
-        ("fam_adopt_loaded_method", "call_loaded_method"),
-        ("fam_adopt_callable_alias", "callable_alias"),
-        ("fam_borrow_builder_bind", "call_bind"),
-        ("fam_borrow_builder_indirect", "call_indirect"),
-        ("fam_adopt_builder_bind", "owned_call_bind"),
-        ("fam_adopt_builder_indirect", "owned_call_indirect"),
+        ("fam_adopt_direct", CallCase::Direct),
+        ("fam_adopt_extracted", CallCase::DirectExtracted),
+        ("fam_adopt_func", CallCase::CallFunc),
+        ("fam_adopt_guarded", CallCase::CallGuarded),
+        ("fam_adopt_method", CallCase::CallMethod),
+        ("fam_adopt_loaded_method", CallCase::CallLoadedMethod),
+        ("fam_adopt_callable_alias", CallCase::CallableAlias),
+        ("fam_borrow_builder_bind", CallCase::CallBind),
+        ("fam_borrow_builder_indirect", CallCase::CallIndirect),
+        ("fam_adopt_builder_bind", CallCase::OwnedCallBind),
+        ("fam_adopt_builder_indirect", CallCase::OwnedCallIndirect),
     ] {
         for bound in [true, false] {
             // Builder result disposal already shares the owned result sink;
             // the adopted source-call families above exercise both forms.
-            if !bound && (shape.contains("bind") || shape.contains("indirect")) {
+            if !bound
+                && matches!(
+                    shape,
+                    CallCase::CallBind
+                        | CallCase::CallIndirect
+                        | CallCase::OwnedCallBind
+                        | CallCase::OwnedCallIndirect
+                )
+            {
                 continue;
             }
             let name = if bound {

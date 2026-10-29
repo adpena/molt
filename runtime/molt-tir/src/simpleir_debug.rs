@@ -54,24 +54,25 @@ pub fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     let mut last_written = 0usize;
     for (idx, op) in func_ir.ops.iter().enumerate() {
         if !full {
-            let kind = op.kind.as_str();
+            let kind = op.kind;
             let is_control = matches!(
                 kind,
-                "if" | "else"
-                    | "end_if"
-                    | "phi"
-                    | "label"
-                    | "state_label"
-                    | "jump"
-                    | "br_if"
-                    | "loop_start"
-                    | "loop_end"
-                    | "loop_break_if_true"
-                    | "loop_break_if_false"
-                    | "loop_break_if_exception"
-                    | "loop_break"
-                    | "loop_continue"
-                    | "ret"
+                molt_ir::OpKind::If
+                    | molt_ir::OpKind::Else
+                    | molt_ir::OpKind::EndIf
+                    | molt_ir::OpKind::Phi
+                    | molt_ir::OpKind::Label
+                    | molt_ir::OpKind::StateLabel
+                    | molt_ir::OpKind::Jump
+                    | molt_ir::OpKind::BrIf
+                    | molt_ir::OpKind::LoopStart
+                    | molt_ir::OpKind::LoopEnd
+                    | molt_ir::OpKind::LoopBreakIfTrue
+                    | molt_ir::OpKind::LoopBreakIfFalse
+                    | molt_ir::OpKind::LoopBreakIfException
+                    | molt_ir::OpKind::LoopBreak
+                    | molt_ir::OpKind::LoopContinue
+                    | molt_ir::OpKind::Ret
             );
             if !is_control {
                 continue;

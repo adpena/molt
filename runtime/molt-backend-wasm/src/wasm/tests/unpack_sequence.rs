@@ -6,12 +6,11 @@ fn unpack_ir(function_name: &str, expected: usize) -> SimpleIR {
         args.push(format!("out{index}"));
     }
     let unpack = OpIR {
-        kind: "unpack_sequence".to_string(),
         args: Some(args),
         value: Some(expected as i64),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::UnpackSequence)
     };
-    let mut ret = wasm_test_op("ret", None, vec![]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec![]);
     if expected != 0 {
         ret.args = Some(vec!["out0".to_string()]);
     }

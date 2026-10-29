@@ -14,67 +14,67 @@ fn tir_round_trip_keeps_loop_index_start_out_of_backedge_path() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(3),
                 out: Some("limit".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(0),
                 out: Some("zero".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(1),
                 out: Some("one".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "loop_start".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopStart,
+                ..OpIR::new(molt_ir::OpKind::LoopStart)
             },
             OpIR {
-                kind: "loop_index_start".into(),
+                kind: molt_ir::OpKind::LoopIndexStart,
                 args: Some(vec!["zero".into()]),
                 out: Some("i".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::LoopIndexStart)
             },
             OpIR {
-                kind: "lt".into(),
+                kind: molt_ir::OpKind::Lt,
                 args: Some(vec!["i".into(), "limit".into()]),
                 out: Some("cond".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Lt)
             },
             OpIR {
-                kind: "loop_break_if_false".into(),
+                kind: molt_ir::OpKind::LoopBreakIfFalse,
                 args: Some(vec!["cond".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::LoopBreakIfFalse)
             },
             OpIR {
-                kind: "add".into(),
+                kind: molt_ir::OpKind::Add,
                 args: Some(vec!["i".into(), "one".into()]),
                 out: Some("next_i".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Add)
             },
             OpIR {
-                kind: "loop_index_next".into(),
+                kind: molt_ir::OpKind::LoopIndexNext,
                 args: Some(vec!["next_i".into()]),
                 out: Some("i".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::LoopIndexNext)
             },
             OpIR {
-                kind: "loop_continue".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopContinue,
+                ..OpIR::new(molt_ir::OpKind::LoopContinue)
             },
             OpIR {
-                kind: "loop_end".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopEnd,
+                ..OpIR::new(molt_ir::OpKind::LoopEnd)
             },
             OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -90,21 +90,20 @@ fn tir_round_trip_keeps_loop_index_start_out_of_backedge_path() {
 
     let loop_start_idx = round_tripped
         .iter()
-        .position(|op| op.kind == "loop_start")
+        .position(|op| op.kind == molt_ir::OpKind::LoopStart)
         .expect("expected loop_start after round-trip");
     let carrier_load_idx = round_tripped
         .iter()
-        .position(|op| op.kind == "load_var")
+        .position(|op| op.kind == molt_ir::OpKind::LoadVar)
         .expect("expected loop-carried load_var after round-trip");
     assert!(
         round_tripped[loop_start_idx + 1..carrier_load_idx]
             .iter()
-            .all(|op| op.kind != "label" && op.kind != "jump" && op.kind != "br_if"),
+            .all(|op| op.kind != molt_ir::OpKind::Label
+                && op.kind != molt_ir::OpKind::Jump
+                && op.kind != molt_ir::OpKind::BrIf),
         "counted loop must not place control-flow re-entry before the carrier load; ops: {:?}",
-        round_tripped
-            .iter()
-            .map(|op| op.kind.as_str())
-            .collect::<Vec<_>>()
+        round_tripped.iter().map(|op| op.kind).collect::<Vec<_>>()
     );
 }
 
@@ -131,6 +130,7 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
     let mut check_exc_attrs = AttrDict::new();
     check_exc_attrs.insert("value".into(), AttrValue::Int(100));
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -152,6 +152,7 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
             id: handler_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -170,6 +171,7 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
             id: else_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -191,8 +193,10 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
         "exception handler labels must survive lowering: {ops:?}"
     );
     assert!(
-        ops.iter()
-            .any(|op| matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(100)),
+        ops.iter().any(|op| matches!(
+            op.kind,
+            molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+        ) && op.value == Some(100)),
         "handler target label 100 must remain materialized: {ops:?}"
     );
 }
@@ -219,6 +223,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -227,6 +232,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
                     source_span: None,
                 },
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
@@ -250,6 +256,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
             id: cleanup_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -291,8 +298,10 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
         "guard raise path lowering must keep labels reachable after a raise block: {out:?}"
     );
     assert!(
-        out.iter()
-            .any(|op| matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(100)),
+        out.iter().any(|op| matches!(
+            op.kind,
+            molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+        ) && op.value == Some(100)),
         "cleanup label 100 must remain materialized after a raise-and-branch chain: {out:?}"
     );
 }
@@ -346,6 +355,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -354,6 +364,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
                     source_span: None,
                 },
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
@@ -562,8 +573,10 @@ fn loop_cond_with_external_reentry_keeps_label_no_dangling() {
     // The cond block's label (36) must survive: the generic fallback
     // emits it so the resume `jump` resolves.
     assert!(
-        ops.iter()
-            .any(|op| matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(36)),
+        ops.iter().any(|op| matches!(
+            op.kind,
+            molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+        ) && op.value == Some(36)),
         "loop cond label (36) must remain materialized when re-entered \
              from outside the region: {ops:?}"
     );
@@ -689,8 +702,10 @@ fn loop_shared_preheader_latch_body_keeps_label_no_dangling() {
     // The latch's label (62) must survive: the generic fallback emits it so
     // the entry `jump 62` resolves instead of dangling.
     assert!(
-        ops.iter()
-            .any(|op| matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(62)),
+        ops.iter().any(|op| matches!(
+            op.kind,
+            molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+        ) && op.value == Some(62)),
         "shared pre-header/latch label (62) must remain materialized when \
              entered from outside the loop region: {ops:?}"
     );
@@ -725,6 +740,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -789,6 +805,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -797,6 +814,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
                     source_span: None,
                 },
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
@@ -820,6 +838,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             id: exit_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -839,6 +858,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             id: body_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -864,6 +884,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             id: return_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -883,6 +904,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             id: continue_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -905,6 +927,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             id: cleanup_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -933,12 +956,14 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
     );
     assert!(
         ops.iter()
-            .any(|op| op.kind == "check_exception" && op.value == Some(100)),
+            .any(|op| op.kind == molt_ir::OpKind::CheckException && op.value == Some(100)),
         "check_exception must keep targeting handler label 100: {ops:?}"
     );
     assert!(
-        ops.iter()
-            .any(|op| matches!(op.kind.as_str(), "label" | "state_label") && op.value == Some(100)),
+        ops.iter().any(|op| matches!(
+            op.kind,
+            molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+        ) && op.value == Some(100)),
         "cleanup handler label 100 must remain materialized: {ops:?}"
     );
 }

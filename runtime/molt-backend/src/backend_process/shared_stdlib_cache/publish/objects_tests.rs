@@ -23,10 +23,9 @@ fn job() -> NativeBatchObjectJob {
             functions: vec![FunctionIR {
                 name: "reader".into(),
                 ops: vec![OpIR {
-                    kind: "func_new".into(),
                     s_value: Some("target".into()),
                     value: Some(0),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::FuncNew)
                 }],
                 ..FunctionIR::default()
             }],
@@ -295,9 +294,8 @@ fn constituent_key_preserves_float_bits_and_function_order() {
     let cache = cache();
     let mut first = job();
     first.ir.functions[0].ops.push(OpIR {
-        kind: "const_float".into(),
         f_value: Some(0.0),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
     });
     let mut second = roundtrip(&first);
     second.ir.functions[0].ops.last_mut().unwrap().f_value = Some(-0.0);

@@ -3,8 +3,8 @@ use molt_tir::tir::simple_def_use::{SimpleIrResultField, visit_simple_ir_results
 
 impl LuauBackend {
     pub(super) fn emit_iteration_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "iter" => {
+        match op.kind {
+            molt_ir::OpKind::Iter => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iterable) = args.first() {
@@ -12,7 +12,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_iterator_new({it})"));
                 }
             }
-            "iter_next" => {
+            molt_ir::OpKind::IterNext => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iter_var) = args.first() {
@@ -20,7 +20,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {iter_var}()"));
                 }
             }
-            "iter_next_unboxed" => {
+            molt_ir::OpKind::IterNextUnboxed => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iter_var) = args.first() {
                     let iter_var = sanitize_ident(iter_var);
@@ -47,7 +47,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "slice" => {
+            molt_ir::OpKind::Slice => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
@@ -65,7 +65,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "enumerate" => {
+            molt_ir::OpKind::Enumerate => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iterable) = args.first() {

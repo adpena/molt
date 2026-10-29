@@ -1,13 +1,13 @@
 use super::super::*;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
+use molt_ir::OpKind;
 
-/// Matrix operator kind authority for [`handle_matrix_op`]. The runtime-backed
-/// `@` family has no scalar fast lane, so keep it out of scalar arithmetic and
-/// bitwise lowering.
+// Matrix operator kind authority for [`handle_matrix_op`]. The runtime-backed
+// `@` family has no scalar fast lane, so keep it out of scalar arithmetic and
+// bitwise lowering.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["matmul", "inplace_matmul"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::Matmul, OpKind::InplaceMatmul);
 
 /// Cranelift codegen handlers for matrix multiply ops.
 #[cfg(feature = "native-backend")]
@@ -48,11 +48,11 @@ pub(in crate::native_backend::function_compiler) fn handle_matrix_op(
         )
     };
 
-    match op.kind.as_str() {
-        "matmul" | "inplace_matmul" => {
+    match op.kind {
+        OpKind::Matmul | OpKind::InplaceMatmul => {
             // `@` and `@=`.  Inplace variant: molt_inplace_matmul tries
             // __imatmul__ before the binary __matmul__/__rmatmul__ chain.
-            let boxed_sym = if op.kind == "inplace_matmul" {
+            let boxed_sym = if op.kind == OpKind::InplaceMatmul {
                 "molt_inplace_matmul"
             } else {
                 "molt_matmul"

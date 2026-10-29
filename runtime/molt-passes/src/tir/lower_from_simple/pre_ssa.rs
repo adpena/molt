@@ -3,8 +3,6 @@
 //! These transforms make loop carriers and cell-local mutations visible to
 //! the shared SSA conversion before CFG assembly turns the stream into TIR.
 
-use super::super::op_kinds_generated::simpleir_kind_is_pre_ssa_rewritten;
-
 fn with_inherited_source_site(
     mut replacement: crate::ir::OpIR,
     source: &crate::ir::OpIR,
@@ -49,9 +47,7 @@ pub fn normalize_loop_indices(
     use crate::ir::OpIR;
 
     // Quick scan: any loop-index op consumed by this pre-SSA rewrite?
-    let has_loop_index = ops
-        .iter()
-        .any(|op| simpleir_kind_is_pre_ssa_rewritten(op.kind.as_str()));
+    let has_loop_index = ops.iter().any(|op| op.kind.is_pre_ssa_rewritten());
     if !has_loop_index {
         return ops;
     }
@@ -71,14 +67,14 @@ pub fn normalize_loop_indices(
     let mut seen_carriers = std::collections::HashSet::new();
 
     for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "loop_start" => {
+        match op.kind {
+            molt_ir::OpKind::LoopStart => {
                 loop_start_stack.push(idx);
             }
-            "loop_end" => {
+            molt_ir::OpKind::LoopEnd => {
                 loop_start_stack.pop();
             }
-            "loop_index_start" => {
+            molt_ir::OpKind::LoopIndexStart => {
                 if let Some(&ls_idx) = loop_start_stack.last() {
                     let var_name = op.out.clone().unwrap_or_default();
                     let init_arg = op.args.as_deref().and_then(|args| match args {
@@ -140,31 +136,31 @@ pub fn normalize_loop_indices(
             for pat in pats {
                 result.push(with_inherited_source_site(
                     OpIR {
-                        kind: "store_var".to_string(),
+                        kind: molt_ir::OpKind::StoreVar,
                         var: Some(pat.var_name.clone()),
                         args: Some(vec![pat.init_arg.clone()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::StoreVar)
                     },
                     &ops[pat.source_op_idx],
                 ));
             }
         }
 
-        match op.kind.as_str() {
-            "loop_start" => {
+        match op.kind {
+            molt_ir::OpKind::LoopStart => {
                 active_loop_carriers.push(idx);
                 result.push(op.clone());
             }
-            "loop_index_start" => {
+            molt_ir::OpKind::LoopIndexStart => {
                 let var_name = op.out.clone().unwrap_or_default();
                 if rewrite_starts.contains(&idx) {
                     // Rewrite to load_var: read V from the phi.
                     result.push(with_inherited_source_site(
                         OpIR {
-                            kind: "load_var".to_string(),
+                            kind: molt_ir::OpKind::LoadVar,
                             var: Some(var_name.clone()),
                             out: Some(var_name),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::LoadVar)
                         },
                         op,
                     ));
@@ -172,7 +168,7 @@ pub fn normalize_loop_indices(
                     result.push(op.clone());
                 }
             }
-            "loop_index_next" => {
+            molt_ir::OpKind::LoopIndexNext => {
                 // Physical nesting does not select the recurrence: inlined
                 // cleanup may update an outer loop's explicitly named carrier.
                 // Resolve that identity in the nearest declaring active scope.
@@ -190,10 +186,10 @@ pub fn normalize_loop_indices(
                     // Rewrite to store_var: update V.
                     result.push(with_inherited_source_site(
                         OpIR {
-                            kind: "store_var".to_string(),
+                            kind: molt_ir::OpKind::StoreVar,
                             var: Some(var_name.clone()),
                             args: Some(vec![updated_arg.clone()]),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::StoreVar)
                         },
                         op,
                     ));
@@ -201,7 +197,7 @@ pub fn normalize_loop_indices(
                     result.push(op.clone());
                 }
             }
-            "loop_end" => {
+            molt_ir::OpKind::LoopEnd => {
                 active_loop_carriers.pop();
                 result.push(op.clone());
             }
@@ -254,13 +250,13 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     // frontend now emits store_var/load_var for non-boxed locals), skip the
     // cell rewrite entirely — the SSA pass already has explicit variable
     // tracking and the rewrite would misidentify user lists as cells.
-    let has_frontend_store_var = ops.iter().any(|op| op.kind == "store_var");
+    let has_frontend_store_var = ops.iter().any(|op| op.kind == molt_ir::OpKind::StoreVar);
     if has_frontend_store_var {
         return false;
     }
     let mut missing_outputs: HashSet<String> = HashSet::new();
     for op in ops.iter() {
-        if op.kind == "missing"
+        if op.kind == molt_ir::OpKind::Missing
             && let Some(out) = &op.out
         {
             missing_outputs.insert(out.clone());
@@ -268,7 +264,7 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     }
     let mut cell_vars: HashSet<String> = HashSet::new();
     for op in ops.iter() {
-        if op.kind == "list_new"
+        if op.kind == molt_ir::OpKind::ListNew
             && let Some(out) = &op.out
         {
             // A cell list_new has exactly one arg that is a missing sentinel.
@@ -297,8 +293,10 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
             if !cell_vars.contains(arg) {
                 continue;
             }
-            let container_access = matches!(op.kind.as_str(), "index" | "store_index")
-                && arg_idx == 0
+            let container_access = matches!(
+                op.kind,
+                molt_ir::OpKind::Index | molt_ir::OpKind::StoreIndex
+            ) && arg_idx == 0
                 && args
                     .iter()
                     .enumerate()
@@ -321,7 +319,7 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     // Build a map: const_output_var → const_value (for slot indices).
     let mut const_values: HashMap<String, i64> = HashMap::new();
     for op in ops.iter() {
-        if op.kind == "const"
+        if op.kind == molt_ir::OpKind::Const
             && let (Some(out), Some(val)) = (&op.out, op.value)
         {
             const_values.insert(out.clone(), val);
@@ -335,31 +333,30 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     let mut heap_slots: HashSet<(String, i64)> = HashSet::new();
     {
         // Map: var_name → producing op kind
-        let mut var_producers: HashMap<String, String> = HashMap::new();
+        let mut var_producers: HashMap<String, molt_ir::OpKind> = HashMap::new();
         for op in ops.iter() {
             if let Some(out) = &op.out {
-                var_producers.insert(out.clone(), op.kind.clone());
+                var_producers.insert(out.clone(), op.kind);
             }
         }
         // Check each store_index: if the value arg was produced by a heap-allocating op,
         // mark that slot as heap.
-        let heap_ops: HashSet<&str> = [
-            "list_new",
-            "dict_new",
-            "set_new",
-            "tuple_new",
-            "call",
-            "call_method",
-            "call_function",
-            "call_builtin",
-            "CALL_BIND",
-            "call_bind",
+        let heap_ops: HashSet<molt_ir::OpKind> = [
+            molt_ir::OpKind::ListNew,
+            molt_ir::OpKind::DictNew,
+            molt_ir::OpKind::SetNew,
+            molt_ir::OpKind::TupleNew,
+            molt_ir::OpKind::Call,
+            molt_ir::OpKind::CallMethod,
+            molt_ir::OpKind::CallFunction,
+            molt_ir::OpKind::CallBuiltin,
+            molt_ir::OpKind::CallBind,
         ]
         .iter()
         .copied()
         .collect();
         for op in ops.iter() {
-            if op.kind == "store_index"
+            if op.kind == molt_ir::OpKind::StoreIndex
                 && let Some(args) = &op.args
                 && args.len() == 3
                 && cell_vars.contains(&args[0])
@@ -367,7 +364,7 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
             {
                 let value_var = &args[2];
                 if let Some(producer) = var_producers.get(value_var)
-                    && heap_ops.contains(producer.as_str())
+                    && heap_ops.contains(producer)
                 {
                     heap_slots.insert((args[0].clone(), slot_val));
                 }
@@ -381,7 +378,10 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
 
     for (i, op) in ops.iter().enumerate() {
         if let Some(args) = &op.args {
-            if op.kind == "store_index" && args.len() == 3 && cell_vars.contains(&args[0]) {
+            if op.kind == molt_ir::OpKind::StoreIndex
+                && args.len() == 3
+                && cell_vars.contains(&args[0])
+            {
                 if let Some(&slot_val) = const_values.get(&args[1]) {
                     if heap_slots.contains(&(args[0].clone(), slot_val)) {
                         // Skip heap slots — lists, dicts, etc. must stay as cell ops.
@@ -392,16 +392,16 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
                         i,
                         with_inherited_source_site(
                             OpIR {
-                                kind: "store_var".to_string(),
+                                kind: molt_ir::OpKind::StoreVar,
                                 var: Some(var_name),
                                 args: Some(vec![args[2].clone()]),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::StoreVar)
                             },
                             op,
                         ),
                     ));
                 }
-            } else if op.kind == "index"
+            } else if op.kind == molt_ir::OpKind::Index
                 && args.len() == 2
                 && cell_vars.contains(&args[0])
                 && let Some(&slot_val) = const_values.get(&args[1])
@@ -415,10 +415,10 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
                         i,
                         with_inherited_source_site(
                             OpIR {
-                                kind: "load_var".to_string(),
+                                kind: molt_ir::OpKind::LoadVar,
                                 var: Some(var_name),
                                 out: Some(out.clone()),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::LoadVar)
                             },
                             op,
                         ),

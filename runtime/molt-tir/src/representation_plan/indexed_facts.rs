@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerStorageFact, ContainerStorageKind};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::ops::TirOp;
 use crate::tir::simple_def_use::{simple_ir_binding, visit_simple_ir_reads};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -156,7 +156,7 @@ impl<'a> FunctionFactIndex<'a> {
                     target: binding.destination,
                     source,
                 });
-                if op.kind == "delete_var" {
+                if op.kind == molt_ir::OpKind::DeleteVar {
                     delete_targets.insert(binding.destination.to_string());
                 }
                 if let (Some(out), Some(source)) = (binding.result, source) {
@@ -165,7 +165,7 @@ impl<'a> FunctionFactIndex<'a> {
                 continue;
             }
             if let Some(out) = op.out.as_deref() {
-                if op.kind == "missing" {
+                if op.kind == molt_ir::OpKind::Missing {
                     sentinel_outputs.insert(out.to_string());
                 }
                 data_ops.push(op);
@@ -173,7 +173,7 @@ impl<'a> FunctionFactIndex<'a> {
                     aliases.push(AliasEdge { out, source });
                 }
             }
-            if op.kind == "store_index" {
+            if op.kind == molt_ir::OpKind::StoreIndex {
                 store_index_ops.push(op);
             }
         }
@@ -995,7 +995,7 @@ fn tir_container_identity(op: &TirOp) -> bool {
     op.opcode == crate::tir::ops::OpCode::Copy
         && op.operands.len() == 1
         && op.results.len() == 1
-        && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+        && matches!(op.origin, Some(kind)
             if crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind))
 }
 
@@ -1106,7 +1106,7 @@ fn flat_list_int_storage_fact() -> ContainerStorageFact {
 /// a demand census, not admission: ranges and alias closure still decide it.
 pub(super) fn tir_container_storage_needs_repr(func: &TirFunction) -> bool {
     func.blocks.values().flat_map(|block| &block.ops).any(|op| {
-        (tir_op_original_kind(op) == Some("list_int_new") && op.operands.len() >= 2)
+        (tir_op_original_kind(op) == Some(molt_ir::OpKind::ListIntNew) && op.operands.len() >= 2)
             || (op.opcode == crate::tir::ops::OpCode::Mul && op.operands.len() == 2)
     })
 }
@@ -1155,7 +1155,7 @@ pub(crate) fn tir_container_storage_facts(
                 continue;
             }
             return ((op.opcode == OpCode::BuildList
-                || tir_op_original_kind(op) == Some("list_new"))
+                || tir_op_original_kind(op) == Some(molt_ir::OpKind::ListNew))
                 && op.operands.len() == 1
                 && inline(&op.operands[0]))
             .then_some(value);
@@ -1168,7 +1168,7 @@ pub(crate) fn tir_container_storage_facts(
     let mut repeat_sources = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            let admitted_fill = tir_op_original_kind(op) == Some("list_int_new")
+            let admitted_fill = tir_op_original_kind(op) == Some(molt_ir::OpKind::ListIntNew)
                 && op.operands.get(1).is_some_and(inline);
             // Canonical source multiplication retains normal evaluation and
             // reflected-method ordering. Only exact producers authorize its
@@ -1225,7 +1225,8 @@ pub(crate) fn tir_container_storage_facts(
             let safe_store = op.opcode == OpCode::StoreIndex
                 && op.operands.get(1).is_some_and(index)
                 && op.operands.get(2).is_some_and(inline);
-            let safe_len = op.opcode == OpCode::Bool || tir_op_original_kind(op) == Some("len");
+            let safe_len =
+                op.opcode == OpCode::Bool || tir_op_original_kind(op) == Some(molt_ir::OpKind::Len);
             for (position, &value) in op.operands.iter().enumerate() {
                 if position == 0 && (safe_read || safe_store || safe_len) {
                     continue;
@@ -1263,67 +1264,60 @@ pub(crate) fn tir_container_storage_facts(
         .collect()
 }
 
-fn tir_op_original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
+fn tir_op_original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
+    op.origin
 }
 
 pub(super) fn is_cold_module_chunk_function(name: &str) -> bool {
     name.contains("__molt_module_chunk_")
 }
 
-pub(super) fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
+pub(super) fn simple_op_produces_non_scalar_value(kind: molt_ir::OpKind) -> bool {
     matches!(
         kind,
-        "async_sleep"
-            | "asyncgen_new"
-            | "bound_method_new"
-            | "build_dict"
-            | "build_list"
-            | "builtin_type"
-            | "callargs_new"
-            | "classmethod_new"
-            | "code_new"
-            | "dataclass_new"
-            | "dataclass_new_values"
-            | "dict_new"
-            | "exception_new"
-            | "exception_new_builtin"
-            | "exception_new_builtin_empty"
-            | "exception_new_builtin_one"
-            | "exception_new_from_class"
-            | "frozenset_new"
-            | "func_new"
-            | "func_new_closure"
-            | "io_wait_new"
-            | "list_from_range"
-            | "list_int_new"
-            | "list_new"
-            | "lock_new"
-            | "missing"
-            | "module_new"
-            | "object_new"
-            | "property_new"
-            | "range_new"
-            | "rlock_new"
-            | "set_new"
-            | "slice_new"
-            | "socket_new"
-            | "staticmethod_new"
-            | "stream_new"
-            | "string_split_field"
-            | "task_new"
-            | "tuple_from_list"
-            | "tuple_new"
-            | "ws_wait_new"
+        molt_ir::OpKind::AsyncgenNew
+            | molt_ir::OpKind::BoundMethodNew
+            | molt_ir::OpKind::BuildDict
+            | molt_ir::OpKind::BuildList
+            | molt_ir::OpKind::BuiltinType
+            | molt_ir::OpKind::CallargsNew
+            | molt_ir::OpKind::ClassmethodNew
+            | molt_ir::OpKind::CodeNew
+            | molt_ir::OpKind::DataclassNew
+            | molt_ir::OpKind::DataclassNewValues
+            | molt_ir::OpKind::DictNew
+            | molt_ir::OpKind::ExceptionNew
+            | molt_ir::OpKind::ExceptionNewBuiltin
+            | molt_ir::OpKind::ExceptionNewBuiltinEmpty
+            | molt_ir::OpKind::ExceptionNewBuiltinOne
+            | molt_ir::OpKind::ExceptionNewFromClass
+            | molt_ir::OpKind::FrozensetNew
+            | molt_ir::OpKind::FuncNew
+            | molt_ir::OpKind::FuncNewClosure
+            | molt_ir::OpKind::ListFromRange
+            | molt_ir::OpKind::ListIntNew
+            | molt_ir::OpKind::ListNew
+            | molt_ir::OpKind::Missing
+            | molt_ir::OpKind::ModuleNew
+            | molt_ir::OpKind::ObjectNew
+            | molt_ir::OpKind::PropertyNew
+            | molt_ir::OpKind::RangeNew
+            | molt_ir::OpKind::SetNew
+            | molt_ir::OpKind::SliceNew
+            | molt_ir::OpKind::StaticmethodNew
+            | molt_ir::OpKind::StringSplitField
+            | molt_ir::OpKind::TupleFromList
+            | molt_ir::OpKind::TupleNew
     )
 }
 
 pub(super) fn alias_source_name(op: &OpIR) -> Option<&str> {
-    match op.kind.as_str() {
-        "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => {
+    match op.kind {
+        molt_ir::OpKind::Copy
+        | molt_ir::OpKind::CopyVar
+        | molt_ir::OpKind::LoadVar
+        | molt_ir::OpKind::IdentityAlias
+        | molt_ir::OpKind::BindingAlias => {
             let mut source = None;
             visit_simple_ir_reads(op, |read| {
                 source.get_or_insert(read.name);
@@ -1335,7 +1329,7 @@ pub(super) fn alias_source_name(op: &OpIR) -> Option<&str> {
 }
 
 fn store_var_source_name(op: &OpIR) -> Option<&str> {
-    if op.kind == "delete_var" {
+    if op.kind == molt_ir::OpKind::DeleteVar {
         return None;
     }
     op.args
@@ -1351,7 +1345,7 @@ mod tests {
     #[test]
     fn binding_index_distinguishes_storage_snapshots_and_delete_metadata() {
         use super::super::test_fixtures::{function, op};
-        for kind in ["store_var", "store_fast"] {
+        for kind in [molt_ir::OpKind::StoreVar, molt_ir::OpKind::StoreFast] {
             let func = function(
                 "binding_index",
                 &[],
@@ -1362,7 +1356,7 @@ mod tests {
                     op(kind, Some("same"), Some("same"), &["source"]),
                     op(kind, Some("none"), Some("reserved_result"), &["source"]),
                     op(
-                        "delete_var",
+                        molt_ir::OpKind::DeleteVar,
                         Some("metadata"),
                         Some("local"),
                         &["missing", "snapshot"],

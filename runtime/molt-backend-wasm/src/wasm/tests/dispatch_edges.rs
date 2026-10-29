@@ -4,7 +4,7 @@ use serde_json::json;
 use std::{fs, path::PathBuf};
 use wasmparser::Operator;
 
-fn marked(kind: &str, value: i64) -> OpIR {
+fn marked(kind: molt_ir::OpKind, value: i64) -> OpIR {
     OpIR {
         value: Some(value),
         ..wasm_test_op(kind, None, vec![])
@@ -83,9 +83,9 @@ fn dispatch_edges_reject_stateful_implicit_return() {
         vec![
             OpIR {
                 state_targets: Some(vec![]),
-                ..wasm_test_op("state_switch", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
             },
-            marked("line", 1),
+            marked(molt_ir::OpKind::Line, 1),
         ],
     ));
 }
@@ -98,13 +98,13 @@ fn saved_state_guest(state_id: i64) -> Vec<u8> {
         vec![
             OpIR {
                 state_targets: Some(vec![(state_id, state_id)]),
-                ..wasm_test_op("state_switch", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
             },
-            marked("line", 10),
-            wasm_test_op("ret_void", None, vec![]),
-            marked("state_label", state_id),
-            marked("line", 20),
-            wasm_test_op("ret_void", None, vec![]),
+            marked(molt_ir::OpKind::Line, 10),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+            marked(molt_ir::OpKind::StateLabel, state_id),
+            marked(molt_ir::OpKind::Line, 20),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     ))
 }
@@ -115,38 +115,42 @@ fn saved_state_roundtrip_guest(state_id: i64, anchored: bool) -> Vec<u8> {
         vec!["task"],
         None,
         vec![
-            marked("line", 8),
-            marked("check_exception", 90),
+            marked(molt_ir::OpKind::Line, 8),
+            marked(molt_ir::OpKind::CheckException, 90),
             OpIR {
                 state_targets: Some(vec![(state_id, 70)]),
-                ..wasm_test_op("state_switch", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
             },
-            marked("line", 10),
-            marked("check_exception", 90),
-            marked("state_set", state_id),
+            marked(molt_ir::OpKind::Line, 10),
+            marked(molt_ir::OpKind::CheckException, 90),
+            marked(molt_ir::OpKind::StateSet, state_id),
             OpIR {
                 value: Some(0),
-                ..wasm_test_op("const_bool", Some("initial"), vec![])
+                ..wasm_test_op(molt_ir::OpKind::ConstBool, Some("initial"), vec![])
             },
-            wasm_test_op("ret", None, vec!["initial"]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["initial"]),
             // Authored operation 8 is the resume identity. Its persisted word
             // is ~8, independently of physical blocks or dispatcher ordinals.
-            marked("state_label", 70),
-            marked("line", 20),
-            marked("check_exception", 90),
+            marked(molt_ir::OpKind::StateLabel, 70),
+            marked(molt_ir::OpKind::Line, 20),
+            marked(molt_ir::OpKind::CheckException, 90),
             OpIR {
                 value: (!anchored).then_some(1),
                 s_value: anchored.then(|| "poll-anchor-β\0雪".to_string()),
                 ..wasm_test_op(
-                    if anchored { "const_str" } else { "const_bool" },
+                    if anchored {
+                        molt_ir::OpKind::ConstStr
+                    } else {
+                        molt_ir::OpKind::ConstBool
+                    },
                     Some("resumed"),
                     vec![],
                 )
             },
-            wasm_test_op("ret", None, vec!["resumed"]),
-            marked("label", 90),
-            marked("line", 90),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["resumed"]),
+            marked(molt_ir::OpKind::Label, 90),
+            marked(molt_ir::OpKind::Line, 90),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     ))
 }
@@ -155,29 +159,29 @@ fn saved_state_roundtrip_guest(state_id: i64, anchored: bool) -> Vec<u8> {
 fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
     let node = PathBuf::from("node");
     let (temp, _cleanup) = wasm_test_temp_dir();
-    let mut linear = vec![marked("label", 0)];
+    let mut linear = vec![marked(molt_ir::OpKind::Label, 0)];
     for line in 1..=64 {
-        linear.push(marked("line", line));
-        linear.push(marked("check_exception", 90));
+        linear.push(marked(molt_ir::OpKind::Line, line));
+        linear.push(marked(molt_ir::OpKind::CheckException, 90));
     }
     linear.push(OpIR {
         args: Some(vec!["condition".into()]),
-        ..marked("br_if", 80)
+        ..marked(molt_ir::OpKind::BrIf, 80)
     });
     linear.extend([
         OpIR {
             value: Some(0),
-            ..wasm_test_op("const_bool", Some("no"), vec![])
+            ..wasm_test_op(molt_ir::OpKind::ConstBool, Some("no"), vec![])
         },
-        wasm_test_op("ret", None, vec!["no"]),
-        marked("label", 80),
+        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["no"]),
+        marked(molt_ir::OpKind::Label, 80),
         OpIR {
             value: Some(1),
-            ..wasm_test_op("const_bool", Some("yes"), vec![])
+            ..wasm_test_op(molt_ir::OpKind::ConstBool, Some("yes"), vec![])
         },
-        wasm_test_op("ret", None, vec!["yes"]),
-        marked("label", 90),
-        wasm_test_op("ret_void", None, vec![]),
+        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["yes"]),
+        marked(molt_ir::OpKind::Label, 90),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
     ]);
     let linear = emit(wasm_test_function(
         "molt_main",
@@ -201,17 +205,17 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         vec![],
         None,
         vec![
-            marked("label", 0),
-            wasm_test_op("loop_start", None, vec![]),
-            marked("line", 7),
-            wasm_test_op("loop_break_if_exception", None, vec![]),
-            wasm_test_op("loop_continue", None, vec![]),
-            wasm_test_op("loop_end", None, vec![]),
+            marked(molt_ir::OpKind::Label, 0),
+            wasm_test_op(molt_ir::OpKind::LoopStart, None, vec![]),
+            marked(molt_ir::OpKind::Line, 7),
+            wasm_test_op(molt_ir::OpKind::LoopBreakIfException, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopContinue, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopEnd, None, vec![]),
             OpIR {
                 value: Some(1),
-                ..wasm_test_op("const_bool", Some("yes"), vec![])
+                ..wasm_test_op(molt_ir::OpKind::ConstBool, Some("yes"), vec![])
             },
-            wasm_test_op("ret", None, vec!["yes"]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["yes"]),
         ],
     ));
     assert_eq!(
@@ -228,14 +232,14 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
     let latch_guest = |jumpful| {
         let mut ops = Vec::new();
         if jumpful {
-            ops.push(marked("label", 0));
+            ops.push(marked(molt_ir::OpKind::Label, 0));
         }
         ops.extend([
-            wasm_test_op("loop_start", None, vec![]),
-            marked("line", 7),
-            wasm_test_op("loop_break_if_exception", None, vec![]),
-            wasm_test_op("loop_end", None, vec![]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopStart, None, vec![]),
+            marked(molt_ir::OpKind::Line, 7),
+            wasm_test_op(molt_ir::OpKind::LoopBreakIfException, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopEnd, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ]);
         emit(wasm_test_function("molt_main", vec![], None, ops))
     };
@@ -252,13 +256,13 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         vec![
             OpIR {
                 state_targets: Some(vec![]),
-                ..wasm_test_op("state_switch", None, vec![])
+                ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
             },
-            wasm_test_op("loop_start", None, vec![]),
-            marked("line", 7),
-            wasm_test_op("loop_break_if_exception", None, vec![]),
-            wasm_test_op("loop_end", None, vec![]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopStart, None, vec![]),
+            marked(molt_ir::OpKind::Line, 7),
+            wasm_test_op(molt_ir::OpKind::LoopBreakIfException, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopEnd, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     ));
     assert_eq!(
@@ -271,7 +275,10 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         "molt_main",
         vec![],
         None,
-        vec![marked("label", 0), marked("line", 99)],
+        vec![
+            marked(molt_ir::OpKind::Label, 0),
+            marked(molt_ir::OpKind::Line, 99),
+        ],
     ));
     assert_eq!(
         direct_loop_edges(&implicit),
@@ -285,23 +292,23 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
                 vec!["task"],
                 None,
                 vec![
-                    wasm_test_op("state_switch", None, vec![]),
-                    marked("state_label", 1),
-                    wasm_test_op("const_none", Some("future"), vec![]),
+                    wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![]),
+                    marked(molt_ir::OpKind::StateLabel, 1),
+                    wasm_test_op(molt_ir::OpKind::ConstNone, Some("future"), vec![]),
                     OpIR {
                         value: Some(1),
-                        ..wasm_test_op("const", Some("resume"), vec![])
+                        ..wasm_test_op(molt_ir::OpKind::Const, Some("resume"), vec![])
                     },
                     OpIR {
                         value: Some(1),
                         ..wasm_test_op(
-                            "state_transition",
+                            molt_ir::OpKind::StateTransition,
                             Some("awaited"),
                             vec!["future", "resume"],
                         )
                     },
-                    marked("line", 23),
-                    wasm_test_op("ret", None, vec!["awaited"]),
+                    marked(molt_ir::OpKind::Line, 23),
+                    wasm_test_op(molt_ir::OpKind::Ret, None, vec!["awaited"]),
                 ],
             )],
             profile: None,
@@ -319,14 +326,14 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         vec!["condition"],
         None,
         vec![
-            marked("label", 0),
-            wasm_test_op("if", None, vec!["condition"]),
-            marked("line", 1),
-            wasm_test_op("else", None, vec![]),
-            marked("line", 2),
-            wasm_test_op("end_if", None, vec![]),
-            marked("line", 3),
-            wasm_test_op("ret", None, vec!["condition"]),
+            marked(molt_ir::OpKind::Label, 0),
+            wasm_test_op(molt_ir::OpKind::If, None, vec!["condition"]),
+            marked(molt_ir::OpKind::Line, 1),
+            wasm_test_op(molt_ir::OpKind::Else, None, vec![]),
+            marked(molt_ir::OpKind::Line, 2),
+            wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]),
+            marked(molt_ir::OpKind::Line, 3),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["condition"]),
         ],
     ));
     assert_eq!(direct_loop_edges(&structured), 0);
@@ -337,15 +344,15 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         vec!["condition"],
         None,
         vec![
-            marked("label", 0),
-            wasm_test_op("if", None, vec!["condition"]),
-            marked("line", 8),
-            wasm_test_op("end_if", None, vec![]),
-            wasm_test_op("loop_start", None, vec![]),
-            marked("line", 7),
-            wasm_test_op("loop_break_if_exception", None, vec![]),
-            wasm_test_op("loop_end", None, vec![]),
-            wasm_test_op("ret", None, vec!["condition"]),
+            marked(molt_ir::OpKind::Label, 0),
+            wasm_test_op(molt_ir::OpKind::If, None, vec!["condition"]),
+            marked(molt_ir::OpKind::Line, 8),
+            wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopStart, None, vec![]),
+            marked(molt_ir::OpKind::Line, 7),
+            wasm_test_op(molt_ir::OpKind::LoopBreakIfException, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::LoopEnd, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["condition"]),
         ],
     ));
     assert_eq!(dispatcher_target_counts(&marker_loop), vec![2]);
@@ -354,10 +361,10 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         vec!["condition"],
         None,
         vec![
-            marked("label", 0),
-            wasm_test_op("if", None, vec!["condition"]),
-            marked("line", 1),
-            wasm_test_op("end_if", None, vec![]),
+            marked(molt_ir::OpKind::Label, 0),
+            wasm_test_op(molt_ir::OpKind::If, None, vec!["condition"]),
+            marked(molt_ir::OpKind::Line, 1),
+            wasm_test_op(molt_ir::OpKind::EndIf, None, vec![]),
         ],
     ));
     assert!(dispatcher_target_counts(&marker_exit).is_empty());
@@ -367,19 +374,19 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         vec!["condition"],
         None,
         vec![
-            marked("jump", 20),
-            marked("label", 10),
-            marked("line", 10),
-            wasm_test_op("ret", None, vec!["condition"]),
-            marked("label", 20),
-            marked("line", 20),
-            marked("check_exception", 10),
+            marked(molt_ir::OpKind::Jump, 20),
+            marked(molt_ir::OpKind::Label, 10),
+            marked(molt_ir::OpKind::Line, 10),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["condition"]),
+            marked(molt_ir::OpKind::Label, 20),
+            marked(molt_ir::OpKind::Line, 20),
+            marked(molt_ir::OpKind::CheckException, 10),
             OpIR {
                 args: Some(vec!["condition".into()]),
-                ..marked("br_if", 10)
+                ..marked(molt_ir::OpKind::BrIf, 10)
             },
-            marked("line", 30),
-            marked("jump", 10),
+            marked(molt_ir::OpKind::Line, 30),
+            marked(molt_ir::OpKind::Jump, 10),
         ],
     ));
     assert_eq!(direct_loop_edges(&backward), 3);
@@ -388,13 +395,13 @@ fn dispatch_edges_preserve_paths_without_synthetic_forward_backedges() {
         vec![],
         None,
         vec![
-            marked("jump", 20),
-            marked("label", 10),
-            marked("line", 10),
-            wasm_test_op("ret_void", None, vec![]),
-            marked("label", 20),
-            marked("line", 20),
-            marked("check_exception", 10),
+            marked(molt_ir::OpKind::Jump, 20),
+            marked(molt_ir::OpKind::Label, 10),
+            marked(molt_ir::OpKind::Line, 10),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+            marked(molt_ir::OpKind::Label, 20),
+            marked(molt_ir::OpKind::Line, 20),
+            marked(molt_ir::OpKind::CheckException, 10),
         ],
     ));
     assert_eq!(direct_loop_edges(&final_check), 1);

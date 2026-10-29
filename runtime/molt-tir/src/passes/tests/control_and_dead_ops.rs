@@ -7,17 +7,20 @@ fn dead_box_bindings_do_not_erase_materialization_failure() {
             functions: vec![manifest_func(vec![
                 make_const_int("raw", i64::MAX),
                 OpIR {
-                    kind: "box".into(),
+                    kind: molt_ir::OpKind::Box,
                     args: Some(vec!["raw".into()]),
                     out: out.map(str::to_string),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Box)
                 },
             ])],
             profile: None,
         };
         eliminate_dead_ops(&mut ir);
         assert!(
-            ir.functions[0].ops.iter().any(|op| op.kind == "box"),
+            ir.functions[0]
+                .ops
+                .iter()
+                .any(|op| op.kind == molt_ir::OpKind::Box),
             "{out:?}"
         );
     }
@@ -26,44 +29,47 @@ fn dead_box_bindings_do_not_erase_materialization_failure() {
 #[test]
 fn exception_elision_requires_clean_fallthrough_and_generated_nothrow_facts() {
     let check = || OpIR {
-        kind: "check_exception".into(),
+        kind: molt_ir::OpKind::CheckException,
         value: Some(100),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::CheckException)
     };
     for kind in [
-        "const_str",
-        "const_bytes",
-        "const_bigint",
-        "const_string",
-        "box",
-        "box_from_raw_int",
-        "call_func",
-        "trace_enter_slot",
-        "label",
-        "state_label",
-        "unknown_operation",
+        molt_ir::OpKind::ConstStr,
+        molt_ir::OpKind::ConstBytes,
+        molt_ir::OpKind::ConstBigint,
+        molt_ir::OpKind::Box,
+        molt_ir::OpKind::BoxFromRawInt,
+        molt_ir::OpKind::CallFunc,
+        molt_ir::OpKind::TraceEnterSlot,
+        molt_ir::OpKind::Label,
+        molt_ir::OpKind::StateLabel,
     ] {
         let mut candidate = make_op(kind);
-        if kind == "trace_enter_slot" {
+        if kind == molt_ir::OpKind::TraceEnterSlot {
             candidate.s_value = Some("m".into());
         }
-        let mut func = manifest_func(vec![check(), candidate, make_op("const_none"), check()]);
+        let mut func = manifest_func(vec![
+            check(),
+            candidate,
+            make_op(molt_ir::OpKind::ConstNone),
+            check(),
+        ]);
         elide_safe_exception_checks(&mut func);
         assert_eq!(
             func.ops
                 .iter()
-                .filter(|op| op.kind == "check_exception")
+                .filter(|op| op.kind == molt_ir::OpKind::CheckException)
                 .count(),
             2,
             "a pure trailing operation cannot hide pending errors or a join after {kind}"
         );
     }
     for kind in [
-        "const_none",
-        "const_bool",
-        "const_float",
-        "inc_ref",
-        "dec_ref",
+        molt_ir::OpKind::ConstNone,
+        molt_ir::OpKind::ConstBool,
+        molt_ir::OpKind::ConstFloat,
+        molt_ir::OpKind::IncRef,
+        molt_ir::OpKind::DecRef,
     ] {
         let mut func = manifest_func(vec![check(), make_op(kind), check()]);
         elide_safe_exception_checks(&mut func);
@@ -83,24 +89,29 @@ fn exception_elision_requires_clean_fallthrough_and_generated_nothrow_facts() {
 #[test]
 fn exception_elision_preserves_polling_observers_and_unproven_entry_state() {
     for (kind, poll, out, target) in [
-        ("check_exception", true, None, Some(100)),
-        ("async_work_poll", false, None, Some(100)),
-        ("check_exception", false, Some("observed"), Some(100)),
-        ("check_exception", false, None, None),
+        (molt_ir::OpKind::CheckException, true, None, Some(100)),
+        (molt_ir::OpKind::AsyncWorkPoll, false, None, Some(100)),
+        (
+            molt_ir::OpKind::CheckException,
+            false,
+            Some("observed"),
+            Some(100),
+        ),
+        (molt_ir::OpKind::CheckException, false, None, None),
     ] {
         let mut func = manifest_func(vec![
             OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(100),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
-            make_op("const_none"),
+            make_op(molt_ir::OpKind::ConstNone),
             OpIR {
-                kind: kind.into(),
+                kind,
                 async_work_poll: poll,
                 out: out.map(str::to_string),
                 value: target,
-                ..Default::default()
+                ..OpIR::new(kind)
             },
         ]);
         elide_safe_exception_checks(&mut func);
@@ -111,11 +122,11 @@ fn exception_elision_preserves_polling_observers_and_unproven_entry_state() {
         );
     }
     let mut func = manifest_func(vec![
-        make_op("const_none"),
+        make_op(molt_ir::OpKind::ConstNone),
         OpIR {
-            kind: "check_exception".into(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(100),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
     ]);
     elide_safe_exception_checks(&mut func);
@@ -129,25 +140,37 @@ fn exception_elision_preserves_polling_observers_and_unproven_entry_state() {
 #[test]
 fn untargeted_observers_cannot_hide_pending_failures_from_later_checks() {
     for (kind, poll, literal) in [
-        ("check_exception", false, Some("const_str")),
-        ("check_exception", false, Some("const_bytes")),
-        ("check_exception", false, Some("const_bigint")),
-        ("check_exception", true, None),
-        ("async_work_poll", false, None),
+        (
+            molt_ir::OpKind::CheckException,
+            false,
+            Some(molt_ir::OpKind::ConstStr),
+        ),
+        (
+            molt_ir::OpKind::CheckException,
+            false,
+            Some(molt_ir::OpKind::ConstBytes),
+        ),
+        (
+            molt_ir::OpKind::CheckException,
+            false,
+            Some(molt_ir::OpKind::ConstBigint),
+        ),
+        (molt_ir::OpKind::CheckException, true, None),
+        (molt_ir::OpKind::AsyncWorkPoll, false, None),
     ] {
         let check = || OpIR {
-            kind: "check_exception".into(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(100),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         };
         let mut ops = vec![check()];
         if let Some(literal) = literal {
             ops.push(make_op(literal));
         }
         ops.push(OpIR {
-            kind: kind.into(),
+            kind,
             async_work_poll: poll,
-            ..Default::default()
+            ..OpIR::new(kind)
         });
         ops.push(check());
         let expected_len = ops.len();
@@ -176,35 +199,35 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
         execution_context: Default::default(),
         ops: vec![
             OpIR {
-                kind: "exception_new_builtin_empty".to_string(),
+                kind: molt_ir::OpKind::ExceptionNewBuiltinEmpty,
                 out: Some("exc".to_string()),
                 value: Some(5),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionNewBuiltinEmpty)
             },
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(100),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "raise".to_string(),
+                kind: molt_ir::OpKind::Raise,
                 args: Some(vec!["exc".to_string()]),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::Raise)
             },
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(100),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "jump".to_string(),
+                kind: molt_ir::OpKind::Jump,
                 value: Some(100),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             },
             OpIR {
-                kind: "label".to_string(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(100),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
         ],
     };
@@ -217,16 +240,19 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
     func.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
 
     assert!(
-        !func.ops.iter().any(|op| op.kind == "check_exception"),
+        !func
+            .ops
+            .iter()
+            .any(|op| op.kind == molt_ir::OpKind::CheckException),
         "direct raise-to-handler edge must not keep redundant polls: {:?}",
         func.ops
     );
     let raise_idx = func
         .ops
         .iter()
-        .position(|op| op.kind == "raise")
+        .position(|op| op.kind == molt_ir::OpKind::Raise)
         .expect("raise must remain");
-    assert_eq!(func.ops[raise_idx + 1].kind, "jump");
+    assert_eq!(func.ops[raise_idx + 1].kind, molt_ir::OpKind::Jump);
     assert!(crate::tir::lower_to_simple::validate_labels(&func.ops));
 }
 
@@ -245,17 +271,17 @@ fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
-                    kind: "copy_var".to_string(),
+                    kind: molt_ir::OpKind::CopyVar,
                     var: Some("n".to_string()),
                     out: Some("_v8".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 make_const_int("_v11", 1),
-                make_arith("add", &["_v8", "_v11"], "_v12"),
+                make_arith(molt_ir::OpKind::Add, &["_v8", "_v11"], "_v12"),
                 OpIR {
-                    kind: "ret".to_string(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["_v12".to_string()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -267,7 +293,7 @@ fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
     let ops = &ir.functions[0].ops;
     assert!(
         ops.iter()
-            .any(|op| op.kind == "copy_var" && op.out.as_deref() == Some("_v8")),
+            .any(|op| op.kind == molt_ir::OpKind::CopyVar && op.out.as_deref() == Some("_v8")),
         "dead-op elimination must preserve copy_var definitions consumed through op.out: {ops:?}"
     );
 }
@@ -288,17 +314,17 @@ fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
             ops: vec![
                 make_const_int("_v0", 40),
                 make_const_int("_v1", 2),
-                make_arith("add", &["_v0", "_v1"], "_sum"),
+                make_arith(molt_ir::OpKind::Add, &["_v0", "_v1"], "_sum"),
                 OpIR {
-                    kind: "copy_var".to_string(),
+                    kind: molt_ir::OpKind::CopyVar,
                     var: Some("_sum".to_string()),
                     out: Some("_alias".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["_alias".to_string()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -310,7 +336,7 @@ fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
     let ops = &ir.functions[0].ops;
     assert!(
         ops.iter()
-            .any(|op| op.kind == "add" && op.out.as_deref() == Some("_sum")),
+            .any(|op| op.kind == molt_ir::OpKind::Add && op.out.as_deref() == Some("_sum")),
         "dead-op elimination must preserve producers consumed through copy_var.var: {ops:?}"
     );
 }
@@ -332,16 +358,16 @@ fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
                 make_const_int("_source", 40),
                 make_const_int("_metadata", 2),
                 OpIR {
-                    kind: "copy_var".to_string(),
+                    kind: molt_ir::OpKind::CopyVar,
                     var: Some("_metadata".to_string()),
                     args: Some(vec!["_source".to_string()]),
                     out: Some("_alias".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["_alias".to_string()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -353,12 +379,12 @@ fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
     let ops = &ir.functions[0].ops;
     assert!(
         ops.iter()
-            .any(|op| op.kind == "const" && op.out.as_deref() == Some("_source")),
+            .any(|op| op.kind == molt_ir::OpKind::Const && op.out.as_deref() == Some("_source")),
         "dead-op elimination must preserve the args[0] value source: {ops:?}"
     );
     assert!(
         !ops.iter()
-            .any(|op| op.kind == "const" && op.out.as_deref() == Some("_metadata")),
+            .any(|op| op.kind == molt_ir::OpKind::Const && op.out.as_deref() == Some("_metadata")),
         "copy_var.var is metadata when args[0] is present and must not keep dead producers alive: {ops:?}"
     );
 }
@@ -378,12 +404,12 @@ fn dead_op_elim_keeps_unused_potentially_throwing_index() {
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
-                    kind: "index".to_string(),
+                    kind: molt_ir::OpKind::Index,
                     args: Some(vec!["mapping".to_string(), "key".to_string()]),
                     out: Some("_unused".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Index)
                 },
-                make_op("ret_void"),
+                make_op(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -393,7 +419,7 @@ fn dead_op_elim_keeps_unused_potentially_throwing_index() {
 
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter().any(|op| op.kind == "index"),
+        ops.iter().any(|op| op.kind == molt_ir::OpKind::Index),
         "dead-op elimination must preserve unused index ops because __getitem__/__missing__ exceptions are observable: {ops:?}"
     );
 }
@@ -413,30 +439,30 @@ fn dead_op_elim_preserves_observable_module_lookup_chain() {
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
+                    kind: molt_ir::OpKind::ConstStr,
                     s_value: Some("__main__".to_string()),
                     out: Some("module_name".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "module_cache_get".to_string(),
+                    kind: molt_ir::OpKind::ModuleCacheGet,
                     args: Some(vec!["module_name".to_string()]),
                     out: Some("module".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ModuleCacheGet)
                 },
                 OpIR {
-                    kind: "const_str".to_string(),
+                    kind: molt_ir::OpKind::ConstStr,
                     s_value: Some("Point".to_string()),
                     out: Some("attr_name".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "module_get_attr".to_string(),
+                    kind: molt_ir::OpKind::ModuleGetAttr,
                     args: Some(vec!["module".to_string(), "attr_name".to_string()]),
                     out: Some("class_ref".to_string()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
                 },
-                make_op("ret_void"),
+                make_op(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -446,11 +472,13 @@ fn dead_op_elim_preserves_observable_module_lookup_chain() {
 
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter().any(|op| op.kind == "module_cache_get"),
+        ops.iter()
+            .any(|op| op.kind == molt_ir::OpKind::ModuleCacheGet),
         "module cache lookup must remain because lookup and exceptions are observable: {ops:?}"
     );
     assert!(
-        ops.iter().any(|op| op.kind == "module_get_attr"),
+        ops.iter()
+            .any(|op| op.kind == molt_ir::OpKind::ModuleGetAttr),
         "module attribute lookup must remain because lookup and exceptions are observable: {ops:?}"
     );
 }
@@ -469,8 +497,8 @@ fn dead_op_elim_keeps_unused_untyped_arithmetic() {
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
-                make_arith("add", &["left", "right"], "_unused"),
-                make_op("ret_void"),
+                make_arith(molt_ir::OpKind::Add, &["left", "right"], "_unused"),
+                make_op(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -480,14 +508,14 @@ fn dead_op_elim_keeps_unused_untyped_arithmetic() {
 
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter().any(|op| op.kind == "add"),
+        ops.iter().any(|op| op.kind == molt_ir::OpKind::Add),
         "dead-op elimination must preserve unused untyped arithmetic because protocol dispatch can raise: {ops:?}"
     );
 }
 
 #[test]
 fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
-    let add = make_arith("add", &["left", "right"], "_unused");
+    let add = make_arith(molt_ir::OpKind::Add, &["left", "right"], "_unused");
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -499,7 +527,7 @@ fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
             codegen_partition: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
-            ops: vec![add, make_op("ret_void")],
+            ops: vec![add, make_op(molt_ir::OpKind::RetVoid)],
         }],
         profile: None,
     };
@@ -508,7 +536,7 @@ fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
 
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter().any(|op| op.kind == "add"),
+        ops.iter().any(|op| op.kind == molt_ir::OpKind::Add),
         "transport hints must not prove unused arithmetic is nonthrowing without typed facts: {ops:?}"
     );
 }
@@ -527,8 +555,8 @@ fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() 
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
-                make_arith("add", &["left", "right"], "_unused"),
-                make_op("ret_void"),
+                make_arith(molt_ir::OpKind::Add, &["left", "right"], "_unused"),
+                make_op(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -538,16 +566,16 @@ fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() 
 
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter().all(|op| op.kind != "add"),
+        ops.iter().all(|op| op.kind != molt_ir::OpKind::Add),
         "typed scalar facts, not transport hints, should prove unused int arithmetic removable: {ops:?}"
     );
     assert_eq!(ops.len(), 1);
-    assert_eq!(ops[0].kind, "ret_void");
+    assert_eq!(ops[0].kind, molt_ir::OpKind::RetVoid);
 }
 
 #[test]
 fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
-    let add = make_arith("add", &["_v0", "_v1"], "_unused");
+    let add = make_arith(molt_ir::OpKind::Add, &["_v0", "_v1"], "_unused");
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -563,7 +591,7 @@ fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
                 make_const_int("_v0", 40),
                 make_const_int("_v1", 2),
                 add,
-                make_op("ret_void"),
+                make_op(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -573,22 +601,23 @@ fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
 
     let ops = &ir.functions[0].ops;
     assert!(
-        ops.iter().all(|op| op.kind != "add" && op.out.is_none()),
+        ops.iter()
+            .all(|op| op.kind != molt_ir::OpKind::Add && op.out.is_none()),
         "dead-op elimination should still remove provably nonthrowing unused typed value chains: {ops:?}"
     );
     assert_eq!(ops.len(), 1);
-    assert_eq!(ops[0].kind, "ret_void");
+    assert_eq!(ops[0].kind, molt_ir::OpKind::RetVoid);
 }
 
 // --- RC coalescing tests ---
 
 #[test]
 fn runtime_guards_keep_profile_events_and_elide_only_nonthrowing_observation() {
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
         let check = || OpIR {
-            kind: "check_exception".into(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(100),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         };
         let mut ir = SimpleIR {
             functions: vec![manifest_func(vec![
@@ -596,19 +625,19 @@ fn runtime_guards_keep_profile_events_and_elide_only_nonthrowing_observation() {
                 make_const_int("source", 7),
                 make_const_int("tag", 5),
                 OpIR {
-                    kind: kind.into(),
+                    kind,
                     args: Some(vec!["source".into(), "tag".into()]),
                     out: Some("unused".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 check(),
-                make_op("ret_void"),
+                make_op(molt_ir::OpKind::RetVoid),
                 OpIR {
-                    kind: "label".into(),
+                    kind: molt_ir::OpKind::Label,
                     value: Some(100),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
-                make_op("ret_void"),
+                make_op(molt_ir::OpKind::RetVoid),
             ])],
             profile: None,
         };
@@ -620,7 +649,9 @@ fn runtime_guards_keep_profile_events_and_elide_only_nonthrowing_observation() {
             "unused result still validates: {kind}"
         );
         assert_eq!(
-            ops.iter().filter(|op| op.kind == "check_exception").count(),
+            ops.iter()
+                .filter(|op| op.kind == molt_ir::OpKind::CheckException)
+                .count(),
             1,
             "a valid inline tag and source cannot raise on mismatch: {kind}"
         );

@@ -1,43 +1,44 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_funcobj_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_funcobj_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "builtin_func",
-    "func_new",
-    "func_new_closure",
-    "code_new",
-    "module_slot",
-    "code_slot_set",
-    "stateful_locals_register",
-    "code_slots_init",
-    "trace_enter_slot",
-    "trace_exit",
-    "frame_context_set",
-    "frame_home_store",
-    "frame_home_cell",
-    "frame_home_private_cell",
-    "frame_home_load",
-    "frame_home_take",
-    "frame_home_clear",
-    "frame_locals",
-    "frame_locals_set",
-    "line",
-    "missing",
-    "function_closure_bits",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::BuiltinFunc,
+    OpKind::FuncNew,
+    OpKind::FuncNewClosure,
+    OpKind::CodeNew,
+    OpKind::ModuleSlot,
+    OpKind::CodeSlotSet,
+    OpKind::StatefulLocalsRegister,
+    OpKind::CodeSlotsInit,
+    OpKind::TraceEnterSlot,
+    OpKind::TraceExit,
+    OpKind::FrameContextSet,
+    OpKind::FrameHomeStore,
+    OpKind::FrameHomeCell,
+    OpKind::FrameHomePrivateCell,
+    OpKind::FrameHomeLoad,
+    OpKind::FrameHomeTake,
+    OpKind::FrameHomeClear,
+    OpKind::FrameLocals,
+    OpKind::FrameLocalsSet,
+    OpKind::Line,
+    OpKind::Missing,
+    OpKind::FunctionClosureBits,
+);
 
-/// Single-source kind authority for [`handle_gpu_intrinsic_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_gpu_intrinsic_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const GPU_INTRINSIC_HANDLED_KINDS: &[&str] = &[
-    "gpu_thread_id",
-    "gpu_block_id",
-    "gpu_block_dim",
-    "gpu_grid_dim",
-    "gpu_barrier",
-];
+define_native_op_kinds!(gpu_intrinsic_handled_kinds_pattern, GPU_INTRINSIC_HANDLED_KINDS;
+    OpKind::GpuThreadId,
+    OpKind::GpuBlockId,
+    OpKind::GpuBlockDim,
+    OpKind::GpuGridDim,
+    OpKind::GpuBarrier,
+);
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -67,7 +68,7 @@ fn entry_custody_word(
 #[cfg(feature = "native-backend")]
 fn metadata_target_signature(
     module: &dyn Module,
-    op_kind: &str,
+    op_kind: OpKind,
     target: &str,
     arities: &BTreeMap<String, usize>,
     returns: &BTreeMap<String, bool>,
@@ -289,8 +290,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
         )
     };
 
-    match op.kind.as_str() {
-        "builtin_func" => {
+    match op.kind {
+        OpKind::BuiltinFunc => {
             let Some(func_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -315,7 +316,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             func_sig.returns.push(AbiParam::new(types::I64));
             let func_id = declare_function_object_target(
                 &mut *module,
-                "builtin_func",
+                OpKind::BuiltinFunc,
                 func_name,
                 Linkage::Import,
                 &func_sig,
@@ -381,7 +382,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "func_new" => {
+        OpKind::FuncNew => {
             let Some(func_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -416,7 +417,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             declared_func_arities.insert(func_name.clone(), func_sig.params.len());
             let func_id = declare_function_object_target(
                 &mut *module,
-                "func_new",
+                OpKind::FuncNew,
                 func_name,
                 Linkage::Import,
                 &func_sig,
@@ -468,7 +469,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "func_new_closure" => {
+        OpKind::FuncNewClosure => {
             let Some(func_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
@@ -528,7 +529,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             };
             let func_id = declare_function_object_target(
                 &mut *module,
-                "func_new_closure",
+                OpKind::FuncNewClosure,
                 func_name,
                 closure_linkage,
                 &func_sig,
@@ -584,7 +585,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             }
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "code_new" => {
+        OpKind::CodeNew => {
             let args = op.args.as_ref().expect("admitted code_new operands");
             let filename_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -720,7 +721,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "module_slot" => {
+        OpKind::ModuleSlot => {
             let owner = op.s_value.as_deref().expect("admitted module_slot owner");
             let raw = emit_program_slot_id(
                 molt_ir::code_slots::ProgramSlotKind::Module,
@@ -738,7 +739,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             };
             def_var_named(builder, vars, out, value);
         }
-        "code_slot_set" => {
+        OpKind::CodeSlotSet => {
             let args = op.args.as_ref().expect("admitted code_slot_set operands");
             let code_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -781,7 +782,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 .ins()
                 .call(local_callee, &[code_id_val, *code_bits, *globals_bits]);
         }
-        "stateful_locals_register" => {
+        OpKind::StatefulLocalsRegister => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let names_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -813,7 +814,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             // Python callable arity or the spelling of the symbol.
             let func_sig = metadata_target_signature(
                 module,
-                &op.kind,
+                op.kind,
                 func_name,
                 known_function_arities,
                 function_has_ret,
@@ -825,7 +826,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             };
             let func_id = declare_function_object_target(
                 &mut *module,
-                "stateful_locals_register",
+                OpKind::StatefulLocalsRegister,
                 func_name,
                 linkage,
                 &func_sig,
@@ -844,7 +845,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 .ins()
                 .call(local_callee, &[func_addr, *names_bits, *layout_bits]);
         }
-        "code_slots_init" => {
+        OpKind::CodeSlotsInit => {
             let count = op.value.expect("admitted code_slots_init count");
             let count_val = builder.ins().iconst(types::I64, count);
             let callee = SimpleBackend::import_func_id_split(
@@ -857,7 +858,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[count_val]);
         }
-        "trace_enter_slot" => {
+        OpKind::TraceEnterSlot => {
             let entered = owned_frame_entered
                 .expect("trace_enter_slot requires local execution-context ownership");
             if let Some(leading_frame_entry_op_idx) = leading_frame_entry_preemitted {
@@ -880,8 +881,8 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 }
             }
         }
-        "trace_exit" => {}
-        "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+        OpKind::TraceExit => {}
+        OpKind::FrameHomeStore | OpKind::FrameHomeCell | OpKind::FrameHomePrivateCell => {
             let homes = builder.use_var(
                 frame_homes
                     .expect("frame home ops require the frame's lent homes")
@@ -906,7 +907,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             // view of a raw integer can allocate into the home below; the
             // store's authored CheckException transfers failure before the next
             // effect or lexical-region exit. Cell stores adopt existing cells.
-            let raw_int = (op.kind == "frame_home_store")
+            let raw_int = (op.kind == OpKind::FrameHomeStore)
                 .then(|| int_raw_value(&mut *builder, vars, representation_plan, src_name))
                 .flatten();
             let bits = match raw_int {
@@ -938,9 +939,9 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     }
                 }
                 None => {
-                    let kind = match op.kind.as_str() {
-                        "frame_home_cell" => molt_codegen_abi::FRAME_HOME_CELL,
-                        "frame_home_private_cell" => molt_codegen_abi::FRAME_HOME_PRIVATE_CELL,
+                    let kind = match op.kind {
+                        OpKind::FrameHomeCell => molt_codegen_abi::FRAME_HOME_CELL,
+                        OpKind::FrameHomePrivateCell => molt_codegen_abi::FRAME_HOME_PRIVATE_CELL,
                         _ => molt_codegen_abi::FRAME_HOME_PLAIN,
                     };
                     let bits = *var_get_boxed_overflow_safe(
@@ -992,7 +993,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 def_var_named(&mut *builder, vars, out_name, bits);
             }
         }
-        "frame_home_load" => {
+        OpKind::FrameHomeLoad => {
             // A borrowed view of the slot's plain binding. `PLAIN` is read
             // inline; the runtime boxes a raw integer into the home, reports an
             // unbound slot as the missing sentinel, and raises for a cell.
@@ -1050,7 +1051,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 def_var_named(&mut *builder, vars, out_name, value);
             }
         }
-        "frame_home_take" => {
+        OpKind::FrameHomeTake => {
             // PEP 709's save of an enclosing binding: the runtime moves it out
             // of the home, which becomes unbound, and the result owns it.
             let homes = builder.use_var(
@@ -1073,7 +1074,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let taken = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, taken, module, import_ids, builder, vars);
         }
-        "frame_home_clear" => {
+        OpKind::FrameHomeClear => {
             // `del`: the slot becomes unbound, then what it held is released.
             let homes = builder.use_var(
                 frame_homes
@@ -1111,7 +1112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 local_dec_ref_obj,
             );
         }
-        "frame_locals" => {
+        OpKind::FrameLocals => {
             // `locals()`, `vars()`, `dir()`: the runtime's one authority reads
             // the executing frame's bindings; the operand pairs are for
             // targets that build the dict themselves.
@@ -1127,7 +1128,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let dict = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, dict, module, import_ids, builder, vars);
         }
-        "frame_context_set" => {
+        OpKind::FrameContextSet => {
             let args: Vec<_> = op
                 .args
                 .as_deref()
@@ -1159,7 +1160,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             // and follows the authored exception continuation without polling.
             let _ = builder.ins().call(local_callee, &args);
         }
-        "frame_locals_set" => {
+        OpKind::FrameLocalsSet => {
             let arg_names = op.args.as_deref().unwrap_or(&[]);
             let dict_bits = arg_names
                 .first()
@@ -1187,7 +1188,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let _ = builder.ins().call(local_callee, &[dict_bits]);
         }
-        "line" => {
+        OpKind::Line => {
             // Inside active loops, skip line tracking entirely.
             // These are debug-info calls (~3ns each) that dominate
             // inner-loop cost when inlining arithmetic and stores.
@@ -1254,7 +1255,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 }
             }
         }
-        "missing" => {
+        OpKind::Missing => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -1269,7 +1270,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "function_closure_bits" => {
+        OpKind::FunctionClosureBits => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let func_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -1316,14 +1317,18 @@ pub(in crate::native_backend::function_compiler) fn handle_gpu_intrinsic_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     vars: &BTreeMap<String, Variable>,
 ) {
-    match op.kind.as_str() {
-        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => {
-            let symbol = match op.kind.as_str() {
-                "gpu_thread_id" => "molt_gpu_thread_id",
-                "gpu_block_id" => "molt_gpu_block_id",
-                "gpu_block_dim" => "molt_gpu_block_dim",
-                "gpu_grid_dim" => "molt_gpu_grid_dim",
-                "gpu_barrier" => "molt_gpu_barrier",
+    match op.kind {
+        OpKind::GpuThreadId
+        | OpKind::GpuBlockId
+        | OpKind::GpuBlockDim
+        | OpKind::GpuGridDim
+        | OpKind::GpuBarrier => {
+            let symbol = match op.kind {
+                OpKind::GpuThreadId => "molt_gpu_thread_id",
+                OpKind::GpuBlockId => "molt_gpu_block_id",
+                OpKind::GpuBlockDim => "molt_gpu_block_dim",
+                OpKind::GpuGridDim => "molt_gpu_grid_dim",
+                OpKind::GpuBarrier => "molt_gpu_barrier",
                 _ => unreachable!(),
             };
             let local_callee = import_func_ref(
@@ -1339,7 +1344,7 @@ pub(in crate::native_backend::function_compiler) fn handle_gpu_intrinsic_op(
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
-                if op.kind != "gpu_barrier" {}
+                if op.kind != OpKind::GpuBarrier {}
             }
         }
         _ => unreachable!("non-GPU intrinsic op routed to handle_gpu_intrinsic_op"),

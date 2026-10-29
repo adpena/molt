@@ -1,5 +1,6 @@
 use super::*;
 use cranelift_codegen::ir::InstBuilder;
+use molt_ir::OpKind;
 
 #[test]
 fn native_completion_retires_dead_builder_components_without_traps() {
@@ -79,8 +80,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
                 name: "_sitebuiltins____annotate__".to_string(),
                 params: vec!["format".to_string()],
                 ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 }],
                 param_types: None,
                 source_file: None,
@@ -95,15 +95,13 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
                 params: vec![],
                 ops: vec![
                     OpIR {
-                        kind: "func_new".to_string(),
                         s_value: Some("_sitebuiltins____annotate__".to_string()),
                         value: Some(1),
                         out: Some("annotate_fn".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::RetVoid)
                     },
                 ],
                 param_types: None,
@@ -131,8 +129,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                 name: "void_helper".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 }],
                 param_types: None,
                 source_file: None,
@@ -147,23 +144,20 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                 params: vec![],
                 ops: vec![
                     OpIR {
-                        kind: "func_new".to_string(),
                         s_value: Some("void_helper".to_string()),
                         value: Some(0),
                         out: Some("void_fn".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::FuncNew)
                     },
                     OpIR {
-                        kind: "call_guarded".to_string(),
                         s_value: Some("void_helper".to_string()),
                         args: Some(vec!["void_fn".to_string()]),
                         out: Some("result".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CallGuarded)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["result".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Ret)
                     },
                 ],
                 param_types: None,
@@ -199,7 +193,6 @@ fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
         ],
         ops: vec![
             OpIR {
-                kind: "call".to_string(),
                 s_value: Some("molt_gpu_linear_contiguous".to_string()),
                 args: Some(vec![
                     "a".to_string(),
@@ -212,12 +205,11 @@ fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
                     "h".to_string(),
                 ]),
                 out: Some("out".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["out".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -249,16 +241,14 @@ fn non_leaf_transport_callee(name: &str, params: Vec<String>) -> FunctionIR {
         params: params.clone(),
         ops: vec![
             OpIR {
-                kind: "call".into(),
                 s_value: Some(name.into()),
                 args: Some(params),
                 out: Some("recursive_result".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["recursive_result".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         ..Default::default()
@@ -341,16 +331,14 @@ fn direct_call_minicfg_preserves_unrelated_live_parameter() {
         params: params.clone(),
         ops: vec![
             OpIR {
-                kind: "call".into(),
                 s_value: Some(callee_name.into()),
                 args: Some(params[1..].to_vec()),
                 out: Some("ignored_result".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["carried".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         ..Default::default()
@@ -368,15 +356,13 @@ fn native_boxed_or_retains_selected_operand_result() {
         params: vec!["lhs".to_string(), "rhs".to_string()],
         ops: vec![
             OpIR {
-                kind: "or".to_string(),
                 args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
                 out: Some("selected".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Or)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["selected".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -410,63 +396,53 @@ fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
         params: vec!["lhs".to_string(), "rhs".to_string()],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 value: Some(8),
                 out: Some("const_lhs".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "const".to_string(),
                 value: Some(1),
                 out: Some("const_rhs".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "lshift".to_string(),
                 args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
                 out: Some("left".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Lshift)
             },
             OpIR {
-                kind: "rshift".to_string(),
                 args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
                 out: Some("right".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Rshift)
             },
             OpIR {
-                kind: "shl".to_string(),
                 args: Some(vec!["const_lhs".to_string(), "const_rhs".to_string()]),
                 out: Some("const_left".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Shl)
             },
             OpIR {
-                kind: "shr".to_string(),
                 args: Some(vec!["const_lhs".to_string(), "const_rhs".to_string()]),
                 out: Some("const_right".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Shr)
             },
             OpIR {
-                kind: "add".to_string(),
                 args: Some(vec!["left".to_string(), "right".to_string()]),
                 out: Some("param_sum".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Add)
             },
             OpIR {
-                kind: "add".to_string(),
                 args: Some(vec!["const_left".to_string(), "const_right".to_string()]),
                 out: Some("const_sum".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Add)
             },
             OpIR {
-                kind: "add".to_string(),
                 args: Some(vec!["param_sum".to_string(), "const_sum".to_string()]),
                 out: Some("out".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Add)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["out".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -502,89 +478,72 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
             params: vec![],
             ops: vec![
                 OpIR {
-                    kind: "const_bool".to_string(),
                     value: Some(0),
                     out: Some("flag".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "if".to_string(),
                     args: Some(vec!["flag".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::If)
                 },
                 OpIR {
-                    kind: "else".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Else)
                 },
                 OpIR {
-                    kind: "exception_last".to_string(),
                     out: Some("exc".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ExceptionLast)
                 },
                 OpIR {
-                    kind: "const_none".to_string(),
                     out: Some("nonev".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["exc".to_string(), "nonev".to_string()]),
                     out: Some("is_none".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Is)
                 },
                 OpIR {
-                    kind: "not".to_string(),
                     args: Some(vec!["is_none".to_string()]),
                     out: Some("has_exc".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Not)
                 },
                 OpIR {
-                    kind: "if".to_string(),
                     args: Some(vec!["has_exc".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::If)
                 },
                 OpIR {
-                    kind: "exception_stack_clear".to_string(),
                     out: Some("none".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ExceptionStackClear)
                 },
                 OpIR {
-                    kind: "raise".to_string(),
                     args: Some(vec!["exc".to_string()]),
                     out: Some("none".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Raise)
                 },
                 OpIR {
-                    kind: "check_exception".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckException)
                 },
                 OpIR {
-                    kind: "jump".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Jump)
                 },
                 OpIR {
-                    kind: "end_if".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::EndIf)
                 },
                 OpIR {
-                    kind: "check_exception".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckException)
                 },
                 OpIR {
-                    kind: "end_if".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::EndIf)
                 },
                 OpIR {
-                    kind: "label".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Label)
                 },
                 OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 },
             ],
             param_types: None,
@@ -630,25 +589,21 @@ fn semantic_branch_edges_preserve_actual_dominating_parameter_without_phi() {
             params: vec!["carried".to_string(), "cond".to_string()],
             ops: vec![
                 OpIR {
-                    kind: "br_if".to_string(),
                     args: Some(vec!["cond".to_string()]),
                     value: Some(7),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::BrIf)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["carried".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
                 OpIR {
-                    kind: "label".to_string(),
                     value: Some(7),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Label)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["carried".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             param_types: Some(vec!["dyn".to_string(), "bool".to_string()]),
@@ -673,24 +628,20 @@ fn exception_edges_preserve_actual_dominating_parameter_without_phi() {
             params: vec!["carried".to_string()],
             ops: vec![
                 OpIR {
-                    kind: "check_exception".to_string(),
                     value: Some(11),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckException)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["carried".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
                 OpIR {
-                    kind: "label".to_string(),
                     value: Some(11),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Label)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["carried".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             param_types: Some(vec!["dyn".to_string()]),
@@ -743,47 +694,40 @@ fn assert_branch_preserves_parameter_without_phi(function: &Function, parameter:
 #[test]
 fn redefined_value_survives_successive_exception_and_branch_fallthroughs() {
     let mut ops = vec![OpIR {
-        kind: "copy".into(),
         args: Some(vec!["initial".into()]),
         out: Some("carried".into()),
-        ..Default::default()
+        ..OpIR::new(OpKind::Copy)
     }];
     for (exception, branch, replacement) in [(10, 11, false), (12, 13, true)] {
         if replacement {
             ops.push(OpIR {
-                kind: "copy".into(),
                 args: Some(vec!["replacement".into()]),
                 out: Some("carried".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::Copy)
             });
         }
         ops.push(OpIR {
-            kind: "check_exception".into(),
             value: Some(exception),
-            ..Default::default()
+            ..OpIR::new(OpKind::CheckException)
         });
         ops.push(OpIR {
-            kind: "br_if".into(),
             value: Some(branch),
             args: Some(vec!["condition".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::BrIf)
         });
     }
     ops.push(OpIR {
-        kind: "ret".into(),
         args: Some(vec!["carried".into()]),
-        ..Default::default()
+        ..OpIR::new(OpKind::Ret)
     });
     for label in 10..=13 {
         ops.push(OpIR {
-            kind: "label".into(),
             value: Some(label),
-            ..Default::default()
+            ..OpIR::new(OpKind::Label)
         });
         ops.push(OpIR {
-            kind: "ret".into(),
             args: Some(vec!["carried".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::Ret)
         });
     }
     let function = compile_function_to_clif(
@@ -852,48 +796,39 @@ fn preloop_value_survives_exception_fallthrough_with_backend_managed_index() {
             param_types: Some(vec!["dyn".into(), "int".into(), "bool".into()]),
             ops: vec![
                 OpIR {
-                    kind: "loop_start".into(),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::LoopStart)
                 },
                 OpIR {
-                    kind: "loop_index_start".into(),
                     out: Some("index".into()),
                     args: Some(vec!["start".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::LoopIndexStart)
                 },
                 OpIR {
-                    kind: "loop_break_if_false".into(),
                     args: Some(vec!["keep_going".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::LoopBreakIfFalse)
                 },
                 OpIR {
-                    kind: "check_exception".into(),
                     value: Some(17),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::CheckException)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["carried".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
                 OpIR {
-                    kind: "loop_end".into(),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::LoopEnd)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["carried".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
                 OpIR {
-                    kind: "label".into(),
                     value: Some(17),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Label)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["carried".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             ..Default::default()
@@ -925,39 +860,33 @@ fn int_overflow_result_does_not_unbox_merged_bigint_result() {
             params: vec![],
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("base".to_string()),
                     value: Some(2),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Const)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("exp".to_string()),
                     value: Some(63),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Const)
                 },
                 OpIR {
-                    kind: "pow".to_string(),
                     args: Some(vec!["base".to_string(), "exp".to_string()]),
                     out: Some("powv".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Pow)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("one".to_string()),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Const)
                 },
                 OpIR {
-                    kind: "sub".to_string(),
                     args: Some(vec!["powv".to_string(), "one".to_string()]),
                     out: Some("maxsize".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Sub)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["maxsize".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             param_types: None,
@@ -985,74 +914,61 @@ fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
             params: vec![],
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("init".to_string()),
                     value: Some(0),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Const)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("one".to_string()),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Const)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("limit".to_string()),
                     value: Some(10),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Const)
                 },
                 OpIR {
-                    kind: "store_var".to_string(),
                     var: Some("_bb1_arg0".to_string()),
                     args: Some(vec!["init".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "loop_start".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopStart)
                 },
                 OpIR {
-                    kind: "load_var".to_string(),
                     out: Some("i_cur".to_string()),
                     var: Some("_bb1_arg0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoadVar)
                 },
                 OpIR {
-                    kind: "lt".to_string(),
                     out: Some("keep_going".to_string()),
                     args: Some(vec!["i_cur".to_string(), "limit".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Lt)
                 },
                 OpIR {
-                    kind: "loop_break_if_false".to_string(),
                     args: Some(vec!["keep_going".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopBreakIfFalse)
                 },
                 OpIR {
-                    kind: "add".to_string(),
                     out: Some("i_next".to_string()),
                     args: Some(vec!["i_cur".to_string(), "one".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Add)
                 },
                 OpIR {
-                    kind: "store_var".to_string(),
                     var: Some("_bb1_arg0".to_string()),
                     args: Some(vec!["i_next".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "loop_continue".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopContinue)
                 },
                 OpIR {
-                    kind: "loop_end".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopEnd)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["i_cur".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             param_types: None,
@@ -1078,23 +994,19 @@ fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
 fn structured_phi_transport_fixture(name: &str, tail: Vec<OpIR>) -> FunctionIR {
     let mut ops = vec![
         OpIR {
-            kind: "if".into(),
             args: Some(vec!["cond".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::If)
         },
         OpIR {
-            kind: "else".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::Else)
         },
         OpIR {
-            kind: "end_if".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::EndIf)
         },
         OpIR {
-            kind: "phi".into(),
             out: Some("merged".into()),
             args: Some(vec!["lhs".into(), "rhs".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::Phi)
         },
     ];
     ops.extend(tail);
@@ -1151,14 +1063,12 @@ fn structured_phi_actual_selected_value_survives_label_transport() {
             name,
             vec![
                 OpIR {
-                    kind: "label".into(),
                     value: Some(7),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Label)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["merged".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
         )],
@@ -1177,16 +1087,14 @@ fn structured_phi_actual_selected_value_survives_internal_cfg() {
                 name,
                 vec![
                     OpIR {
-                        kind: "call".into(),
                         s_value: Some(callee_name.into()),
                         args: Some(vec![]),
                         out: Some("unrelated".into()),
-                        ..Default::default()
+                        ..OpIR::new(OpKind::Call)
                     },
                     OpIR {
-                        kind: "ret".into(),
                         args: Some(vec!["merged".into()]),
-                        ..Default::default()
+                        ..OpIR::new(OpKind::Ret)
                     },
                 ],
             ),
@@ -1205,15 +1113,13 @@ fn structured_phi_does_not_define_a_neighboring_load_source_by_its_name() {
             name,
             vec![
                 OpIR {
-                    kind: "load_var".into(),
                     var: Some("_bb1_arg0".into()),
                     out: Some("result".into()),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::LoadVar)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["result".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
         )],
@@ -1230,26 +1136,22 @@ fn structured_phi_explicit_binding_updates_its_declared_destination() {
             name,
             vec![
                 OpIR {
-                    kind: "store_var".into(),
                     var: Some("lhs".into()),
                     args: Some(vec!["merged".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "label".into(),
                     value: Some(7),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Label)
                 },
                 OpIR {
-                    kind: "load_var".into(),
                     var: Some("lhs".into()),
                     out: Some("result".into()),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::LoadVar)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["result".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
         )],
@@ -1263,64 +1165,59 @@ fn statement_output_metadata_never_defines_or_overwrites_a_value() {
     // Real deletion IR carries an `out` diagnostic name. Neither a fresh name
     // nor a collision with a live value may manufacture a result definition.
     // Exercise the complete native statement family through actual codegen.
-    let cases: &[(&str, &[&str])] = &[
-        ("set_attr", &["receiver", "value"]),
-        ("set_attr_name", &["receiver", "key", "value"]),
-        ("set_attr_generic_ptr", &["receiver", "value"]),
-        ("set_attr_generic_obj", &["receiver", "value"]),
-        ("del_attr", &["receiver"]),
-        ("del_attr_name", &["receiver", "key"]),
-        ("del_attr_generic_ptr", &["receiver"]),
-        ("del_attr_generic_obj", &["receiver"]),
-        ("module_cache_set", &["key", "receiver"]),
-        ("module_cache_del", &["key"]),
-        ("module_set_attr", &["receiver", "key", "value"]),
-        ("module_del_global", &["receiver", "key"]),
-        ("module_del_global_if_present", &["receiver", "key"]),
-        ("store", &["receiver", "value"]),
-        ("guarded_field_set", &["receiver", "version", "value"]),
-        ("store_index", &["receiver", "key", "value"]),
-        ("del_index", &["receiver", "key"]),
-        ("raise", &["receiver"]),
-        ("inc_ref", &["receiver"]),
-        ("dec_ref", &["receiver"]),
+    let cases: &[(OpKind, &[&str])] = &[
+        (OpKind::SetAttr, &["receiver", "value"]),
+        (OpKind::SetAttrName, &["receiver", "key", "value"]),
+        (OpKind::SetAttrGenericPtr, &["receiver", "value"]),
+        (OpKind::SetAttrGenericObj, &["receiver", "value"]),
+        (OpKind::DelAttr, &["receiver"]),
+        (OpKind::DelAttrName, &["receiver", "key"]),
+        (OpKind::DelAttrGenericPtr, &["receiver"]),
+        (OpKind::DelAttrGenericObj, &["receiver"]),
+        (OpKind::ModuleCacheSet, &["key", "receiver"]),
+        (OpKind::ModuleCacheDel, &["key"]),
+        (OpKind::ModuleSetAttr, &["receiver", "key", "value"]),
+        (OpKind::ModuleDelGlobal, &["receiver", "key"]),
+        (OpKind::ModuleDelGlobalIfPresent, &["receiver", "key"]),
+        (OpKind::Store, &["receiver", "value"]),
+        (OpKind::GuardedFieldSet, &["receiver", "version", "value"]),
+        (OpKind::StoreIndex, &["receiver", "key", "value"]),
+        (OpKind::DelIndex, &["receiver", "key"]),
+        (OpKind::Raise, &["receiver"]),
+        (OpKind::IncRef, &["receiver"]),
+        (OpKind::DecRef, &["receiver"]),
     ];
     for &(kind, args) in cases {
         assert!(crate::tir::op_kinds_generated::simpleir_out_field_is_metadata(kind));
         for output in [None, Some("fresh_metadata"), Some("keep"), Some("none")] {
             let statement = OpIR {
-                kind: kind.into(),
                 args: Some(args.iter().map(|name| (*name).into()).collect()),
                 out: output.map(str::to_owned),
                 s_value: Some("field".into()),
                 value: Some(0),
-                class_definition: (kind == "guarded_field_set").then(|| "class:m:Owner".into()),
+                class_definition: (kind == OpKind::GuardedFieldSet).then(|| "class:m:Owner".into()),
                 source_op_idx: Some(7),
-                ..Default::default()
+                ..OpIR::new(kind)
             };
             let mut ops = vec![OpIR {
-                kind: "drop_inserted".into(),
-                ..Default::default()
+                ..OpIR::new(OpKind::DropInserted)
             }];
-            if kind == "dec_ref" {
+            if kind == OpKind::DecRef {
                 ops.push(OpIR {
-                    kind: "inc_ref".into(),
                     args: Some(vec!["receiver".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::IncRef)
                 });
             }
             ops.push(statement);
-            if kind == "inc_ref" {
+            if kind == OpKind::IncRef {
                 ops.push(OpIR {
-                    kind: "dec_ref".into(),
                     args: Some(vec!["receiver".into()]),
-                    ..Default::default()
+                    ..OpIR::new(OpKind::DecRef)
                 });
             }
             ops.push(OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["keep".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Ret)
             });
             let name = format!("metadata_{kind}");
             let function = compile_function_to_clif(

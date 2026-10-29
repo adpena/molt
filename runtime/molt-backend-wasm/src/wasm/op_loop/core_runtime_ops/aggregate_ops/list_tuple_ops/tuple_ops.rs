@@ -6,9 +6,9 @@ use crate::wasm_binary::emit_call;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_tuple_op(func: &mut Function, op: &OpIR, ctx: &AggregateRuntimeContext<'_>) {
-    match op.kind.as_str() {
-        "tuple_new" => emit_tuple_new(func, op, ctx),
-        "tuple_index" => emit_tuple_index(func, op, ctx),
+    match op.kind {
+        molt_ir::OpKind::TupleNew => emit_tuple_new(func, op, ctx),
+        molt_ir::OpKind::TupleIndex => emit_tuple_index(func, op, ctx),
         _ => unreachable!("non-tuple aggregate op routed to tuple emitter"),
     }
 }

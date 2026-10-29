@@ -31,7 +31,7 @@
 //!   dynamic method dispatch), a method load ([`OpCode::LoadMethod`] /
 //!   [`OpCode::LoadSuperMethod`], whose lookup can run Python code), or a `Copy`
 //!   op carrying a call-kind
-//!   `_original_kind` (the SSA-lift fallback spelling of `call_func` /
+//!   `origin` (the SSA-lift fallback spelling of `call_func` /
 //!   `call_indirect` / `call_bind` / `invoke_ffi` etc. — see
 //!   [`crate::tir::ssa`]). An opaque call may reach *any* function (including
 //!   back into this one), so it is conservatively a recursion-capable edge.
@@ -531,6 +531,7 @@ mod tests {
                 attrs.insert("s_value".into(), AttrValue::Str((*c).to_string()));
             }
             block.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -599,6 +600,7 @@ mod tests {
         let entry = f.entry_block;
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallMethod,
             operands: vec![],
@@ -625,10 +627,6 @@ mod tests {
             let result = function.fresh_value();
             let mut attrs = AttrDict::new();
             if opcode == OpCode::Copy {
-                attrs.insert(
-                    "_original_kind".into(),
-                    AttrValue::Str("builtin_func".into()),
-                );
                 attrs.insert("builtin_name".into(), AttrValue::Str("len".into()));
             } else {
                 attrs.insert("name".into(), AttrValue::Str("print".into()));
@@ -639,6 +637,7 @@ mod tests {
                 .unwrap()
                 .ops
                 .push(TirOp {
+                    origin: Some(molt_ir::OpKind::BuiltinFunc),
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![argument],
@@ -656,16 +655,14 @@ mod tests {
     #[test]
     fn gpu_intrinsic_call_does_not_disqualify_leaf() {
         for (kind, symbol) in [
-            ("gpu_thread_id", "molt_gpu_thread_id"),
-            ("gpu_block_id", "molt_gpu_block_id"),
-            ("gpu_block_dim", "molt_gpu_block_dim"),
-            ("gpu_grid_dim", "molt_gpu_grid_dim"),
-            ("gpu_barrier", "molt_gpu_barrier"),
+            (molt_ir::OpKind::GpuThreadId, "molt_gpu_thread_id"),
+            (molt_ir::OpKind::GpuBlockId, "molt_gpu_block_id"),
+            (molt_ir::OpKind::GpuBlockDim, "molt_gpu_block_dim"),
+            (molt_ir::OpKind::GpuGridDim, "molt_gpu_grid_dim"),
+            (molt_ir::OpKind::GpuBarrier, "molt_gpu_barrier"),
         ] {
             let mut f = func_calling("kernel", &[Some(symbol)]);
-            f.blocks.get_mut(&f.entry_block).unwrap().ops[0]
-                .attrs
-                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            f.blocks.get_mut(&f.entry_block).unwrap().ops[0].origin = Some(kind);
             let cg = CallGraph::build(&module(vec![f]));
             assert!(
                 cg.leaf_functions().contains("kernel"),
@@ -679,18 +676,16 @@ mod tests {
     #[test]
     fn opaque_call_spellings_cannot_borrow_gpu_or_module_identity() {
         for kind in [
-            "call_func",
-            "call_function",
-            "call_indirect",
-            "call_bind",
-            "call_guarded",
-            "invoke_ffi",
+            molt_ir::OpKind::CallFunc,
+            molt_ir::OpKind::CallFunction,
+            molt_ir::OpKind::CallIndirect,
+            molt_ir::OpKind::CallBind,
+            molt_ir::OpKind::CallGuarded,
+            molt_ir::OpKind::InvokeFfi,
         ] {
             for symbol in ["molt_gpu_thread_id", "module_function"] {
                 let mut caller = func_calling("caller", &[Some(symbol)]);
-                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
-                    .attrs
-                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
                 let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
                 assert!(cg.has_opaque_call("caller"), "{kind}: {symbol}");
                 assert!(!cg.leaf_functions().contains("caller"), "{kind}: {symbol}");
@@ -708,12 +703,14 @@ mod tests {
             "molt_gpu_grid_dim",
             "molt_gpu_barrier",
         ] {
-            for original in [None, Some("call"), Some("call_internal")] {
+            for original in [
+                None,
+                Some(molt_ir::OpKind::Call),
+                Some(molt_ir::OpKind::CallInternal),
+            ] {
                 let mut caller = func_calling("caller", &[Some(symbol)]);
                 if let Some(kind) = original {
-                    caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
-                        .attrs
-                        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                    caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
                 }
                 let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
                 assert!(!cg.has_opaque_call("caller"), "{symbol}: {original:?}");
@@ -733,14 +730,14 @@ mod tests {
     #[test]
     fn copy_call_transport_uses_generated_direct_and_opaque_roles() {
         for kind in [
-            "call",
-            "call_internal",
-            "call_func",
-            "call_function",
-            "call_indirect",
-            "call_bind",
-            "call_guarded",
-            "invoke_ffi",
+            molt_ir::OpKind::Call,
+            molt_ir::OpKind::CallInternal,
+            molt_ir::OpKind::CallFunc,
+            molt_ir::OpKind::CallFunction,
+            molt_ir::OpKind::CallIndirect,
+            molt_ir::OpKind::CallBind,
+            molt_ir::OpKind::CallGuarded,
+            molt_ir::OpKind::InvokeFfi,
         ] {
             for symbol in ["module_function", "molt_gpu_thread_id"] {
                 let mut caller = func_calling("caller", &[Some(symbol)]);
@@ -748,10 +745,9 @@ mod tests {
                 let op = &mut caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0];
                 op.opcode = OpCode::Copy;
                 op.results = vec![result];
-                op.attrs
-                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                op.origin = Some(kind);
                 let cg = CallGraph::build(&module(vec![caller, func_calling(symbol, &[])]));
-                let direct = matches!(kind, "call" | "call_internal");
+                let direct = matches!(kind, molt_ir::OpKind::Call | molt_ir::OpKind::CallInternal);
                 assert_eq!(cg.has_opaque_call("caller"), !direct, "{kind}: {symbol}");
                 assert_eq!(
                     cg.callees("caller").len(),
@@ -765,7 +761,7 @@ mod tests {
 
     #[test]
     fn copy_fallback_call_kind_disqualifies_leaf() {
-        // A `Copy` op carrying _original_kind=call_func is a disguised call.
+        // A `Copy` op carrying origin=call_func is a disguised call.
         let mut f = TirFunction::new(
             "f".into(),
             vec![],
@@ -775,9 +771,10 @@ mod tests {
         let entry = f.entry_block;
         let block = f.blocks.get_mut(&entry).unwrap();
         let mut attrs = AttrDict::new();
-        attrs.insert("_original_kind".into(), AttrValue::Str("call_func".into()));
+
         attrs.insert("s_value".into(), AttrValue::Str("g".into()));
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::CallFunc),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -798,7 +795,7 @@ mod tests {
 
     #[test]
     fn plain_copy_is_not_a_call() {
-        // A `Copy` with no _original_kind (a real SSA copy) is NOT a call.
+        // A `Copy` with no origin (a real SSA copy) is NOT a call.
         let mut f = TirFunction::new(
             "f".into(),
             vec![],
@@ -810,6 +807,7 @@ mod tests {
         let w = f.fresh_value();
         let block = f.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![v],
@@ -921,6 +919,7 @@ mod tests {
         let mut attrs = AttrDict::new();
         attrs.insert("s_value".into(), AttrValue::Str("g_poll".into()));
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::AllocTask,
             operands: vec![],

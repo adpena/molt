@@ -16,11 +16,13 @@ pub(super) fn emit_truth_runtime_op(
     scalar_plan: &ScalarRepresentationPlan,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "bool" | "cast_bool" | "builtin_bool" => {
+    match op.kind {
+        molt_ir::OpKind::Bool | molt_ir::OpKind::CastBool | molt_ir::OpKind::BuiltinBool => {
             emit_bool_like(func, op, import_ids, locals, scalar_plan, reloc_enabled)
         }
-        "and" | "or" => emit_selected_operand(func, op, import_ids, locals, reloc_enabled),
+        molt_ir::OpKind::And | molt_ir::OpKind::Or => {
+            emit_selected_operand(func, op, import_ids, locals, reloc_enabled)
+        }
         _ => return false,
     }
     true
@@ -59,7 +61,7 @@ fn emit_selected_operand(
     let args = op.args.as_ref().unwrap();
     let lhs = locals[&args[0]];
     let rhs = locals[&args[1]];
-    let (truthy, falsey) = if op.kind == "and" {
+    let (truthy, falsey) = if op.kind == molt_ir::OpKind::And {
         (rhs, lhs)
     } else {
         (lhs, rhs)
@@ -78,7 +80,7 @@ fn emit_selected_operand(
     func.instruction(&Instruction::LocalGet(falsey));
     func.instruction(&Instruction::End);
     debug_assert!(
-        crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(&op.kind)
+        crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(op.kind)
     );
     store_borrowed_value(
         func,

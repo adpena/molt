@@ -9,15 +9,15 @@ pub(super) fn emit_branch_control_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    match op.kind.as_str() {
-        "jump" => emit_jump(context, func, op),
-        "br_if" => emit_br_if(context, func, op),
-        "if" => emit_if(context, func, op),
-        "label" => emit_label(context, func, op),
-        "else" => {
+    match op.kind {
+        molt_ir::OpKind::Jump => emit_jump(context, func, op),
+        molt_ir::OpKind::BrIf => emit_br_if(context, func, op),
+        molt_ir::OpKind::If => emit_if(context, func, op),
+        molt_ir::OpKind::Label => emit_label(context, func, op),
+        molt_ir::OpKind::Else => {
             func.instruction(&Instruction::Else);
         }
-        "end_if" => {
+        molt_ir::OpKind::EndIf => {
             func.instruction(&Instruction::End);
             context.control_stack.pop();
         }
@@ -28,7 +28,7 @@ pub(super) fn emit_branch_control_op(
 
 fn emit_jump(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
     let target = op.value.expect("jump missing label");
-    let depth = label_branch_depth(context, target, "jump");
+    let depth = label_branch_depth(context, target, molt_ir::OpKind::Jump);
     func.instruction(&Instruction::Br(depth));
 }
 
@@ -36,7 +36,7 @@ fn emit_br_if(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
     let args = op.args.as_ref().unwrap();
     let cond = context.locals[&args[0]];
     let target = op.value.expect("br_if missing label");
-    let depth = label_branch_depth(context, target, "br_if");
+    let depth = label_branch_depth(context, target, molt_ir::OpKind::BrIf);
     emit_branch_truthiness_i32(
         func,
         cond,
@@ -77,7 +77,11 @@ fn emit_label(context: &mut ControlOpContext<'_>, func: &mut Function, op: &OpIR
     }
 }
 
-pub(super) fn label_branch_depth(context: &ControlOpContext<'_>, target: i64, kind: &str) -> u32 {
+pub(super) fn label_branch_depth(
+    context: &ControlOpContext<'_>,
+    target: i64,
+    kind: molt_ir::OpKind,
+) -> u32 {
     context
         .label_depths
         .get(&target)

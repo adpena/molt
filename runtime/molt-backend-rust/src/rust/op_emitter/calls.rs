@@ -57,10 +57,9 @@ impl RustBackend {
             return;
         }
         let call = OpIR {
-            kind: "call_func".to_string(),
             args: Some([&args[..1], &args[2..]].concat()),
             out: op.out.clone(),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CallFunc)
         };
         self.emit_op_dynamic_call(&call);
     }

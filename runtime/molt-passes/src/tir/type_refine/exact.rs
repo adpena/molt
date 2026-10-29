@@ -110,7 +110,13 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                 {
                     vec![ty; op.results.len()]
                 } else if transfers_exact {
-                    infer_result_facts_with_attrs(op.opcode, &operand_types, None, op.results.len())
+                    infer_result_facts_with_attrs(
+                        op.opcode,
+                        op.origin,
+                        &operand_types,
+                        None,
+                        op.results.len(),
+                    )
                 } else {
                     vec![TirType::DynBox; op.results.len()]
                 };

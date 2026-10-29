@@ -59,12 +59,12 @@ impl<'a> SimpleIrScalarPurityFacts<'a> {
 }
 
 fn simple_ir_literal_scalar_kind(op: &OpIR) -> Option<ScalarKind> {
-    match op.kind.as_str() {
-        "const" => op.value.map(|_| ScalarKind::Int),
-        "const_bool" => Some(ScalarKind::Bool),
-        "const_float" => Some(ScalarKind::Float),
-        "const_str" => Some(ScalarKind::Str),
-        "const_none" => Some(ScalarKind::NoneValue),
+    match op.kind {
+        molt_ir::OpKind::Const => op.value.map(|_| ScalarKind::Int),
+        molt_ir::OpKind::ConstBool => Some(ScalarKind::Bool),
+        molt_ir::OpKind::ConstFloat => Some(ScalarKind::Float),
+        molt_ir::OpKind::ConstStr => Some(ScalarKind::Str),
+        molt_ir::OpKind::ConstNone => Some(ScalarKind::NoneValue),
         _ => None,
     }
 }
@@ -73,9 +73,9 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
     facts: Option<&SimpleIrScalarPurityFacts<'_>>,
     op: &OpIR,
 ) -> bool {
-    let kind = op.kind.as_str();
+    let kind = op.kind;
 
-    if matches!(kind, "guard_tag" | "guard_type") {
+    if matches!(kind, molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType) {
         return facts.is_some_and(|facts| facts.guards.is_nonthrowing(op, facts.plan));
     }
 
@@ -85,44 +85,37 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
 
     if matches!(
         kind,
-        "const"
-            | "const_int"
-            | "const_float"
-            | "const_str"
-            | "const_bool"
-            | "const_none"
-            | "const_bytes"
-            | "const_bigint"
-            | "const_ellipsis"
-            | "missing"
+        molt_ir::OpKind::Const
+            | molt_ir::OpKind::ConstInt
+            | molt_ir::OpKind::ConstFloat
+            | molt_ir::OpKind::ConstStr
+            | molt_ir::OpKind::ConstBool
+            | molt_ir::OpKind::ConstNone
+            | molt_ir::OpKind::ConstBytes
+            | molt_ir::OpKind::ConstBigint
+            | molt_ir::OpKind::ConstEllipsis
+            | molt_ir::OpKind::Missing
     ) {
         return true;
     }
 
     if matches!(
         kind,
-        "load_var"
-            | "store_var"
-            | "load_fast"
-            | "store_fast"
-            | "load_var_slot"
-            | "store_var_slot"
-            | "load_closure"
-            | "store_closure"
+        molt_ir::OpKind::LoadVar | molt_ir::OpKind::StoreVar | molt_ir::OpKind::StoreFast
     ) {
         return true;
     }
 
     if matches!(
         kind,
-        "copy"
-            | "copy_var"
-            | "identity_alias"
-            | "binding_alias"
-            | "unbox"
-            | "cast"
-            | "widen"
-            | "phi"
+        molt_ir::OpKind::Copy
+            | molt_ir::OpKind::CopyVar
+            | molt_ir::OpKind::IdentityAlias
+            | molt_ir::OpKind::BindingAlias
+            | molt_ir::OpKind::Unbox
+            | molt_ir::OpKind::Cast
+            | molt_ir::OpKind::Widen
+            | molt_ir::OpKind::Phi
     ) {
         return true;
     }
@@ -133,54 +126,61 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
         return true;
     }
 
-    if matches!(kind, "is" | "is_not") {
+    if matches!(kind, molt_ir::OpKind::Is | molt_ir::OpKind::IsNot) {
         return true;
     }
 
     if matches!(
         kind,
-        "guard_layout" | "guard_int" | "guard_float" | "type_guard"
+        molt_ir::OpKind::GuardLayout
+            | molt_ir::OpKind::GuardInt
+            | molt_ir::OpKind::GuardFloat
+            | molt_ir::OpKind::TypeGuard
     ) {
         return true;
     }
 
-    if matches!(kind, "store" | "load") {
+    if matches!(kind, molt_ir::OpKind::Store | molt_ir::OpKind::Load) {
         return true;
     }
 
     if matches!(
         kind,
-        "if" | "else"
-            | "end_if"
-            | "loop_start"
-            | "loop_end"
-            | "loop_continue"
-            | "loop_break"
-            | "loop_break_if_false"
-            | "loop_index_start"
-            | "loop_index_next"
-            | "jump"
-            | "label"
-            | "line"
+        molt_ir::OpKind::If
+            | molt_ir::OpKind::Else
+            | molt_ir::OpKind::EndIf
+            | molt_ir::OpKind::LoopStart
+            | molt_ir::OpKind::LoopEnd
+            | molt_ir::OpKind::LoopContinue
+            | molt_ir::OpKind::LoopBreak
+            | molt_ir::OpKind::LoopBreakIfFalse
+            | molt_ir::OpKind::LoopIndexStart
+            | molt_ir::OpKind::LoopIndexNext
+            | molt_ir::OpKind::Jump
+            | molt_ir::OpKind::Label
+            | molt_ir::OpKind::Line
     ) {
         return true;
     }
 
-    if matches!(kind, "code_slots_init" | "code_slot_set" | "code_new") {
+    if matches!(
+        kind,
+        molt_ir::OpKind::CodeSlotsInit | molt_ir::OpKind::CodeSlotSet | molt_ir::OpKind::CodeNew
+    ) {
         return true;
     }
 
     if matches!(
         kind,
-        "trace_exit"
-            | "exception_clear"
-            | "exception_last"
-            | "exception_last_pending"
-            | "exception_finally_pending_observer"
-            | "exception_stack_enter"
-            | "exception_stack_clear"
-            | "exception_stack_depth"
-            | "check_exception"
+        molt_ir::OpKind::TraceExit
+            | molt_ir::OpKind::ExceptionClear
+            | molt_ir::OpKind::ExceptionLast
+            | molt_ir::OpKind::ExceptionLastPending
+            | molt_ir::OpKind::ExceptionFinallyPendingObserver
+            | molt_ir::OpKind::ExceptionStackEnter
+            | molt_ir::OpKind::ExceptionStackClear
+            | molt_ir::OpKind::ExceptionStackDepth
+            | molt_ir::OpKind::CheckException
     ) {
         return true;
     }
@@ -216,52 +216,59 @@ fn simple_ir_scalar_op_is_provably_nonthrowing(
             .and_then(arg_kind)
     };
 
-    match op.kind.as_str() {
-        "add" | "inplace_add" => all_args_numeric() || all_args_str(),
-        "sub" | "mul" | "inplace_sub" | "inplace_mul" => all_args_numeric(),
-        "neg" | "pos" => matches!(
+    match op.kind {
+        molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => all_args_numeric() || all_args_str(),
+        molt_ir::OpKind::Sub
+        | molt_ir::OpKind::Mul
+        | molt_ir::OpKind::InplaceSub
+        | molt_ir::OpKind::InplaceMul => all_args_numeric(),
+        molt_ir::OpKind::Neg | molt_ir::OpKind::Pos => matches!(
             first_source_kind(),
             Some(ScalarKind::Int | ScalarKind::Bool | ScalarKind::Float)
         ),
-        "bit_and" | "bit_or" | "bit_xor" | "bit_not" | "bitand" | "bitor" | "bitxor"
-        | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" => {
+        molt_ir::OpKind::BitAnd
+        | molt_ir::OpKind::BitOr
+        | molt_ir::OpKind::BitXor
+        | molt_ir::OpKind::BitNot
+        | molt_ir::OpKind::InplaceBitAnd
+        | molt_ir::OpKind::InplaceBitOr
+        | molt_ir::OpKind::InplaceBitXor => {
             !args.is_empty()
                 && args
                     .iter()
                     .all(|arg| facts.name_is_integer_family(arg.as_str()))
         }
-        "eq" | "ne" => all_args_scalar(),
-        "lt" | "le" | "gt" | "ge" => all_args_numeric() || all_args_str(),
+        molt_ir::OpKind::Eq | molt_ir::OpKind::Ne => all_args_scalar(),
+        molt_ir::OpKind::Lt | molt_ir::OpKind::Le | molt_ir::OpKind::Gt | molt_ir::OpKind::Ge => {
+            all_args_numeric() || all_args_str()
+        }
         _ => false,
     }
 }
 
 pub(super) fn simple_ir_op_needs_scalar_plan_for_nonthrowing(op: &OpIR) -> bool {
     matches!(
-        op.kind.as_str(),
-        "add"
-            | "sub"
-            | "mul"
-            | "inplace_add"
-            | "inplace_sub"
-            | "inplace_mul"
-            | "neg"
-            | "pos"
-            | "bit_and"
-            | "bit_or"
-            | "bit_xor"
-            | "bit_not"
-            | "bitand"
-            | "bitor"
-            | "bitxor"
-            | "inplace_bit_and"
-            | "inplace_bit_or"
-            | "inplace_bit_xor"
-            | "lt"
-            | "le"
-            | "gt"
-            | "ge"
-            | "eq"
-            | "ne"
+        op.kind,
+        molt_ir::OpKind::Add
+            | molt_ir::OpKind::Sub
+            | molt_ir::OpKind::Mul
+            | molt_ir::OpKind::InplaceAdd
+            | molt_ir::OpKind::InplaceSub
+            | molt_ir::OpKind::InplaceMul
+            | molt_ir::OpKind::Neg
+            | molt_ir::OpKind::Pos
+            | molt_ir::OpKind::BitAnd
+            | molt_ir::OpKind::BitOr
+            | molt_ir::OpKind::BitXor
+            | molt_ir::OpKind::BitNot
+            | molt_ir::OpKind::InplaceBitAnd
+            | molt_ir::OpKind::InplaceBitOr
+            | molt_ir::OpKind::InplaceBitXor
+            | molt_ir::OpKind::Lt
+            | molt_ir::OpKind::Le
+            | molt_ir::OpKind::Gt
+            | molt_ir::OpKind::Ge
+            | molt_ir::OpKind::Eq
+            | molt_ir::OpKind::Ne
     )
 }

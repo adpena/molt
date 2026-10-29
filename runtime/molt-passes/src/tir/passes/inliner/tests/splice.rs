@@ -44,6 +44,7 @@ fn splice_void_return() {
     let centry = caller.entry_block;
     let block = caller.blocks.get_mut(&centry).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -92,6 +93,7 @@ fn refcount_guard_refuses_arg_incref() {
     call_attrs.insert("s_value".into(), AttrValue::Str("f".into()));
     let block = caller.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::IncRef,
         operands: vec![arg],
@@ -100,6 +102,7 @@ fn refcount_guard_refuses_arg_incref() {
         source_span: None,
     });
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![arg],
@@ -275,6 +278,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         let mut call_attrs = AttrDict::new();
         call_attrs.insert("s_value".into(), AttrValue::Str("obs_custody".into()));
         let mut call = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![argument],
@@ -289,6 +293,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         let block = caller.blocks.get_mut(&entry).unwrap();
         block.ops = vec![
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -301,6 +306,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
             },
             call,
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -341,8 +347,8 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
                     op.opcode == OpCode::Copy
                         && op.operands == [source]
                         && matches!(
-                            op.attrs.get("_original_kind"),
-                            Some(AttrValue::Str(kind)) if kind == "binding_alias"
+                            op.origin,
+                            Some(kind) if kind == molt_ir::OpKind::BindingAlias
                         )
                 })
                 .collect::<Vec<_>>()

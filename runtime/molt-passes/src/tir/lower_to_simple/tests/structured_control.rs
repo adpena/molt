@@ -91,12 +91,16 @@ fn structured_if_skips_join_with_external_predecessor() {
         "shared join labels must remain valid after lower_to_simple: {ops:?}"
     );
     assert!(
-        !ops.iter()
-            .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::If
+            || op.kind == molt_ir::OpKind::Else
+            || op.kind == molt_ir::OpKind::EndIf),
         "shared-join lowering must stay label-based instead of inlining to structured if/else: {ops:?}"
     );
     assert!(
-        ops.iter().filter(|op| op.kind == "label").count() >= 4,
+        ops.iter()
+            .filter(|op| op.kind == molt_ir::OpKind::Label)
+            .count()
+            >= 4,
         "shared-join lowering must preserve explicit labels for the merge shape: {ops:?}"
     );
 }
@@ -192,12 +196,16 @@ fn structured_if_skips_arm_with_external_predecessor() {
         "shared-arm lowering must remain label-valid after lower_to_simple: {ops:?}"
     );
     assert!(
-        !ops.iter()
-            .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::If
+            || op.kind == molt_ir::OpKind::Else
+            || op.kind == molt_ir::OpKind::EndIf),
         "shared-arm lowering must stay label-based instead of inlining to structured if/else: {ops:?}"
     );
     assert!(
-        ops.iter().filter(|op| op.kind == "label").count() >= 4,
+        ops.iter()
+            .filter(|op| op.kind == molt_ir::OpKind::Label)
+            .count()
+            >= 4,
         "shared-arm lowering must preserve explicit labels for the reused then-arm shape: {ops:?}"
     );
 }
@@ -235,6 +243,7 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
             id: then_blk,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -257,6 +266,7 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
             id: else_blk,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -287,21 +297,24 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
     );
 
     let ops = lower_to_simple_ir(&func);
-    let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
+    let kinds: Vec<molt_ir::OpKind> = ops.iter().map(|op| op.kind).collect();
 
-    assert!(kinds.contains(&"if"), "{ops:?}");
-    assert!(kinds.contains(&"else"), "{ops:?}");
-    assert!(kinds.contains(&"end_if"), "{ops:?}");
+    assert!(kinds.contains(&molt_ir::OpKind::If), "{ops:?}");
+    assert!(kinds.contains(&molt_ir::OpKind::Else), "{ops:?}");
+    assert!(kinds.contains(&molt_ir::OpKind::EndIf), "{ops:?}");
     assert!(
-        !kinds.contains(&"phi"),
+        !kinds.contains(&molt_ir::OpKind::Phi),
         "structured if join args must round-trip as store/load, not phi: {ops:?}"
     );
     assert!(
-        ops.iter().filter(|op| op.kind == "store_var").count() >= 2,
+        ops.iter()
+            .filter(|op| op.kind == molt_ir::OpKind::StoreVar)
+            .count()
+            >= 2,
         "structured if join args must emit branch-site stores: {ops:?}"
     );
     assert!(
-        ops.iter().any(|op| op.kind == "load_var"),
+        ops.iter().any(|op| op.kind == molt_ir::OpKind::LoadVar),
         "structured if join args must reload the merged value after end_if: {ops:?}"
     );
 }
@@ -327,6 +340,7 @@ fn check_exception_materializes_handler_arg_stores() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -335,6 +349,7 @@ fn check_exception_materializes_handler_arg_stores() {
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![value],
@@ -382,7 +397,7 @@ fn check_exception_materializes_handler_arg_stores() {
 
     assert!(
         ops.iter().any(|op| {
-            op.kind == "store_var"
+            op.kind == molt_ir::OpKind::StoreVar
                 && op.var.as_deref() == Some(handler_param.as_str())
                 && op
                     .args
@@ -393,7 +408,7 @@ fn check_exception_materializes_handler_arg_stores() {
     );
     assert!(
         ops.iter().any(|op| {
-            op.kind == "load_var"
+            op.kind == molt_ir::OpKind::LoadVar
                 && op.var.as_deref() == Some(handler_param.as_str())
                 && op.out.as_deref() == Some(handler_value.as_str())
         }),
@@ -422,6 +437,7 @@ fn try_start_materializes_handler_arg_stores() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -430,6 +446,7 @@ fn try_start_materializes_handler_arg_stores() {
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TryStart,
         operands: vec![value],
@@ -477,7 +494,7 @@ fn try_start_materializes_handler_arg_stores() {
 
     assert!(
         ops.iter().any(|op| {
-            op.kind == "store_var"
+            op.kind == molt_ir::OpKind::StoreVar
                 && op.var.as_deref() == Some(handler_param.as_str())
                 && op
                     .args
@@ -488,7 +505,7 @@ fn try_start_materializes_handler_arg_stores() {
     );
     assert!(
         ops.iter().any(|op| {
-            op.kind == "load_var"
+            op.kind == molt_ir::OpKind::LoadVar
                 && op.var.as_deref() == Some(handler_param.as_str())
                 && op.out.as_deref() == Some(handler_value.as_str())
         }),
@@ -555,8 +572,9 @@ fn structured_if_skips_one_return_one_continue_shape() {
         "mixed return/fallthrough shape must keep valid labels after lower_to_simple: {ops:?}"
     );
     assert!(
-        !ops.iter()
-            .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::If
+            || op.kind == molt_ir::OpKind::Else
+            || op.kind == molt_ir::OpKind::EndIf),
         "mixed return/fallthrough shape must stay label-based until region analysis proves it safe: {ops:?}"
     );
 }
@@ -601,6 +619,7 @@ fn structured_if_skips_successor_with_nested_scf() {
             id: else_blk,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Scf,
                 opcode: OpCode::ScfWhile,
                 operands: vec![],
@@ -630,8 +649,9 @@ fn structured_if_skips_successor_with_nested_scf() {
         "nested-scf successor lowering must keep valid labels after lower_to_simple: {ops:?}"
     );
     assert!(
-        !ops.iter()
-            .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::If
+            || op.kind == molt_ir::OpKind::Else
+            || op.kind == molt_ir::OpKind::EndIf),
         "successors containing nested SCF must stay label-based instead of inlining to structured if/else: {ops:?}"
     );
 }
@@ -669,6 +689,7 @@ fn structured_if_skips_successor_with_try_region_markers() {
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::TryStart,
                     operands: vec![],
@@ -677,6 +698,7 @@ fn structured_if_skips_successor_with_try_region_markers() {
                     source_span: None,
                 },
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::TryEnd,
                     operands: vec![],
@@ -728,8 +750,9 @@ fn structured_if_skips_successor_with_try_region_markers() {
         "try-region successor lowering must keep valid labels after lower_to_simple: {ops:?}"
     );
     assert!(
-        !ops.iter()
-            .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::If
+            || op.kind == molt_ir::OpKind::Else
+            || op.kind == molt_ir::OpKind::EndIf),
         "successors containing try_start/try_end must stay label-based instead of inlining to structured if/else: {ops:?}"
     );
 }
@@ -798,8 +821,9 @@ fn structured_if_skips_join_that_is_loop_header() {
         "loop-header join lowering must keep valid labels after lower_to_simple: {ops:?}"
     );
     assert!(
-        !ops.iter()
-            .any(|op| op.kind == "if" || op.kind == "else" || op.kind == "end_if"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::If
+            || op.kind == molt_ir::OpKind::Else
+            || op.kind == molt_ir::OpKind::EndIf),
         "join blocks that are loop headers must stay label-based instead of inlining to structured if/else: {ops:?}"
     );
 }
@@ -852,8 +876,10 @@ fn loop_end_block_target_must_keep_its_label() {
         "loop-end block labels must survive when explicit branches still target them: {ops:?}"
     );
     assert!(
-        ops.iter()
-            .any(|op| matches!(op.kind.as_str(), "label" | "state_label") && op.value.is_some()),
+        ops.iter().any(|op| matches!(
+            op.kind,
+            molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+        ) && op.value.is_some()),
         "expected a materialized target label for the loop-end block: {ops:?}"
     );
 }
@@ -862,27 +888,27 @@ fn loop_end_block_target_must_keep_its_label() {
 fn eliminate_dead_loop_end_after_return() {
     let mut ops = vec![
         OpIR {
-            kind: "ret".into(),
+            kind: molt_ir::OpKind::Ret,
             args: Some(vec!["_ret0".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         },
         OpIR {
-            kind: "loop_end".into(),
+            kind: molt_ir::OpKind::LoopEnd,
             args: Some(vec![]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::LoopEnd)
         },
         OpIR {
-            kind: "label".into(),
+            kind: molt_ir::OpKind::Label,
             args: Some(vec![]),
             value: Some(42),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
     ];
 
     eliminate_dead_labels(&mut ops);
 
     assert!(
-        !ops.iter().any(|op| op.kind == "loop_end"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::LoopEnd),
         "dead loop_end must not survive after a real return: {ops:?}"
     );
 }
@@ -890,56 +916,62 @@ fn eliminate_dead_loop_end_after_return() {
 #[test]
 fn paired_loop_closers_survive_terminal_body_paths() {
     for terminal in [
-        "ret",
-        "ret_void",
-        "jump",
-        "goto",
-        "loop_break",
-        "loop_continue",
+        molt_ir::OpKind::Ret,
+        molt_ir::OpKind::RetVoid,
+        molt_ir::OpKind::Jump,
+        molt_ir::OpKind::Goto,
+        molt_ir::OpKind::LoopBreak,
+        molt_ir::OpKind::LoopContinue,
     ] {
         for depth in 1..=2 {
             let mut ops = Vec::new();
             for _ in 0..depth {
-                for kind in ["loop_start", "loop_break_if_false"] {
+                for kind in [
+                    molt_ir::OpKind::LoopStart,
+                    molt_ir::OpKind::LoopBreakIfFalse,
+                ] {
                     ops.push(OpIR {
-                        kind: kind.into(),
-                        ..OpIR::default()
+                        kind,
+                        ..OpIR::new(kind)
                     });
                 }
             }
             ops.push(OpIR {
-                kind: terminal.into(),
-                value: matches!(terminal, "jump" | "goto").then_some(42),
-                ..OpIR::default()
+                kind: terminal,
+                value: matches!(terminal, molt_ir::OpKind::Jump | molt_ir::OpKind::Goto)
+                    .then_some(42),
+                ..OpIR::new(terminal)
             });
             ops.push(OpIR {
-                kind: "const_int".into(),
+                kind: molt_ir::OpKind::ConstInt,
                 out: Some("dead_body_value".into()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstInt)
             });
             for _ in 0..depth {
                 ops.push(OpIR {
-                    kind: "loop_end".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::LoopEnd,
+                    ..OpIR::new(molt_ir::OpKind::LoopEnd)
                 });
             }
             ops.push(OpIR {
-                kind: "label".into(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             });
             ops.push(OpIR {
-                kind: "const_int".into(),
+                kind: molt_ir::OpKind::ConstInt,
                 out: Some("after_loop_value".into()),
                 value: Some(2),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstInt)
             });
 
             eliminate_dead_labels(&mut ops);
 
             assert_eq!(
-                ops.iter().filter(|op| op.kind == "loop_end").count(),
+                ops.iter()
+                    .filter(|op| op.kind == molt_ir::OpKind::LoopEnd)
+                    .count(),
                 depth,
                 "{terminal} at depth {depth} must close every retained loop: {ops:?}"
             );
@@ -960,27 +992,27 @@ fn paired_loop_closers_survive_terminal_body_paths() {
 fn eliminate_dead_jump_after_return() {
     let mut ops = vec![
         OpIR {
-            kind: "ret".into(),
+            kind: molt_ir::OpKind::Ret,
             args: Some(vec!["_ret0".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         },
         OpIR {
-            kind: "jump".into(),
+            kind: molt_ir::OpKind::Jump,
             value: Some(42),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         },
         OpIR {
-            kind: "label".into(),
+            kind: molt_ir::OpKind::Label,
             args: Some(vec![]),
             value: Some(42),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
     ];
 
     eliminate_dead_labels(&mut ops);
 
     assert!(
-        !ops.iter().any(|op| op.kind == "jump"),
+        !ops.iter().any(|op| op.kind == molt_ir::OpKind::Jump),
         "dead jump must not survive after a real return: {ops:?}"
     );
 }
@@ -989,37 +1021,37 @@ fn eliminate_dead_jump_after_return() {
 fn preserve_loop_end_after_live_labeled_raise_path() {
     let mut ops = vec![
         OpIR {
-            kind: "br_if".into(),
+            kind: molt_ir::OpKind::BrIf,
             args: Some(vec!["cond".into()]),
             value: Some(7),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::BrIf)
         },
         OpIR {
-            kind: "loop_continue".into(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::LoopContinue,
+            ..OpIR::new(molt_ir::OpKind::LoopContinue)
         },
         OpIR {
-            kind: "label".into(),
+            kind: molt_ir::OpKind::Label,
             value: Some(7),
             args: Some(vec![]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "raise".into(),
+            kind: molt_ir::OpKind::Raise,
             args: Some(vec!["exc".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Raise)
         },
         OpIR {
-            kind: "loop_end".into(),
+            kind: molt_ir::OpKind::LoopEnd,
             args: Some(vec![]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::LoopEnd)
         },
     ];
 
     eliminate_dead_labels(&mut ops);
 
     assert!(
-        ops.iter().any(|op| op.kind == "loop_end"),
+        ops.iter().any(|op| op.kind == molt_ir::OpKind::LoopEnd),
         "loop_end must survive after a live labeled terminal block because it still closes the structured loop break path: {ops:?}"
     );
 }
@@ -1028,40 +1060,46 @@ fn preserve_loop_end_after_live_labeled_raise_path() {
 fn eliminate_dead_labels_preserves_explicit_post_raise_exception_transfer() {
     let mut ops = vec![
         OpIR {
-            kind: "raise".into(),
+            kind: molt_ir::OpKind::Raise,
             args: Some(vec!["exc".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Raise)
         },
         OpIR {
-            kind: "store_var".into(),
+            kind: molt_ir::OpKind::StoreVar,
             var: Some("_bb7_arg0".into()),
             args: Some(vec!["total".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
         OpIR {
-            kind: "check_exception".into(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(5),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
         OpIR {
-            kind: "jump".into(),
+            kind: molt_ir::OpKind::Jump,
             value: Some(5),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         },
         OpIR {
-            kind: "label".into(),
+            kind: molt_ir::OpKind::Label,
             value: Some(5),
             args: Some(vec![]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
     ];
 
     eliminate_dead_labels(&mut ops);
 
-    let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
+    let kinds: Vec<molt_ir::OpKind> = ops.iter().map(|op| op.kind).collect();
     assert_eq!(
         kinds,
-        vec!["raise", "store_var", "check_exception", "jump", "label"],
+        vec![
+            molt_ir::OpKind::Raise,
+            molt_ir::OpKind::StoreVar,
+            molt_ir::OpKind::CheckException,
+            molt_ir::OpKind::Jump,
+            molt_ir::OpKind::Label
+        ],
         "raise must not delete the explicit exception transfer edge: {ops:?}"
     );
 }
@@ -1070,47 +1108,54 @@ fn eliminate_dead_labels_preserves_explicit_post_raise_exception_transfer() {
 fn eliminate_dead_labels_keeps_if_marker_after_dead_label_before_structured_if() {
     let mut ops = vec![
         OpIR {
-            kind: "ret".into(),
+            kind: molt_ir::OpKind::Ret,
             args: Some(vec!["_ret0".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         },
         OpIR {
-            kind: "label".into(),
+            kind: molt_ir::OpKind::Label,
             value: Some(42),
             args: Some(vec![]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "if".into(),
+            kind: molt_ir::OpKind::If,
             args: Some(vec!["cond".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::If)
         },
         OpIR {
-            kind: "const_none".into(),
+            kind: molt_ir::OpKind::ConstNone,
             out: Some("_v0".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstNone)
         },
         OpIR {
-            kind: "else".into(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::Else,
+            ..OpIR::new(molt_ir::OpKind::Else)
         },
         OpIR {
-            kind: "raise".into(),
+            kind: molt_ir::OpKind::Raise,
             args: Some(vec!["exc".into()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Raise)
         },
         OpIR {
-            kind: "end_if".into(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::EndIf,
+            ..OpIR::new(molt_ir::OpKind::EndIf)
         },
     ];
 
     eliminate_dead_labels(&mut ops);
 
-    let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
+    let kinds: Vec<molt_ir::OpKind> = ops.iter().map(|op| op.kind).collect();
     assert_eq!(
         kinds,
-        vec!["ret", "if", "const_none", "else", "raise", "end_if"],
+        vec![
+            molt_ir::OpKind::Ret,
+            molt_ir::OpKind::If,
+            molt_ir::OpKind::ConstNone,
+            molt_ir::OpKind::Else,
+            molt_ir::OpKind::Raise,
+            molt_ir::OpKind::EndIf
+        ],
         "dead-label elimination must not orphan structured if markers: {ops:?}"
     );
     let mut errors = Vec::new();
@@ -1121,16 +1166,25 @@ fn eliminate_dead_labels_keeps_if_marker_after_dead_label_before_structured_if()
 #[test]
 fn shared_structure_verifier_rejects_orphaned_and_crossed_regions() {
     for kinds in [
-        vec!["ret", "else", "end_if"],
-        vec!["loop_start", "ret"],
-        vec!["loop_end"],
-        vec!["if", "loop_start", "end_if", "loop_end"],
+        vec![
+            molt_ir::OpKind::Ret,
+            molt_ir::OpKind::Else,
+            molt_ir::OpKind::EndIf,
+        ],
+        vec![molt_ir::OpKind::LoopStart, molt_ir::OpKind::Ret],
+        vec![molt_ir::OpKind::LoopEnd],
+        vec![
+            molt_ir::OpKind::If,
+            molt_ir::OpKind::LoopStart,
+            molt_ir::OpKind::EndIf,
+            molt_ir::OpKind::LoopEnd,
+        ],
     ] {
         let ops: Vec<_> = kinds
             .iter()
             .map(|kind| OpIR {
-                kind: (*kind).into(),
-                ..OpIR::default()
+                kind: (*kind),
+                ..OpIR::new(*kind)
             })
             .collect();
         let mut errors = Vec::new();
@@ -1178,9 +1232,14 @@ fn terminal_structured_if_roundtrips_without_a_fabricated_return() {
         );
     }
     let ops = lower_to_simple_ir(&func);
-    assert_eq!(ops.last().unwrap().kind, "end_if", "{ops:?}");
-    assert_eq!(ops.iter().filter(|op| op.kind == "ret").count(), 2);
-    assert!(!ops.iter().any(|op| op.kind == "ret_void"));
+    assert_eq!(ops.last().unwrap().kind, molt_ir::OpKind::EndIf, "{ops:?}");
+    assert_eq!(
+        ops.iter()
+            .filter(|op| op.kind == molt_ir::OpKind::Ret)
+            .count(),
+        2
+    );
+    assert!(!ops.iter().any(|op| op.kind == molt_ir::OpKind::RetVoid));
     let document = molt_ir::SimpleIR {
         functions: vec![FunctionIR {
             name: func.name.clone(),
@@ -1246,6 +1305,7 @@ fn structured_terminal_arms_preserve_generic_unreachable_emission() {
                 args: vec![],
                 ops: if suspend {
                     vec![TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::StateYield,
                         operands: vec![value],
@@ -1269,16 +1329,25 @@ fn structured_terminal_arms_preserve_generic_unreachable_emission() {
             },
         );
         let ops = lower_to_simple_ir(&func);
-        assert_eq!(ops.last().unwrap().kind, "end_if");
+        assert_eq!(ops.last().unwrap().kind, molt_ir::OpKind::EndIf);
         assert_eq!(
-            ops.iter().filter(|op| op.kind == "unreachable").count(),
+            ops.iter()
+                .filter(|op| op.kind == molt_ir::OpKind::Unreachable)
+                .count(),
             usize::from(!suspend)
         );
         assert_eq!(
-            ops.iter().filter(|op| op.kind == "state_yield").count(),
+            ops.iter()
+                .filter(|op| op.kind == molt_ir::OpKind::StateYield)
+                .count(),
             usize::from(suspend)
         );
-        assert_eq!(ops.iter().filter(|op| op.kind == "ret_void").count(), 1);
+        assert_eq!(
+            ops.iter()
+                .filter(|op| op.kind == molt_ir::OpKind::RetVoid)
+                .count(),
+            1
+        );
         // This asserts transport preservation only. An unreachable opcode is
         // not thereby admitted as a supported terminal on every backend.
     }

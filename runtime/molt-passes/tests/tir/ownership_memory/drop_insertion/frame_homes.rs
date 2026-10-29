@@ -75,11 +75,11 @@ fn observe(label: i64) -> TirOp {
 
 /// The frontend's owned capture of a read, CPython's `LOAD_FAST` reference.
 fn capture(read: ValueId, result: ValueId) -> TirOp {
-    original_copy_with_operands("binding_alias", vec![read], vec![result])
+    original_copy_with_operands(molt_ir::OpKind::BindingAlias, vec![read], vec![result])
 }
 
 /// A frame home access spelled `kind` on code slot `slot`.
-fn home(kind: &str, slot: i64, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+fn home(kind: molt_ir::OpKind, slot: i64, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     let mut access = original_copy_with_operands(kind, operands, results);
     access.attrs.insert("value".into(), AttrValue::Int(slot));
     access
@@ -87,17 +87,22 @@ fn home(kind: &str, slot: i64, operands: Vec<ValueId>, results: Vec<ValueId>) ->
 
 /// `slot = value`: the home takes `value`'s reference; `view` names it.
 fn store(slot: i64, value: ValueId, view: ValueId) -> TirOp {
-    home("frame_home_store", slot, vec![value], vec![view])
+    home(
+        molt_ir::OpKind::FrameHomeStore,
+        slot,
+        vec![value],
+        vec![view],
+    )
 }
 
 /// A read of `slot`: `view` names what the home holds.
 fn load(slot: i64, view: ValueId) -> TirOp {
-    home("frame_home_load", slot, vec![], vec![view])
+    home(molt_ir::OpKind::FrameHomeLoad, slot, vec![], vec![view])
 }
 
 /// The frame's exit, which releases every home.
 fn exit() -> TirOp {
-    original_copy("trace_exit", vec![])
+    original_copy(molt_ir::OpKind::TraceExit, vec![])
 }
 
 fn block(id: BlockId, ops: Vec<TirOp>, terminator: Terminator) -> TirBlock {
@@ -147,9 +152,9 @@ fn argument(block: &mut TirBlock, id: ValueId) {
 #[test]
 fn declarations_are_generated() {
     for kind in [
-        "frame_home_store",
-        "frame_home_cell",
-        "frame_home_private_cell",
+        molt_ir::OpKind::FrameHomeStore,
+        molt_ir::OpKind::FrameHomeCell,
+        molt_ir::OpKind::FrameHomePrivateCell,
     ] {
         assert_eq!(
             kind_consumed_operand_table(kind, 1),
@@ -161,8 +166,12 @@ fn declarations_are_generated() {
             "{kind} returns a view"
         );
     }
-    assert!(copy_kind_is_binding_view_table("frame_home_load"));
-    assert!(copy_kind_mints_owned_value_table("frame_home_take"));
+    assert!(copy_kind_is_binding_view_table(
+        molt_ir::OpKind::FrameHomeLoad
+    ));
+    assert!(copy_kind_mints_owned_value_table(
+        molt_ir::OpKind::FrameHomeTake
+    ));
 }
 
 /// The frontend stores each parameter into its home at entry. The home takes
@@ -172,9 +181,9 @@ fn declarations_are_generated() {
 #[test]
 fn parameter_stored_at_entry_moves_into_its_home() {
     for kind in [
-        "frame_home_store",
-        "frame_home_cell",
-        "frame_home_private_cell",
+        molt_ir::OpKind::FrameHomeStore,
+        molt_ir::OpKind::FrameHomeCell,
+        molt_ir::OpKind::FrameHomePrivateCell,
     ] {
         let mut func = function("stores_its_parameter", &[TRANSFERRED]);
         let param = parameter(&func, 0);
@@ -360,9 +369,9 @@ fn unmarked_source_binding_cannot_survive_its_home_store() {
 #[test]
 fn explicitly_released_expression_is_not_a_stale_python_binding() {
     for kind in [
-        "frame_home_store",
-        "frame_home_cell",
-        "frame_home_private_cell",
+        molt_ir::OpKind::FrameHomeStore,
+        molt_ir::OpKind::FrameHomeCell,
+        molt_ir::OpKind::FrameHomePrivateCell,
     ] {
         let mut func = function("explicit_expression_home", &[]);
         let (value, view) = (owned(&mut func), owned(&mut func));
@@ -401,11 +410,11 @@ fn handler_match_reference_keeps_region_custody_when_stored_in_a_home() {
         block(
             handler,
             vec![
-                original_copy("exception_last_pending", vec![matched]),
-                original_copy("exception_clear", vec![]),
+                original_copy(molt_ir::OpKind::ExceptionLastPending, vec![matched]),
+                original_copy(molt_ir::OpKind::ExceptionClear, vec![]),
                 store(0, matched, view),
                 read(vec![matched]),
-                original_copy("exception_pop", vec![]),
+                original_copy(molt_ir::OpKind::ExceptionPop, vec![]),
                 read(vec![view]),
                 exit(),
             ],
@@ -414,9 +423,10 @@ fn handler_match_reference_keeps_region_custody_when_stored_in_a_home() {
     );
     insert(&mut func);
     let ops = &func.blocks[&handler].ops;
-    let pop = ops.iter().position(|op| {
-        matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind)) if kind == "exception_pop")
-    }).unwrap();
+    let pop = ops
+        .iter()
+        .position(|op| matches!(op.origin, Some(kind) if kind == molt_ir::OpKind::ExceptionPop))
+        .unwrap();
     assert_eq!(ops[pop + 1].opcode, OpCode::DecRef);
     assert_eq!(ops[pop + 1].operands, [matched]);
     assert_eq!((count_increfs(&func), count_decrefs(&func)), (1, 1));
@@ -512,7 +522,7 @@ fn explicit_reference_carrier_keeps_its_boundary_across_a_home_store() {
         keep,
         vec![
             store(0, carried, view),
-            home("frame_home_clear", 0, vec![], vec![]),
+            home(molt_ir::OpKind::FrameHomeClear, 0, vec![], vec![]),
             marker(),
             exit(),
         ],
@@ -598,7 +608,7 @@ fn walrus_expression_keeps_its_statement_reference_through_absorption() {
         vec![
             finalizer_object(value),
             store(0, value, view),
-            original_copy_with_operands("list_new", vec![value], vec![list]),
+            original_copy_with_operands(molt_ir::OpKind::ListNew, vec![value], vec![list]),
             read(vec![list]),
             exit(),
         ],
@@ -915,7 +925,7 @@ fn taken_binding_is_owned_until_its_restore() {
         &mut func,
         vec![
             store(0, param, first),
-            home("frame_home_take", 0, vec![], vec![saved]),
+            home(molt_ir::OpKind::FrameHomeTake, 0, vec![], vec![saved]),
             produce(inner),
             store(0, inner, inner_view),
             store(0, saved, restored),
@@ -944,7 +954,7 @@ fn del_releases_the_binding_at_the_statement() {
         vec![
             store(0, param, view),
             marker(),
-            home("frame_home_clear", 0, vec![], vec![]),
+            home(molt_ir::OpKind::FrameHomeClear, 0, vec![], vec![]),
             marker(),
             exit(),
         ],

@@ -10,11 +10,15 @@ enum TaskPayloadCase {
 fn task_constructor_ir(task_kind: &str, target: &str, payload: TaskPayloadCase) -> SimpleIR {
     let mut main_ops = Vec::new();
     let (constructor_kind, constructor_args, arity) = match payload {
-        TaskPayloadCase::None => ("func_new", vec![], 0),
-        TaskPayloadCase::Positional => ("func_new", vec![], 1),
+        TaskPayloadCase::None => (molt_ir::OpKind::FuncNew, vec![], 0),
+        TaskPayloadCase::Positional => (molt_ir::OpKind::FuncNew, vec![], 1),
         TaskPayloadCase::Closure => {
-            main_ops.push(wasm_test_op("const_none", Some("closure"), vec![]));
-            ("func_new_closure", vec!["closure"], 0)
+            main_ops.push(wasm_test_op(
+                molt_ir::OpKind::ConstNone,
+                Some("closure"),
+                vec![],
+            ));
+            (molt_ir::OpKind::FuncNewClosure, vec!["closure"], 0)
         }
     };
     let mut function_object =
@@ -23,7 +27,7 @@ fn task_constructor_ir(task_kind: &str, target: &str, payload: TaskPayloadCase) 
     function_object.value = Some(arity);
     function_object.task_kind = Some(task_kind.to_string());
     function_object.task_closure_size = Some(64);
-    let mut return_function = wasm_test_op("ret", None, vec!["function_object"]);
+    let mut return_function = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["function_object"]);
     return_function.args = Some(vec!["function_object".to_string()]);
     main_ops.extend([function_object, return_function]);
 
@@ -35,8 +39,8 @@ fn task_constructor_ir(task_kind: &str, target: &str, payload: TaskPayloadCase) 
                 vec!["task"],
                 None,
                 vec![
-                    wasm_test_op("const_none", Some("result"), vec![]),
-                    wasm_test_op("ret", None, vec!["result"]),
+                    wasm_test_op(molt_ir::OpKind::ConstNone, Some("result"), vec![]),
+                    wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"]),
                 ],
             ),
         ],

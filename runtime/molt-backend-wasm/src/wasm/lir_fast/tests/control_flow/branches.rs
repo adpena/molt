@@ -28,6 +28,7 @@ fn conditional_branch() {
         id: then_id,
         args: vec![],
         ops: vec![TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -48,6 +49,7 @@ fn conditional_branch() {
         id: else_id,
         args: vec![],
         ops: vec![TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -90,6 +92,7 @@ fn dynbox_bool_uses_lir_truthiness_without_generic_bail() {
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Bool,
         operands: vec![ValueId(0)],
@@ -148,6 +151,7 @@ fn dynbox_conditional_branch_uses_lir_truthiness_without_generic_bail() {
             id: then_id,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -170,6 +174,7 @@ fn dynbox_conditional_branch_uses_lir_truthiness_without_generic_bail() {
             id: else_id,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

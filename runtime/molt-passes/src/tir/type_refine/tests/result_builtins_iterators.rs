@@ -108,17 +108,17 @@ fn mutable_builtin_names_and_conflicting_dispatch_do_not_prove_results() {
             "{name}"
         );
     }
-    let attrs = AttrDict::from([
-        ("name".into(), AttrValue::Str("len".into())),
-        ("_original_kind".into(), AttrValue::Str("print".into())),
-    ]);
+    let attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
     let mut func = single_block_func(
-        vec![make_op(
-            OpCode::CallBuiltin,
-            vec![ValueId(0)],
-            vec![ValueId(1)],
-            attrs,
-        )],
+        vec![
+            make_op(
+                OpCode::CallBuiltin,
+                vec![ValueId(0)],
+                vec![ValueId(1)],
+                attrs,
+            )
+            .with_origin(molt_ir::OpKind::Print),
+        ],
         2,
     );
     func.value_types.insert(ValueId(0), TirType::DynBox);

@@ -16,6 +16,7 @@
 //! bytes and a bounded size for the full arithmetic-family stress program.
 
 use super::*;
+use molt_ir::OpKind;
 
 /// Deterministic 64-bit FNV-1a over the object image. A single differing
 /// codegen byte flips the digest, so equality is a byte-identity assertion.
@@ -28,12 +29,11 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn binop(kind: &str, lhs: &str, rhs: &str, out: &str) -> OpIR {
+fn binop(kind: OpKind, lhs: &str, rhs: &str, out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         args: Some(vec![lhs.to_string(), rhs.to_string()]),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -46,16 +46,15 @@ fn typed_int_function() -> FunctionIR {
         name: "arith_typed_int".to_string(),
         params: vec!["a".to_string(), "b".to_string()],
         ops: vec![
-            binop("add", "a", "b", "s0"),
-            binop("sub", "s0", "b", "s1"),
-            binop("mul", "s1", "a", "s2"),
-            binop("inplace_add", "s2", "b", "s3"),
-            binop("inplace_sub", "s3", "a", "s4"),
-            binop("inplace_mul", "s4", "b", "s5"),
+            binop(OpKind::Add, "a", "b", "s0"),
+            binop(OpKind::Sub, "s0", "b", "s1"),
+            binop(OpKind::Mul, "s1", "a", "s2"),
+            binop(OpKind::InplaceAdd, "s2", "b", "s3"),
+            binop(OpKind::InplaceSub, "s3", "a", "s4"),
+            binop(OpKind::InplaceMul, "s4", "b", "s5"),
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["s5".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -76,16 +75,15 @@ fn generic_function() -> FunctionIR {
         name: "arith_generic".to_string(),
         params: vec!["x".to_string(), "y".to_string()],
         ops: vec![
-            binop("add", "x", "y", "g0"),
-            binop("sub", "g0", "y", "g1"),
-            binop("mul", "g1", "x", "g2"),
-            binop("inplace_add", "g2", "y", "g3"),
-            binop("inplace_sub", "g3", "x", "g4"),
-            binop("inplace_mul", "g4", "y", "g5"),
+            binop(OpKind::Add, "x", "y", "g0"),
+            binop(OpKind::Sub, "g0", "y", "g1"),
+            binop(OpKind::Mul, "g1", "x", "g2"),
+            binop(OpKind::InplaceAdd, "g2", "y", "g3"),
+            binop(OpKind::InplaceSub, "g3", "x", "g4"),
+            binop(OpKind::InplaceMul, "g4", "y", "g5"),
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["g5".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -105,16 +103,15 @@ fn typed_float_function() -> FunctionIR {
         name: "arith_typed_float".to_string(),
         params: vec!["p".to_string(), "q".to_string()],
         ops: vec![
-            binop("add", "p", "q", "f0"),
-            binop("sub", "f0", "q", "f1"),
-            binop("mul", "f1", "p", "f2"),
-            binop("inplace_add", "f2", "q", "f3"),
-            binop("inplace_sub", "f3", "p", "f4"),
-            binop("inplace_mul", "f4", "q", "f5"),
+            binop(OpKind::Add, "p", "q", "f0"),
+            binop(OpKind::Sub, "f0", "q", "f1"),
+            binop(OpKind::Mul, "f1", "p", "f2"),
+            binop(OpKind::InplaceAdd, "f2", "q", "f3"),
+            binop(OpKind::InplaceSub, "f3", "p", "f4"),
+            binop(OpKind::InplaceMul, "f4", "q", "f5"),
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["f5".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: Some(vec!["float".to_string(), "float".to_string()]),

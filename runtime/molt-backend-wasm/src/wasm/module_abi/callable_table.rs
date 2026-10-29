@@ -158,12 +158,18 @@ impl WasmCallableTablePlan {
                 continue;
             }
             for (op_idx, op) in func_ir.ops.iter().enumerate() {
-                let kind = op.kind.as_str();
+                let kind = op.kind;
                 let requires = match kind {
-                    "call" | "call_internal" => TargetRequirement::FunctionIndex,
-                    "call_guarded" => TargetRequirement::FunctionAndTable,
-                    "call_async" | "alloc_task" => TargetRequirement::PollTable,
-                    "func_new" | "func_new_closure" => TargetRequirement::FunctionObject,
+                    molt_ir::OpKind::Call | molt_ir::OpKind::CallInternal => {
+                        TargetRequirement::FunctionIndex
+                    }
+                    molt_ir::OpKind::CallGuarded => TargetRequirement::FunctionAndTable,
+                    molt_ir::OpKind::CallAsync | molt_ir::OpKind::AllocTask => {
+                        TargetRequirement::PollTable
+                    }
+                    molt_ir::OpKind::FuncNew | molt_ir::OpKind::FuncNewClosure => {
+                        TargetRequirement::FunctionObject
+                    }
                     _ => continue,
                 };
                 let Some(target) = op.s_value.as_deref() else {
@@ -209,7 +215,7 @@ impl WasmCallableTablePlan {
         issues: &mut Vec<String>,
         owner: &str,
         op_idx: usize,
-        kind: &str,
+        kind: molt_ir::OpKind,
         target: &str,
         requires: TargetRequirement,
         target_signature: Option<(usize, bool)>,
@@ -242,7 +248,7 @@ impl WasmCallableTablePlan {
         issues: &mut Vec<String>,
         owner: &str,
         op_idx: usize,
-        kind: &str,
+        kind: molt_ir::OpKind,
         target: &str,
     ) {
         if !self.func_to_index.contains_key(target) {
@@ -257,7 +263,7 @@ impl WasmCallableTablePlan {
         issues: &mut Vec<String>,
         owner: &str,
         op_idx: usize,
-        kind: &str,
+        kind: molt_ir::OpKind,
         target: &str,
     ) {
         if !self.func_to_table_idx.contains_key(target) {
@@ -272,7 +278,7 @@ impl WasmCallableTablePlan {
         issues: &mut Vec<String>,
         owner: &str,
         op_idx: usize,
-        kind: &str,
+        kind: molt_ir::OpKind,
         target: &str,
     ) {
         if !self.func_to_trampoline_idx.contains_key(target) {
@@ -537,16 +543,15 @@ mod tests {
         }
     }
 
-    fn ir_with_op(kind: &str, target: &str) -> SimpleIR {
+    fn ir_with_op(kind: molt_ir::OpKind, target: &str) -> SimpleIR {
         SimpleIR {
             functions: vec![FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: Vec::new(),
                 ops: vec![OpIR {
-                    kind: kind.to_string(),
                     s_value: Some(target.to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 }],
                 param_types: None,
                 source_file: None,
@@ -562,7 +567,7 @@ mod tests {
     #[test]
     fn callable_table_validation_rejects_missing_direct_call_target() {
         let issue = plan(BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
-            .ir_call_target_closure_issue(&ir_with_op("call", "sys___init_metadata"))
+            .ir_call_target_closure_issue(&ir_with_op(molt_ir::OpKind::Call, "sys___init_metadata"))
             .expect("missing direct call target should fail closed");
 
         assert!(issue.contains("wasm callable table target validation failed"));
@@ -572,7 +577,7 @@ mod tests {
 
     #[test]
     fn task_target_validation_uses_physical_signature_not_name_or_callable_arity() {
-        for kind in ["alloc_task", "call_async"] {
+        for kind in [molt_ir::OpKind::AllocTask, molt_ir::OpKind::CallAsync] {
             for (target, arity, returns_value, accepted) in [
                 ("opaque_body", 1, true, true),
                 ("ordinary_poll", 0, true, false),
@@ -588,11 +593,7 @@ mod tests {
                 } else {
                     molt_ir::FunctionReturnAbi::Void
                 };
-                body.ops = vec![OpIR {
-                    // A missing payload must not redefine the physical ABI.
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }];
+                body.ops = vec![OpIR::new(molt_ir::OpKind::RetVoid)];
                 ir.functions.push(body);
                 let mut table = plan(
                     BTreeMap::from([(target.to_string(), 7)]),
@@ -622,7 +623,7 @@ mod tests {
         );
         assert!(
             table
-                .ir_call_target_closure_issue(&ir_with_op("call_async", target))
+                .ir_call_target_closure_issue(&ir_with_op(molt_ir::OpKind::CallAsync, target))
                 .is_none()
         );
     }
@@ -634,7 +635,7 @@ mod tests {
             BTreeMap::from([("callee".to_string(), 42)]),
             BTreeMap::new(),
         )
-        .ir_call_target_closure_issue(&ir_with_op("func_new", "callee"))
+        .ir_call_target_closure_issue(&ir_with_op(molt_ir::OpKind::FuncNew, "callee"))
         .expect("function objects require trampoline table custody");
 
         assert!(issue.contains("func_new trampoline target not indexed: callee"));
@@ -647,7 +648,7 @@ mod tests {
             BTreeMap::from([("callee".to_string(), 42)]),
             BTreeMap::new(),
         )
-        .ir_call_target_closure_issue(&ir_with_op("call_guarded", "callee"));
+        .ir_call_target_closure_issue(&ir_with_op(molt_ir::OpKind::CallGuarded, "callee"));
 
         assert!(issue.is_none());
     }

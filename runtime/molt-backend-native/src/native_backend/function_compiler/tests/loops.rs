@@ -1,25 +1,23 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn metadata_only_structured_loop_ops_skips_unmatched_loop_controls() {
     let ops = vec![
-        op_kind("state_switch"),
-        op_kind("loop_start"),
+        op_kind(OpKind::StateSwitch),
+        op_kind(OpKind::LoopStart),
         OpIR {
-            kind: "loop_break_if_true".to_string(),
             args: Some(vec!["done".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoopBreakIfTrue)
         },
         OpIR {
-            kind: "label".to_string(),
             value: Some(365),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Label)
         },
         OpIR {
-            kind: "br_if".to_string(),
             args: Some(vec!["done".to_string()]),
             value: Some(343),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::BrIf)
         },
     ];
 
@@ -33,13 +31,13 @@ fn metadata_only_structured_loop_ops_skips_unmatched_loop_controls() {
 #[test]
 fn metadata_only_structured_loop_ops_preserves_matched_nested_loops() {
     let ops = vec![
-        op_kind("loop_start"),
-        op_kind("loop_break_if_false"),
-        op_kind("loop_start"),
-        op_kind("loop_continue"),
-        op_kind("loop_end"),
-        op_kind("loop_break"),
-        op_kind("loop_end"),
+        op_kind(OpKind::LoopStart),
+        op_kind(OpKind::LoopBreakIfFalse),
+        op_kind(OpKind::LoopStart),
+        op_kind(OpKind::LoopContinue),
+        op_kind(OpKind::LoopEnd),
+        op_kind(OpKind::LoopBreak),
+        op_kind(OpKind::LoopEnd),
     ];
 
     assert!(

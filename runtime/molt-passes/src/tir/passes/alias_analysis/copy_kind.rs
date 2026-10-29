@@ -1,16 +1,16 @@
 //! Copy-lowering classification: the ownership taxonomy of `OpCode::Copy` ops.
 //!
 //! The SSA converter's `Copy` opcode is overloaded across every SimpleIR op that
-//! lowers to a value move. These pure `_original_kind` classifiers decide, for
+//! lowers to a value move. These pure `origin` classifiers decide, for
 //! each copy, whether its result is a independently owned reference, an owned alias, a
 //! transparent (no-incref) alias, or an inert marker — the fact the RC drop pass
 //! and the backends' explicit-lowering sets depend on. Split out of
 //! `alias_analysis.rs` as a move-only decomposition; every classifier reads the
 //! single-source op-kind registry (`op_kinds.toml` → `op_kinds_generated`).
 
-use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::ops::TirOp;
 
-/// Result custody for operations carried by `Copy` with `_original_kind`.
+/// Result custody for operations carried by `Copy` with `origin`.
 /// An owned result is an independent reference obligation, not a newly
 /// allocated object. Public namespace lookup may return any published object.
 /// The result must not inherit operand zero's identity or type. Allocation
@@ -35,26 +35,26 @@ pub(crate) enum CopyLowering {
 /// The runtime returns an independent +1 and every drop-enabled backend
 /// lowers the operation explicitly. This does not prove fresh allocation,
 /// callable identity, or disjointness from any other object's storage.
-pub(crate) fn copy_kind_mints_owned_value(kind: &str) -> bool {
+pub(crate) fn copy_kind_mints_owned_value(kind: molt_ir::OpKind) -> bool {
     // Exact result ownership comes from the canonical operation registry.
     // A similar spelling supplies no runtime or reference-ownership contract.
     crate::tir::op_kinds_generated::copy_kind_mints_owned_value_table(kind)
 }
 
-pub(crate) fn copy_kind_mints_owned_alias_ref(kind: &str) -> bool {
+pub(crate) fn copy_kind_mints_owned_alias_ref(kind: molt_ir::OpKind) -> bool {
     crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
 }
 
-pub(crate) fn copy_kind_is_exception_creation_ref(kind: &str) -> bool {
+pub(crate) fn copy_kind_is_exception_creation_ref(kind: molt_ir::OpKind) -> bool {
     crate::tir::op_kinds_generated::copy_kind_is_exception_creation_ref_table(kind)
 }
 
-/// Classify a `Copy`'s `_original_kind` into its lowering class — THE single
+/// Classify a `Copy`'s `origin` into its lowering class — THE single
 /// source of truth for "does this `Copy` mint a independently owned reference, alias
 /// operand 0, or mark nothing?" See [`CopyLowering`]. FAIL-CLOSED to
 /// `TransparentAlias` for any unrecognized kind.
-pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
-    // A bare `Copy` (no `_original_kind`) is the SSA converter's pure value move:
+pub(crate) fn classify_copy_kind(kind: Option<molt_ir::OpKind>) -> CopyLowering {
+    // A bare `Copy` (no `origin`) is the SSA converter's pure value move:
     // result := operand 0, same bits, no new reference.
     let Some(k) = kind else {
         return CopyLowering::TransparentAlias;
@@ -102,7 +102,7 @@ pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
 /// machine register (`I64`/`F64`/`Bool`) rather than the boxed NaN-box word.
 ///
 /// `OpCode::Copy` is the SSA converter's fallback opcode for every SimpleIR op
-/// without a dedicated [`OpCode`] (the name is stashed in `_original_kind`), so a
+/// without a dedicated [`OpCode`] (the name is stashed in `origin`), so a
 /// `Copy`'s result type is NOT, in general, operand 0's type. A full typed
 /// counterpart of [`classify_copy_kind`] would map every `OwnedValue` kind to its
 /// produced type; but the ONLY observable miscompile is the RAW-CARRIER scalar
@@ -128,9 +128,11 @@ pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
 /// `enumerate`'s result was retyped — so it is deliberately out of scope: those
 /// copies have no raw carrier and so cannot trigger the repr-mismatch class this
 /// closes. Membership of [`copy_kind_mints_owned_value`] is required so a
-/// NON-fresh `Copy` whose `_original_kind` happens to collide with a conversion
+/// NON-fresh `Copy` whose `origin` happens to collide with a conversion
 /// name (there are none today) can never be misclassified.
-pub(crate) fn copy_kind_raw_carrier_type(kind: Option<&str>) -> Option<crate::tir::types::TirType> {
+pub(crate) fn copy_kind_raw_carrier_type(
+    kind: Option<molt_ir::OpKind>,
+) -> Option<crate::tir::types::TirType> {
     use crate::tir::types::TirType;
     let k = kind?;
     if !copy_kind_mints_owned_value(k) {
@@ -142,9 +144,11 @@ pub(crate) fn copy_kind_raw_carrier_type(kind: Option<&str>) -> Option<crate::ti
         // `ConstInt`), and so is `operator.index(x)`, range()'s bound
         // conversion. `float(x)` → `F64`. The `in` / `not in` membership test
         // (`x in c`, lowered to `contains`) → `bool` → `Bool`.
-        "int_from_obj" | "int_from_str_of_obj" | "operator_index" => Some(TirType::I64),
-        "float_from_obj" => Some(TirType::F64),
-        "contains" => Some(TirType::Bool),
+        molt_ir::OpKind::IntFromObj
+        | molt_ir::OpKind::IntFromStrOfObj
+        | molt_ir::OpKind::OperatorIndex => Some(TirType::I64),
+        molt_ir::OpKind::FloatFromObj => Some(TirType::F64),
+        molt_ir::OpKind::Contains => Some(TirType::Bool),
         _ => None,
     }
 }
@@ -157,10 +161,10 @@ pub(crate) fn copy_kind_raw_carrier_type(kind: Option<&str>) -> Option<crate::ti
 /// 0 for the union-find. An UNKNOWN kind is NOT a pure move — its memory effects
 /// are unknown (an unmapped op like `list_append` mutates the heap) and its result
 /// is not provably operand 0, so it stays `GenericHeap` / its own alias root.
-pub(crate) fn copy_kind_is_explicit_no_heap_move(kind: Option<&str>) -> bool {
+pub(crate) fn copy_kind_is_explicit_no_heap_move(kind: Option<molt_ir::OpKind>) -> bool {
     // The explicit no-heap-move set is the registry's `classifier_no_heap_move`
     // (op_kinds.toml, generated into [`crate::tir::op_kinds_generated`];
-    // docs/design/foundation/25). A bare `Copy` with no `_original_kind` is the
+    // docs/design/foundation/25). A bare `Copy` with no `origin` is the
     // SSA converter's pure value move and is likewise a no-heap move.
     match kind {
         None => true,
@@ -168,16 +172,13 @@ pub(crate) fn copy_kind_is_explicit_no_heap_move(kind: Option<&str>) -> bool {
     }
 }
 
-/// The `_original_kind` string of an op, if present.
+/// The typed `origin` of an op, if present.
 #[inline]
-pub(super) fn copy_original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
+pub(super) fn copy_original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
+    op.origin
 }
 
-/// True if a `Copy` with `_original_kind = kind` is SOUND to lower as a plain
+/// True if a `Copy` with `origin = kind` is SOUND to lower as a plain
 /// no-incref bit-passthrough of operand 0 (or as an inert marker) — i.e. it is
 /// neither [`CopyLowering::OwnedValue`] nor [`CopyLowering::OwnedAlias`]. The
 /// LLVM backend's `Copy` arm gates its passthrough on this: an owned result that
@@ -191,14 +192,14 @@ pub(super) fn copy_original_kind(op: &TirOp) -> Option<&str> {
 /// always-compiled alias/memory-region axes consume `classify_copy_kind` /
 /// `copy_kind_is_explicit_no_heap_move` directly, not this LLVM-specific view.
 #[cfg(any(feature = "llvm", test))]
-pub fn copy_kind_reaches_no_incref_passthrough(kind: Option<&str>) -> bool {
+pub fn copy_kind_reaches_no_incref_passthrough(kind: Option<molt_ir::OpKind>) -> bool {
     !matches!(
         classify_copy_kind(kind),
         CopyLowering::OwnedValue | CopyLowering::OwnedAlias
     )
 }
 
-/// True if a `Copy`-carried `_original_kind` op writes/reads/clobbers NO heap
+/// True if a `Copy`-carried `origin` op writes/reads/clobbers NO heap
 /// memory — a debug / source-location / control-flow marker or a read-only guard
 /// the SSA lift carries as a `Copy` (it has no dedicated `OpCode`). These are
 /// classified [`MemRegion::ScalarRegister`] so they do not spuriously bump the
@@ -213,7 +214,7 @@ pub fn copy_kind_reaches_no_incref_passthrough(kind: Option<&str>) -> bool {
 ///
 /// Delegates to the single-source-of-truth [`classify_copy_kind`]: a `Copy` is
 /// memory-inert iff its kind classifies as [`CopyLowering::InertMarker`]. (A bare
-/// `Copy` with no `_original_kind` is a `TransparentAlias`, NOT inert — its
+/// `Copy` with no `origin` is a `TransparentAlias`, NOT inert — its
 /// region is handled by the alias path in [`AliasAnalysisResult::region_of`].)
 pub(super) fn copy_kind_is_memory_inert(op: &TirOp) -> bool {
     matches!(

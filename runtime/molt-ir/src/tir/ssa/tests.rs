@@ -4,58 +4,58 @@ use crate::tir::cfg::CFG;
 use std::collections::HashSet;
 
 /// Helper to create an `OpIR` with just a `kind`.
-pub(super) fn op(kind: &str) -> OpIR {
+pub(super) fn op(kind: crate::OpKind) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
+        kind,
+        ..crate::OpIR::new(kind)
     }
 }
 
 /// Helper to create an `OpIR` with `kind`, `args`, and `out`.
-pub(super) fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
+pub(super) fn op_args_out(kind: crate::OpKind, args: &[&str], out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..crate::OpIR::new(kind)
     }
 }
 
 /// Helper to create an `OpIR` with `kind` and `args`.
-pub(super) fn op_args(kind: &str, args: &[&str]) -> OpIR {
+pub(super) fn op_args(kind: crate::OpKind, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
-        ..OpIR::default()
+        ..crate::OpIR::new(kind)
     }
 }
 
 /// Helper to create an `OpIR` with `kind` and `value`.
-pub(super) fn op_val(kind: &str, value: i64) -> OpIR {
+pub(super) fn op_val(kind: crate::OpKind, value: i64) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         value: Some(value),
-        ..OpIR::default()
+        ..crate::OpIR::new(kind)
     }
 }
 
 /// Helper to create an `OpIR` with `kind`, `out`, and `value`.
-pub(super) fn op_val_out(kind: &str, value: i64, out: &str) -> OpIR {
+pub(super) fn op_val_out(kind: crate::OpKind, value: i64, out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         value: Some(value),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..crate::OpIR::new(kind)
     }
 }
 
 #[test]
 fn compact_ssa_liveness_retains_unresolved_reads_and_parameter_entry_definitions() {
     let ops = vec![
-        op_val("jump", 7),
-        op_val("label", 7),
-        op_args("print", &["parameter", "unresolved"]),
-        op("ret_void"),
+        op_val(crate::OpKind::Jump, 7),
+        op_val(crate::OpKind::Label, 7),
+        op_args(crate::OpKind::Print, &["parameter", "unresolved"]),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let params = vec!["parameter".to_owned()];
@@ -129,6 +129,7 @@ mod iter_next_fusion {
                 args: vec![],
                 ops: vec![
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -137,6 +138,7 @@ mod iter_next_fusion {
                         source_span: None,
                     },
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -145,6 +147,7 @@ mod iter_next_fusion {
                         source_span: None,
                     },
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNext,
                         operands: vec![ValueId(0)],
@@ -153,6 +156,7 @@ mod iter_next_fusion {
                         source_span: None,
                     },
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(1)],
@@ -173,6 +177,7 @@ mod iter_next_fusion {
                 id: BlockId(1),
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Index,
                     operands: vec![ValueId(3), ValueId(2)],
@@ -193,20 +198,20 @@ mod iter_next_fusion {
 
     fn guarded_projection_ops() -> Vec<OpIR> {
         vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
-            op_val("label", 10),
-            op("ret_void"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 10),
+            op(crate::OpKind::RetVoid),
         ]
     }
 
@@ -234,21 +239,21 @@ mod iter_next_fusion {
     #[test]
     fn intervening_effect_is_preserved() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_args_out("module_cache_set", &["done", "iter"], "none"),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
-            op_val("label", 10),
-            op("ret_void"),
+            op_args_out(crate::OpKind::ModuleCacheSet, &["done", "iter"], "none"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 10),
+            op(crate::OpKind::RetVoid),
         ];
         let output = lower(&ops, &["iter"]);
 
@@ -259,21 +264,21 @@ mod iter_next_fusion {
     #[test]
     fn pre_guard_effect_rejects_exhaustion_finalizer_reordering() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("module_cache_set", &["prior", "iter"], "none"),
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::ModuleCacheSet, &["prior", "iter"], "none"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
-            op_val("label", 10),
-            op("ret_void"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 10),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter", "prior"]));
@@ -282,12 +287,12 @@ mod iter_next_fusion {
     #[test]
     fn bare_projections_without_done_guard_reject_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx1"], "done"),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter"]));
@@ -296,20 +301,20 @@ mod iter_next_fusion {
     #[test]
     fn done_true_item_projection_rejects_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op("ret_void"),
-            op_val("label", 10),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 10),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter"]));
@@ -318,22 +323,22 @@ mod iter_next_fusion {
     #[test]
     fn done_paths_rejoining_before_item_reject_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_val("jump", 20),
-            op_val("label", 10),
-            op_val("jump", 20),
-            op_val("label", 20),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
+            op_val(crate::OpKind::Jump, 20),
+            op_val(crate::OpKind::Label, 10),
+            op_val(crate::OpKind::Jump, 20),
+            op_val(crate::OpKind::Label, 20),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter"]));
@@ -342,19 +347,19 @@ mod iter_next_fusion {
     #[test]
     fn same_target_done_branch_rejects_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_val("label", 10),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
+            op_val(crate::OpKind::Label, 10),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter"]));
@@ -363,29 +368,29 @@ mod iter_next_fusion {
     #[test]
     fn pre_guard_cycle_rejects_stale_step_validity() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_val("jump", 10),
-            op_val("label", 10),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_val(crate::OpKind::Jump, 10),
+            op_val(crate::OpKind::Label, 10),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["spin".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_val("label", 20),
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_val(crate::OpKind::Label, 20),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(30),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
-            op_val("label", 30),
-            op("ret_void"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 30),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter", "spin"]));
@@ -395,14 +400,14 @@ mod iter_next_fusion {
     fn augmented_exception_and_resume_edges_reject_fusion() {
         let cfg_ops = vec![
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["cond".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op("ret_void"),
-            op_val("label", 10),
-            op("ret_void"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 10),
+            op(crate::OpKind::RetVoid),
         ];
 
         for resume_edge in [false, true] {
@@ -440,13 +445,13 @@ mod iter_next_fusion {
     #[test]
     fn extra_pair_consumer_rejects_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx1"], "done"),
-            op_args_out("is", &["pair", "iter"], "extra"),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
+            op_args_out(crate::OpKind::Is, &["pair", "iter"], "extra"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter"]));
@@ -455,13 +460,13 @@ mod iter_next_fusion {
     #[test]
     fn shadowed_selector_rejects_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("copy", &["selector_override"], "idx1"),
-            op_args_out("index", &["pair", "idx1"], "done"),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Copy, &["selector_override"], "idx1"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter", "selector_override"]));
@@ -470,23 +475,23 @@ mod iter_next_fusion {
     #[test]
     fn branch_reassignment_ambiguity_rejects_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["cond".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_val("jump", 20),
-            op_val("label", 10),
-            op_args_out("copy", &["other_pair"], "pair"),
-            op_val("jump", 20),
-            op_val("label", 20),
-            op_args_out("index", &["pair", "idx1"], "done"),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
+            op_val(crate::OpKind::Jump, 20),
+            op_val(crate::OpKind::Label, 10),
+            op_args_out(crate::OpKind::Copy, &["other_pair"], "pair"),
+            op_val(crate::OpKind::Jump, 20),
+            op_val(crate::OpKind::Label, 20),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter", "cond", "other_pair"]));
@@ -496,16 +501,16 @@ mod iter_next_fusion {
     fn unused_mixed_forwarding_rejects_pair_elimination() {
         let cfg_ops = vec![
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["cond".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_val("jump", 20),
-            op_val("label", 10),
-            op_val("jump", 20),
-            op_val("label", 20),
-            op("ret_void"),
+            op_val(crate::OpKind::Jump, 20),
+            op_val(crate::OpKind::Label, 10),
+            op_val(crate::OpKind::Jump, 20),
+            op_val(crate::OpKind::Label, 20),
+            op(crate::OpKind::RetVoid),
         ];
         let cfg = CFG::build(&cfg_ops);
         assert_eq!(cfg.blocks.len(), 4, "synthetic diamond CFG shape changed");
@@ -529,6 +534,7 @@ mod iter_next_fusion {
                 args: vec![],
                 ops: vec![
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -537,6 +543,7 @@ mod iter_next_fusion {
                         source_span: None,
                     },
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -545,6 +552,7 @@ mod iter_next_fusion {
                         source_span: None,
                     },
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNext,
                         operands: vec![ValueId(0)],
@@ -553,6 +561,7 @@ mod iter_next_fusion {
                         source_span: None,
                     },
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(1)],
@@ -561,6 +570,7 @@ mod iter_next_fusion {
                         source_span: None,
                     },
                     TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(2)],
@@ -590,6 +600,7 @@ mod iter_next_fusion {
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],
@@ -640,25 +651,29 @@ mod iter_next_fusion {
     #[test]
     fn projection_distance_has_no_correctness_window() {
         let mut ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
         ];
         for value in 0..30 {
-            ops.push(op_val_out("const", value, &format!("gap_{value}")));
+            ops.push(op_val_out(
+                crate::OpKind::Const,
+                value,
+                &format!("gap_{value}"),
+            ));
         }
         ops.extend([
-            op_args_out("index", &["pair", "idx1"], "done"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
             OpIR {
-                kind: "br_if".to_string(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["done".to_string()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("ret_void"),
-            op_val("label", 10),
-            op("ret_void"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 10),
+            op(crate::OpKind::RetVoid),
         ]);
         let output = lower(&ops, &["iter"]);
 
@@ -669,12 +684,12 @@ mod iter_next_fusion {
     #[test]
     fn value_projection_before_done_rejects_fusion() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op_args_out("index", &["pair", "idx1"], "done"),
-            op("ret_void"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
+            op(crate::OpKind::RetVoid),
         ];
 
         assert_materialized(&lower(&ops, &["iter"]));
@@ -683,17 +698,17 @@ mod iter_next_fusion {
     #[test]
     fn exception_aware_loop_keeps_fast_path_and_pending_check() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op("loop_start"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op("loop_break_if_exception"),
-            op_args_out("index", &["pair", "idx1"], "done"),
-            op_args("loop_break_if_true", &["done"]),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op("loop_continue"),
-            op("loop_end"),
-            op("ret_void"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op(crate::OpKind::LoopStart),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op(crate::OpKind::LoopBreakIfException),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
+            op_args(crate::OpKind::LoopBreakIfTrue, &["done"]),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op(crate::OpKind::LoopContinue),
+            op(crate::OpKind::LoopEnd),
+            op(crate::OpKind::RetVoid),
         ];
         let output = lower(&ops, &["iter"]);
 
@@ -704,22 +719,22 @@ mod iter_next_fusion {
     #[test]
     fn frontend_inline_exception_checks_preserve_unboxed_loop_steps() {
         let ops = vec![
-            op_val_out("const", 1, "idx1"),
-            op_val_out("const", 0, "idx0"),
-            op("loop_start"),
-            op_args_out("iter_next", &["iter"], "pair"),
-            op_val("check_exception", 90),
-            op_args_out("index", &["pair", "idx1"], "done"),
-            op_val("check_exception", 90),
-            op_args("loop_break_if_true", &["done"]),
-            op_args_out("index", &["pair", "idx0"], "value"),
-            op_val("check_exception", 90),
-            op_args_out("call", &["consume", "value"], "used"),
-            op("loop_continue"),
-            op("loop_end"),
-            op("ret_void"),
-            op_val("label", 90),
-            op("ret_void"),
+            op_val_out(crate::OpKind::Const, 1, "idx1"),
+            op_val_out(crate::OpKind::Const, 0, "idx0"),
+            op(crate::OpKind::LoopStart),
+            op_args_out(crate::OpKind::IterNext, &["iter"], "pair"),
+            op_val(crate::OpKind::CheckException, 90),
+            op_args_out(crate::OpKind::Index, &["pair", "idx1"], "done"),
+            op_val(crate::OpKind::CheckException, 90),
+            op_args(crate::OpKind::LoopBreakIfTrue, &["done"]),
+            op_args_out(crate::OpKind::Index, &["pair", "idx0"], "value"),
+            op_val(crate::OpKind::CheckException, 90),
+            op_args_out(crate::OpKind::Call, &["consume", "value"], "used"),
+            op(crate::OpKind::LoopContinue),
+            op(crate::OpKind::LoopEnd),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 90),
+            op(crate::OpKind::RetVoid),
         ];
         let output = lower(&ops, &["iter", "consume"]);
 
@@ -731,11 +746,11 @@ mod iter_next_fusion {
     #[test]
     fn inline_exception_handler_that_observes_the_pair_keeps_it_materialized() {
         let mut ops = guarded_projection_ops();
-        ops.insert(3, op_val("check_exception", 90));
+        ops.insert(3, op_val(crate::OpKind::CheckException, 90));
         ops.extend([
-            op_val("label", 90),
-            op_args_out("is", &["pair", "iter"], "observed"),
-            op("ret_void"),
+            op_val(crate::OpKind::Label, 90),
+            op_args_out(crate::OpKind::Is, &["pair", "iter"], "observed"),
+            op(crate::OpKind::RetVoid),
         ]);
 
         assert_materialized(&lower(&ops, &["iter"]));
@@ -746,8 +761,8 @@ mod iter_next_fusion {
         let mut ops = guarded_projection_ops();
         // The wire alias lifts to a CheckException with the typed poll marker;
         // that marker is not a legal SimpleIR field on check_exception itself.
-        ops.insert(3, op_val("async_work_poll", 90));
-        ops.extend([op_val("label", 90), op("ret_void")]);
+        ops.insert(3, op_val(crate::OpKind::AsyncWorkPoll, 90));
+        ops.extend([op_val(crate::OpKind::Label, 90), op(crate::OpKind::RetVoid)]);
 
         assert_materialized(&lower(&ops, &["iter"]));
     }
@@ -756,14 +771,14 @@ mod iter_next_fusion {
 #[test]
 fn unpack_sequence_lowers_to_first_class_variable_result_op() {
     let ops = vec![
-        op_args_out("tuple_new", &[], "seq"),
+        op_args_out(crate::OpKind::TupleNew, &[], "seq"),
         OpIR {
-            kind: "unpack_sequence".to_string(),
+            kind: crate::OpKind::UnpackSequence,
             args: Some(vec!["seq".into(), "left".into(), "right".into()]),
             value: Some(2),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::UnpackSequence)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -777,20 +792,20 @@ fn unpack_sequence_lowers_to_first_class_variable_result_op() {
     assert_eq!(unpack.operands.len(), 1);
     assert_eq!(unpack.results.len(), 2);
     assert_eq!(unpack.attrs.get("value"), Some(&AttrValue::Int(2)));
-    assert!(!unpack.attrs.contains_key("_original_kind"));
+    assert!(!unpack.origin.is_some());
 }
 
 #[test]
 fn empty_unpack_sequence_has_zero_first_class_results() {
     let ops = vec![
-        op_args_out("tuple_new", &[], "seq"),
+        op_args_out(crate::OpKind::TupleNew, &[], "seq"),
         OpIR {
-            kind: "unpack_sequence".to_string(),
+            kind: crate::OpKind::UnpackSequence,
             args: Some(vec!["seq".into()]),
             value: Some(0),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::UnpackSequence)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -809,15 +824,19 @@ fn empty_unpack_sequence_has_zero_first_class_results() {
 #[test]
 fn module_get_attr_does_not_lower_as_fallback_copy() {
     let ops = vec![
-        op_args_out("module_cache_get", &["mod_name"], "module"),
+        op_args_out(crate::OpKind::ModuleCacheGet, &["mod_name"], "module"),
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("Point".to_string()),
             out: Some("name".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_args_out("module_get_attr", &["module", "name"], "class_ref"),
-        op_args("ret", &["class_ref"]),
+        op_args_out(
+            crate::OpKind::ModuleGetAttr,
+            &["module", "name"],
+            "class_ref",
+        ),
+        op_args(crate::OpKind::Ret, &["class_ref"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -835,8 +854,8 @@ fn module_get_attr_does_not_lower_as_fallback_copy() {
         .filter(|op| {
             op.opcode == OpCode::Copy
                 && matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "module_get_attr"
+                    op.origin,
+                    Some(kind) if kind == crate::OpKind::ModuleGetAttr
                 )
         })
         .count();
@@ -855,15 +874,15 @@ fn module_get_attr_does_not_lower_as_fallback_copy() {
 fn active_line_marker_stamps_tir_source_site() {
     let ops = vec![
         OpIR {
-            kind: "line".to_string(),
+            kind: crate::OpKind::Line,
             value: Some(17),
             source_line: Some(17),
             col_offset: Some(4),
             end_col_offset: Some(13),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Line)
         },
-        op_val_out("const", 5, "x"),
-        op_args("ret", &["x"]),
+        op_val_out(crate::OpKind::Const, 5, "x"),
+        op_args(crate::OpKind::Ret, &["x"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -889,9 +908,9 @@ fn active_line_marker_stamps_tir_source_site() {
 #[test]
 fn ssa_lift_stamps_source_op_index_on_ops_and_inline_consts() {
     let ops = vec![
-        op_val_out("const", 5, "x"),
-        op_args_out("add", &["x", "3"], "y"),
-        op_args("ret", &["y"]),
+        op_val_out(crate::OpKind::Const, 5, "x"),
+        op_args_out(crate::OpKind::Add, &["x", "3"], "y"),
+        op_args(crate::OpKind::Ret, &["y"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -930,15 +949,15 @@ fn ssa_lift_stamps_source_op_index_on_ops_and_inline_consts() {
 #[test]
 fn ssa_lift_preserves_transport_source_op_index() {
     let ops = vec![
-        op_val_out("const", 5, "x"),
+        op_val_out(crate::OpKind::Const, 5, "x"),
         OpIR {
-            kind: "add".into(),
+            kind: crate::OpKind::Add,
             args: Some(vec!["x".into(), "3".into()]),
             out: Some("y".into()),
             source_op_idx: Some(41),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Add)
         },
-        op_args("ret", &["y"]),
+        op_args(crate::OpKind::Ret, &["y"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -967,18 +986,18 @@ fn ssa_lift_preserves_transport_source_op_index() {
 fn store_var_survives_ssa_as_local_lifetime_marker() {
     let ops = vec![
         OpIR {
-            kind: "list_new".to_string(),
+            kind: crate::OpKind::ListNew,
             args: Some(vec![]),
             out: Some("list".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ListNew)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("bag".to_string()),
             args: Some(vec!["list".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -990,8 +1009,8 @@ fn store_var_survives_ssa_as_local_lifetime_marker() {
         .filter(|op| {
             op.opcode == OpCode::Copy
                 && matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "store_var"
+                    op.origin,
+                    Some(kind) if kind == crate::OpKind::StoreVar
                 )
                 && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "bag")
         })
@@ -1013,23 +1032,23 @@ fn store_var_survives_ssa_as_local_lifetime_marker() {
 fn copy_var_preserves_source_local_name_as_transport_attr() {
     let ops = vec![
         OpIR {
-            kind: "const_none".to_string(),
+            kind: crate::OpKind::ConstNone,
             out: Some("seed".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstNone)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("x".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
         OpIR {
-            kind: "copy_var".to_string(),
+            kind: crate::OpKind::CopyVar,
             var: Some("x".to_string()),
             out: Some("read_x".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CopyVar)
         },
-        op_args("ret", &["read_x"]),
+        op_args(crate::OpKind::Ret, &["read_x"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1040,7 +1059,7 @@ fn copy_var_preserves_source_local_name_as_transport_attr() {
         .flat_map(|block| block.ops.iter())
         .find(|op| {
             op.opcode == OpCode::Copy
-                && !op.attrs.contains_key("_original_kind")
+                && !op.origin.is_some()
                 && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "x")
         })
         .expect("copy_var must carry its original SimpleIR source-local name");
@@ -1060,24 +1079,24 @@ fn copy_var_preserves_source_local_name_as_transport_attr() {
 fn copy_var_with_args_treats_var_as_transport_not_second_operand() {
     let ops = vec![
         OpIR {
-            kind: "const_none".to_string(),
+            kind: crate::OpKind::ConstNone,
             out: Some("seed".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstNone)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("x".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
         OpIR {
-            kind: "copy_var".to_string(),
+            kind: crate::OpKind::CopyVar,
             var: Some("x".to_string()),
             args: Some(vec!["seed".to_string()]),
             out: Some("alias".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CopyVar)
         },
-        op_args("ret", &["alias"]),
+        op_args(crate::OpKind::Ret, &["alias"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1088,7 +1107,7 @@ fn copy_var_with_args_treats_var_as_transport_not_second_operand() {
         .flat_map(|block| block.ops.iter())
         .find(|op| {
             op.opcode == OpCode::Copy
-                && !op.attrs.contains_key("_original_kind")
+                && !op.origin.is_some()
                 && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "x")
         })
         .expect("args-based copy_var must still carry its local-name metadata");
@@ -1104,14 +1123,14 @@ fn copy_var_with_args_treats_var_as_transport_not_second_operand() {
 fn ord_at_lowers_to_first_class_tir_opcode() {
     let ops = vec![
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("Aé".to_string()),
             out: Some("text".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_val_out("const", 1, "idx"),
-        op_args_out("ord_at", &["text", "idx"], "code"),
-        op_args("ret", &["code"]),
+        op_val_out(crate::OpKind::Const, 1, "idx"),
+        op_args_out(crate::OpKind::OrdAt, &["text", "idx"], "code"),
+        op_args(crate::OpKind::Ret, &["code"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1129,8 +1148,8 @@ fn ord_at_lowers_to_first_class_tir_opcode() {
         .filter(|op| {
             op.opcode == OpCode::Copy
                 && matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "ord_at"
+                    op.origin,
+                    Some(kind) if kind == crate::OpKind::OrdAt
                 )
         })
         .count();
@@ -1142,34 +1161,38 @@ fn ord_at_lowers_to_first_class_tir_opcode() {
     );
 }
 
-fn assert_first_class_module_lookup(simple_kind: &str, expected_opcode: OpCode, args: &[&str]) {
+fn assert_first_class_module_lookup(
+    simple_kind: crate::OpKind,
+    expected_opcode: OpCode,
+    args: &[&str],
+) {
     let mut ops = vec![
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("mod".to_string()),
             out: Some("module_name".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_args_out("module_cache_get", &["module_name"], "module"),
+        op_args_out(crate::OpKind::ModuleCacheGet, &["module_name"], "module"),
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("answer".to_string()),
             out: Some("name".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
         op_args_out(simple_kind, args, "resolved"),
-        op_args("ret", &["resolved"]),
+        op_args(crate::OpKind::Ret, &["resolved"]),
     ];
-    if simple_kind == "module_cache_get" {
+    if simple_kind == crate::OpKind::ModuleCacheGet {
         ops = vec![
             OpIR {
-                kind: "const_str".to_string(),
+                kind: crate::OpKind::ConstStr,
                 s_value: Some("mod".to_string()),
                 out: Some("module_name".to_string()),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::ConstStr)
             },
-            op_args_out("module_cache_get", &["module_name"], "resolved"),
-            op_args("ret", &["resolved"]),
+            op_args_out(crate::OpKind::ModuleCacheGet, &["module_name"], "resolved"),
+            op_args(crate::OpKind::Ret, &["resolved"]),
         ];
     }
 
@@ -1189,8 +1212,8 @@ fn assert_first_class_module_lookup(simple_kind: &str, expected_opcode: OpCode, 
         .filter(|op| {
             op.opcode == OpCode::Copy
                 && matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == simple_kind
+                    op.origin,
+                    Some(kind) if kind == simple_kind
                 )
         })
         .count();
@@ -1207,13 +1230,17 @@ fn assert_first_class_module_lookup(simple_kind: &str, expected_opcode: OpCode, 
 
 #[test]
 fn module_cache_get_lowers_to_first_class_tir_opcode() {
-    assert_first_class_module_lookup("module_cache_get", OpCode::ModuleCacheGet, &["module_name"]);
+    assert_first_class_module_lookup(
+        crate::OpKind::ModuleCacheGet,
+        OpCode::ModuleCacheGet,
+        &["module_name"],
+    );
 }
 
 #[test]
 fn module_get_global_lowers_to_first_class_tir_opcode() {
     assert_first_class_module_lookup(
-        "module_get_global",
+        crate::OpKind::ModuleGetGlobal,
         OpCode::ModuleGetGlobal,
         &["module", "name"],
     );
@@ -1222,29 +1249,33 @@ fn module_get_global_lowers_to_first_class_tir_opcode() {
 #[test]
 fn module_get_name_lowers_to_first_class_tir_opcode() {
     assert_first_class_module_lookup(
-        "module_get_name",
+        crate::OpKind::ModuleGetName,
         OpCode::ModuleGetName,
         &["module", "name"],
     );
 }
 
-fn assert_first_class_module_mutation(simple_kind: &str, expected_opcode: OpCode, args: &[&str]) {
+fn assert_first_class_module_mutation(
+    simple_kind: crate::OpKind,
+    expected_opcode: OpCode,
+    args: &[&str],
+) {
     let ops = vec![
-        op_args_out("module_import", &["builtins"], "module"),
+        op_args_out(crate::OpKind::ModuleImport, &["builtins"], "module"),
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("answer".to_string()),
             out: Some("name".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_val_out("const", 42, "value"),
+        op_val_out(crate::OpKind::Const, 42, "value"),
         OpIR {
-            kind: simple_kind.to_string(),
+            kind: simple_kind,
             args: Some(args.iter().map(|arg| arg.to_string()).collect()),
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(simple_kind)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1262,8 +1293,8 @@ fn assert_first_class_module_mutation(simple_kind: &str, expected_opcode: OpCode
         .filter(|op| {
             op.opcode == OpCode::Copy
                 && matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == simple_kind
+                    op.origin,
+                    Some(kind) if kind == simple_kind
                 )
         })
         .count();
@@ -1281,7 +1312,7 @@ fn assert_first_class_module_mutation(simple_kind: &str, expected_opcode: OpCode
 #[test]
 fn module_cache_set_lowers_to_first_class_tir_opcode() {
     assert_first_class_module_mutation(
-        "module_cache_set",
+        crate::OpKind::ModuleCacheSet,
         OpCode::ModuleCacheSet,
         &["name", "module"],
     );
@@ -1289,13 +1320,17 @@ fn module_cache_set_lowers_to_first_class_tir_opcode() {
 
 #[test]
 fn module_cache_del_lowers_to_first_class_tir_opcode() {
-    assert_first_class_module_mutation("module_cache_del", OpCode::ModuleCacheDel, &["name"]);
+    assert_first_class_module_mutation(
+        crate::OpKind::ModuleCacheDel,
+        OpCode::ModuleCacheDel,
+        &["name"],
+    );
 }
 
 #[test]
 fn module_set_attr_lowers_to_first_class_tir_opcode() {
     assert_first_class_module_mutation(
-        "module_set_attr",
+        crate::OpKind::ModuleSetAttr,
         OpCode::ModuleSetAttr,
         &["module", "name", "value"],
     );
@@ -1304,7 +1339,7 @@ fn module_set_attr_lowers_to_first_class_tir_opcode() {
 #[test]
 fn module_del_global_lowers_to_first_class_tir_opcode() {
     assert_first_class_module_mutation(
-        "module_del_global",
+        crate::OpKind::ModuleDelGlobal,
         OpCode::ModuleDelGlobal,
         &["module", "name"],
     );
@@ -1313,7 +1348,7 @@ fn module_del_global_lowers_to_first_class_tir_opcode() {
 #[test]
 fn module_del_global_if_present_lowers_to_first_class_tir_opcode() {
     assert_first_class_module_mutation(
-        "module_del_global_if_present",
+        crate::OpKind::ModuleDelGlobalIfPresent,
         OpCode::ModuleDelGlobalIfPresent,
         &["module", "name"],
     );
@@ -1342,9 +1377,9 @@ fn all_value_ids(output: &SsaOutput) -> HashSet<ValueId> {
 fn straight_line_no_block_args() {
     // x = 1; y = x + 1
     let ops = vec![
-        op_val_out("const", 1, "x"),     // x = 1
-        op_args_out("add", &["x"], "y"), // y = x + 1 (simplified)
-        op("ret_void"),
+        op_val_out(crate::OpKind::Const, 1, "x"),     // x = 1
+        op_args_out(crate::OpKind::Add, &["x"], "y"), // y = x + 1 (simplified)
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1377,8 +1412,8 @@ fn straight_line_no_block_args() {
 #[test]
 fn import_name_lowers_to_import_opcode_instead_of_copy_fallback() {
     let ops = vec![
-        op_args_out("import_name", &["pathlib"], "mod"),
-        op("ret_void"),
+        op_args_out(crate::OpKind::ImportName, &["pathlib"], "mod"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1393,8 +1428,8 @@ fn import_name_lowers_to_import_opcode_instead_of_copy_fallback() {
 #[test]
 fn module_import_lowers_to_import_opcode_instead_of_copy_fallback() {
     let ops = vec![
-        op_args_out("module_import", &["pathlib"], "mod"),
-        op("ret_void"),
+        op_args_out(crate::OpKind::ModuleImport, &["pathlib"], "mod"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1409,25 +1444,25 @@ fn module_import_lowers_to_import_opcode_instead_of_copy_fallback() {
 #[test]
 fn module_set_attr_does_not_lower_as_store_attr_transport() {
     let ops = vec![
-        op_args_out("module_import", &["builtins"], "mod"),
+        op_args_out(crate::OpKind::ModuleImport, &["builtins"], "mod"),
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("answer".to_string()),
             out: Some("name".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_val_out("const", 42, "value"),
+        op_val_out(crate::OpKind::Const, 42, "value"),
         OpIR {
-            kind: "module_set_attr".to_string(),
+            kind: crate::OpKind::ModuleSetAttr,
             args: Some(vec![
                 "mod".to_string(),
                 "name".to_string(),
                 "value".to_string(),
             ]),
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ModuleSetAttr)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1436,11 +1471,7 @@ fn module_set_attr_does_not_lower_as_store_attr_transport() {
         .ops
         .iter()
         .filter(|op| {
-            op.opcode == OpCode::StoreAttr
-                && op.attrs.get("_original_kind").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.as_str()),
-                    _ => None,
-                }) == Some("module_set_attr")
+            op.opcode == OpCode::StoreAttr && op.origin == Some(crate::OpKind::ModuleSetAttr)
         })
         .count();
     assert_eq!(
@@ -1453,13 +1484,13 @@ fn module_set_attr_does_not_lower_as_store_attr_transport() {
 fn module_import_preserves_variable_operand_through_ssa() {
     let ops = vec![
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("builtins".to_string()),
             out: Some("v62".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_args_out("module_import", &["v62"], "v63"),
-        op("ret_void"),
+        op_args_out(crate::OpKind::ModuleImport, &["v62"], "v63"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1476,39 +1507,39 @@ fn module_import_preserves_variable_operand_through_ssa() {
 fn module_import_preserves_operand_with_module_obj_param_and_checks() {
     let ops = vec![
         OpIR {
-            kind: "line".to_string(),
+            kind: crate::OpKind::Line,
             value: Some(7),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Line)
         },
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("builtins".to_string()),
             out: Some("v62".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_args_out("module_import", &["v62"], "v63"),
+        op_args_out(crate::OpKind::ModuleImport, &["v62"], "v63"),
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(3),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("_builtins".to_string()),
             out: Some("v64".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
         OpIR {
-            kind: "module_set_attr".to_string(),
+            kind: crate::OpKind::ModuleSetAttr,
             args: Some(vec![
                 "__molt_module_obj__".to_string(),
                 "v64".to_string(),
                 "v63".to_string(),
             ]),
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ModuleSetAttr)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa_with_params(&cfg, &ops, &["__molt_module_obj__".into()]);
@@ -1537,13 +1568,13 @@ fn join_point_block_argument() {
     //   end_if                 (block 3: join)
     //   ret [x]               (block 3: join)
     let ops = vec![
-        op_val_out("const", 0, "v0"), // 0
-        op_args("if", &["v0"]),       // 1 — terminates block 0
-        op_val_out("const", 1, "x"),  // 2 — then block
-        op("else"),                   // 3 — else block start
-        op_val_out("const", 2, "x"),  // 4 — else body
-        op("end_if"),                 // 5 — join block
-        op_args("ret", &["x"]),       // 6 — return x
+        op_val_out(crate::OpKind::Const, 0, "v0"), // 0
+        op_args(crate::OpKind::If, &["v0"]),       // 1 — terminates block 0
+        op_val_out(crate::OpKind::Const, 1, "x"),  // 2 — then block
+        op(crate::OpKind::Else),                   // 3 — else block start
+        op_val_out(crate::OpKind::Const, 2, "x"),  // 4 — else body
+        op(crate::OpKind::EndIf),                  // 5 — join block
+        op_args(crate::OpKind::Ret, &["x"]),       // 6 — return x
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1573,11 +1604,11 @@ fn loop_variable_block_argument() {
     //   loop_end              (block 2/3: back-edge)
     //   ret_void              (after loop)
     let ops = vec![
-        op_val_out("const", 0, "x"),     // 0
-        op("loop_start"),                // 1 — loop header
-        op_args_out("add", &["x"], "x"), // 2 — x = x + 1
-        op("loop_end"),                  // 3 — back-edge
-        op("ret_void"),                  // 4 — after
+        op_val_out(crate::OpKind::Const, 0, "x"),     // 0
+        op(crate::OpKind::LoopStart),                 // 1 — loop header
+        op_args_out(crate::OpKind::Add, &["x"], "x"), // 2 — x = x + 1
+        op(crate::OpKind::LoopEnd),                   // 3 — back-edge
+        op(crate::OpKind::RetVoid),                   // 4 — after
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1604,15 +1635,15 @@ fn loop_variable_block_argument() {
 fn multiple_variables_at_join() {
     // if c: x = 1; y = 2 else: x = 3; y = 4; use x, y
     let ops = vec![
-        op_val_out("const", 0, "v0"), // 0
-        op_args("if", &["v0"]),       // 1
-        op_val_out("const", 1, "x"),  // 2 then
-        op_val_out("const", 2, "y"),  // 3 then
-        op("else"),                   // 4 else
-        op_val_out("const", 3, "x"),  // 5 else
-        op_val_out("const", 4, "y"),  // 6 else
-        op("end_if"),                 // 7 join
-        op_args("ret", &["x", "y"]),  // 8
+        op_val_out(crate::OpKind::Const, 0, "v0"), // 0
+        op_args(crate::OpKind::If, &["v0"]),       // 1
+        op_val_out(crate::OpKind::Const, 1, "x"),  // 2 then
+        op_val_out(crate::OpKind::Const, 2, "y"),  // 3 then
+        op(crate::OpKind::Else),                   // 4 else
+        op_val_out(crate::OpKind::Const, 3, "x"),  // 5 else
+        op_val_out(crate::OpKind::Const, 4, "y"),  // 6 else
+        op(crate::OpKind::EndIf),                  // 7 join
+        op_args(crate::OpKind::Ret, &["x", "y"]),  // 8
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1653,17 +1684,17 @@ fn block_argument_and_edge_order_is_deterministic() {
     }
 
     let ops = vec![
-        op_val_out("const", 0, "condition"),
-        op_args("if", &["condition"]),
-        op_val_out("const", 1, "zeta"),
-        op_val_out("const", 2, "alpha"),
-        op_val_out("const", 3, "middle"),
-        op("else"),
-        op_val_out("const", 4, "zeta"),
-        op_val_out("const", 5, "alpha"),
-        op_val_out("const", 6, "middle"),
-        op("end_if"),
-        op_args("ret", &["zeta", "alpha", "middle"]),
+        op_val_out(crate::OpKind::Const, 0, "condition"),
+        op_args(crate::OpKind::If, &["condition"]),
+        op_val_out(crate::OpKind::Const, 1, "zeta"),
+        op_val_out(crate::OpKind::Const, 2, "alpha"),
+        op_val_out(crate::OpKind::Const, 3, "middle"),
+        op(crate::OpKind::Else),
+        op_val_out(crate::OpKind::Const, 4, "zeta"),
+        op_val_out(crate::OpKind::Const, 5, "alpha"),
+        op_val_out(crate::OpKind::Const, 6, "middle"),
+        op(crate::OpKind::EndIf),
+        op_args(crate::OpKind::Ret, &["zeta", "alpha", "middle"]),
     ];
     let cfg = CFG::build(&ops);
     let expected = structural_signature(&convert_to_ssa(&cfg, &ops));
@@ -1692,13 +1723,13 @@ fn empty_cfg_produces_no_blocks() {
 #[test]
 fn ssa_property_unique_definitions() {
     let ops = vec![
-        op_val_out("const", 0, "v0"),
-        op_args("if", &["v0"]),
-        op_val_out("const", 1, "x"),
-        op("else"),
-        op_val_out("const", 2, "x"),
-        op("end_if"),
-        op_args("ret", &["x"]),
+        op_val_out(crate::OpKind::Const, 0, "v0"),
+        op_args(crate::OpKind::If, &["v0"]),
+        op_val_out(crate::OpKind::Const, 1, "x"),
+        op(crate::OpKind::Else),
+        op_val_out(crate::OpKind::Const, 2, "x"),
+        op(crate::OpKind::EndIf),
+        op_args(crate::OpKind::Ret, &["x"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1733,13 +1764,13 @@ fn ssa_property_unique_definitions() {
 #[test]
 fn branch_args_match_block_arg_count() {
     let ops = vec![
-        op_val_out("const", 0, "v0"),
-        op_args("if", &["v0"]),
-        op_val_out("const", 1, "x"),
-        op("else"),
-        op_val_out("const", 2, "x"),
-        op("end_if"),
-        op_args("ret", &["x"]),
+        op_val_out(crate::OpKind::Const, 0, "v0"),
+        op_args(crate::OpKind::If, &["v0"]),
+        op_val_out(crate::OpKind::Const, 1, "x"),
+        op(crate::OpKind::Else),
+        op_val_out(crate::OpKind::Const, 2, "x"),
+        op(crate::OpKind::EndIf),
+        op_args(crate::OpKind::Ret, &["x"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1782,12 +1813,12 @@ fn empty_then_with_else_does_not_swap_branch_bodies() {
     //   else:
     //       y = 7   <-- recovery body must run when cond is FALSE
     let ops = vec![
-        op_val_out("const_bool", 1, "cond"), // 0: cond
-        op_args("if", &["cond"]),            // 1: if (empty THEN)
-        op("else"),                          // 2: else
-        op_val_out("const", 7, "y"),         // 3: ELSE body
-        op("end_if"),                        // 4: join
-        op("ret_void"),                      // 5
+        op_val_out(crate::OpKind::ConstBool, 1, "cond"), // 0: cond
+        op_args(crate::OpKind::If, &["cond"]),           // 1: if (empty THEN)
+        op(crate::OpKind::Else),                         // 2: else
+        op_val_out(crate::OpKind::Const, 7, "y"),        // 3: ELSE body
+        op(crate::OpKind::EndIf),                        // 4: join
+        op(crate::OpKind::RetVoid),                      // 5
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1861,18 +1892,18 @@ fn empty_then_with_else_does_not_swap_branch_bodies() {
 #[test]
 fn check_exception_does_not_capture_future_dead_vars() {
     let ops = vec![
-        op_val_out("const", 1, "x"),
-        op_val("try_start", 100),
+        op_val_out(crate::OpKind::Const, 1, "x"),
+        op_val(crate::OpKind::TryStart, 100),
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(100),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
-        op_val_out("const", 2, "y"),
-        op_val("try_end", 100),
-        op("ret_void"),
-        op_val("label", 100),
-        op("ret_void"),
+        op_val_out(crate::OpKind::Const, 2, "y"),
+        op_val(crate::OpKind::TryEnd, 100),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::Label, 100),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -1904,14 +1935,18 @@ fn check_exception_does_not_capture_future_dead_vars() {
 
 #[test]
 fn every_simple_exception_transfer_spelling_keeps_dominating_handler_state() {
-    for transfer_kind in ["check_exception", "async_work_poll", "try_start"] {
+    for transfer_kind in [
+        crate::OpKind::CheckException,
+        crate::OpKind::AsyncWorkPoll,
+        crate::OpKind::TryStart,
+    ] {
         let ops = vec![
-            op_val_out("const", 7, "live"),
+            op_val_out(crate::OpKind::Const, 7, "live"),
             op_val(transfer_kind, 100),
-            op("ret_void"),
-            op_val("label", 100),
-            op_args("print", &["live"]),
-            op("ret_void"),
+            op(crate::OpKind::RetVoid),
+            op_val(crate::OpKind::Label, 100),
+            op_args(crate::OpKind::Print, &["live"]),
+            op(crate::OpKind::RetVoid),
         ];
         let cfg = CFG::build(&ops);
         let output = convert_to_ssa(&cfg, &ops);
@@ -1936,7 +1971,7 @@ fn every_simple_exception_transfer_spelling_keeps_dominating_handler_state() {
             .iter()
             .find(|op| {
                 op.source_op_index()
-                    .is_some_and(|index| ops[index].kind == "print")
+                    .is_some_and(|index| ops[index].kind == crate::OpKind::Print)
             })
             .expect("handler observer must remain");
         assert_eq!(
@@ -1961,23 +1996,23 @@ fn every_simple_exception_transfer_spelling_keeps_dominating_handler_state() {
 #[test]
 fn check_exception_in_multi_block_try_does_not_capture_dead_vars() {
     let ops = vec![
-        op_val_out("const", 1, "c"),
-        op_val("try_start", 100),
-        op_args("if", &["c"]),
-        op_val_out("const", 1, "x"),
-        op("else"),
-        op_val_out("const", 2, "x"),
-        op("end_if"),
+        op_val_out(crate::OpKind::Const, 1, "c"),
+        op_val(crate::OpKind::TryStart, 100),
+        op_args(crate::OpKind::If, &["c"]),
+        op_val_out(crate::OpKind::Const, 1, "x"),
+        op(crate::OpKind::Else),
+        op_val_out(crate::OpKind::Const, 2, "x"),
+        op(crate::OpKind::EndIf),
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(100),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
-        op_val_out("const", 3, "y"),
-        op_val("try_end", 100),
-        op("ret_void"),
-        op_val("label", 100),
-        op("ret_void"),
+        op_val_out(crate::OpKind::Const, 3, "y"),
+        op_val(crate::OpKind::TryEnd, 100),
+        op(crate::OpKind::RetVoid),
+        op_val(crate::OpKind::Label, 100),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2016,69 +2051,69 @@ fn check_exception_in_multi_block_try_does_not_capture_dead_vars() {
 fn check_exception_threads_live_cleanup_state_for_method_guarded_field_set() {
     let ops = vec![
         OpIR {
-            kind: "exception_stack_enter".to_string(),
+            kind: crate::OpKind::ExceptionStackEnter,
             out: Some("v88".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ExceptionStackEnter)
         },
         OpIR {
-            kind: "exception_stack_depth".to_string(),
+            kind: crate::OpKind::ExceptionStackDepth,
             out: Some("v89".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ExceptionStackDepth)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("self".to_string()),
             args: Some(vec!["self".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
         OpIR {
-            kind: "line".to_string(),
+            kind: crate::OpKind::Line,
             value: Some(3),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Line)
         },
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(1),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
-        op_val_out("const", 1, "v90"),
+        op_val_out(crate::OpKind::Const, 1, "v90"),
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("C".to_string()),
             out: Some("v91".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("method_trace".to_string()),
             out: Some("v92".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
         OpIR {
-            kind: "module_cache_get".to_string(),
+            kind: crate::OpKind::ModuleCacheGet,
             args: Some(vec!["v92".to_string()]),
             out: Some("v93".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ModuleCacheGet)
         },
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(1),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
         OpIR {
-            kind: "module_get_attr".to_string(),
+            kind: crate::OpKind::ModuleGetAttr,
             args: Some(vec!["v93".to_string(), "v91".to_string()]),
             out: Some("v94".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ModuleGetAttr)
         },
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(1),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
-        op_val_out("const", 3, "v95"),
+        op_val_out(crate::OpKind::Const, 3, "v95"),
         OpIR {
-            kind: "guarded_field_set".to_string(),
+            kind: crate::OpKind::GuardedFieldSet,
             args: Some(vec![
                 "self".to_string(),
                 "v95".to_string(),
@@ -2088,33 +2123,33 @@ fn check_exception_threads_live_cleanup_state_for_method_guarded_field_set() {
             value: Some(0),
             class_definition: Some("class:method_trace:C".to_string()),
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::GuardedFieldSet)
         },
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(1),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
-        op_val_out("const", 0, "v96"),
+        op_val_out(crate::OpKind::Const, 0, "v96"),
         OpIR {
-            kind: "ret".to_string(),
+            kind: crate::OpKind::Ret,
             args: Some(vec!["v96".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Ret)
         },
-        op_val("label", 1),
+        op_val(crate::OpKind::Label, 1),
         OpIR {
-            kind: "exception_stack_set_depth".to_string(),
+            kind: crate::OpKind::ExceptionStackSetDepth,
             args: Some(vec!["v89".to_string()]),
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ExceptionStackSetDepth)
         },
         OpIR {
-            kind: "exception_stack_exit".to_string(),
+            kind: crate::OpKind::ExceptionStackExit,
             args: Some(vec!["v88".to_string()]),
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ExceptionStackExit)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2141,8 +2176,8 @@ fn check_exception_threads_live_cleanup_state_for_method_guarded_field_set() {
     let stack = result_at(0);
     let depth = result_at(1);
     for (kind, expected) in [
-        ("exception_stack_set_depth", depth),
-        ("exception_stack_exit", stack),
+        (crate::OpKind::ExceptionStackSetDepth, depth),
+        (crate::OpKind::ExceptionStackExit, stack),
     ] {
         let cleanup = handler_block
             .ops
@@ -2171,13 +2206,13 @@ fn check_exception_threads_live_cleanup_state_for_method_guarded_field_set() {
 #[test]
 fn join_block_does_not_receive_dead_branch_only_vars() {
     let ops = vec![
-        op_val_out("const", 1, "c"),
-        op_args("if", &["c"]),
-        op_val_out("const", 1, "x"),
-        op("else"),
-        op_val_out("const", 2, "y"),
-        op("end_if"),
-        op("ret_void"),
+        op_val_out(crate::OpKind::Const, 1, "c"),
+        op_args(crate::OpKind::If, &["c"]),
+        op_val_out(crate::OpKind::Const, 1, "x"),
+        op(crate::OpKind::Else),
+        op_val_out(crate::OpKind::Const, 2, "y"),
+        op(crate::OpKind::EndIf),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2198,11 +2233,11 @@ fn join_block_does_not_receive_dead_branch_only_vars() {
 #[test]
 fn branch_defined_live_var_gets_none_on_missing_edge() {
     let ops = vec![
-        op_val_out("const", 1, "c"),
-        op_args("if", &["c"]),
-        op_val_out("const", 1, "x"),
-        op("end_if"),
-        op_args("ret", &["x"]),
+        op_val_out(crate::OpKind::Const, 1, "c"),
+        op_args(crate::OpKind::If, &["c"]),
+        op_val_out(crate::OpKind::Const, 1, "x"),
+        op(crate::OpKind::EndIf),
+        op_args(crate::OpKind::Ret, &["x"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2238,40 +2273,40 @@ fn branch_defined_live_var_gets_none_on_missing_edge() {
 fn post_if_store_var_reaches_following_load() {
     let ops = vec![
         OpIR {
-            kind: "missing".to_string(),
+            kind: crate::OpKind::Missing,
             out: Some("seed".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Missing)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("v".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
         OpIR {
-            kind: "const_none".to_string(),
+            kind: crate::OpKind::ConstNone,
             out: Some("cond".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstNone)
         },
-        op_args("if", &["cond"]),
-        op("else"),
-        op_val_out("const", 1, "one"),
-        op_args_out("or", &["cond", "one"], "picked"),
-        op("end_if"),
-        op_args_out("phi", &["cond", "picked"], "joined"),
+        op_args(crate::OpKind::If, &["cond"]),
+        op(crate::OpKind::Else),
+        op_val_out(crate::OpKind::Const, 1, "one"),
+        op_args_out(crate::OpKind::Or, &["cond", "one"], "picked"),
+        op(crate::OpKind::EndIf),
+        op_args_out(crate::OpKind::Phi, &["cond", "picked"], "joined"),
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("v".to_string()),
             args: Some(vec!["joined".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
         OpIR {
-            kind: "load_var".to_string(),
+            kind: crate::OpKind::LoadVar,
             var: Some("v".to_string()),
             out: Some("loaded".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::LoadVar)
         },
-        op_args("ret", &["loaded"]),
+        op_args(crate::OpKind::Ret, &["loaded"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2283,8 +2318,8 @@ fn post_if_store_var_reaches_following_load() {
         .filter(|op| {
             op.opcode == OpCode::ConstNone
                 || matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "missing"
+                    op.origin,
+                    Some(kind) if kind == crate::OpKind::Missing
                 )
         })
         .flat_map(|op| op.results.iter().copied())
@@ -2308,46 +2343,46 @@ fn post_if_store_var_reaches_following_load() {
 fn delete_var_uses_explicit_old_operand_not_target_metadata() {
     let ops = vec![
         OpIR {
-            kind: "missing".to_string(),
+            kind: crate::OpKind::Missing,
             out: Some("seed".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Missing)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("item".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
         OpIR {
-            kind: "const_str".to_string(),
+            kind: crate::OpKind::ConstStr,
             s_value: Some("old".to_string()),
             out: Some("old_value".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: crate::OpKind::StoreVar,
             var: Some("item".to_string()),
             args: Some(vec!["old_value".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::StoreVar)
         },
         OpIR {
-            kind: "load_var".to_string(),
+            kind: crate::OpKind::LoadVar,
             var: Some("item".to_string()),
             out: Some("old_loaded".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::LoadVar)
         },
         OpIR {
-            kind: "missing".to_string(),
+            kind: crate::OpKind::Missing,
             out: Some("gone".to_string()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::Missing)
         },
         OpIR {
-            kind: "delete_var".to_string(),
+            kind: crate::OpKind::DeleteVar,
             var: Some("item".to_string()),
             args: Some(vec!["gone".to_string(), "old_loaded".to_string()]),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::DeleteVar)
         },
-        op("ret_void"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2445,40 +2480,40 @@ fn try_finally_threads_assignment_through_post_handler_join() {
     // through every runtime control flow.
     let ops = vec![
         // r = missing
-        op_val_out("const", 0, "r"),
+        op_val_out(crate::OpKind::Const, 0, "r"),
         // c = 1
-        op_val_out("const", 1, "c"),
+        op_val_out(crate::OpKind::Const, 1, "c"),
         // try_start L100  (handler at label 100)
-        op_val("try_start", 100),
+        op_val(crate::OpKind::TryStart, 100),
         // if c:
-        op_args("if", &["c"]),
+        op_args(crate::OpKind::If, &["c"]),
         //   r = 1
-        op_val_out("const", 1, "r"),
+        op_val_out(crate::OpKind::Const, 1, "r"),
         // else:
-        op("else"),
+        op(crate::OpKind::Else),
         //   r = 2
-        op_val_out("const", 2, "r"),
+        op_val_out(crate::OpKind::Const, 2, "r"),
         // end_if
-        op("end_if"),
+        op(crate::OpKind::EndIf),
         // check_exception L100
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: crate::OpKind::CheckException,
             value: Some(100),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::CheckException)
         },
         // try_end
-        op_val("try_end", 100),
+        op_val(crate::OpKind::TryEnd, 100),
         // jump L_join
-        op_val("jump", 200),
+        op_val(crate::OpKind::Jump, 200),
         // L_handler:
-        op_val("label", 100),
+        op_val(crate::OpKind::Label, 100),
         // (handler cleanup body — no assignment to r)
         // jump L_join (handler merges back into the post-try control flow)
-        op_val("jump", 200),
+        op_val(crate::OpKind::Jump, 200),
         // L_join:
-        op_val("label", 200),
+        op_val(crate::OpKind::Label, 200),
         // ret r
-        op_args("ret", &["r"]),
+        op_args(crate::OpKind::Ret, &["r"]),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2588,9 +2623,9 @@ fn try_finally_threads_assignment_through_post_handler_join() {
 #[test]
 fn all_values_typed_dynbox() {
     let ops = vec![
-        op_val_out("const", 1, "x"),
-        op_args_out("add", &["x"], "y"),
-        op("ret_void"),
+        op_val_out(crate::OpKind::Const, 1, "x"),
+        op_args_out(crate::OpKind::Add, &["x"], "y"),
+        op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
@@ -2619,14 +2654,18 @@ fn all_values_typed_dynbox() {
 /// identity.
 #[test]
 fn user_class_type_hint_refines_result_type() {
-    let mut alloc_op = op_args_out("object_new_bound", &["cls"], "p");
+    let mut alloc_op = op_args_out(crate::OpKind::ObjectNewBound, &["cls"], "p");
     alloc_op.type_hint = Some("Point".to_string());
     // Carry the size attr so the op is well-formed for the
     // Phase 5 step 3 lowering (24 bytes = 2 ints + __dict__
     // slot).  Not strictly required for the type-refine test
     // but matches what the frontend actually emits.
     alloc_op.value = Some(24);
-    let ops = vec![op_val_out("const", 0, "cls"), alloc_op, op("ret_void")];
+    let ops = vec![
+        op_val_out(crate::OpKind::Const, 0, "cls"),
+        alloc_op,
+        op(crate::OpKind::RetVoid),
+    ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
 
@@ -2652,9 +2691,9 @@ fn user_class_type_hint_refines_result_type() {
 /// SimpleIR transport hints.
 #[test]
 fn builtin_type_hint_does_not_refine_at_lift() {
-    let mut const_op = op_val_out("const", 42, "x");
+    let mut const_op = op_val_out(crate::OpKind::Const, 42, "x");
     const_op.type_hint = Some("int".to_string());
-    let ops = vec![const_op, op("ret_void")];
+    let ops = vec![const_op, op(crate::OpKind::RetVoid)];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
 

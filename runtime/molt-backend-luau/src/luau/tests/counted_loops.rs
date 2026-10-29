@@ -1,23 +1,22 @@
 //! Execute admitted normalized float carriers and reject raw integer transport.
 use super::*;
 
-fn op(kind: &str, args: &[&str], out: Option<&str>) -> OpIR {
+fn op(kind: molt_ir::OpKind, args: &[&str], out: Option<&str>) -> OpIR {
     OpIR {
-        kind: kind.into(),
         args: (!args.is_empty()).then(|| args.iter().map(|arg| (*arg).into()).collect()),
         out: out.map(str::to_string),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 fn float(name: &str, value: f64) -> OpIR {
     OpIR {
         f_value: Some(value),
-        ..op("const_float", &[], Some(name))
+        ..op(molt_ir::OpKind::ConstFloat, &[], Some(name))
     }
 }
 
-fn label(kind: &str, value: i64) -> OpIR {
+fn label(kind: molt_ir::OpKind, value: i64) -> OpIR {
     OpIR {
         value: Some(value),
         ..op(kind, &[], None)
@@ -27,14 +26,14 @@ fn label(kind: &str, value: i64) -> OpIR {
 fn store(name: &str, value: &str) -> OpIR {
     OpIR {
         var: Some(name.into()),
-        ..op("store_var", &[value], None)
+        ..op(molt_ir::OpKind::StoreVar, &[value], None)
     }
 }
 
 fn load(name: &str, out: &str) -> OpIR {
     OpIR {
         var: Some(name.into()),
-        ..op("load_var", &[], Some(out))
+        ..op(molt_ir::OpKind::LoadVar, &[], Some(out))
     }
 }
 
@@ -50,35 +49,47 @@ fn normalized_float_function(name: &str, inner_carried: Option<bool>) -> Functio
         store("visits", "zero"),
         store("total", "zero"),
         store("observed_inner", "zero"),
-        label("jump", 10),
-        label("label", 10),
+        label(molt_ir::OpKind::Jump, 10),
+        label(molt_ir::OpKind::Label, 10),
         store("outer", "seed"),
-        op("loop_start", &[], None),
+        op(molt_ir::OpKind::LoopStart, &[], None),
         load("outer", "outer"),
-        op("lt", &["outer", "limit"], Some("in_range")),
-        op("loop_break_if_false", &["in_range"], None),
+        op(molt_ir::OpKind::Lt, &["outer", "limit"], Some("in_range")),
+        op(molt_ir::OpKind::LoopBreakIfFalse, &["in_range"], None),
         load("visits", "old_visits"),
-        op("add", &["old_visits", "one"], Some("next_visits")),
+        op(
+            molt_ir::OpKind::Add,
+            &["old_visits", "one"],
+            Some("next_visits"),
+        ),
         store("visits", "next_visits"),
         // This independent counter makes a reset/dropped recurrence fail with
         // a wrong result instead of hanging the required Lune process.
-        op("lt", &["next_visits", "visit_cap"], Some("within_cap")),
-        op("loop_break_if_false", &["within_cap"], None),
+        op(
+            molt_ir::OpKind::Lt,
+            &["next_visits", "visit_cap"],
+            Some("within_cap"),
+        ),
+        op(molt_ir::OpKind::LoopBreakIfFalse, &["within_cap"], None),
         load("total", "old_total"),
-        op("add", &["old_total", "outer"], Some("next_total")),
+        op(
+            molt_ir::OpKind::Add,
+            &["old_total", "outer"],
+            Some("next_total"),
+        ),
         store("total", "next_total"),
     ];
     if let Some(carried) = inner_carried {
         if carried {
             ops.push(store("inner", "inner_seed"));
         }
-        ops.push(op("loop_start", &[], None));
+        ops.push(op(molt_ir::OpKind::LoopStart, &[], None));
         if carried {
             ops.push(load("inner", "inner"));
         }
     }
     ops.extend([
-        op("add", &["outer", "one"], Some("advanced")),
+        op(molt_ir::OpKind::Add, &["outer", "one"], Some("advanced")),
         store("outer", "advanced"),
     ]);
     if let Some(carried) = inner_carried {
@@ -89,23 +100,23 @@ fn normalized_float_function(name: &str, inner_carried: Option<bool>) -> Functio
             ops.push(store("observed_inner", "inner_after_update"));
         }
         ops.extend([
-            label("jump", 99),
-            op("loop_end", &[], None),
-            label("label", 99),
+            label(molt_ir::OpKind::Jump, 99),
+            op(molt_ir::OpKind::LoopEnd, &[], None),
+            label(molt_ir::OpKind::Label, 99),
         ]);
     }
     ops.extend([
-        op("loop_continue", &[], None),
-        op("loop_end", &[], None),
+        op(molt_ir::OpKind::LoopContinue, &[], None),
+        op(molt_ir::OpKind::LoopEnd, &[], None),
         load("visits", "final_visits"),
         load("total", "final_total"),
         load("observed_inner", "final_inner"),
         op(
-            "tuple_new",
+            molt_ir::OpKind::TupleNew,
             &["outer", "final_visits", "final_total", "final_inner"],
             Some("result"),
         ),
-        op("ret", &["result"], None),
+        op(molt_ir::OpKind::Ret, &["result"], None),
     ]);
     FunctionIR {
         name: name.into(),
@@ -166,14 +177,14 @@ fn checked_luau_rejects_counted_integer_transport_even_with_float_operands() {
             ops: vec![
                 float("seed", 7.0),
                 float("updated", 8.0),
-                label("jump", 10),
-                label("label", 10),
-                op("loop_start", &[], None),
-                op("loop_index_start", &["seed"], Some("index")),
-                op("loop_index_next", &["updated"], Some("index")),
-                op("loop_break", &[], None),
-                op("loop_end", &[], None),
-                op("ret", &["index"], None),
+                label(molt_ir::OpKind::Jump, 10),
+                label(molt_ir::OpKind::Label, 10),
+                op(molt_ir::OpKind::LoopStart, &[], None),
+                op(molt_ir::OpKind::LoopIndexStart, &["seed"], Some("index")),
+                op(molt_ir::OpKind::LoopIndexNext, &["updated"], Some("index")),
+                op(molt_ir::OpKind::LoopBreak, &[], None),
+                op(molt_ir::OpKind::LoopEnd, &[], None),
+                op(molt_ir::OpKind::Ret, &["index"], None),
             ],
             ..FunctionIR::default()
         }],
@@ -206,10 +217,14 @@ fn checked_luau_rejects_counted_integer_transport_even_with_float_operands() {
 
 #[test]
 fn labelled_counted_consumer_rejects_orphan_and_malformed_transport_before_emission() {
-    let start = || op("loop_index_start", &["seed"], Some("index"));
+    let start = || op(molt_ir::OpKind::LoopIndexStart, &["seed"], Some("index"));
     let malformed_next = OpIR {
         source_op_idx: Some(73),
-        ..op("loop_index_next", &["seed", "extra"], Some("index"))
+        ..op(
+            molt_ir::OpKind::LoopIndexNext,
+            &["seed", "extra"],
+            Some("index"),
+        )
     };
     let orphan_start = OpIR {
         source_op_idx: Some(73),
@@ -217,34 +232,38 @@ fn labelled_counted_consumer_rejects_orphan_and_malformed_transport_before_emiss
     };
     let orphan_next = OpIR {
         source_op_idx: Some(73),
-        ..op("loop_index_next", &["seed"], Some("index"))
+        ..op(molt_ir::OpKind::LoopIndexNext, &["seed"], Some("index"))
     };
     for (kind, body) in [
         (
-            "loop_index_start",
+            molt_ir::OpKind::LoopIndexStart,
             vec![
-                op("loop_start", &[], None),
+                op(molt_ir::OpKind::LoopStart, &[], None),
                 start(),
-                op("loop_break", &[], None),
-                op("loop_end", &[], None),
+                op(molt_ir::OpKind::LoopBreak, &[], None),
+                op(molt_ir::OpKind::LoopEnd, &[], None),
                 // Reusing a formerly valid name cannot borrow a closed owner.
                 orphan_start,
             ],
         ),
-        ("loop_index_next", vec![orphan_next]),
+        (molt_ir::OpKind::LoopIndexNext, vec![orphan_next]),
         (
-            "loop_index_next",
+            molt_ir::OpKind::LoopIndexNext,
             vec![
-                op("loop_start", &[], None),
+                op(molt_ir::OpKind::LoopStart, &[], None),
                 start(),
                 malformed_next,
-                op("loop_end", &[], None),
+                op(molt_ir::OpKind::LoopEnd, &[], None),
             ],
         ),
     ] {
-        let mut ops = vec![float("seed", 7.0), label("jump", 10), label("label", 10)];
+        let mut ops = vec![
+            float("seed", 7.0),
+            label(molt_ir::OpKind::Jump, 10),
+            label(molt_ir::OpKind::Label, 10),
+        ];
         ops.extend(body);
-        ops.push(op("ret_void", &[], None));
+        ops.push(op(molt_ir::OpKind::RetVoid, &[], None));
         let function = FunctionIR {
             name: "rejected_counted_consumer".into(),
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -274,7 +293,7 @@ fn labelled_counted_consumer_rejects_orphan_and_malformed_transport_before_emiss
             "{message}"
         );
         assert!(
-            message.contains(kind) && message.contains("source op#73"),
+            message.contains(kind.as_str()) && message.contains("source op#73"),
             "{message}"
         );
         assert!(message.contains("pre-SSA operation remains"), "{message}");

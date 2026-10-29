@@ -6,7 +6,7 @@ fn call_indirect_exports_follow_manifest_imports() {
         "call_indirect_exports",
         vec![],
         None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+        vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -41,7 +41,7 @@ fn call_indirect_type_layout_and_sentinel_table_slot_are_pinned() {
         "call_indirect_type_layout",
         vec![],
         None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+        vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -123,7 +123,7 @@ fn reloc_objects_publish_no_numeric_callable_aliases_or_table_writers() {
         "molt_main",
         vec![],
         None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+        vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -157,7 +157,7 @@ fn poll_table_slots_follow_manifest_slot_numbers() {
         "slot_layout",
         vec![],
         None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+        vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -221,7 +221,7 @@ fn poll_slots_the_runtime_lacks_hold_the_sentinel_and_are_not_imported() {
                 "molt_main",
                 vec![],
                 None,
-                vec![wasm_test_op("ret_void", None, vec![])],
+                vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
             )],
             profile: None,
         };

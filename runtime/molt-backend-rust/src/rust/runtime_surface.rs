@@ -29,17 +29,17 @@ impl RuntimeValueCall {
     }
 }
 
-pub(super) fn runtime_value_call_for_kind(kind: &str) -> Option<RuntimeValueCall> {
+pub(super) fn runtime_value_call_for_kind(kind: molt_ir::OpKind) -> Option<RuntimeValueCall> {
     match kind {
-        "str_from_obj" => Some(RuntimeValueCall {
+        molt_ir::OpKind::StrFromObj => Some(RuntimeValueCall {
             rust_fn: "molt_str_from_obj",
             arity: 1,
         }),
-        "repr_from_obj" => Some(RuntimeValueCall {
+        molt_ir::OpKind::ReprFromObj => Some(RuntimeValueCall {
             rust_fn: "molt_repr",
             arity: 1,
         }),
-        "ascii_from_obj" => Some(RuntimeValueCall {
+        molt_ir::OpKind::AsciiFromObj => Some(RuntimeValueCall {
             rust_fn: "molt_ascii_from_obj",
             arity: 1,
         }),

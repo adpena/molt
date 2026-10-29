@@ -15,6 +15,7 @@ fn wasm_reachability_never_rewrites_existing_release_custody() {
     let dead = function.fresh_value();
     let block = function.blocks.get_mut(&function.entry_block).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],

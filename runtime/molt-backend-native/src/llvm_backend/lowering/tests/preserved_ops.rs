@@ -1,8 +1,9 @@
 use super::*;
+use molt_ir::OpKind;
 
 fn runtime_call_shape_function(
     opcode: OpCode,
-    kind: &str,
+    kind: OpKind,
     symbol: &str,
     arity: usize,
     with_result: bool,
@@ -25,17 +26,16 @@ fn runtime_call_shape_function(
         const_none_def(argument)
     });
     entry.ops.push(TirOp {
+        origin: Some(if opcode == OpCode::Call {
+            OpKind::Call
+        } else {
+            kind
+        }),
         dialect: Dialect::Molt,
         opcode,
         operands: vec![argument; arity],
         results: if with_result { vec![result] } else { vec![] },
-        attrs: AttrDict::from([
-            (
-                "_original_kind".into(),
-                AttrValue::Str(if opcode == OpCode::Call { "call" } else { kind }.into()),
-            ),
-            ("s_value".into(), AttrValue::Str(symbol.into())),
-        ]),
+        attrs: AttrDict::from([("s_value".into(), AttrValue::Str(symbol.into()))]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -64,6 +64,7 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
             entry.ops.push(const_none_def(operand));
         }
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
             operands,
@@ -104,48 +105,48 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
 #[test]
 fn lower_preserved_passthrough_class_routes_to_runtime() {
     // (kind, n_operands, with_result, s_value, expected runtime symbol)
-    let cases: &[(&str, usize, bool, Option<&str>, &str)] = &[
-        ("abs", 1, true, None, "molt_abs_builtin"),
-        ("const_ellipsis", 0, true, None, "molt_ellipsis"),
+    let cases: &[(OpKind, usize, bool, Option<&str>, &str)] = &[
+        (OpKind::Abs, 1, true, None, "molt_abs_builtin"),
+        (OpKind::ConstEllipsis, 0, true, None, "molt_ellipsis"),
         (
-            "const_not_implemented",
+            OpKind::ConstNotImplemented,
             0,
             true,
             None,
             "molt_not_implemented",
         ),
-        ("gen_throw", 2, true, None, "molt_generator_throw"),
-        ("gen_close", 1, true, None, "molt_generator_close"),
+        (OpKind::GenThrow, 2, true, None, "molt_generator_throw"),
+        (OpKind::GenClose, 1, true, None, "molt_generator_close"),
         (
-            "get_attr_special_obj",
+            OpKind::GetAttrSpecialObj,
             1,
             true,
             Some("__class__"),
             "molt_get_attr_special",
         ),
-        ("borrow", 1, true, None, "molt_inc_ref_obj"),
-        ("binding_alias", 1, true, None, "molt_inc_ref_obj"),
-        ("release", 1, true, None, "molt_dec_ref_obj"),
-        ("guard_tag", 2, false, None, "molt_guard_type"),
-        ("guard_tag", 2, true, None, "molt_guard_type"),
-        ("guard_type", 2, false, None, "molt_guard_type"),
-        ("guard_type", 2, true, None, "molt_guard_type"),
-        ("dataclass_new", 4, true, None, "molt_dataclass_new"),
+        (OpKind::Borrow, 1, true, None, "molt_inc_ref_obj"),
+        (OpKind::BindingAlias, 1, true, None, "molt_inc_ref_obj"),
+        (OpKind::Release, 1, true, None, "molt_dec_ref_obj"),
+        (OpKind::GuardTag, 2, false, None, "molt_guard_type"),
+        (OpKind::GuardTag, 2, true, None, "molt_guard_type"),
+        (OpKind::GuardType, 2, false, None, "molt_guard_type"),
+        (OpKind::GuardType, 2, true, None, "molt_guard_type"),
+        (OpKind::DataclassNew, 4, true, None, "molt_dataclass_new"),
         (
-            "stateful_locals_register",
+            OpKind::StatefulLocalsRegister,
             2,
             false,
             Some("gen_fn"),
             "molt_stateful_locals_register",
         ),
         (
-            "function_closure_bits",
+            OpKind::FunctionClosureBits,
             1,
             true,
             None,
             "molt_function_closure_bits",
         ),
-        ("asyncgen_new", 1, true, None, "molt_asyncgen_new"),
+        (OpKind::AsyncgenNew, 1, true, None, "molt_asyncgen_new"),
     ];
     for &(kind, nops, with_result, s_value, sym) in cases {
         let ctx = Context::create();
@@ -172,7 +173,7 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
 fn builtin_callable_function(symbol: &str, arity: i64, named: bool) -> TirFunction {
     let mut function = runtime_call_shape_function(
         OpCode::Copy,
-        "builtin_func",
+        OpKind::BuiltinFunc,
         symbol,
         usize::from(named),
         true,
@@ -290,16 +291,16 @@ fn runtime_builtin_call_frame_uses_provider_as_trampoline() {
 #[test]
 fn callable_constructors_release_only_discarded_owned_results() {
     for (kind, argc) in [
-        ("func_new", 0),
-        ("func_new_closure", 1),
-        ("builtin_func", 0),
-        ("code_new", 9),
-        ("callargs_new", 0),
-        ("classmethod_new", 1),
-        ("staticmethod_new", 1),
-        ("property_new", 3),
-        ("bound_method_new", 2),
-        ("asyncgen_new", 1),
+        (OpKind::FuncNew, 0),
+        (OpKind::FuncNewClosure, 1),
+        (OpKind::BuiltinFunc, 0),
+        (OpKind::CodeNew, 9),
+        (OpKind::CallargsNew, 0),
+        (OpKind::ClassmethodNew, 1),
+        (OpKind::StaticmethodNew, 1),
+        (OpKind::PropertyNew, 3),
+        (OpKind::BoundMethodNew, 2),
+        (OpKind::AsyncgenNew, 1),
     ] {
         for bound in [false, true] {
             let ctx = Context::create();
@@ -309,7 +310,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
             std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
                 .insert(format!("molt_{kind}"));
             let mut target_abi = test_native_linkage_abi(
-                if kind == "func_new_closure" {
+                if kind == OpKind::FuncNewClosure {
                     vec![TirType::DynBox]
                 } else {
                     vec![]
@@ -317,15 +318,15 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 Some(TirType::DynBox),
             );
             // A closure constructor's target takes the closure transport first.
-            target_abi.source_signature.has_closure = kind == "func_new_closure";
-            if kind != "builtin_func" {
+            target_abi.source_signature.has_closure = kind == OpKind::FuncNewClosure;
+            if kind != OpKind::BuiltinFunc {
                 backend
                     .function_linkage_abis
                     .insert("callable_result_target".into(), target_abi);
             }
             let symbol_target = match kind {
-                "builtin_func" => Some("molt_sys_version"),
-                "func_new" | "func_new_closure" => Some("callable_result_target"),
+                OpKind::BuiltinFunc => Some("molt_sys_version"),
+                OpKind::FuncNew | OpKind::FuncNewClosure => Some("callable_result_target"),
                 _ => None,
             };
             let ir = lower_preserved_kind_ir(&backend, kind, argc, bound, symbol_target)
@@ -334,7 +335,7 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 .module
                 .verify()
                 .unwrap_or_else(|error| panic!("{kind}, bound={bound}: {error}"));
-            let symbol = if kind == "builtin_func" {
+            let symbol = if kind == OpKind::BuiltinFunc {
                 "molt_func_new_builtin".into()
             } else {
                 format!("molt_{kind}")
@@ -356,10 +357,10 @@ fn callable_constructors_release_only_discarded_owned_results() {
 #[test]
 fn descriptor_constructors_share_boxed_admission_and_argument_materialization() {
     for (kind, arity) in [
-        ("classmethod_new", 1),
-        ("staticmethod_new", 1),
-        ("property_new", 3),
-        ("bound_method_new", 2),
+        (OpKind::ClassmethodNew, 1),
+        (OpKind::StaticmethodNew, 1),
+        (OpKind::PropertyNew, 3),
+        (OpKind::BoundMethodNew, 2),
     ] {
         let symbol = format!("molt_{kind}");
         for (available, supplied, diagnostic) in [
@@ -408,11 +409,12 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_def(input, 7));
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![input; arity],
             results: vec![result],
-            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            attrs: AttrDict::from([]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -446,7 +448,11 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
 
 #[test]
 fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
-    for kind in ["alloc_class", "asyncgen_new", "function_closure_bits"] {
+    for kind in [
+        OpKind::AllocClass,
+        OpKind::AsyncgenNew,
+        OpKind::FunctionClosureBits,
+    ] {
         for keep_result in [false, true] {
             let ctx = Context::create();
             let backend = make_backend(&ctx);
@@ -460,14 +466,12 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             let operand = entry.args[0].id;
             entry.ops.push(TirOp {
+                origin: Some(kind),
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![operand],
                 results: if keep_result { vec![result] } else { vec![] },
-                attrs: AttrDict::from([
-                    ("_original_kind".into(), AttrValue::Str(kind.into())),
-                    ("value".into(), AttrValue::Int(48)),
-                ]),
+                attrs: AttrDict::from([("value".into(), AttrValue::Int(48))]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return {
@@ -481,14 +485,14 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
                 .module
                 .verify()
                 .expect("dedicated runtime ABI must verify");
-            let expected_call = if kind == "alloc_class" {
+            let expected_call = if kind == OpKind::AllocClass {
                 "call i64 @molt_alloc_class(i64 48, i64 %0)".to_string()
             } else {
                 format!("call i64 @molt_{kind}(i64 %0)")
             };
             assert!(ir.contains(&expected_call), "{ir}");
             assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
-            if kind == "alloc_class" {
+            if kind == OpKind::AllocClass {
                 let publish = "call i64 @molt_object_publish_initialized(i64 %alloc_class)";
                 assert!(ir.contains(publish), "{ir}");
                 assert!(
@@ -502,21 +506,21 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
                     );
                 }
             }
-            if kind == "asyncgen_new" && !keep_result {
+            if kind == OpKind::AsyncgenNew && !keep_result {
                 assert!(
                     ir.contains("call void @molt_dec_ref_obj(i64 %asyncgen_new)"),
                     "{ir}"
                 );
             }
             if keep_result {
-                let result_name = if kind == "alloc_class" {
+                let result_name = if kind == OpKind::AllocClass {
                     "class_initialized"
                 } else {
-                    kind
+                    kind.as_str()
                 };
                 assert!(ir.contains(&format!("ret i64 %{result_name}")), "{ir}");
             }
-            let borrowed = kind == "function_closure_bits";
+            let borrowed = kind == OpKind::FunctionClosureBits;
             assert_eq!(
                 ir.matches("call void @molt_inc_ref_obj(").count(),
                 usize::from(borrowed && keep_result),
@@ -543,23 +547,23 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
     // have no dedicated arm: a raw integer operand is boxed once, owned through
     // the call and released after it, and an unavailable symbol fails closed.
     for (kind, arity) in [
-        ("isinstance", 2),
-        ("issubclass", 2),
-        ("has_attr_name", 2),
-        ("is_callable", 1),
-        ("str_from_obj", 1),
-        ("int_from_obj", 3),
-        ("ord", 1),
-        ("string_join", 2),
-        ("module_set_attr", 3),
-        ("exception_stack_exit", 1),
-        ("callargs_push_pos", 2),
-        ("callargs_expand_star", 2),
-        ("code_new", 9),
-        ("vec_sum", 3),
-        ("vec_prod", 3),
-        ("vec_min", 3),
-        ("vec_max", 3),
+        (OpKind::Isinstance, 2),
+        (OpKind::Issubclass, 2),
+        (OpKind::HasAttrName, 2),
+        (OpKind::IsCallable, 1),
+        (OpKind::StrFromObj, 1),
+        (OpKind::IntFromObj, 3),
+        (OpKind::Ord, 1),
+        (OpKind::StringJoin, 2),
+        (OpKind::ModuleSetAttr, 3),
+        (OpKind::ExceptionStackExit, 1),
+        (OpKind::CallargsPushPos, 2),
+        (OpKind::CallargsExpandStar, 2),
+        (OpKind::CodeNew, 9),
+        (OpKind::VecSum, 3),
+        (OpKind::VecProd, 3),
+        (OpKind::VecMin, 3),
+        (OpKind::VecMax, 3),
     ] {
         let symbol = format!("molt_{kind}");
         for admitted in [false, true] {
@@ -616,67 +620,67 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
 #[test]
 fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
     // (kind, operands, raw tag attr, runtime symbol, expected arguments)
-    let cases: &[(&str, usize, Option<i64>, &str, &str)] = &[
-        ("type_of", 1, None, "molt_type_of", "(i64 %boxed_int)"),
+    let cases: &[(OpKind, usize, Option<i64>, &str, &str)] = &[
+        (OpKind::TypeOf, 1, None, "molt_type_of", "(i64 %boxed_int)"),
         (
-            "builtin_type",
+            OpKind::BuiltinType,
             1,
             None,
             "molt_builtin_type",
             "(i64 %boxed_int)",
         ),
         (
-            "get_attr_name_default",
+            OpKind::GetAttrNameDefault,
             3,
             None,
             "molt_get_attr_name_default",
             "(i64 %boxed_int, i64 %boxed_int, i64 %boxed_int)",
         ),
         (
-            "gen_send",
+            OpKind::GenSend,
             2,
             None,
             "molt_generator_send",
             "(i64 %boxed_int, i64 %boxed_int)",
         ),
         (
-            "gen_throw",
+            OpKind::GenThrow,
             2,
             None,
             "molt_generator_throw",
             "(i64 %boxed_int, i64 %boxed_int)",
         ),
         (
-            "gen_close",
+            OpKind::GenClose,
             1,
             None,
             "molt_generator_close",
             "(i64 %boxed_int)",
         ),
-        ("abs", 1, None, "molt_abs_builtin", "(i64 %boxed_int)"),
+        (OpKind::Abs, 1, None, "molt_abs_builtin", "(i64 %boxed_int)"),
         (
-            "string_format",
+            OpKind::StringFormat,
             2,
             None,
             "molt_format_builtin",
             "(i64 %boxed_int, i64 %boxed_int)",
         ),
         (
-            "exception_match_builtin",
+            OpKind::ExceptionMatchBuiltin,
             1,
             Some(7),
             "molt_exception_match_builtin",
             "(i64 %boxed_int, i64 7)",
         ),
         (
-            "exception_new_builtin_one",
+            OpKind::ExceptionNewBuiltinOne,
             1,
             Some(7),
             "molt_exception_new_builtin_one",
             "(i64 7, i64 %boxed_int)",
         ),
         (
-            "exception_new_builtin",
+            OpKind::ExceptionNewBuiltin,
             1,
             Some(7),
             "molt_exception_new_builtin",
@@ -694,13 +698,15 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
         );
         let raw = func.fresh_value();
         let result = func.fresh_value();
-        let mut attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]);
+        let origin = Some(kind);
+        let mut attrs = AttrDict::from([]);
         if let Some(tag) = tag {
             attrs.insert("value".into(), AttrValue::Int(tag));
         }
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_def(raw, i64::MAX));
         entry.ops.push(TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![raw; arity],
@@ -752,6 +758,7 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
     entry.ops.push(const_int_def(raw, i64::MAX));
     entry.ops.push(const_none_def(fallback));
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ModuleSetAttr,
         operands: vec![raw; 3],
@@ -781,22 +788,27 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
 fn direct_and_preserved_boxed_calls_share_result_custody() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         for (kind, symbol, arity, shape) in [
-            ("dict_set", "molt_dict_set", 3, "borrowed"),
-            ("dict_unpack", "molt_dict_unpack", 2, "owned"),
-            ("dict_update", "molt_dict_update", 2, "owned"),
-            ("dict_update_kwstar", "molt_dict_update_kwstar", 2, "owned"),
+            (OpKind::DictSet, "molt_dict_set", 3, "borrowed"),
+            (OpKind::DictUnpack, "molt_dict_unpack", 2, "owned"),
+            (OpKind::DictUpdate, "molt_dict_update", 2, "owned"),
             (
-                "dict_update_missing",
+                OpKind::DictUpdateKwstar,
+                "molt_dict_update_kwstar",
+                2,
+                "owned",
+            ),
+            (
+                OpKind::DictUpdateMissing,
                 "molt_dict_update_missing",
                 3,
                 "borrowed",
             ),
-            ("list_append", "molt_list_append", 2, "owned"),
-            ("print_newline", "molt_print_newline", 0, "void"),
-            ("vec_sum", "molt_vec_sum", 3, "owned"),
-            ("vec_prod", "molt_vec_prod", 3, "owned"),
-            ("vec_min", "molt_vec_min", 3, "owned"),
-            ("vec_max", "molt_vec_max", 3, "owned"),
+            (OpKind::ListAppend, "molt_list_append", 2, "owned"),
+            (OpKind::PrintNewline, "molt_print_newline", 0, "void"),
+            (OpKind::VecSum, "molt_vec_sum", 3, "owned"),
+            (OpKind::VecProd, "molt_vec_prod", 3, "owned"),
+            (OpKind::VecMin, "molt_vec_min", 3, "owned"),
+            (OpKind::VecMax, "molt_vec_max", 3, "owned"),
         ] {
             for with_result in [false, true] {
                 let ctx = Context::create();
@@ -845,7 +857,12 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
 
 #[test]
 fn preserved_vector_reductions_reject_wrong_arity_before_materialization() {
-    for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+    for kind in [
+        OpKind::VecSum,
+        OpKind::VecProd,
+        OpKind::VecMin,
+        OpKind::VecMax,
+    ] {
         let symbol = format!("molt_{kind}");
         for arity in [2, 4] {
             let ctx = Context::create();
@@ -879,7 +896,8 @@ fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
         let mut backend = make_backend(&ctx);
         std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
             .insert("molt_dict_set".into());
-        let func = runtime_call_shape_function(opcode, "dict_set", "molt_dict_set", 3, true, true);
+        let func =
+            runtime_call_shape_function(opcode, OpKind::DictSet, "molt_dict_set", 3, true, true);
         let ir = try_lower_tir_to_llvm(&func, &backend)
             .unwrap_or_else(|error| panic!("{opcode:?}: {:?}", error.diagnostics()))
             .print_to_string()
@@ -921,11 +939,11 @@ fn direct_and_preserved_borrowed_calls_box_raw_arguments_before_cleanup() {
 fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
     for opcode in [OpCode::Call, OpCode::Copy] {
         for (kind, symbol, arity) in [
-            ("dict_set", "molt_dict_set", 3),
-            ("dict_unpack", "molt_dict_unpack", 2),
-            ("dict_update", "molt_dict_update", 2),
-            ("dict_update_kwstar", "molt_dict_update_kwstar", 2),
-            ("dict_update_missing", "molt_dict_update_missing", 3),
+            (OpKind::DictSet, "molt_dict_set", 3),
+            (OpKind::DictUnpack, "molt_dict_unpack", 2),
+            (OpKind::DictUpdate, "molt_dict_update", 2),
+            (OpKind::DictUpdateKwstar, "molt_dict_update_kwstar", 2),
+            (OpKind::DictUpdateMissing, "molt_dict_update_missing", 3),
         ] {
             for with_result in [false, true] {
                 let ctx = Context::create();
@@ -953,7 +971,7 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
 
 #[test]
 fn stateful_locals_registration_preserves_mixed_abi() {
-    let kind = "stateful_locals_register";
+    let kind = OpKind::StatefulLocalsRegister;
     // Real IR registers a task poll entry with no arity claim; the linkage row
     // alone names its one task parameter. A present claim is checked instead.
     for claimed_arity in [None, Some(1)] {
@@ -973,14 +991,13 @@ fn stateful_locals_registration_preserves_mixed_abi() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         let names = entry.args[0].id;
         let offsets = entry.args[1].id;
-        let mut attrs = AttrDict::from([
-            ("_original_kind".into(), AttrValue::Str(kind.into())),
-            ("s_value".into(), AttrValue::Str("poll_fn".into())),
-        ]);
+        let origin = Some(kind);
+        let mut attrs = AttrDict::from([("s_value".into(), AttrValue::Str("poll_fn".into()))]);
         if let Some(arity) = claimed_arity {
             attrs.insert("value".into(), AttrValue::Int(arity));
         }
         entry.ops.push(TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![names, offsets],
@@ -1032,29 +1049,28 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     let params: Vec<_> = entry.args.iter().map(|arg| arg.id).collect();
-    let named = |kind: &str| {
-        AttrDict::from([
-            ("_original_kind".into(), AttrValue::Str(kind.into())),
-            (
-                "class_definition".into(),
-                AttrValue::Str("class:m:C".into()),
-            ),
-        ])
+    let named = || {
+        AttrDict::from([(
+            "class_definition".into(),
+            AttrValue::Str("class:m:C".into()),
+        )])
     };
     entry.ops.push(TirOp {
+        origin: Some(OpKind::ClassSetDefinition),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![params[0]],
         results: vec![],
-        attrs: named("class_set_definition"),
+        attrs: named(),
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: Some(OpKind::GuardLayout),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![params[1], params[2]],
         results: vec![result],
-        attrs: named("guard_layout"),
+        attrs: named(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1100,14 +1116,12 @@ fn marked_finally_observer_lowers_to_the_fused_runtime_projection() {
     );
     let result = func.fresh_value();
     let mut observer = TirOp {
+        origin: Some(OpKind::ExceptionFinallyPendingObserver),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
         results: vec![result],
-        attrs: AttrDict::from([(
-            "_original_kind".into(),
-            AttrValue::Str("exception_finally_pending_observer".into()),
-        )]),
+        attrs: AttrDict::from([]),
         source_span: None,
     };
     observer.mark_async_work_poll();
@@ -1135,8 +1149,14 @@ fn marked_finally_observer_lowers_to_the_fused_runtime_projection() {
 fn lower_special_get_attr_trusts_runtime_owned_result() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let ir = lower_preserved_kind_ir(&backend, "get_attr_special_obj", 1, true, Some("__class__"))
-        .expect("special getattr must lower");
+    let ir = lower_preserved_kind_ir(
+        &backend,
+        OpKind::GetAttrSpecialObj,
+        1,
+        true,
+        Some("__class__"),
+    )
+    .expect("special getattr must lower");
     assert!(ir.contains("molt_get_attr_special"), "{ir}");
     assert!(!ir.contains("get_attr_special_inc_ref"), "{ir}");
     assert!(!ir.contains("call void @molt_inc_ref_obj"), "{ir}");
@@ -1151,7 +1171,13 @@ fn lower_special_get_attr_trusts_runtime_owned_result() {
 fn lower_preserved_repr_identity_ops_pass_operand_through() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    for kind in ["cast", "widen", "store_var", "copy_var", "identity_alias"] {
+    for kind in [
+        OpKind::Cast,
+        OpKind::Widen,
+        OpKind::StoreVar,
+        OpKind::CopyVar,
+        OpKind::IdentityAlias,
+    ] {
         let mut func = TirFunction::new(
             format!("preserved_{kind}_identity"),
             vec![TirType::DynBox],
@@ -1166,9 +1192,10 @@ fn lower_preserved_repr_identity_ops_pass_operand_through() {
             .expect("identity test function must have one entry argument");
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        let mut attrs = AttrDict::new();
-        attrs.insert("_original_kind".into(), AttrValue::Str(kind.to_string()));
+        let attrs = AttrDict::new();
+        let origin = Some(kind);
         entry.ops.push(TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![src],
@@ -1200,21 +1227,21 @@ fn lower_preserved_repr_identity_ops_pass_operand_through() {
     }
 }
 
-/// Terminal fail-loud state: a preserved `Copy` carrying an `_original_kind`
+/// Terminal fail-loud state: a preserved `Copy` carrying an `origin`
 /// that NO arm and NO `molt_<kind>` runtime intrinsic claims must be a hard
 /// `record_fatal` lowering error — never a silent operand-0 passthrough.
-/// `__ppaudit_unmapped__` is a synthetic kind that cannot resolve to any
-/// `molt_*` symbol, so it must reach the terminal guard.
+/// Luau-private `binop` is registered but has no LLVM lowering or runtime ABI,
+/// so it must reach the typed terminal refusal.
 #[test]
 fn lower_preserved_unmapped_kind_fails_loud() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let err = lower_preserved_kind_ir(&backend, "__ppaudit_unmapped__", 1, true, None).expect_err(
+    let err = lower_preserved_kind_ir(&backend, OpKind::Binop, 1, true, None).expect_err(
         "an unhandled preserved op must fail the lowering, not silently \
                  pass operand 0 through",
     );
     assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
-    assert_lowering_error_contains(&err, "__ppaudit_unmapped__");
+    assert_lowering_error_contains(&err, "binop");
 }
 
 /// RESULT-LESS preserved side-effect ops (`print_newline`, `set_update`, …)
@@ -1230,12 +1257,12 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     // (kind, n_operands, expected runtime symbol). All result-less (res=0).
-    let cases: &[(&str, usize, &str)] = &[
-        ("print_newline", 0, "molt_print_newline"),
-        ("set_update", 2, "molt_set_update"),
-        ("math_sin", 1, "molt_math_sin"),
+    let cases: &[(OpKind, usize, &str)] = &[
+        (OpKind::PrintNewline, 0, "molt_print_newline"),
+        (OpKind::SetUpdate, 2, "molt_set_update"),
+        (OpKind::Abs, 1, "molt_abs"),
         (
-            "string_split_field_len_from_bounds",
+            OpKind::StringSplitFieldLenFromBounds,
             4,
             "molt_string_split_field_len_from_bounds",
         ),
@@ -1270,22 +1297,18 @@ fn lower_preserved_void_runtime_result_shape_fails_loud() {
     let mut backend = make_backend(&ctx);
     std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_print_newline".to_string());
-    let err = lower_preserved_kind_ir(&backend, "print_newline", 0, true, None)
+    let err = lower_preserved_kind_ir(&backend, OpKind::PrintNewline, 0, true, None)
         .expect_err("void preserved runtime ops must not bind a boxed result");
     assert_lowering_error_contains(&err, "call to void runtime symbol");
     assert_lowering_error_contains(&err, "print_newline");
 }
 
 #[test]
-fn preserved_runtime_calls_reject_raw_carriers_even_when_linked() {
-    for (kind, arity) in [("int_from_i64", 1), ("int_as_i64", 1), ("is_truthy", 1)] {
-        let ctx = Context::create();
-        let mut backend = make_backend(&ctx);
-        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-            .insert(format!("molt_{kind}"));
-        let error = lower_preserved_kind_ir(&backend, kind, arity, true, None)
-            .expect_err("machine i64 ABI cannot authorize boxed operands/results");
-        assert_lowering_error_contains(&error, "no positional boxed-value ABI classification");
+fn raw_runtime_services_cannot_be_spelled_as_wire_operations() {
+    for spelling in ["int_from_i64", "int_as_i64", "is_truthy"] {
+        let error = serde_json::from_value::<molt_ir::OpIR>(serde_json::json!({"kind": spelling}))
+            .unwrap_err();
+        assert!(error.to_string().contains(spelling), "{error}");
     }
 }
 
@@ -1297,18 +1320,18 @@ fn preserved_runtime_calls_reject_raw_carriers_even_when_linked() {
 fn lower_preserved_resultless_unmapped_fails_loud() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let err = lower_preserved_kind_ir(&backend, "__ppaudit_resultless__", 2, false, None)
+    let err = lower_preserved_kind_ir(&backend, OpKind::Binop, 2, false, None)
         .expect_err("an unhandled result-less preserved op must fail the lowering");
     assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
-    assert_lowering_error_contains(&err, "__ppaudit_resultless__");
+    assert_lowering_error_contains(&err, "binop");
 }
 
-/// A bare `Copy` (no `_original_kind` — a genuine SSA value copy such as
+/// A bare `Copy` (no `origin` — a genuine SSA value copy such as
 /// `copy`/`load_var`/`store_var`) must STILL take the benign operand-0
-/// passthrough. The terminal fail-loud guard keys on `_original_kind`, so it
+/// passthrough. The terminal fail-loud guard keys on `origin`, so it
 /// must not fire here.
 #[test]
-fn lower_bare_copy_without_original_kind_passes_through() {
+fn lower_bare_copy_withoutorigin_passes_through() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
     let mut func = TirFunction::new(
@@ -1322,6 +1345,7 @@ fn lower_bare_copy_without_original_kind_passes_through() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(src));
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![src],
@@ -1335,7 +1359,7 @@ fn lower_bare_copy_without_original_kind_passes_through() {
     // Must lower cleanly (no fatal); the result aliases the source.
     let ir = try_lower_tir_to_llvm(&func, &backend)
         .map(|f| f.print_to_string().to_string())
-        .expect("a bare Copy without _original_kind must lower as a passthrough");
+        .expect("a bare Copy without origin must lower as a passthrough");
     assert!(
         !ir.contains("unhandled preserved"),
         "bare Copy must not trigger the preserved-op fail-loud: {ir}"
@@ -1358,13 +1382,14 @@ fn lower_preserved_len_ignores_transport_container_type() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(obj));
     entry.ops.push(TirOp {
+        origin: Some(OpKind::Len),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj],
         results: vec![result],
         attrs: {
             let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str("len".into()));
+
             attrs.insert("container_type".into(), AttrValue::Str("tuple".into()));
             attrs
         },
@@ -1395,15 +1420,12 @@ fn lower_preserved_len_uses_tir_tuple_fact() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: Some(OpKind::Len),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str("len".into()));
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1432,28 +1454,24 @@ fn custom_container_calls_retire_discarded_owned_returns() {
     let unpacked = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(source));
-    for kind in ["len", "iter"] {
+    for kind in [OpKind::Len, OpKind::Iter] {
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source],
             results: vec![],
-            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            attrs: AttrDict::from([]),
             source_span: None,
         });
     }
     entry.ops.push(TirOp {
+        origin: Some(OpKind::UnpackSequence),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![source],
         results: vec![unpacked],
-        attrs: AttrDict::from([
-            (
-                "_original_kind".into(),
-                AttrValue::Str("unpack_sequence".into()),
-            ),
-            ("value".into(), AttrValue::Int(1)),
-        ]),
+        attrs: AttrDict::from([("value".into(), AttrValue::Int(1))]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1473,7 +1491,10 @@ fn custom_container_calls_retire_discarded_owned_returns() {
 
 #[test]
 fn custom_container_calls_box_and_retire_raw_inputs() {
-    for (kind, symbol) in [("len", "molt_len"), ("iter", "molt_iter_checked")] {
+    for (kind, symbol) in [
+        (OpKind::Len, "molt_len"),
+        (OpKind::Iter, "molt_iter_checked"),
+    ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
         std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.into());
@@ -1489,11 +1510,12 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         entry.ops.push(const_int_def(raw, i64::MAX));
         entry.ops.push(const_none_def(fallback));
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![raw],
             results: vec![],
-            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            attrs: AttrDict::from([]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -1539,17 +1561,12 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_int_def(raw, i64::MAX));
     entry.ops.push(TirOp {
+        origin: Some(OpKind::UnpackSequence),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![raw],
         results: vec![unpacked],
-        attrs: AttrDict::from([
-            (
-                "_original_kind".into(),
-                AttrValue::Str("unpack_sequence".into()),
-            ),
-            ("value".into(), AttrValue::Int(1)),
-        ]),
+        attrs: AttrDict::from([("value".into(), AttrValue::Int(1))]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1605,18 +1622,12 @@ fn lower_preserved_list_append_calls_runtime() {
         .ops
         .extend([const_none_def(list_bits), const_none_def(item_bits)]);
     entry.ops.push(TirOp {
+        origin: Some(OpKind::ListAppend),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![list_bits, item_bits],
         results: vec![],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("list_append".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1640,6 +1651,7 @@ fn lower_del_boundary_calls_dec_ref_runtime() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(owned));
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelBoundary,
         operands: vec![owned],
@@ -1660,7 +1672,7 @@ fn lower_preserved_list_pop_calls_runtime() {
     let mut backend = make_backend(&ctx);
     std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
         .insert("molt_list_pop".to_string());
-    let ir = lower_preserved_kind_ir(&backend, "list_pop", 2, true, None)
+    let ir = lower_preserved_kind_ir(&backend, OpKind::ListPop, 2, true, None)
         .expect("list_pop must lower through the boxed runtime call");
     assert!(ir.contains("molt_list_pop"), "{ir}");
 }
@@ -1669,7 +1681,7 @@ fn lower_preserved_list_pop_calls_runtime() {
 fn lower_preserved_dataclass_new_values_calls_runtime_with_value_slice() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
-    let ir = lower_preserved_kind_ir(&backend, "dataclass_new_values", 5, true, None)
+    let ir = lower_preserved_kind_ir(&backend, OpKind::DataclassNewValues, 5, true, None)
         .expect("dataclass_new_values must lower through its value-slice runtime call");
     assert!(ir.contains("molt_dataclass_new_from_values"), "{ir}");
     assert!(ir.contains("alloca i64, i64 2"), "{ir}");
@@ -1677,9 +1689,10 @@ fn lower_preserved_dataclass_new_values_calls_runtime_with_value_slice() {
 
 #[test]
 fn preserved_word_ranges_use_static_entry_block_slots() {
-    for (kind, operand_count, result_count) in
-        [("unpack_sequence", 1, 2), ("dataclass_new_values", 5, 1)]
-    {
+    for (kind, operand_count, result_count) in [
+        (OpKind::UnpackSequence, 1, 2),
+        (OpKind::DataclassNewValues, 5, 1),
+    ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let mut func = TirFunction::new(
@@ -1699,8 +1712,9 @@ fn preserved_word_ranges_use_static_entry_block_slots() {
             target: body,
             args: vec![],
         };
-        let mut attrs = AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]);
-        if kind == "unpack_sequence" {
+        let origin = Some(kind);
+        let mut attrs = AttrDict::from([]);
+        if kind == OpKind::UnpackSequence {
             attrs.insert("value".into(), AttrValue::Int(result_count as i64));
         }
         // An operation in a loop-shaped block reuses one static slot; a range
@@ -1711,6 +1725,7 @@ fn preserved_word_ranges_use_static_entry_block_slots() {
                 id: body,
                 args: vec![],
                 ops: vec![TirOp {
+                    origin,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands,
@@ -1758,18 +1773,12 @@ fn lower_preserved_tuple_from_list_calls_runtime() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(list_bits));
     entry.ops.push(TirOp {
+        origin: Some(OpKind::TupleFromList),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![list_bits],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("tuple_from_list".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1799,15 +1808,12 @@ fn lower_preserved_set_add_calls_runtime() {
         .ops
         .extend([const_none_def(set_bits), const_none_def(item_bits)]);
     entry.ops.push(TirOp {
+        origin: Some(OpKind::SetAdd),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![set_bits, item_bits],
         results: vec![],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str("set_add".into()));
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1836,18 +1842,12 @@ fn lower_preserved_list_extend_calls_runtime() {
         .ops
         .extend([const_none_def(list_bits), const_none_def(other_bits)]);
     entry.ops.push(TirOp {
+        origin: Some(OpKind::ListExtend),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![list_bits, other_bits],
         results: vec![],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("list_extend".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1873,15 +1873,12 @@ fn lower_preserved_aiter_calls_runtime() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_none_def(obj_bits));
     entry.ops.push(TirOp {
+        origin: Some(OpKind::Aiter),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj_bits],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str("aiter".into()));
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1911,15 +1908,12 @@ fn lower_preserved_gen_send_calls_runtime() {
         .ops
         .extend([const_none_def(gen_bits), const_none_def(send_bits)]);
     entry.ops.push(TirOp {
+        origin: Some(OpKind::GenSend),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![gen_bits, send_bits],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str("gen_send".into()));
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1951,18 +1945,12 @@ fn lower_preserved_context_exit_calls_runtime() {
         .ops
         .extend([const_none_def(ctx_bits), const_none_def(exc_bits)]);
     entry.ops.push(TirOp {
+        origin: Some(OpKind::ContextExit),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![ctx_bits, exc_bits],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("context_exit".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1976,7 +1964,7 @@ fn lower_preserved_context_exit_calls_runtime() {
 
 #[test]
 fn runtime_guard_results_return_the_original_operand_after_checking() {
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [OpKind::GuardTag, OpKind::GuardType] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let mut func = TirFunction::new(
@@ -1990,11 +1978,12 @@ fn runtime_guard_results_return_the_original_operand_after_checking() {
         let source = entry.args[0].id;
         let tag = entry.args[1].id;
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source, tag],
             results: vec![result],
-            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            attrs: AttrDict::from([]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -2014,7 +2003,7 @@ fn runtime_guard_results_return_the_original_operand_after_checking() {
 
 #[test]
 fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [OpKind::GuardTag, OpKind::GuardType] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let mut func = TirFunction::new(
@@ -2030,11 +2019,12 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
         entry.ops.push(const_int_def(tag, 5));
         for _ in 0..2 {
             entry.ops.push(TirOp {
+                origin: Some(kind),
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![source, tag],
                 results: vec![],
-                attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+                attrs: AttrDict::from([]),
                 source_span: None,
             });
         }
@@ -2060,57 +2050,61 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
 
 #[test]
 fn shared_boxed_text_calls_use_owned_abi_and_exact_arity() {
-    for receiver in ["string", "bytes", "bytearray"] {
-        for method in ["find", "startswith", "endswith", "count"] {
-            for suffix in ["", "_slice"] {
-                let kind = format!("{receiver}_{method}{suffix}");
-                let symbol = format!("molt_{kind}");
-                let arity = if suffix.is_empty() { 2 } else { 6 };
-                for bound in [false, true] {
-                    let ctx = Context::create();
-                    let mut backend = make_backend(&ctx);
-                    std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-                        .insert(symbol.clone());
-                    let func = runtime_call_shape_function(
-                        OpCode::Copy,
-                        &kind,
-                        &symbol,
-                        arity,
-                        bound,
-                        false,
-                    );
-                    let ir = try_lower_tir_to_llvm(&func, &backend)
-                        .expect("shared text ABI")
-                        .print_to_string()
-                        .to_string();
-                    assert_eq!(
-                        ir.matches(&format!("call i64 @{symbol}(")).count(),
-                        1,
-                        "{ir}"
-                    );
-                    assert_eq!(
-                        ir.matches("call void @molt_dec_ref_obj(").count(),
-                        usize::from(!bound),
-                        "{ir}"
-                    );
-                    backend.module.verify().expect("text call LLVM IR");
-                }
-                let ctx = Context::create();
-                let mut backend = make_backend(&ctx);
-                std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-                    .insert(symbol.clone());
-                let func = runtime_call_shape_function(
-                    OpCode::Copy,
-                    &kind,
-                    &symbol,
-                    arity + 1,
-                    true,
-                    false,
-                );
-                let error = try_lower_tir_to_llvm(&func, &backend)
-                    .expect_err("extra operand must not be silently ignored");
-                assert_lowering_error_contains(&error, "mismatched arity");
-            }
+    for (kind, arity) in [
+        (OpKind::StringFind, 2),
+        (OpKind::StringFindSlice, 6),
+        (OpKind::StringStartswith, 2),
+        (OpKind::StringStartswithSlice, 6),
+        (OpKind::StringEndswith, 2),
+        (OpKind::StringEndswithSlice, 6),
+        (OpKind::StringCount, 2),
+        (OpKind::StringCountSlice, 6),
+        (OpKind::BytesFind, 2),
+        (OpKind::BytesFindSlice, 6),
+        (OpKind::BytesStartswith, 2),
+        (OpKind::BytesStartswithSlice, 6),
+        (OpKind::BytesEndswith, 2),
+        (OpKind::BytesEndswithSlice, 6),
+        (OpKind::BytesCount, 2),
+        (OpKind::BytesCountSlice, 6),
+        (OpKind::BytearrayFind, 2),
+        (OpKind::BytearrayFindSlice, 6),
+        (OpKind::BytearrayStartswith, 2),
+        (OpKind::BytearrayStartswithSlice, 6),
+        (OpKind::BytearrayEndswith, 2),
+        (OpKind::BytearrayEndswithSlice, 6),
+        (OpKind::BytearrayCount, 2),
+        (OpKind::BytearrayCountSlice, 6),
+    ] {
+        let symbol = format!("molt_{kind}");
+        for bound in [false, true] {
+            let ctx = Context::create();
+            let mut backend = make_backend(&ctx);
+            std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.clone());
+            let func =
+                runtime_call_shape_function(OpCode::Copy, kind, &symbol, arity, bound, false);
+            let ir = try_lower_tir_to_llvm(&func, &backend)
+                .expect("shared text ABI")
+                .print_to_string()
+                .to_string();
+            assert_eq!(
+                ir.matches(&format!("call i64 @{symbol}(")).count(),
+                1,
+                "{ir}"
+            );
+            assert_eq!(
+                ir.matches("call void @molt_dec_ref_obj(").count(),
+                usize::from(!bound),
+                "{ir}"
+            );
+            backend.module.verify().expect("text call LLVM IR");
         }
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols).insert(symbol.clone());
+        let func = runtime_call_shape_function(OpCode::Copy, kind, &symbol, arity + 1, true, false);
+        let error = try_lower_tir_to_llvm(&func, &backend)
+            .expect_err("extra operand must not be silently ignored");
+        assert_lowering_error_contains(&error, "mismatched arity");
     }
 }

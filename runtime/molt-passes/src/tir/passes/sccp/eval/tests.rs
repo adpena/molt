@@ -60,6 +60,7 @@ fn builtin(name: &str, args: &[ConstVal]) -> Option<ConstVal> {
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, TirOp};
     use crate::tir::values::ValueId;
     let op = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: (0..args.len()).map(|index| ValueId(index as u32)).collect(),
@@ -350,11 +351,12 @@ fn explicit_range_primitive_retains_constant_domain_without_public_name_folding(
     for step in [-1, 0, 1] {
         let values = [ConstVal::Int(0), ConstVal::Int(3), ConstVal::Int(step)];
         let mut op = TirOp {
+            origin: Some(molt_ir::OpKind::RangeNew),
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
             operands: vec![ValueId(0), ValueId(1), ValueId(2)],
             results: vec![ValueId(3)],
-            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str("range_new".into()))]),
+            attrs: AttrDict::from([]),
             source_span: None,
         };
         assert_eq!(
@@ -366,6 +368,7 @@ fn explicit_range_primitive_retains_constant_domain_without_public_name_folding(
             })
         );
         op.attrs = AttrDict::from([("name".into(), AttrValue::Str("range_new".into()))]);
+        op.origin = None;
         assert_eq!(
             evaluate_builtin_call(&op, &values.iter().map(Some).collect::<Vec<_>>()),
             None

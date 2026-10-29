@@ -13,7 +13,7 @@ pub(super) fn emit_hash_container_op(
     op: &OpIR,
     ctx: &AggregateRuntimeContext<'_>,
 ) -> bool {
-    if op.kind == "dict_new" {
+    if op.kind == molt_ir::OpKind::DictNew {
         use super::super::super::builder_ops::{WordRangeConstructor, emit_word_range_constructor};
         let args = op.args.as_deref().unwrap_or(&[]);
         assert!(
@@ -37,9 +37,9 @@ pub(super) fn emit_hash_container_op(
         finish_owned_local_result(func, op, ctx.locals, ctx.import_ids, ctx.reloc_enabled, out);
         return true;
     }
-    let (constructor, insert) = match op.kind.as_str() {
-        "set_new" => (WasmRuntimeImport::SetNew, WasmRuntimeImport::SetAdd),
-        "frozenset_new" => (
+    let (constructor, insert) = match op.kind {
+        molt_ir::OpKind::SetNew => (WasmRuntimeImport::SetNew, WasmRuntimeImport::SetAdd),
+        molt_ir::OpKind::FrozensetNew => (
             WasmRuntimeImport::FrozensetNew,
             WasmRuntimeImport::FrozensetAdd,
         ),

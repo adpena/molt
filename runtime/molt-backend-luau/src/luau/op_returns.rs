@@ -2,7 +2,7 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_return_op(&mut self, op: &OpIR) -> bool {
-        match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind.as_str()) {
+        match molt_ir::tir::op_kinds_generated::simpleir_return_shape(op.kind) {
             molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value => {
                 self.emit_line("molt_exception_propagate()");
                 let value = op

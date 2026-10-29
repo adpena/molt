@@ -1,25 +1,26 @@
 use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-/// Single-source kind authority for [`handle_module_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_module_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "module_new",
-    "module_cache_get",
-    "module_import",
-    "module_cache_set",
-    "module_cache_del",
-    "module_get_attr",
-    "module_import_from",
-    "module_get_global",
-    "module_del_global",
-    "module_del_global_if_present",
-    "module_get_name",
-    "module_set_attr",
-    "module_import_star",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::ModuleNew,
+    OpKind::ModuleCacheGet,
+    OpKind::ModuleImport,
+    OpKind::ModuleCacheSet,
+    OpKind::ModuleCacheDel,
+    OpKind::ModuleGetAttr,
+    OpKind::ModuleImportFrom,
+    OpKind::ModuleGetGlobal,
+    OpKind::ModuleDelGlobal,
+    OpKind::ModuleDelGlobalIfPresent,
+    OpKind::ModuleGetName,
+    OpKind::ModuleSetAttr,
+    OpKind::ModuleImportStar,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for module ops: creation/import (`module_new`/`module_import`/`module_import_star`), cache (`cache_get`/`cache_set`/`cache_del`), attribute/global access (`get_attr`/`import_from`/`get_global`/`del_global`/`set_attr`/`get_name`).
@@ -74,8 +75,8 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "module_new" => {
+    match op.kind {
+        OpKind::ModuleNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let name_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -102,7 +103,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "module_cache_get" => {
+        OpKind::ModuleCacheGet => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let name_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -129,7 +130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "module_import" => {
+        OpKind::ModuleImport => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let name_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -160,7 +161,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "module_cache_set" => {
+        OpKind::ModuleCacheSet => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let name_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -196,7 +197,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 .ins()
                 .call(local_callee, &[*name_bits, *module_bits]);
         }
-        "module_cache_del" => {
+        OpKind::ModuleCacheDel => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let name_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -219,7 +220,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             builder.ins().call(local_callee, &[*name_bits]);
         }
-        "module_get_attr" | "module_import_from" => {
+        OpKind::ModuleGetAttr | OpKind::ModuleImportFrom => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let module_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -278,7 +279,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             // (CPython IMPORT_FROM semantics: ImportError on miss with a
             // sys.modules submodule fallback); plain `M.name` reads use
             // molt_module_get_attr (AttributeError on miss).
-            let runtime_symbol = if op.kind == "module_import_from" {
+            let runtime_symbol = if op.kind == OpKind::ModuleImportFrom {
                 "molt_module_import_from"
             } else {
                 "molt_module_get_attr"
@@ -297,7 +298,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "module_get_global" => {
+        OpKind::ModuleGetGlobal => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let module_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -335,7 +336,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "module_del_global" | "module_del_global_if_present" => {
+        OpKind::ModuleDelGlobal | OpKind::ModuleDelGlobalIfPresent => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let module_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -359,7 +360,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 representation_plan,
             )
             .expect("Attr not found");
-            let callee_name = if op.kind == "module_del_global_if_present" {
+            let callee_name = if op.kind == OpKind::ModuleDelGlobalIfPresent {
                 "molt_module_del_global_if_present"
             } else {
                 "molt_module_del_global"
@@ -378,7 +379,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out_name, res);
             }
         }
-        "module_get_name" => {
+        OpKind::ModuleGetName => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let module_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -416,7 +417,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "module_set_attr" => {
+        OpKind::ModuleSetAttr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let module_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -474,7 +475,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 .ins()
                 .call(local_callee, &[*module_bits, attr_bits, *val_bits]);
         }
-        "module_import_star" => {
+        OpKind::ModuleImportStar => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let src_bits = var_get_boxed_overflow_safe(
                 &mut *module,

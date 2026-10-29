@@ -1,9 +1,5 @@
 use super::*;
 use molt_ir::simple_verify::{EdgeRole, SimpleIrLogicalFlow};
-use molt_ir::tir::op_kinds_generated::{
-    simpleir_kind_is_exception_check, simpleir_kind_is_return_terminator,
-    simpleir_kind_is_structural, simpleir_kind_is_suspend, simpleir_kind_is_wasm_stateful_dispatch,
-};
 
 impl LuauBackend {
     /// Project the canonical logical graph into Luau, whose language has no
@@ -53,20 +49,17 @@ impl LuauBackend {
                 &mut capture_counter,
             );
             for op in &captured {
-                if simpleir_kind_is_wasm_stateful_dispatch(&op.kind)
-                    || simpleir_kind_is_suspend(&op.kind)
-                {
+                if op.kind.is_wasm_stateful_dispatch() || op.kind.is_suspend() {
                     self.emit_unsupported_op_with_reason(op,
                         "logical labelled-flow emission requires synchronous edges; coroutine state-machine lowering remains target-gated");
-                } else if simpleir_kind_is_return_terminator(&op.kind)
-                    || (!simpleir_kind_is_structural(&op.kind)
-                        && !simpleir_kind_is_exception_check(&op.kind))
+                } else if op.kind.is_return_terminator()
+                    || (!op.kind.is_structural() && !op.kind.is_exception_check())
                 {
                     self.emit_op(op);
                 }
             }
             let tail = &ops[end];
-            if simpleir_kind_is_return_terminator(&tail.kind) {
+            if tail.kind.is_return_terminator() {
                 continue;
             }
             let edges = &flow.edges[end];
@@ -89,7 +82,7 @@ impl LuauBackend {
                 .iter()
                 .any(|edge| matches!(edge.role, EdgeRole::BranchTrue | EdgeRole::BranchFalse))
             {
-                let condition = if tail.kind == "loop_break_if_exception" {
+                let condition = if tail.kind == molt_ir::OpKind::LoopBreakIfException {
                     "molt_exception_pending()".to_string()
                 } else if let Some(value) = tail.args.as_deref().and_then(|args| args.first()) {
                     self.guard_truthiness(value)

@@ -7,6 +7,7 @@ use crate::tir::values::ValueId;
 
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -18,6 +19,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
 
 fn make_call_builtin(name: &str, operand: ValueId, result: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: vec![operand],
@@ -81,6 +83,7 @@ fn build_iter_sum_function() -> TirFunction {
             id: bb1,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ForIter,
                 operands: vec![iter_val],
@@ -175,6 +178,7 @@ fn make_unpack_sequence(source: ValueId, results: Vec<ValueId>, count: i64) -> T
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(count));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnpackSequence,
         operands: vec![source],
@@ -248,19 +252,13 @@ fn tuple_scalarize_fib_swap() {
     assert_eq!(entry.ops[0].results, vec![ValueId(3)]);
     // The annotated parameters prove no raw carrier, so each unpacked
     // result keeps its own reference: an owned alias of its element.
-    assert_eq!(
-        entry.ops[0].attrs.get("_original_kind"),
-        Some(&AttrValue::Str("binding_alias".into()))
-    );
+    assert_eq!(entry.ops[0].origin, Some(molt_ir::OpKind::BindingAlias));
 
     // Second Copy: %4 = Copy(%1)  (new_b = a_plus_b)
     assert_eq!(entry.ops[1].opcode, OpCode::Copy);
     assert_eq!(entry.ops[1].operands, vec![ValueId(1)]);
     assert_eq!(entry.ops[1].results, vec![ValueId(4)]);
-    assert_eq!(
-        entry.ops[1].attrs.get("_original_kind"),
-        Some(&AttrValue::Str("binding_alias".into()))
-    );
+    assert_eq!(entry.ops[1].origin, Some(molt_ir::OpKind::BindingAlias));
 }
 
 // -----------------------------------------------------------------------
@@ -679,19 +677,17 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
     let equal = function.fresh_value();
     let handler = function.fresh_block();
     function.label_id_map.insert(handler.0, 9);
-    let preserved = |name: &str, operands: Vec<ValueId>, results: Vec<ValueId>| {
+    let preserved = |name: molt_ir::OpKind, operands: Vec<ValueId>, results: Vec<ValueId>| {
         let mut operation = make_op(
             crate::tir::op_kinds_generated::kind_to_opcode_table(name).unwrap_or(OpCode::Copy),
             operands,
             results,
         );
-        operation
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str(name.into()));
+        operation.origin = Some(name);
         operation
     };
     let mut split = preserved(
-        "string_split_field",
+        molt_ir::OpKind::StringSplitField,
         vec![ValueId(0), ValueId(1), ValueId(2)],
         vec![field],
     );
@@ -717,7 +713,7 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
     type_tag.attrs.insert("value".into(), AttrValue::Int(5));
     let mut check = make_op(OpCode::CheckException, vec![], vec![]);
     check.attrs.insert("value".into(), AttrValue::Int(9));
-    let mut len = preserved("len", vec![field], vec![length]);
+    let mut len = preserved(molt_ir::OpKind::Len, vec![field], vec![length]);
     len.set_source_op_index(72);
     let entry = function.blocks.get_mut(&function.entry_block).unwrap();
     entry.ops = vec![
@@ -726,9 +722,13 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
         split,
         check,
         len,
-        preserved("ord_at", vec![field, ValueId(3)], vec![ordinal]),
-        preserved("eq", vec![constant, field], vec![equal]),
-        preserved("guard_type", vec![field, tag], vec![]),
+        preserved(
+            molt_ir::OpKind::OrdAt,
+            vec![field, ValueId(3)],
+            vec![ordinal],
+        ),
+        preserved(molt_ir::OpKind::Eq, vec![constant, field], vec![equal]),
+        preserved(molt_ir::OpKind::GuardType, vec![field, tag], vec![]),
     ];
     entry.terminator = Terminator::Return {
         values: vec![length],
@@ -750,27 +750,30 @@ fn split_property_fixture() -> (TirFunction, ValueId) {
 #[test]
 fn split_properties_rewrite_exact_ssa_uses_and_keep_observation_and_metadata() {
     let (mut function, field) = split_property_fixture();
+    for opcode in [OpCode::ScfFor, OpCode::ScfWhile] {
+        let mut marker = make_op(opcode, vec![], vec![]);
+        marker.dialect = Dialect::Scf;
+        function
+            .blocks
+            .get_mut(&function.entry_block)
+            .unwrap()
+            .ops
+            .push(marker);
+    }
     let old_next = function.fresh_value();
     let stats = super::run_split_field_reads(&mut function);
     assert_eq!(stats.values_changed, 1);
     let entry = &function.blocks[&function.entry_block];
-    let kinds: Vec<_> = entry
-        .ops
-        .iter()
-        .filter_map(|op| match op.attrs.get("_original_kind") {
-            Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-            _ => None,
-        })
-        .collect();
+    let kinds: Vec<_> = entry.ops.iter().filter_map(|op| op.origin).collect();
     assert_eq!(
         kinds,
         [
-            "string_split_field_start",
-            "string_split_field_end",
-            "string_split_field_is_ascii",
-            "string_split_field_len_from_bounds",
-            "string_split_field_ord_at_bounds",
-            "string_split_field_eq"
+            molt_ir::OpKind::StringSplitFieldStart,
+            molt_ir::OpKind::StringSplitFieldEnd,
+            molt_ir::OpKind::StringSplitFieldIsAscii,
+            molt_ir::OpKind::StringSplitFieldLenFromBounds,
+            molt_ir::OpKind::StringSplitFieldOrdAtBounds,
+            molt_ir::OpKind::StringSplitFieldEq
         ]
     );
     let properties = &entry.ops[2..5];
@@ -832,6 +835,7 @@ fn split_properties_refuse_escape_payload_release_guard_and_custody_changes() {
         "producer_custody",
         "consumer_custody",
         "unknown_eq",
+        "structured_use",
         "runtime_override",
     ] {
         let (mut function, field) = split_property_fixture();
@@ -861,6 +865,11 @@ fn split_properties_refuse_escape_payload_release_guard_and_custody_changes() {
                 entry.ops[4].set_argument_custody(&[crate::ir::ParameterCustody::Transferred])
             }
             "unknown_eq" => entry.ops[6].operands[0] = ValueId(1),
+            "structured_use" => {
+                let mut user = make_op(OpCode::ScfWhile, vec![field], vec![]);
+                user.dialect = Dialect::Scf;
+                entry.ops.push(user);
+            }
             "runtime_override" => {
                 entry.ops[4]
                     .attrs

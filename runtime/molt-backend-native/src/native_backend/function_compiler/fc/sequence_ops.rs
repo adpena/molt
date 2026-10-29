@@ -1,20 +1,21 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_sequence_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_sequence_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "len",
-    "range_new",
-    "tuple_new",
-    "unpack_sequence",
-    "tuple_count",
-    "tuple_index",
-    "iter",
-    "enumerate",
-    "iter_next_unboxed",
-    "iter_next",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Len,
+    OpKind::RangeNew,
+    OpKind::TupleNew,
+    OpKind::UnpackSequence,
+    OpKind::TupleCount,
+    OpKind::TupleIndex,
+    OpKind::Iter,
+    OpKind::Enumerate,
+    OpKind::IterNextUnboxed,
+    OpKind::IterNext,
+);
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -65,8 +66,8 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
         )
     };
 
-    match op.kind.as_str() {
-        "len" => {
+    match op.kind {
+        OpKind::Len => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Stack-tuple fast path: length is known at compile time.
             if let Some(elems) = scalarized_tuples.get(&args[0]) {
@@ -124,7 +125,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 }
             }
         }
-        "range_new" => {
+        OpKind::RangeNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let start = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -173,7 +174,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "tuple_new" => {
+        OpKind::TupleNew => {
             let elements = emit_fixed_aggregate_constructor(
                 op,
                 FixedAggregateConstructor::Tuple,
@@ -197,7 +198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 }
             }
         }
-        "unpack_sequence" => {
+        OpKind::UnpackSequence => {
             // Generated SimpleIR field authority separates the sole sequence
             // source from every output binding.
             // op.value holds the expected element count.
@@ -289,7 +290,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 index += 1;
             });
         }
-        "tuple_count" => {
+        OpKind::TupleCount => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let tuple = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -327,7 +328,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "tuple_index" => {
+        OpKind::TupleIndex => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let tuple = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -365,7 +366,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "iter" => {
+        OpKind::Iter => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -392,7 +393,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "enumerate" => {
+        OpKind::Enumerate => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let iterable = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -443,7 +444,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "iter_next_unboxed" => {
+        OpKind::IterNextUnboxed => {
             // Fusion is represented explicitly by shared SSA. Native lowering
             // consumes exactly the declared value/done outputs; it never scans
             // ahead, skips consumers, or substitutes a key for a tuple.
@@ -514,7 +515,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 }
             }
         }
-        "iter_next" => {
+        OpKind::IterNext => {
             let args = op.args.as_ref().expect("iter_next requires an iterator");
             assert_eq!(args.len(), 1, "iter_next requires one source");
             let iter = var_get_boxed_overflow_safe(

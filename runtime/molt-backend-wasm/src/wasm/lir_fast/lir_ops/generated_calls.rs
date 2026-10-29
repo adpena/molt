@@ -4,7 +4,13 @@ use super::super::runtime_calls::lir_fixed_runtime_call;
 use molt_tir::tir::lir::LirOp;
 
 pub(super) fn emit_lir_generated_fixed_runtime_call(ctx: &mut LirLowerCtx, op: &LirOp) {
-    let kind = crate::tir::op_kinds_generated::opcode_canonical_kind_table(op.tir_op.opcode);
+    let kind = crate::tir::op_kinds_generated::opcode_canonical_kind_table(op.tir_op.opcode)
+        .unwrap_or_else(|| {
+            panic!(
+                "WASM fixed runtime call opcode {:?} has no wire kind",
+                op.tir_op.opcode
+            )
+        });
     let runtime = lir_fixed_runtime_call(kind)
         .unwrap_or_else(|| panic!("missing generated WASM LIR fixed runtime call for {kind}"));
     assert!(

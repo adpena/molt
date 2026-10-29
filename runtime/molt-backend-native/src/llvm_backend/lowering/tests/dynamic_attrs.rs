@@ -1,18 +1,19 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
-    for kind in ["guarded_field_get", "guarded_field_set"] {
+    for kind in [OpKind::GuardedFieldGet, OpKind::GuardedFieldSet] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let read = kind == "guarded_field_get";
+        let read = kind == OpKind::GuardedFieldGet;
         // HF-220: [obj, expected_version] (+ value); the class statement is
         // an attribute, loaded as a program slot.
         let mut params = vec![TirType::DynBox; if read { 2 } else { 3 }];
         // An unchecked annotation may supply this hint for an actual scalar.
         params[0] = TirType::UserClass("C".into());
         let mut func = TirFunction::new(
-            kind.into(),
+            kind.to_string(),
             params,
             TirType::DynBox,
             molt_ir::FunctionReturnAbi::Value,
@@ -20,6 +21,7 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: if read {
                 OpCode::LoadAttr
@@ -29,7 +31,6 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
             operands: (0..if read { 2 } else { 3 }).map(ValueId).collect(),
             results: if read { vec![result] } else { vec![] },
             attrs: AttrDict::from([
-                ("_original_kind".into(), AttrValue::Str(kind.into())),
                 ("name".into(), AttrValue::Str("x".into())),
                 ("value".into(), AttrValue::Int(0)),
                 (
@@ -64,10 +65,10 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
 
 #[test]
 fn typed_field_inline_access_checks_receiver_before_dereferencing() {
-    for kind in ["load", "guarded_load", "store"] {
+    for kind in [OpKind::Load, OpKind::GuardedLoad, OpKind::Store] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
-        let is_load = matches!(kind, "load" | "guarded_load");
+        let is_load = matches!(kind, OpKind::Load | OpKind::GuardedLoad);
         let mut func = TirFunction::new(
             format!("field_{kind}"),
             vec![TirType::DynBox; if is_load { 1 } else { 2 }],
@@ -77,6 +78,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: if is_load {
                 OpCode::LoadAttr
@@ -89,10 +91,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
                 vec![ValueId(0), ValueId(1)]
             },
             results: if is_load { vec![result] } else { vec![] },
-            attrs: AttrDict::from([
-                ("_original_kind".into(), AttrValue::Str(kind.into())),
-                ("value".into(), AttrValue::Int(0)),
-            ]),
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(0))]),
             source_span: None,
         });
         if !is_load {
@@ -233,18 +232,12 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: Some(OpKind::GetAttrName),
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("get_attr_name".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -269,16 +262,14 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
     );
     let result = func.fresh_value();
     let mut load = TirOp {
+        origin: Some(OpKind::GetAttrGenericObj),
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0)],
         results: vec![result],
         attrs: {
             let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("get_attr_generic_obj".into()),
-            );
+
             attrs.insert("name".into(), AttrValue::Str("items".into()));
             attrs
         },
@@ -302,25 +293,25 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
 fn lower_generic_attribute_sites_carry_source_identity() {
     for (kind, opcode, operand_count, runtime_name) in [
         (
-            "get_attr_generic_obj",
+            OpKind::GetAttrGenericObj,
             OpCode::LoadAttr,
             1,
             "molt_get_attr_object_ic",
         ),
         (
-            "get_attr_generic_ptr",
+            OpKind::GetAttrGenericPtr,
             OpCode::LoadAttr,
             1,
             "molt_get_attr_object_ic",
         ),
         (
-            "set_attr_generic_obj",
+            OpKind::SetAttrGenericObj,
             OpCode::StoreAttr,
             2,
             "molt_set_attr_object_ic",
         ),
         (
-            "set_attr_generic_ptr",
+            OpKind::SetAttrGenericPtr,
             OpCode::StoreAttr,
             2,
             "molt_set_attr_object_ic",
@@ -337,13 +328,14 @@ fn lower_generic_attribute_sites_carry_source_identity() {
         );
         let result = func.fresh_value();
         let mut access = TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
             results: vec![result],
             attrs: {
                 let mut attrs = AttrDict::new();
-                attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+
                 attrs.insert("name".into(), AttrValue::Str("field".into()));
                 attrs
             },
@@ -359,7 +351,9 @@ fn lower_generic_attribute_sites_carry_source_identity() {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
         let site_bits = molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
-            func_name, 17, kind,
+            func_name,
+            17,
+            kind.as_str(),
         ));
         assert!(ir.contains(&format!("@{runtime_name}(")), "{kind}: {ir}");
         assert!(
@@ -385,18 +379,12 @@ fn lower_dynamic_set_attr_name_uses_operand_name() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: Some(OpKind::SetAttrName),
         dialect: Dialect::Molt,
         opcode: OpCode::StoreAttr,
         operands: vec![ValueId(0), ValueId(1), ValueId(2)],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("set_attr_name".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -422,18 +410,12 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: Some(OpKind::DelAttrName),
         dialect: Dialect::Molt,
         opcode: OpCode::DelAttr,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("del_attr_name".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -467,18 +449,12 @@ fn lower_preserved_has_attr_name_calls_runtime() {
         .ops
         .extend([const_none_def(obj_bits), const_none_def(name_bits)]);
     entry.ops.push(TirOp {
+        origin: Some(OpKind::HasAttrName),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj_bits, name_bits],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("has_attr_name".into()),
-            );
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -508,6 +484,7 @@ fn lower_call_method_uses_call_bind_ic_abi() {
         .ops
         .extend([const_none_def(callable), const_none_def(arg0)]);
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallMethod,
         operands: vec![callable, arg0],
@@ -543,15 +520,12 @@ fn lower_call_bind_preserves_callargs_builder_abi() {
         .ops
         .extend([const_none_def(callable), const_none_def(builder)]);
     entry.ops.push(TirOp {
+        origin: Some(OpKind::CallBind),
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, builder],
         results: vec![result],
-        attrs: {
-            let mut attrs = AttrDict::new();
-            attrs.insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -579,11 +553,12 @@ fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
     let builder = entry.args[0].id;
     entry.ops.push(const_int_def(callable, i64::MAX));
     entry.ops.push(TirOp {
+        origin: Some(OpKind::CallBind),
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![callable, builder],
         results: vec![result],
-        attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str("call_bind".into()))]),
+        attrs: AttrDict::from([]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {

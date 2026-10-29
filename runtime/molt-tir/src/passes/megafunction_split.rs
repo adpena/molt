@@ -7,10 +7,8 @@ use partition::split_boundaries;
 use super::runtime_roots::is_protected_runtime_entrypoint;
 use crate::tir::op_kinds_generated::{
     ExceptionRegionNestingRole, SimpleIrReturnShape, SimpleIrVerifierRegionRole,
-    kind_to_opcode_table, opcode_exception_region_nesting_role_table,
-    simpleir_kind_is_return_terminator, simpleir_kind_is_verifier_label_definition,
-    simpleir_kind_is_verifier_label_reference, simpleir_kind_is_verifier_loop_scoped,
-    simpleir_kind_uses_function_label_id, simpleir_return_shape, simpleir_verifier_region_role,
+    kind_to_opcode_table, opcode_exception_region_nesting_role_table, simpleir_return_shape,
+    simpleir_verifier_region_role,
 };
 use crate::tir::simple_def_use::{
     simple_ir_return_has_value, visit_simple_ir_defined_names, visit_simple_ir_reads,
@@ -138,9 +136,9 @@ fn split_frame_load_ops(
         .then(|| {
             let emptied = split_frame_name("__molt_split_frame_taken", occupied);
             ops.push(OpIR {
-                kind: "const_none".to_string(),
+                kind: molt_ir::OpKind::ConstNone,
                 out: Some(emptied.clone()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNone)
             });
             emptied
         });
@@ -150,22 +148,22 @@ fn split_frame_load_ops(
         };
         let slot_name = split_frame_name("__molt_split_frame_index", occupied);
         ops.push(OpIR {
-            kind: "const".to_string(),
+            kind: molt_ir::OpKind::Const,
             value: Some(*slot as i64),
             out: Some(slot_name.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         });
         ops.push(OpIR {
-            kind: "index".to_string(),
+            kind: molt_ir::OpKind::Index,
             args: Some(vec![frame_name.to_string(), slot_name.clone()]),
             out: Some(name.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Index)
         });
         if let Some(emptied) = &emptied {
             ops.push(OpIR {
-                kind: "store_index".to_string(),
+                kind: molt_ir::OpKind::StoreIndex,
                 args: Some(vec![frame_name.to_string(), slot_name, emptied.clone()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreIndex)
             });
         }
     }
@@ -185,15 +183,15 @@ fn split_frame_store_ops(
         };
         let slot_name = split_frame_name("__molt_split_frame_store_index", occupied);
         ops.push(OpIR {
-            kind: "const".to_string(),
+            kind: molt_ir::OpKind::Const,
             value: Some(*slot as i64),
             out: Some(slot_name.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         });
         ops.push(OpIR {
-            kind: "store_index".to_string(),
+            kind: molt_ir::OpKind::StoreIndex,
             args: Some(vec![frame_name.to_string(), slot_name, name.clone()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreIndex)
         });
     }
     ops
@@ -210,15 +208,15 @@ fn split_status_return_ops(occupied: &mut BTreeSet<String>, should_continue: boo
     );
     vec![
         OpIR {
-            kind: "const_bool".to_string(),
+            kind: molt_ir::OpKind::ConstBool,
             value: Some(i64::from(should_continue)),
             out: Some(name.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstBool)
         },
         OpIR {
-            kind: "ret".to_string(),
+            kind: molt_ir::OpKind::Ret,
             args: Some(vec![name]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         },
     ]
 }
@@ -230,8 +228,7 @@ fn split_rewrite_void_terminals_to_status(
 ) -> Vec<OpIR> {
     let mut rewritten = Vec::with_capacity(ops.len());
     for op in ops {
-        if simpleir_kind_is_return_terminator(op.kind.as_str()) && !simple_ir_return_has_value(&op)
-        {
+        if op.kind.is_return_terminator() && !simple_ir_return_has_value(&op) {
             rewritten.extend(split_status_return_ops(occupied, should_continue));
         } else {
             rewritten.push(op);
@@ -243,10 +240,10 @@ fn split_rewrite_void_terminals_to_status(
 fn split_insert_local_frame_exits(ops: Vec<OpIR>) -> Vec<OpIR> {
     let mut with_exits = Vec::with_capacity(ops.len() + 4);
     for op in ops {
-        if simpleir_kind_is_return_terminator(op.kind.as_str()) {
+        if op.kind.is_return_terminator() {
             with_exits.push(OpIR {
-                kind: "trace_exit".to_string(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::TraceExit,
+                ..OpIR::new(molt_ir::OpKind::TraceExit)
             });
         }
         with_exits.push(op);
@@ -263,11 +260,11 @@ struct SplitLocalFrameOwner<'a> {
 fn split_local_frame_owner(ops: &[OpIR]) -> Option<SplitLocalFrameOwner<'_>> {
     let entry_end = 2;
     let entry_ops = ops.get(..entry_end)?;
-    if entry_ops[0].kind != "trace_enter_slot"
-        || entry_ops[1].kind != "check_exception"
+    if entry_ops[0].kind != molt_ir::OpKind::TraceEnterSlot
+        || entry_ops[1].kind != molt_ir::OpKind::CheckException
         || ops
             .iter()
-            .filter(|op| op.kind == "trace_enter_slot")
+            .filter(|op| op.kind == molt_ir::OpKind::TraceEnterSlot)
             .count()
             != 1
     {
@@ -276,23 +273,23 @@ fn split_local_frame_owner(ops: &[OpIR]) -> Option<SplitLocalFrameOwner<'_>> {
     let failure_label = entry_ops[1].value?;
     let tail_start = ops.len().checked_sub(3)?;
     let failure_tail = &ops[tail_start..];
-    if failure_tail[0].kind != "label"
+    if failure_tail[0].kind != molt_ir::OpKind::Label
         || failure_tail[0].value != Some(failure_label)
-        || failure_tail[1].kind != "trace_exit"
-        || simpleir_return_shape(&failure_tail[2].kind) != SimpleIrReturnShape::Void
+        || failure_tail[1].kind != molt_ir::OpKind::TraceExit
+        || simpleir_return_shape(failure_tail[2].kind) != SimpleIrReturnShape::Void
     {
         return None;
     }
     let body_ops = ops.get(entry_end..tail_start)?;
     if body_ops
         .last()
-        .is_none_or(|op| !simpleir_kind_is_return_terminator(&op.kind))
+        .is_none_or(|op| !op.kind.is_return_terminator())
     {
         // The entry-only tail must not also own ordinary body fallthrough.
         return None;
     }
     if ops.iter().enumerate().any(|(index, op)| {
-        simpleir_kind_uses_function_label_id(&op.kind)
+        (op.kind).uses_function_label_id()
             && op.value == Some(failure_label)
             && index != 1
             && index != tail_start
@@ -330,18 +327,6 @@ pub(super) fn verify_split_function_def_use(func: &FunctionIR) -> Result<(), Str
     Ok(())
 }
 
-pub(super) fn verify_split_generated_ops(func: &FunctionIR) -> Result<(), String> {
-    for (idx, op) in func.ops.iter().enumerate() {
-        if op.kind == "load_index" {
-            return Err(format!(
-                "function `{}` op {} uses non-canonical generated op `load_index`; use `index`",
-                func.name, idx
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// The freshly allocated frame identity, not a spelling prefix, identifies
 /// generated accesses. Validate both the slot producer and the actual value
 /// being loaded/stored against the layout used by the emitters. A take,
@@ -356,24 +341,27 @@ pub(super) fn verify_split_frame_ops(
             continue;
         };
         if args.first().map(String::as_str) != Some(frame_name)
-            || !matches!(op.kind.as_str(), "index" | "store_index")
+            || !matches!(
+                op.kind,
+                molt_ir::OpKind::Index | molt_ir::OpKind::StoreIndex
+            )
         {
             continue;
         }
-        let value_name = if op.kind == "index" && args.len() == 2 {
+        let value_name = if op.kind == molt_ir::OpKind::Index && args.len() == 2 {
             op.out.as_ref()
-        } else if op.kind == "store_index" && args.len() == 3 {
+        } else if op.kind == molt_ir::OpKind::StoreIndex && args.len() == 3 {
             args.get(2)
         } else {
             None
         };
         let slot = value_name.and_then(|name| frame_slot_for.get(name));
         let producer = idx.checked_sub(1).and_then(|index| func.ops.get(index));
-        if op.kind == "store_index"
+        if op.kind == molt_ir::OpKind::StoreIndex
             && args.len() == 3
             && !frame_slot_for.contains_key(&args[2])
             && producer.is_some_and(|load| {
-                load.kind == "index"
+                load.kind == molt_ir::OpKind::Index
                     && load.args.as_deref() == Some(&args[..2])
                     && load
                         .out
@@ -384,7 +372,7 @@ pub(super) fn verify_split_frame_ops(
             continue;
         }
         if !producer.is_some_and(|producer| {
-            producer.kind == "const"
+            producer.kind == molt_ir::OpKind::Const
                 && producer.out.as_ref() == args.get(1)
                 && slot.is_some_and(|slot| producer.value == Some(*slot as i64))
         }) {
@@ -398,7 +386,8 @@ pub(super) fn verify_split_frame_ops(
 }
 
 fn split_control_target(op: &OpIR) -> Option<i64> {
-    simpleir_kind_is_verifier_label_reference(&op.kind)
+    op.kind
+        .is_verifier_label_reference()
         .then_some(op.value)
         .flatten()
 }
@@ -412,21 +401,19 @@ pub(super) fn split_region_boundaries(ops: &[OpIR]) -> Option<Vec<bool>> {
     let mut top_level = Vec::with_capacity(ops.len() + 1);
     for op in ops {
         top_level.push(stack.is_empty());
-        let role =
-            simpleir_verifier_region_role(&op.kind).or_else(|| {
-                match kind_to_opcode_table(&op.kind).map(opcode_exception_region_nesting_role_table)
-                {
-                    Some(ExceptionRegionNestingRole::Enter) => {
-                        Some(("try", SimpleIrVerifierRegionRole::Start))
-                    }
-                    Some(ExceptionRegionNestingRole::Exit) => {
-                        Some(("try", SimpleIrVerifierRegionRole::End))
-                    }
-                    _ => None,
+        let role = simpleir_verifier_region_role(op.kind).or_else(|| {
+            match kind_to_opcode_table(op.kind).map(opcode_exception_region_nesting_role_table) {
+                Some(ExceptionRegionNestingRole::Enter) => {
+                    Some(("try", SimpleIrVerifierRegionRole::Start))
                 }
-            });
+                Some(ExceptionRegionNestingRole::Exit) => {
+                    Some(("try", SimpleIrVerifierRegionRole::End))
+                }
+                _ => None,
+            }
+        });
         let Some((region, role)) = role else {
-            if simpleir_kind_is_verifier_loop_scoped(&op.kind)
+            if op.kind.is_verifier_loop_scoped()
                 && !stack.iter().any(|(region, _)| *region == "loop")
             {
                 return None;
@@ -458,9 +445,8 @@ pub(super) fn split_region_boundaries(ops: &[OpIR]) -> Option<Vec<bool>> {
 
 pub(super) fn is_drop_fact_marker_op(op: &OpIR) -> bool {
     matches!(
-        op.kind.as_str(),
-        crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR
-            | crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+        op.kind,
+        molt_ir::OpKind::DropInserted | molt_ir::OpKind::ExceptionRegionDropsInserted
     )
 }
 
@@ -587,14 +573,14 @@ pub fn split_large_function(
     let mut label_refs: std::collections::BTreeMap<i64, (usize, usize)> =
         std::collections::BTreeMap::new();
     for (idx, op) in all_ops.iter().enumerate() {
-        if simpleir_kind_is_verifier_label_definition(&op.kind) {
+        if op.kind.is_verifier_label_definition() {
             let Some(id) = op.value else {
                 return Err(Box::new(func));
             };
             if label_positions.insert(id, idx).is_some() {
                 return Err(Box::new(func));
             }
-        } else if simpleir_kind_is_verifier_label_reference(&op.kind) {
+        } else if op.kind.is_verifier_label_reference() {
             let Some(id) = split_control_target(op) else {
                 return Err(Box::new(func));
             };
@@ -692,7 +678,7 @@ pub fn split_large_function(
         // ops (method FuncNew, CLASS_DEF, export, annotation wiring) without
         // increasing structured-control depth, so splitting at an arbitrary
         // op boundary can sever one logical statement across chunks.
-        (top_level[idx] && idx > 0 && op.kind == "line").then_some(idx)
+        (top_level[idx] && idx > 0 && op.kind == molt_ir::OpKind::Line).then_some(idx)
     });
     // One planner owns complete-statement packing and the hard source-op
     // limit. Control admission remains this function's shared authority.
@@ -717,7 +703,7 @@ pub fn split_large_function(
     // func.return_abi even when its chunks use the no-payload status protocol.
     let body_has_value_returns = all_ops.iter().any(simple_ir_return_has_value);
     for (idx, op) in all_ops.iter().enumerate() {
-        if simpleir_kind_is_return_terminator(op.kind.as_str()) && idx + 1 != all_ops.len() {
+        if op.kind.is_return_terminator() && idx + 1 != all_ops.len() {
             return Err(Box::new(func));
         }
     }
@@ -752,7 +738,7 @@ pub fn split_large_function(
     let mut occupied_labels = func
         .ops
         .iter()
-        .filter(|op| simpleir_kind_uses_function_label_id(&op.kind))
+        .filter(|op| (op.kind).uses_function_label_id())
         .filter_map(|op| op.value)
         .collect::<BTreeSet<_>>();
     let mut next_synthetic_label = 0;
@@ -787,7 +773,7 @@ pub fn split_large_function(
         // Collect label IDs defined in THIS chunk.
         let mut chunk_labels: std::collections::BTreeSet<i64> = chunk_ops
             .iter()
-            .filter(|op| simpleir_kind_is_verifier_label_definition(&op.kind))
+            .filter(|op| op.kind.is_verifier_label_definition())
             .filter_map(|op| op.value)
             .collect();
 
@@ -814,19 +800,19 @@ pub fn split_large_function(
             };
             normal_skip_label_for_cloned_suffix = Some(skip_label);
             chunk_ops.push(OpIR {
-                kind: "jump".to_string(),
+                kind: molt_ir::OpKind::Jump,
                 value: Some(skip_label),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             });
             chunk_ops.extend_from_slice(&all_ops[suffix_start..]);
             chunk_ops.push(OpIR {
-                kind: "label".to_string(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(skip_label),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             });
             chunk_labels = chunk_ops
                 .iter()
-                .filter(|op| simpleir_kind_is_verifier_label_definition(&op.kind))
+                .filter(|op| op.kind.is_verifier_label_definition())
                 .filter_map(|op| op.value)
                 .collect();
             if chunk_ops.len() > max_ops.saturating_mul(2) {
@@ -846,14 +832,14 @@ pub fn split_large_function(
         // The checked entry pair and its private failure tail were excluded
         // from body planning, so no entry guard can survive inside a chunk.
         if execution_context == ExecutionContextPolicy::Local {
-            chunk_ops.retain(|op| op.kind != "trace_exit");
+            chunk_ops.retain(|op| op.kind != molt_ir::OpKind::TraceExit);
         }
 
         let chunk_name = chunk_names[i].clone();
         let terminal = if body_has_value_returns {
             if chunk_ops
                 .last()
-                .is_some_and(|op| simpleir_kind_is_return_terminator(op.kind.as_str()))
+                .is_some_and(|op| op.kind.is_return_terminator())
             {
                 chunk_ops.pop()
             } else {
@@ -879,10 +865,9 @@ pub fn split_large_function(
             let stores =
                 split_frame_store_ops(&frame_name, &frame_slot_for, &live_out, &mut occupied_names);
             if let Some(skip_label) = normal_skip_label_for_cloned_suffix {
-                let Some(insert_idx) = chunk_ops
-                    .iter()
-                    .position(|op| op.kind == "jump" && op.value == Some(skip_label))
-                else {
+                let Some(insert_idx) = chunk_ops.iter().position(|op| {
+                    op.kind == molt_ir::OpKind::Jump && op.value == Some(skip_label)
+                }) else {
                     return Err(Box::new(func));
                 };
                 chunk_ops.splice(insert_idx..insert_idx, stores);
@@ -904,8 +889,8 @@ pub fn split_large_function(
             }
             ChunkReturnProtocol::Fallthrough | ChunkReturnProtocol::OwnerValue => {
                 chunk_ops.push(terminal.unwrap_or_else(|| OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 }));
             }
         }
@@ -960,22 +945,22 @@ pub fn split_large_function(
             }
             let slot_init = split_frame_name("__molt_split_frame_init", &mut occupied_names);
             stub_ops.push(OpIR {
-                kind: "const_none".to_string(),
+                kind: molt_ir::OpKind::ConstNone,
                 out: Some(slot_init.clone()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNone)
             });
             frame_init_args.push(slot_init);
         }
         stub_ops.push(OpIR {
-            kind: "list_new".to_string(),
+            kind: molt_ir::OpKind::ListNew,
             args: Some(frame_init_args),
             out: Some(frame_name.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ListNew)
         });
         stub_ops.push(OpIR {
-            kind: "check_exception".to_string(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(exception_return_label),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         });
         // The frame now holds each transferred argument, so the stub's own
         // reference ends here and the chunk that takes it is its only owner.
@@ -986,9 +971,9 @@ pub fn split_large_function(
                 .iter()
                 .filter(|name| transferred_parameters.contains(name.as_str()))
                 .map(|name| OpIR {
-                    kind: "del_boundary".to_string(),
+                    kind: molt_ir::OpKind::DelBoundary,
                     args: Some(vec![name.clone()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DelBoundary)
                 }),
         );
     }
@@ -1005,17 +990,17 @@ pub fn split_large_function(
         let chunk_result_name =
             split_frame_name(plan.return_protocol.result_name_base(), &mut occupied_names);
         stub_ops.push(OpIR {
-            kind: "call_internal".to_string(),
+            kind: molt_ir::OpKind::CallInternal,
             s_value: Some(plan.name.clone()),
             args: Some(call_args),
             out: Some(chunk_result_name.clone()),
             passes_execution_context: chunk_execution_context == ExecutionContextPolicy::Inherited,
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CallInternal)
         });
         stub_ops.push(OpIR {
-            kind: "check_exception".to_string(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(exception_return_label),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         });
         match plan.return_protocol {
             ChunkReturnProtocol::ContinuationStatus => {
@@ -1025,25 +1010,25 @@ pub fn split_large_function(
                     return Err(Box::new(func));
                 };
                 stub_ops.push(OpIR {
-                    kind: "br_if".to_string(),
+                    kind: molt_ir::OpKind::BrIf,
                     args: Some(vec![chunk_result_name]),
                     value: Some(continue_label),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BrIf)
                 });
                 stub_ops.push(OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 });
                 stub_ops.push(OpIR {
-                    kind: "label".to_string(),
+                    kind: molt_ir::OpKind::Label,
                     value: Some(continue_label),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 });
             }
             ChunkReturnProtocol::OwnerValue => stub_ops.push(OpIR {
-                kind: "ret".to_string(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec![chunk_result_name]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             }),
             ChunkReturnProtocol::Fallthrough => {}
         }
@@ -1051,17 +1036,17 @@ pub fn split_large_function(
     // Empty exits preserve the authored owner ABI. Final machine lowering
     // supplies its carrier, without synthetic payloads in the split IR.
     stub_ops.push(OpIR {
-        kind: "ret_void".to_string(),
-        ..OpIR::default()
+        kind: molt_ir::OpKind::RetVoid,
+        ..OpIR::new(molt_ir::OpKind::RetVoid)
     });
     stub_ops.push(OpIR {
-        kind: "label".to_string(),
+        kind: molt_ir::OpKind::Label,
         value: Some(exception_return_label),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Label)
     });
     stub_ops.push(OpIR {
-        kind: "ret_void".to_string(),
-        ..OpIR::default()
+        kind: molt_ir::OpKind::RetVoid,
+        ..OpIR::new(molt_ir::OpKind::RetVoid)
     });
     if execution_context == ExecutionContextPolicy::Local {
         stub_ops = split_insert_local_frame_exits(stub_ops);
@@ -1091,9 +1076,6 @@ pub fn split_large_function(
         if let Err(detail) = verify_split_function_def_use(chunk) {
             panic!("megafunction split produced invalid chunk IR: {detail}");
         }
-        if let Err(detail) = verify_split_generated_ops(chunk) {
-            panic!("megafunction split produced non-canonical chunk IR: {detail}");
-        }
         if uses_split_frame
             && let Err(detail) = verify_split_frame_ops(chunk, &frame_name, &frame_slot_for)
         {
@@ -1102,9 +1084,6 @@ pub fn split_large_function(
     }
     if let Err(detail) = verify_split_function_def_use(&stub) {
         panic!("megafunction split produced invalid stub IR: {detail}");
-    }
-    if let Err(detail) = verify_split_generated_ops(&stub) {
-        panic!("megafunction split produced non-canonical stub IR: {detail}");
     }
     let transformed = SimpleIR {
         functions: std::iter::once(stub).chain(chunks).collect(),

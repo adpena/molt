@@ -152,48 +152,44 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
     let mut errors = Vec::new();
     for (bid, block) in &func.blocks {
         for (op_index, op) in block.ops.iter().enumerate() {
-            let original_kind = match op.attrs.get("_original_kind") {
-                Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-                _ => None,
-            };
+            if let Err(error) =
+                super::ops::validate_op_attr_keys(op.attrs.keys().map(String::as_str))
+            {
+                errors.push(VerifyError::op(*bid, op_index, error));
+                continue;
+            }
+
+            let original_kind = op.origin;
             let kind = if op.opcode == super::ops::OpCode::Copy
                 || (op.opcode == super::ops::OpCode::Call
                     && original_kind.is_some_and(|kind| {
                         super::op_kinds_generated::kind_to_opcode_table(kind) == Some(op.opcode)
                     })) {
-                original_kind.unwrap_or_else(|| opcode_canonical_kind_table(op.opcode))
+                original_kind.or_else(|| opcode_canonical_kind_table(op.opcode))
             } else {
                 opcode_canonical_kind_table(op.opcode)
             };
-            // A typed carrier does not erase a retired origin. Calls retain
-            // their original dispatch shape: opaque calls may carry a call-site
-            // diagnostic value, whereas direct calls may not. Other live
-            // aliases still use the carrier's own shape.
-            if let Some(original_kind) = original_kind.filter(|original| *original != kind)
-                && let Err(error) = crate::ir_schema::validate_op_not_retired(original_kind)
-            {
-                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
-                continue;
-            }
             let value = match op.attrs.get("value") {
                 Some(AttrValue::Int(value)) => Some(*value),
                 _ => None,
             };
-            if let Err(error) =
-                crate::ir_schema::validate_op_shape(kind, Some(op.operands.len()), value)
-            {
-                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
-                continue;
-            }
-            // Retired origins and malformed shapes own diagnostic precedence;
-            // do not diagnose the payload of a carrier already rejected above.
             let symbol = match op.attrs.get("s_value") {
                 Some(AttrValue::Str(symbol)) => Some(symbol.as_str()),
                 _ => None,
             };
-            if let Err(error) = crate::ir_schema::validate_program_slot_symbol(kind, symbol) {
-                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
-                continue;
+            if let Some(kind) = kind {
+                if let Err(error) =
+                    crate::ir_schema::validate_op_shape(kind, Some(op.operands.len()), value)
+                {
+                    errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                    continue;
+                }
+                // Malformed wire shapes own diagnostic precedence; do not
+                // diagnose the payload of a carrier already rejected above.
+                if let Err(error) = crate::ir_schema::validate_program_slot_symbol(kind, symbol) {
+                    errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                    continue;
+                }
             }
             // Class statement identity follows the wire spelling, which a typed
             // carrier (LoadAttr for `guarded_field_get`) keeps as its origin.
@@ -202,12 +198,27 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 Some(_) => Some(""),
                 None => None,
             };
-            if let Err(error) = crate::ir_schema::validate_class_definition_symbol(
-                original_kind.unwrap_or(kind),
-                class_definition,
-            ) {
-                errors.push(VerifyError::op(*bid, op_index, error.to_string()));
-                continue;
+            match original_kind.or(kind) {
+                Some(kind) => {
+                    if let Err(error) =
+                        crate::ir_schema::validate_class_definition_symbol(kind, class_definition)
+                    {
+                        errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                        continue;
+                    }
+                }
+                None if class_definition.is_some() => {
+                    errors.push(VerifyError::op(
+                        *bid,
+                        op_index,
+                        format!(
+                            "{:?} forbids `class_definition`; it has no wire class identity",
+                            op.opcode
+                        ),
+                    ));
+                    continue;
+                }
+                None => {}
             }
             if let Err(error) = crate::literal_payload::validate_tir_literal(op) {
                 errors.push(VerifyError::op(*bid, op_index, error));
@@ -331,18 +342,14 @@ fn op_has_call_callee(op: &super::ops::TirOp) -> bool {
     if super::call_targets::direct_call_symbol_for_op(op).is_some() {
         return true;
     }
-    let kind = match op.attrs.get("_original_kind") {
-        None => "call",
-        Some(AttrValue::Str(kind)) => kind.as_str(),
-        Some(_) => return false,
-    };
+    let kind = op.origin.unwrap_or(crate::OpKind::Call);
     if simpleir_call_target_role(kind) != Some(SimpleIrCallTargetRole::Opaque) {
         return false;
     }
     // The native ABI validator below checks the complete metadata and arity.
     // Only invoke_ffi can replace its callable operand with a native symbol.
     !op.operands.is_empty()
-        || (kind == "invoke_ffi"
+        || (kind == crate::OpKind::InvokeFfi
             && attr_str(op, "native_callable_binding") == Some("direct_symbol")
             && attr_str(op, "native_callable_symbol").is_some_and(|symbol| !symbol.is_empty()))
 }
@@ -380,8 +387,7 @@ fn verify_native_callable_attrs(
         return;
     }
 
-    if op.opcode != super::ops::OpCode::Call || attr_str(op, "_original_kind") != Some("invoke_ffi")
-    {
+    if op.opcode != super::ops::OpCode::Call || op.origin != Some(crate::OpKind::InvokeFfi) {
         push_native_callable_error(
             errors,
             bid,
@@ -1088,6 +1094,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OpKind;
 
     /// A method load's `self_or_null` is a non-object word (HF-216). The
     /// verifier admits it as operand 1 of a call or receiver prefix, as a block
@@ -1122,6 +1129,7 @@ mod tests {
                 attrs.insert("name".into(), AttrValue::Str(name.into()));
             }
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -1401,7 +1409,7 @@ mod tests {
         use super::super::types::TirType;
 
         let check = |opcode,
-                     original: Option<AttrValue>,
+                     original: Option<crate::OpKind>,
                      target: Option<(&str, AttrValue)>,
                      operands,
                      valid| {
@@ -1412,14 +1420,12 @@ mod tests {
                 crate::FunctionReturnAbi::Void,
             );
             let mut attrs = AttrDict::new();
-            if let Some(kind) = original {
-                attrs.insert("_original_kind".into(), kind);
-            }
             if let Some((key, value)) = target {
                 attrs.insert(key.into(), value);
             }
             let block = func.blocks.get_mut(&func.entry_block).unwrap();
             block.ops.push(TirOp {
+                origin: original,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: if operands { vec![ValueId(0)] } else { vec![] },
@@ -1441,12 +1447,16 @@ mod tests {
                 );
             }
         };
-        for kind in [None, Some("call"), Some("call_internal")] {
+        for kind in [
+            None,
+            Some(crate::OpKind::Call),
+            Some(crate::OpKind::CallInternal),
+        ] {
             for operands in [false, true] {
-                let original = kind.map(|kind| AttrValue::Str(kind.into()));
+                let original = kind;
                 check(
                     OpCode::Call,
-                    original.clone(),
+                    original,
                     Some(("s_value", AttrValue::Str("fixture_target".into()))),
                     operands,
                     true,
@@ -1457,17 +1467,17 @@ mod tests {
                     Some(("s_value", AttrValue::Str(String::new()))),
                     Some(("s_value", AttrValue::Int(1))),
                 ] {
-                    check(OpCode::Call, original.clone(), target, operands, false);
+                    check(OpCode::Call, original, target, operands, false);
                 }
             }
         }
         for kind in [
-            "call_func",
-            "call_function",
-            "call_indirect",
-            "call_bind",
-            "call_guarded",
-            "invoke_ffi",
+            crate::OpKind::CallFunc,
+            crate::OpKind::CallFunction,
+            crate::OpKind::CallIndirect,
+            crate::OpKind::CallBind,
+            crate::OpKind::CallGuarded,
+            crate::OpKind::InvokeFfi,
         ] {
             for target in [
                 None,
@@ -1475,38 +1485,23 @@ mod tests {
                 Some(("callee", AttrValue::Str("incidental".into()))),
             ] {
                 for operands in [false, true] {
-                    check(
-                        OpCode::Call,
-                        Some(AttrValue::Str(kind.into())),
-                        target.clone(),
-                        operands,
-                        operands,
-                    );
+                    check(OpCode::Call, Some(kind), target.clone(), operands, operands);
                 }
             }
         }
-        for original in [AttrValue::Str("unknown_call".into()), AttrValue::Bool(true)] {
-            check(
-                OpCode::Call,
-                Some(original),
-                Some(("s_value", AttrValue::Str("fixture_target".into()))),
-                true,
-                false,
-            );
-        }
-        for kind in ["gpu_thread_id", "gpu_barrier"] {
+        for kind in [crate::OpKind::GpuThreadId, crate::OpKind::GpuBarrier] {
             let symbol =
                 super::super::call_targets::gpu_runtime_symbol_for_simple_kind(kind).unwrap();
             check(
                 OpCode::Call,
-                Some(AttrValue::Str(kind.into())),
+                Some(kind),
                 Some(("s_value", AttrValue::Str(symbol.into()))),
                 false,
                 true,
             );
             check(
                 OpCode::Call,
-                Some(AttrValue::Str(kind.into())),
+                Some(kind),
                 Some(("s_value", AttrValue::Str("wrong_symbol".into()))),
                 true,
                 false,
@@ -1531,7 +1526,11 @@ mod tests {
         use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
         use super::super::types::TirType;
 
-        let check = |attrs: AttrDict, operands: usize, results: usize, valid: bool| {
+        let check = |origin: Option<crate::OpKind>,
+                     attrs: AttrDict,
+                     operands: usize,
+                     results: usize,
+                     valid: bool| {
             let mut func = TirFunction::new(
                 "builtin_admission".into(),
                 vec![TirType::DynBox; operands],
@@ -1541,6 +1540,7 @@ mod tests {
             let results = (0..results).map(|_| func.fresh_value()).collect();
             let block = func.blocks.get_mut(&func.entry_block).unwrap();
             block.ops.push(TirOp {
+                origin,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CallBuiltin,
                 operands: (0..operands).map(|index| ValueId(index as u32)).collect(),
@@ -1566,6 +1566,7 @@ mod tests {
             for results in [0, 1] {
                 for key in ["name", "s_value"] {
                     check(
+                        None,
                         AttrDict::from([(key.into(), AttrValue::Str("len".into()))]),
                         operands,
                         results,
@@ -1573,6 +1574,7 @@ mod tests {
                     );
                 }
                 check(
+                    None,
                     AttrDict::from([
                         ("name".into(), AttrValue::Str("len".into())),
                         ("s_value".into(), AttrValue::Str("len".into())),
@@ -1581,29 +1583,31 @@ mod tests {
                     results,
                     true,
                 );
-                check(AttrDict::new(), operands, results, operands != 0);
-                for kind in ["print", "builtin_print"] {
-                    check(
-                        AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
-                        operands,
-                        results,
-                        true,
-                    );
+                check(None, AttrDict::new(), operands, results, operands != 0);
+                for kind in [crate::OpKind::Print, crate::OpKind::BuiltinPrint] {
+                    check(Some(kind), AttrDict::from([]), operands, results, true);
                 }
             }
         }
         for operands in 0..=4 {
             check(
-                AttrDict::from([("_original_kind".into(), AttrValue::Str("range_new".into()))]),
+                Some(OpKind::RangeNew),
+                AttrDict::from([]),
                 operands,
                 1,
                 operands == 3,
             );
         }
         for operands in [0, 1] {
-            for key in ["name", "s_value", "_original_kind"] {
+            for key in ["name", "s_value"] {
                 for value in [AttrValue::Str(String::new()), AttrValue::Int(1)] {
-                    check(AttrDict::from([(key.into(), value)]), operands, 1, false);
+                    check(
+                        None,
+                        AttrDict::from([(key.into(), value)]),
+                        operands,
+                        1,
+                        false,
+                    );
                 }
             }
             for key in [
@@ -1613,32 +1617,32 @@ mod tests {
                 "native_callable_export",
             ] {
                 let mut attrs = AttrDict::from([(key.into(), AttrValue::Str("len".into()))]);
-                check(attrs.clone(), operands, 1, false);
+                check(None, attrs.clone(), operands, 1, false);
                 attrs.insert("name".into(), AttrValue::Str("len".into()));
-                check(attrs, operands, 1, false);
+                check(None, attrs, operands, 1, false);
             }
         }
-        for attrs in [
-            AttrDict::from([
-                ("name".into(), AttrValue::Str("len".into())),
-                ("s_value".into(), AttrValue::Str("abs".into())),
-            ]),
-            AttrDict::from([
-                ("name".into(), AttrValue::Str("len".into())),
-                ("_original_kind".into(), AttrValue::Str("print".into())),
-            ]),
-            AttrDict::from([
-                ("name".into(), AttrValue::Str("len".into())),
-                ("_original_kind".into(), AttrValue::Str("range_new".into())),
-            ]),
-            AttrDict::from([(
-                "_original_kind".into(),
-                AttrValue::Str("unknown_builtin".into()),
-            )]),
+        for (origin, attrs) in [
+            (
+                None,
+                AttrDict::from([
+                    ("name".into(), AttrValue::Str("len".into())),
+                    ("s_value".into(), AttrValue::Str("abs".into())),
+                ]),
+            ),
+            (
+                Some(crate::OpKind::Print),
+                AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+            ),
+            (
+                Some(crate::OpKind::RangeNew),
+                AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+            ),
         ] {
-            check(attrs, 3, 1, false);
+            check(origin, attrs, 3, 1, false);
         }
         check(
+            None,
             AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
             1,
             2,
@@ -1658,21 +1662,22 @@ mod tests {
                 TirType::None,
                 crate::FunctionReturnAbi::Void,
             );
-            let mut attrs =
-                AttrDict::from([("_original_kind".into(), AttrValue::Str(shape.kind.into()))]);
+            let origin = Some(shape.kind);
+            let mut attrs = AttrDict::new();
             if shape.value_rule == SimpleIrOpValueRule::NonNegative {
                 attrs.insert("value".into(), AttrValue::Int(0));
             }
             let symbol = match shape.kind {
-                "code_slot_set" | "trace_enter_slot" => Some("preserved_shape"),
-                "module_slot" => Some("fixture.module"),
+                crate::OpKind::CodeSlotSet | crate::OpKind::TraceEnterSlot => {
+                    Some("preserved_shape")
+                }
+                crate::OpKind::ModuleSlot => Some("fixture.module"),
                 _ => None,
             };
             if let Some(symbol) = symbol {
                 attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
             }
-            if super::super::op_kinds_generated::simpleir_kind_carries_class_definition(shape.kind)
-            {
+            if shape.kind.carries_class_definition() {
                 attrs.insert(
                     "class_definition".into(),
                     AttrValue::Str("class:fixture:Owner".into()),
@@ -1683,14 +1688,15 @@ mod tests {
                 .unwrap()
                 .ops
                 .push(TirOp {
+                    origin,
                     dialect: Dialect::Molt,
-                    opcode: if shape.kind == "module_slot" {
+                    opcode: if shape.kind == crate::OpKind::ModuleSlot {
                         OpCode::ModuleSlot
                     } else {
                         OpCode::Copy
                     },
                     operands: (0..shape.operands).map(|i| ValueId(i as u32)).collect(),
-                    results: if shape.kind == "module_slot" {
+                    results: if shape.kind == crate::OpKind::ModuleSlot {
                         vec![ValueId(100)]
                     } else {
                         vec![]
@@ -1704,7 +1710,7 @@ mod tests {
                 .push(ValueId(101));
             let errors = verify_operation_shapes(&func).unwrap_err();
             assert_eq!(errors.len(), 1);
-            assert!(errors[0].message.contains(shape.kind));
+            assert!(errors[0].message.contains(shape.kind.as_str()));
             assert!(errors[0].message.contains("args"));
             let op = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops[0];
             op.operands.pop();
@@ -1729,7 +1735,7 @@ mod tests {
                     }
                     let errors = verify_operation_shapes(&func).unwrap_err();
                     assert_eq!(errors.len(), 1);
-                    let expected = if shape.kind == "module_slot" {
+                    let expected = if shape.kind == crate::OpKind::ModuleSlot {
                         "nonempty canonical module name"
                     } else {
                         "nonempty code-owner symbol"
@@ -1745,87 +1751,111 @@ mod tests {
     #[test]
     fn class_statement_identity_follows_the_wire_spelling() {
         use super::super::types::TirType;
-        let check = |opcode: OpCode, original: &str, class_definition: Option<AttrValue>| {
-            let mut func = TirFunction::new(
-                "class_identity".into(),
-                vec![],
-                TirType::None,
-                crate::FunctionReturnAbi::Void,
-            );
-            let mut attrs =
-                AttrDict::from([("_original_kind".into(), AttrValue::Str(original.into()))]);
-            if let Some(symbol) = class_definition {
-                attrs.insert("class_definition".into(), symbol);
-            }
-            let operands = if opcode == OpCode::LoadAttr { 2 } else { 1 };
-            func.blocks
-                .get_mut(&func.entry_block)
-                .unwrap()
-                .ops
-                .push(TirOp {
-                    dialect: Dialect::Molt,
-                    opcode,
-                    operands: (0..operands).map(ValueId).collect(),
-                    results: vec![ValueId(100)],
-                    attrs,
-                    source_span: None,
-                });
-            verify_operation_shapes(&func).map_err(|errors| errors[0].message.clone())
-        };
-        let symbol = || Some(AttrValue::Str("class:m:P".into()));
-        assert!(check(OpCode::LoadAttr, "guarded_field_get", symbol()).is_ok());
-        for missing in [
-            None,
-            Some(AttrValue::Str(String::new())),
-            Some(AttrValue::Int(3)),
-        ] {
-            let error = check(OpCode::LoadAttr, "guarded_field_get", missing).unwrap_err();
-            assert!(error.contains("class statement symbol"), "{error}");
-        }
-        let error = check(OpCode::LoadAttr, "get_attr_generic_ptr", symbol()).unwrap_err();
-        assert!(error.contains("forbids `class_definition`"), "{error}");
-    }
-
-    #[test]
-    fn retired_preserved_operations_share_wire_admission() {
-        for (kind, operands) in [
-            ("store_init", 2),
-            ("guarded_field_init", 2),
-            ("object_new_bound_stack", 1),
-            ("list_repeat_range", 2),
-            ("list_repeat_range", 4),
-        ] {
-            let expected = crate::ir_schema::validate_op_shape(kind, Some(operands as usize), None)
-                .unwrap_err()
-                .to_string();
-            for &opcode in super::super::op_kinds_generated::ALL_OPCODES {
+        let check =
+            |opcode: OpCode, original: crate::OpKind, class_definition: Option<AttrValue>| {
                 let mut func = TirFunction::new(
-                    "retired_operation".into(),
+                    "class_identity".into(),
                     vec![],
                     TirType::None,
                     crate::FunctionReturnAbi::Void,
                 );
+                let origin = Some(original);
+                let mut attrs = AttrDict::new();
+                if let Some(symbol) = class_definition {
+                    attrs.insert("class_definition".into(), symbol);
+                }
+                let operands = if opcode == OpCode::LoadAttr { 2 } else { 1 };
                 func.blocks
                     .get_mut(&func.entry_block)
                     .unwrap()
                     .ops
                     .push(TirOp {
+                        origin,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: (0..operands).map(ValueId).collect(),
                         results: vec![ValueId(100)],
-                        attrs: AttrDict::from([(
-                            "_original_kind".into(),
-                            AttrValue::Str(kind.into()),
-                        )]),
+                        attrs,
                         source_span: None,
                     });
-                let errors = verify_operation_shapes(&func).unwrap_err();
-                assert_eq!(errors.len(), 1, "{opcode:?}/{kind}");
-                assert_eq!(errors[0].message, expected, "{opcode:?}/{kind}");
-            }
+                verify_operation_shapes(&func).map_err(|errors| errors[0].message.clone())
+            };
+        let symbol = || Some(AttrValue::Str("class:m:P".into()));
+        assert!(check(OpCode::LoadAttr, crate::OpKind::GuardedFieldGet, symbol()).is_ok());
+        for missing in [
+            None,
+            Some(AttrValue::Str(String::new())),
+            Some(AttrValue::Int(3)),
+        ] {
+            let error =
+                check(OpCode::LoadAttr, crate::OpKind::GuardedFieldGet, missing).unwrap_err();
+            assert!(error.contains("class statement symbol"), "{error}");
+        }
+        let error =
+            check(OpCode::LoadAttr, crate::OpKind::GetAttrGenericPtr, symbol()).unwrap_err();
+        assert!(error.contains("forbids `class_definition`"), "{error}");
+    }
+
+    #[test]
+    fn structured_operations_have_no_wire_shape_or_class_identity() {
+        for opcode in [OpCode::ScfFor, OpCode::ScfWhile] {
+            assert_eq!(opcode_canonical_kind_table(opcode), None);
+            let mut func = TirFunction::new(
+                "structured".into(),
+                vec![],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(TirOp {
+                    origin: None,
+                    dialect: Dialect::Scf,
+                    opcode,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                });
+            assert!(verify_operation_shapes(&func).is_ok());
+            let op = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops[0];
+            op.attrs.insert(
+                "class_definition".into(),
+                AttrValue::Str("class:m:P".into()),
+            );
+            assert!(
+                verify_operation_shapes(&func).unwrap_err()[0]
+                    .message
+                    .contains("forbids `class_definition`")
+            );
+            let op = &mut func.blocks.get_mut(&func.entry_block).unwrap().ops[0];
+            op.attrs.clear();
+            op.attrs
+                .insert("_original_kind".into(), AttrValue::Str("nop".into()));
+            assert!(
+                verify_operation_shapes(&func).unwrap_err()[0]
+                    .message
+                    .contains("_original_kind")
+            );
         }
     }
+
+    #[test]
+    fn retired_operations_fail_at_wire_admission() {
+        for kind in [
+            "store_init",
+            "guarded_field_init",
+            "object_new_bound_stack",
+            "list_repeat_range",
+        ] {
+            let error = serde_json::from_value::<crate::OpIR>(serde_json::json!({"kind":kind}))
+                .unwrap_err();
+            assert!(error.to_string().contains(kind), "{error}");
+        }
+    }
+
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
@@ -1845,6 +1875,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -1912,10 +1943,11 @@ mod tests {
             "native_callable_abi".into(),
             AttrValue::Str("molt.pyinit_module_v1".into()),
         );
-        attrs.insert("_original_kind".into(), AttrValue::Str("invoke_ffi".into()));
+        let origin = Some(crate::OpKind::InvokeFfi);
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0)],
@@ -1956,10 +1988,11 @@ mod tests {
             "native_callable_abi".into(),
             AttrValue::Str("molt.object_callargs_v1".into()),
         );
-        attrs.insert("_original_kind".into(), AttrValue::Str("invoke_ffi".into()));
+        let origin = Some(crate::OpKind::InvokeFfi);
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0), ValueId(1)],
@@ -2000,10 +2033,11 @@ mod tests {
             "native_callable_abi".into(),
             AttrValue::Str("molt.forward_f32_v1".into()),
         );
-        attrs.insert("_original_kind".into(), AttrValue::Str("invoke_ffi".into()));
+        let origin = Some(crate::OpKind::InvokeFfi);
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0), ValueId(1)],
@@ -2048,6 +2082,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -2081,6 +2116,7 @@ mod tests {
         attrs.insert("value".into(), AttrValue::Int(expected));
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnpackSequence,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
@@ -2173,6 +2209,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2225,6 +2262,7 @@ mod tests {
             }
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -2259,6 +2297,7 @@ mod tests {
                     attrs.insert("value".into(), AttrValue::Int(77));
                     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
                     entry.ops.push(TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: vec![],
@@ -2319,6 +2358,7 @@ mod tests {
                 .unwrap()
                 .ops
                 .push(TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -2358,6 +2398,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         // Define v0 twice.
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2366,6 +2407,7 @@ mod tests {
             source_span: None,
         });
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -2417,6 +2459,7 @@ mod tests {
         let undefined = ValueId(999);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Neg,
             operands: vec![undefined], // never defined
@@ -2479,6 +2522,7 @@ mod tests {
                 id: bb1,
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -2499,6 +2543,7 @@ mod tests {
                 id: bb2,
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -2519,6 +2564,7 @@ mod tests {
 
     fn capture_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

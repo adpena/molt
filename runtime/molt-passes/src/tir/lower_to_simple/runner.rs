@@ -73,8 +73,8 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         Some(AttrValue::Bool(true))
     ) {
         out.push(OpIR {
-            kind: crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.to_string(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::DropInserted,
+            ..OpIR::new(molt_ir::OpKind::DropInserted)
         });
     }
     if matches!(
@@ -83,9 +83,8 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         Some(AttrValue::Bool(true))
     ) {
         out.push(OpIR {
-            kind: crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
-                .to_string(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::ExceptionRegionDropsInserted,
+            ..OpIR::new(molt_ir::OpKind::ExceptionRegionDropsInserted)
         });
     }
 
@@ -859,14 +858,14 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         if *bid != func.entry_block || entry_needs_join {
             let label_id = block_label_id(bid);
             let label_kind = if state_resume_blocks.contains(bid) {
-                "state_label"
+                molt_ir::OpKind::StateLabel
             } else {
-                "label"
+                molt_ir::OpKind::Label
             };
             out.push(OpIR {
-                kind: label_kind.to_string(),
+                kind: label_kind,
                 value: Some(label_id),
-                ..OpIR::default()
+                ..OpIR::new(label_kind)
             });
 
             emit_block_arg_loads(block, &block_param_vars, &mut out);
@@ -910,9 +909,9 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
 
             // Emit: if cond
             out.push(OpIR {
-                kind: "if".to_string(),
+                kind: molt_ir::OpKind::If,
                 args: Some(vec![value_var(*cond)]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::If)
             });
 
             for (index, (arm, args)) in [(then_blk, then_args), (else_blk, else_args)]
@@ -921,8 +920,8 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
             {
                 if index != 0 {
                     out.push(OpIR {
-                        kind: "else".to_string(),
-                        ..OpIR::default()
+                        kind: molt_ir::OpKind::Else,
+                        ..OpIR::new(molt_ir::OpKind::Else)
                     });
                 }
                 // Inlining removes labels, not predecessor value transport.
@@ -951,8 +950,8 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
 
             // Emit: end_if
             out.push(OpIR {
-                kind: "end_if".to_string(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::EndIf,
+                ..OpIR::new(molt_ir::OpKind::EndIf)
             });
         } else {
             // Non-loop, non-if-pattern block: emit ops and terminator normally.

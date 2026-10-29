@@ -33,7 +33,7 @@ pub(super) fn emit_numeric_op(
     known_raw_ints: &BTreeMap<u32, i64>,
     numeric_lane_stats: &mut WasmNumericLaneStats,
 ) -> bool {
-    let Some(selection) = wasm_numeric_runtime_selection(op.kind.as_str()) else {
+    let Some(selection) = wasm_numeric_runtime_selection(op.kind) else {
         return false;
     };
     match selection.op_loop_kind {

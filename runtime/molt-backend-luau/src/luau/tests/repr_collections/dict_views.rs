@@ -15,33 +15,26 @@ fn test_dict_view_ops_emit_luau_helpers() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "build_dict".to_string(),
                     args: Some(vec!["k".to_string(), "v".to_string()]),
                     out: Some("d".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuildDict)
                 },
                 OpIR {
-                    kind: "dict_keys".to_string(),
                     args: Some(vec!["d".to_string()]),
                     out: Some("keys".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictKeys)
                 },
                 OpIR {
-                    kind: "dict_values".to_string(),
                     args: Some(vec!["d".to_string()]),
                     out: Some("values".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictValues)
                 },
                 OpIR {
-                    kind: "dict_items".to_string(),
                     args: Some(vec!["d".to_string()]),
                     out: Some("items".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictItems)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,

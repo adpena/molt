@@ -1,24 +1,22 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn slot_backed_join_names_skip_load_only_phi_join_carriers() {
     let ops = vec![
         OpIR {
-            kind: "phi".to_string(),
             out: Some("joined".to_string()),
             args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Phi)
         },
         OpIR {
-            kind: "label".to_string(),
             value: Some(18),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Label)
         },
         OpIR {
-            kind: "load_var".to_string(),
             var: Some("_bb4_arg0".to_string()),
             out: Some("joined".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoadVar)
         },
     ];
 
@@ -34,21 +32,18 @@ fn slot_backed_join_names_skip_load_only_phi_join_carriers() {
 fn slot_backed_join_names_keep_explicit_store_backed_join_carriers() {
     let ops = vec![
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("_bb4_arg0".to_string()),
             args: Some(vec!["src".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "label".to_string(),
             value: Some(18),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Label)
         },
         OpIR {
-            kind: "load_var".to_string(),
             var: Some("_bb4_arg0".to_string()),
             out: Some("joined".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::LoadVar)
         },
     ];
 
@@ -64,48 +59,40 @@ fn slot_backed_join_names_keep_explicit_store_backed_join_carriers() {
 fn exception_slot_backing_ignores_compiler_value_temps() {
     let ops = vec![
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("_bb4_arg0".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("slot".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("_v7".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("v116".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "try_start".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::TryStart)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("_v8".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "store_var".to_string(),
             var: Some("handler_slot".to_string()),
             args: Some(vec!["seed".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         },
         OpIR {
-            kind: "exception_pop".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ExceptionPop)
         },
     ];
     let exception_labels = BTreeSet::from([7]);

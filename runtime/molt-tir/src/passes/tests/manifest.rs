@@ -19,14 +19,17 @@ fn app_callable_manifest_publication_retains_the_supported_builtin_namespace() {
             }
             ops.push(OpIR {
                 kind: if target.is_some() {
-                    "call"
+                    molt_ir::OpKind::Call
                 } else {
-                    "module_cache_set"
-                }
-                .into(),
+                    molt_ir::OpKind::ModuleCacheSet
+                },
                 s_value: target.map(str::to_owned),
                 args: Some(vec!["name".into(), "module".into()]),
-                ..Default::default()
+                ..OpIR::new(if target.is_some() {
+                    molt_ir::OpKind::Call
+                } else {
+                    molt_ir::OpKind::ModuleCacheSet
+                })
             });
             let expected = match name {
                 Some("_io") => BTreeSet::from(["molt_open_builtin".to_owned()]),
@@ -82,15 +85,18 @@ fn app_callable_manifest_retains_every_named_builtin_without_specializing_lookup
         ] {
             let lookup = OpIR {
                 kind: if target.is_some() {
-                    "call"
+                    molt_ir::OpKind::Call
                 } else {
-                    "module_get_global"
-                }
-                .into(),
+                    molt_ir::OpKind::ModuleGetGlobal
+                },
                 s_value: target.map(str::to_owned),
                 args: Some(vec!["module".into(), "name".into()]),
                 out: Some("callable".into()),
-                ..Default::default()
+                ..OpIR::new(if target.is_some() {
+                    molt_ir::OpKind::Call
+                } else {
+                    molt_ir::OpKind::ModuleGetGlobal
+                })
             };
             let function = manifest_func(vec![make_const_str("name", spec.python_name), lookup]);
             let result = compute_app_callable_manifest(std::slice::from_ref(&function), &symbols);
@@ -125,9 +131,9 @@ fn app_callable_manifest_computed_or_redefined_names_retain_only_generated_built
             function.params.push("name".into());
         }
         function.ops.push(OpIR {
-            kind: "module_get_global".into(),
+            kind: molt_ir::OpKind::ModuleGetGlobal,
             args: Some(vec!["module".into(), "name".into()]),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
         });
         assert_eq!(
             compute_app_callable_manifest(&[function], &symbols),
@@ -145,19 +151,19 @@ fn app_callable_manifest_unrelated_names_and_shadowed_runtime_calls_add_no_built
     let function = manifest_func(vec![
         make_const_str("name", "application_global"),
         OpIR {
-            kind: "module_get_global".into(),
+            kind: molt_ir::OpKind::ModuleGetGlobal,
             args: Some(vec!["module".into(), "name".into()]),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
         },
     ]);
     assert!(compute_app_callable_manifest(&[function], &symbols).is_empty());
     let mut shadow = manifest_func(vec![
         make_const_str("name", "globals"),
         OpIR {
-            kind: "call".into(),
+            kind: molt_ir::OpKind::Call,
             s_value: Some("molt_module_get_global".into()),
             args: Some(vec!["module".into(), "name".into()]),
-            ..Default::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         },
     ]);
     shadow.name = "molt_module_get_global".into();
@@ -168,9 +174,9 @@ fn app_callable_manifest_unrelated_names_and_shadowed_runtime_calls_add_no_built
 fn app_callable_manifest_retains_qualified_acquisitions_without_literal_symbol_ops() {
     let symbol = "molt_sys_gettrace";
     let function = manifest_func(vec![OpIR {
-        kind: "module_get_attr".into(),
+        kind: molt_ir::OpKind::ModuleGetAttr,
         runtime_symbol: Some(symbol.into()),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
     }]);
     assert_eq!(
         compute_app_callable_manifest(&[function], &BTreeSet::from([symbol.into()])),
@@ -351,10 +357,10 @@ fn gpu_body_identity_retains_actual_application_target_without_runtime_import() 
         let mut ops = vec![literal.clone()];
         if published {
             ops.push(OpIR {
-                kind: "call".into(),
+                kind: molt_ir::OpKind::Call,
                 s_value: Some("molt_gpu_kernel_descriptor_set".into()),
                 args: Some(vec!["kernel".into(), "metadata".into()]),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             });
         }
         let functions = [manifest_func(ops), body.clone()];

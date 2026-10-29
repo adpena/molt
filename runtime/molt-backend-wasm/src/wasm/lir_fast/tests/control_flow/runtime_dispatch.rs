@@ -11,6 +11,7 @@ fn dynbox_add_falls_back_to_call() {
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -47,6 +48,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
     let result_id = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -75,6 +77,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
     entry.ops.insert(
         0,
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
@@ -139,6 +142,7 @@ fn dynbox_identity_comparisons_stay_lir_fast_runtime_calls() {
         let result_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0), ValueId(1)],

@@ -1,8 +1,8 @@
 use super::super::*;
+use molt_ir::OpKind;
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] =
-    &["del_index", "slice", "slice_new"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::DelIndex, OpKind::Slice, OpKind::SliceNew);
 
 /// Cranelift codegen for delete-index, subscript-slice and slice construction.
 /// Operands are borrowed through the shared operand transaction in `shared.rs`:
@@ -28,10 +28,10 @@ pub(in crate::native_backend::function_compiler) fn handle_slice_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
-    let (symbol, arity) = match op.kind.as_str() {
-        "del_index" => ("molt_del_index", 2),
-        "slice" => ("molt_slice", 3),
-        "slice_new" => {
+    let (symbol, arity) = match op.kind {
+        OpKind::DelIndex => ("molt_del_index", 2),
+        OpKind::Slice => ("molt_slice", 3),
+        OpKind::SliceNew => {
             emit_fixed_aggregate_constructor(
                 op,
                 FixedAggregateConstructor::Slice,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .render_rust_common import _render_matches_arm, _rs_bool
+from . import render_wire as _wire
+
+from .render_rust_common import _rs_bool
 
 _OPERAND_OWNERSHIP_VARIANT = {
     "borrowed": "OperandOwnership::Borrowed",
@@ -23,6 +25,7 @@ _RESULT_VALIDITY_VARIANT = {
 
 
 def _render_operand_ownership(
+    data: dict,
     opcodes: list[dict],
     consuming: list[dict],
     absorbing_operands: list[dict],
@@ -36,10 +39,10 @@ def _render_operand_ownership(
       classified). Honors the per-position list form (a list opcode dispatches
       on ``operand_idx``); a uniform opcode ignores the index.
     * ``kind_consumed_operand_table(kind, arity)`` — the per-SPELLING consume
-      override keyed on the ``_original_kind`` attr. Returns the 0-based index
+      override keyed on typed ``TirOp.origin``. Returns the 0-based index
       of the consumed operand, resolving ``"last"`` against the op's ``arity``.
       This is the table ``op_transferred_operands`` reads (replacing the
-      hand-coded ``matches!(_original_kind, "call_bind" | "call_indirect")``).
+      hand-coded wire-spelling checks).
     * ``kind_is_source_call(kind)`` — the per-SPELLING source call admission
       (design 20 §1.6): a source Python call may adopt its operands through
       typed ``argument_custody``.
@@ -150,7 +153,7 @@ def _render_operand_ownership(
         "/// per-position opcode dispatches on it (positions past the listed arity\n"
         "/// fall back to the LAST listed leaf — variadic tails inherit the final\n"
         "/// position's treatment). This is the per-OpCode floor; a finer\n"
-        "/// per-`_original_kind` consume is `kind_consumed_operand_table`.\n"
+        "/// per-origin consume is `kind_consumed_operand_table`.\n"
         "#[inline]\n"
         "pub fn opcode_operand_ownership_table(\n"
         "    opcode: OpCode,\n"
@@ -182,84 +185,62 @@ def _render_operand_ownership(
     out.append("        _ => None,\n")
     out.append("    }\n}\n\n")
 
+    def selector(rows: list[dict], key: str) -> dict[str, str]:
+        return {
+            row["kind"]: "arity.checked_sub(1)"
+            if row[key] == "last"
+            else f"Some({int(row[key])})"
+            for row in rows
+        }
+
     out.append(
-        "/// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op\n"
-        "/// carrying `_original_kind = kind`, the 0-based index of the operand the\n"
-        "/// op CONSUMES (frees internally, or moves into storage it owns, as a\n"
-        "/// frame home store does), or `None` if it consumes none. `arity` is the\n"
-        '/// op\'s operand count, used to resolve a `"last"` selector. The drop pass\n'
-        "/// hands the op the value's own reference when nothing reads the value\n"
-        "/// afterwards, ending a Python binding that held it, and a retained one\n"
-        "/// otherwise; no trailing `DecRef` releases what the op took.\n"
-        "/// Read by the ownership module's `op_transferred_operands`.\n"
-        "#[inline]\n"
-        "pub fn kind_consumed_operand_table(kind: &str, arity: usize) -> Option<usize> {\n"
-        "    match kind {\n"
-    )
-    if consuming:
-        for row in consuming:
-            kind = row["kind"]
-            sel = row["consumed_operand"]
-            if sel == "last":
-                out.append(f'        "{kind}" => arity.checked_sub(1),\n')
-            else:
-                out.append(f'        "{kind}" => Some({int(sel)}),\n')
-    out.append("        _ => None,\n")
-    out.append("    }\n}\n")
-    out.append(
-        "\n/// Per-SPELLING source call instruction (design 20 §1.6): whether a source\n"
-        "/// Python call spelled `kind` may adopt its operands through typed\n"
-        "/// `argument_custody`. CALL takes its whole value stack, so every operand\n"
-        "/// position may adopt.\n"
-        "#[inline]\n"
-        "pub fn kind_is_source_call(kind: &str) -> bool {\n"
-        "    matches!(\n"
-        "        kind,\n"
+        _wire.fact(
+            data,
+            "kind_consumed_operand_table",
+            "Option<usize>",
+            selector(consuming, "consumed_operand"),
+            "None",
+            extra=", arity: usize",
+        )
     )
     out.append(
-        "        " + " | ".join(f'"{row["kind"]}"' for row in source_calls) + "\n"
+        _wire.boolean(
+            data, "kind_is_source_call", [row["kind"] for row in source_calls]
+        )
     )
-    out.append("    )\n}\n")
     out.append(
-        "\n/// Per-SPELLING source call instruction (design 20 §1.6): the operand holding\n"
-        "/// the callable. An ordinary call adopts it and an expanded call borrows it,\n"
-        "/// so its custody follows the call form rather than the arguments'.\n"
-        "#[inline]\n"
-        "pub fn kind_source_call_callable_operand(kind: &str) -> Option<usize> {\n"
-        "    match kind {\n"
+        _wire.fact(
+            data,
+            "kind_source_call_callable_operand",
+            "Option<usize>",
+            {
+                row["kind"]: f"Some({row['callable_operand']})"
+                for row in source_calls
+                if "callable_operand" in row
+            },
+            "None",
+        )
     )
-    for row in source_calls:
-        if "callable_operand" in row:
-            callable_operand = int(row["callable_operand"])
-            out.append(f'        "{row["kind"]}" => Some({callable_operand}),\n')
-    out.append("        _ => None,\n")
-    out.append("    }\n}\n")
-    absorbed_uses_arity = any(
-        row["absorbed_operand"] == "last" for row in absorbing_operands
+    extra = (
+        ", arity: usize"
+        if any(row["absorbed_operand"] == "last" for row in absorbing_operands)
+        else ", _arity: usize"
     )
-    absorbed_arity_param = "arity" if absorbed_uses_arity else "_arity"
     out.append(
-        "\n/// Per-SPELLING existing-container absorption override. These preserved\n"
-        "/// SimpleIR spellings lower as `Copy` with `_original_kind`, so they need a\n"
-        "/// spelling table parallel to `kind_consumed_operand_table`.\n"
-        "#[inline]\n"
-        f"pub fn kind_container_absorbed_operand_table(kind: &str, {absorbed_arity_param}: usize) -> Option<usize> {{\n"
-        "    match kind {\n"
+        _wire.fact(
+            data,
+            "kind_container_absorbed_operand_table",
+            "Option<usize>",
+            selector(absorbing_operands, "absorbed_operand"),
+            "None",
+            extra=extra,
+        )
     )
-    if absorbing_operands:
-        for row in absorbing_operands:
-            kind = row["kind"]
-            sel = row["absorbed_operand"]
-            if sel == "last":
-                out.append(f'        "{kind}" => arity.checked_sub(1),\n')
-            else:
-                out.append(f'        "{kind}" => Some({int(sel)}),\n')
-    out.append("        _ => None,\n")
-    out.append("    }\n}\n")
     return "".join(out)
 
 
 def _render_result_absorption(
+    data: dict,
     opcodes: list[dict],
     absorbing: list[dict],
     result_sources: list[dict],
@@ -313,53 +294,43 @@ def _render_result_absorption(
         out.append("    let _ = opcode;\n    false\n")
     out.append("}\n\n")
 
+    selected = {
+        spelling
+        for row in data.get("kind", [])
+        if row.get("mapper_opcode") in selected_owner_opcodes
+        for spelling in (row["canonical"], *row.get("aliases", []))
+    }
     out.append(
-        "/// Same selected-alias result ownership fact keyed by SimpleIR kind spelling.\n"
-        "/// String-dispatch backends must query this rather than duplicating an\n"
-        "/// `and`/`or` list by hand.\n"
-        "#[inline]\n"
-        "pub fn kind_result_mints_owned_selected_operand_table(kind: &str) -> bool {\n"
-        "    kind_to_opcode_table(kind)\n"
-        "        .is_some_and(opcode_result_mints_owned_selected_operand_table)\n"
-        "}\n\n"
+        _wire.boolean(data, "kind_result_mints_owned_selected_operand_table", selected)
     )
-
     out.append(
-        "/// Result-side ownership-transfer fact for Copy-lifted SimpleIR spellings.\n"
-        "/// These spellings intentionally remain outside `[[kind]]` so backconversion\n"
-        "/// and backend dispatch preserve their public wire names while still sharing\n"
-        "/// the finalizer/escape ownership fact with first-class Build* opcodes.\n"
-        "#[inline]\n"
-        "pub fn kind_result_absorbs_operand_ownership_table(kind: &str) -> bool {\n"
-        "    matches!(kind,\n"
+        _wire.boolean(
+            data,
+            "kind_result_absorbs_operand_ownership_table",
+            [row["kind"] for row in absorbing],
+        )
     )
-    absorbing_kinds = sorted(row["kind"] for row in absorbing)
-    out.append(_render_matches_arm(absorbing_kinds))
-    out.append("    )\n}\n\n")
-
-    result_source_uses_arity = any(
-        row["source_operand"] == "last" for row in result_sources
+    extra = (
+        ", arity: usize"
+        if any(row["source_operand"] == "last" for row in result_sources)
+        else ", _arity: usize"
     )
-    result_source_arity_param = "arity" if result_source_uses_arity else "_arity"
+    values = {
+        row["kind"]: "arity.checked_sub(1)"
+        if row["source_operand"] == "last"
+        else f"Some({int(row['source_operand'])})"
+        for row in result_sources
+    }
     out.append(
-        "/// Per-SPELLING result finalizer-source facts. These Copy-lifted\n"
-        "/// extraction spellings return a fresh owned result whose finalizer\n"
-        "/// sensitivity is inherited from one source operand, but whose own\n"
-        "/// temporary ref should release at the statement unless Python-bound.\n"
-        "#[inline]\n"
-        f"pub fn kind_result_finalizer_source_operand_table(kind: &str, {result_source_arity_param}: usize) -> Option<usize> {{\n"
-        "    match kind {\n"
+        _wire.fact(
+            data,
+            "kind_result_finalizer_source_operand_table",
+            "Option<usize>",
+            values,
+            "None",
+            extra=extra,
+        )
     )
-    if result_sources:
-        for row in result_sources:
-            kind = row["kind"]
-            sel = row["source_operand"]
-            if sel == "last":
-                out.append(f'        "{kind}" => arity.checked_sub(1),\n')
-            else:
-                out.append(f'        "{kind}" => Some({int(sel)}),\n')
-    out.append("        _ => None,\n")
-    out.append("    }\n}\n")
     return "".join(out)
 
 

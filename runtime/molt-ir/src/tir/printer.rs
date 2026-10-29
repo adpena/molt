@@ -150,6 +150,11 @@ fn print_op(op: &TirOp) -> String {
         format!(" {{{}}}", inner)
     };
 
+    let attrs_str = match op.origin {
+        Some(origin) => format!(" origin={origin}{attrs_str}"),
+        None => attrs_str,
+    };
+
     // Source span.
     let span_str = if let Some((lo, hi)) = op.source_span {
         format!(" // span:{lo}..{hi}")
@@ -309,6 +314,8 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::StateYield => "state_yield",
         OpCode::StateSet | OpCode::IsPending | OpCode::TaskWait => {
             super::op_kinds_generated::opcode_canonical_kind_table(*op)
+                .expect("state operations have canonical wire kinds")
+                .as_str()
         }
         OpCode::ClosureLoad => "closure_load",
         OpCode::ClosureStore => "closure_store",
@@ -503,6 +510,22 @@ mod tests {
     use crate::tir::types::TirType;
     use crate::tir::values::ValueId;
 
+    #[test]
+    fn printed_ir_distinguishes_preserved_origins() {
+        let mut function = make_add_function();
+        let op = &mut function.blocks.get_mut(&function.entry_block).unwrap().ops[0];
+        op.opcode = OpCode::Copy;
+        op.operands.truncate(1);
+        op.origin = Some(crate::OpKind::Len);
+        let length = print_function(&function);
+        function.blocks.get_mut(&function.entry_block).unwrap().ops[0].origin =
+            Some(crate::OpKind::Iter);
+        let iteration = print_function(&function);
+        assert!(length.contains("origin=len"));
+        assert!(iteration.contains("origin=iter"));
+        assert_ne!(length, iteration);
+    }
+
     fn make_add_function() -> TirFunction {
         // func @add(%0: i64, %1: i64) -> i64 {
         //   ^bb0(%0: i64, %1: i64):
@@ -521,6 +544,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -640,6 +664,7 @@ mod tests {
     #[test]
     fn print_op_with_attrs() {
         let op = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],

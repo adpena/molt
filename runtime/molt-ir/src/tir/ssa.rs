@@ -76,7 +76,6 @@ pub fn convert_to_ssa_with_name_and_params(
     ops: &[OpIR],
     params: &[String],
 ) -> SsaOutput {
-    crate::ir::validate_op_kinds(func_name, ops).unwrap_or_else(|error| panic!("{error}"));
     let mut ctx = SsaContext::new(func_name, cfg, ops, params);
     ctx.run();
     ctx.into_output()
@@ -169,9 +168,13 @@ impl<'a> SsaContext<'a> {
         let mut sites = Vec::with_capacity(ops.len());
         let mut active: Option<SourceSite> = None;
         for op in ops {
-            let explicit_line = op
-                .source_line
-                .or_else(|| if op.kind == "line" { op.value } else { None });
+            let explicit_line = op.source_line.or_else(|| {
+                if op.kind == crate::OpKind::Line {
+                    op.value
+                } else {
+                    None
+                }
+            });
             let mut site = explicit_line
                 .and_then(|line| SourceSite::from_line_col(line, op.col_offset, op.end_col_offset))
                 .or(active);
@@ -185,7 +188,7 @@ impl<'a> SsaContext<'a> {
                     current.end_col = active_site.end_col;
                 }
             }
-            if op.kind == "line" && site.is_some() {
+            if op.kind == crate::OpKind::Line && site.is_some() {
                 active = site;
             }
             sites.push(site);
@@ -492,6 +495,7 @@ impl<'a> SsaContext<'a> {
             block.ops.insert(
                 insert_at,
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],

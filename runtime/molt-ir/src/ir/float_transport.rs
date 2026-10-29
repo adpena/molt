@@ -95,10 +95,10 @@ mod tests {
                     return_abi: crate::FunctionReturnAbi::Void,
                     name: "float_wire".into(),
                     ops: vec![OpIR {
-                        kind: "const_float".into(),
+                        kind: crate::OpKind::ConstFloat,
                         f_value: Some(value),
                         out: Some("result".into()),
-                        ..OpIR::default()
+                        ..crate::OpIR::new(crate::OpKind::ConstFloat)
                     }],
                     ..FunctionIR::default()
                 }],

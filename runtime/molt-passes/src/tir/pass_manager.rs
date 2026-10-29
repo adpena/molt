@@ -781,6 +781,7 @@ mod tests {
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ObjectNewBound,
             operands: vec![ValueId(0)],
@@ -864,6 +865,7 @@ mod tests {
             let mut attrs = AttrDict::new();
             attrs.insert("value".into(), AttrValue::Int(70));
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0)],
@@ -875,6 +877,7 @@ mod tests {
         func.blocks.get_mut(&entry).unwrap().ops = vec![
             labeled(OpCode::TryStart),
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![ValueId(0)],
@@ -887,6 +890,7 @@ mod tests {
             },
             labeled(OpCode::CheckException),
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],
@@ -931,6 +935,7 @@ mod tests {
         let mut attrs = AttrDict::new();
         attrs.insert("s_value".into(), AttrValue::Str("external_call".into()));
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -1068,6 +1073,7 @@ mod tests {
                 id: body,
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -1129,6 +1135,7 @@ mod tests {
         func.label_id_map.insert(handler.0, 9);
 
         let mut try_start = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -1144,6 +1151,7 @@ mod tests {
             Terminator::Return { values: vec![] };
 
         let mut match_ref = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1151,10 +1159,7 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         };
-        match_ref.attrs.insert(
-            "_original_kind".into(),
-            crate::tir::ops::AttrValue::Str("exception_last_pending".into()),
-        );
+        match_ref.origin = Some(molt_ir::OpKind::ExceptionLastPending);
         func.blocks.insert(
             handler,
             TirBlock {
@@ -1189,6 +1194,7 @@ mod tests {
         };
 
         let mut try_start = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -1210,6 +1216,7 @@ mod tests {
         );
 
         let mut match_ref = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1217,11 +1224,9 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         };
-        match_ref.attrs.insert(
-            "_original_kind".into(),
-            crate::tir::ops::AttrValue::Str("exception_last_pending".into()),
-        );
+        match_ref.origin = Some(molt_ir::OpKind::ExceptionLastPending);
         let mut exception_pop = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1229,10 +1234,7 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         };
-        exception_pop.attrs.insert(
-            "_original_kind".into(),
-            crate::tir::ops::AttrValue::Str("exception_pop".into()),
-        );
+        exception_pop.origin = Some(molt_ir::OpKind::ExceptionPop);
         func.blocks.insert(
             handler,
             TirBlock {
@@ -1289,6 +1291,7 @@ mod tests {
             let parameter = func.blocks[&entry].args[0].id;
             let block = func.blocks.get_mut(&entry).unwrap();
             block.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![parameter],

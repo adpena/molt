@@ -13,6 +13,7 @@ fn make_boxed_checked_binary_func(name: &str, opcode: OpCode) -> TirFunction {
     func.value_types.insert(overflow_id, TirType::Bool);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(0), ValueId(1)],

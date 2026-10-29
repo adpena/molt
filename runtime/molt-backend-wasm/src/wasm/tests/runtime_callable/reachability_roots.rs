@@ -2,11 +2,15 @@ use super::*;
 use crate::wasm_abi_generated::runtime_callable_import;
 use molt_ir::python_builtin_callables_generated::PYTHON_BUILTIN_CALLABLES;
 
-fn deferred_lookup_function(function_name: &str, name: Option<&str>, spelling: &str) -> FunctionIR {
+fn deferred_lookup_function(
+    function_name: &str,
+    name: Option<&str>,
+    spelling: molt_ir::OpKind,
+) -> FunctionIR {
     let mut ops = Vec::new();
     let mut params = vec!["module"];
     if let Some(name) = name {
-        let mut constant = wasm_test_op("const_str", Some("name"), vec![]);
+        let mut constant = wasm_test_op(molt_ir::OpKind::ConstStr, Some("name"), vec![]);
         constant.s_value = Some(name.to_string());
         ops.push(constant);
     } else {
@@ -14,11 +18,14 @@ fn deferred_lookup_function(function_name: &str, name: Option<&str>, spelling: &
     }
     let mut lookup = wasm_test_op(spelling, Some("value"), vec!["module", "name"]);
     match spelling {
-        "call" => lookup.s_value = Some("molt_module_get_global".to_string()),
-        "module_get_global" => {}
+        molt_ir::OpKind::Call => lookup.s_value = Some("molt_module_get_global".to_string()),
+        molt_ir::OpKind::ModuleGetGlobal => {}
         _ => panic!("unknown fixture lookup spelling {spelling}"),
     }
-    ops.extend([lookup, wasm_test_op("ret", None, vec!["value"])]);
+    ops.extend([
+        lookup,
+        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
+    ]);
     wasm_test_function(function_name, params, None, ops)
 }
 
@@ -34,18 +41,18 @@ fn compile_lookup_functions(
     let mut callables = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         let name = format!("callable_{index}");
-        let mut object = wasm_test_op("func_new", Some(&name), vec![]);
+        let mut object = wasm_test_op(molt_ir::OpKind::FuncNew, Some(&name), vec![]);
         object.s_value = Some(function.name.clone());
         object.value = Some(function.params.len() as i64);
         entry_ops.push(object);
         callables.push(name);
     }
     entry_ops.push(wasm_test_op(
-        "tuple_new",
+        molt_ir::OpKind::TupleNew,
         Some("callables"),
         callables.iter().map(String::as_str).collect(),
     ));
-    entry_ops.push(wasm_test_op("ret", None, vec!["callables"]));
+    entry_ops.push(wasm_test_op(molt_ir::OpKind::Ret, None, vec!["callables"]));
     functions.insert(0, wasm_test_function("molt_main", vec![], None, entry_ops));
     WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,
@@ -61,7 +68,7 @@ fn compile_lookup_functions(
 
 fn deferred_lookup_wasm(
     name: Option<&str>,
-    spelling: &str,
+    spelling: molt_ir::OpKind,
     reloc_enabled: bool,
     profile: WasmProfile,
 ) -> Vec<u8> {
@@ -74,7 +81,7 @@ fn deferred_lookup_wasm(
 
 #[test]
 fn deferred_global_lookup_roots_the_generated_builtin_family() {
-    for spelling in ["module_get_global", "call"] {
+    for spelling in [molt_ir::OpKind::ModuleGetGlobal, molt_ir::OpKind::Call] {
         for reloc_enabled in [false, true] {
             // All signatures in one module per transport/relocation cell. The
             // planner unit test owns per-name minimality; avoid recompiling the
@@ -112,7 +119,12 @@ fn deferred_global_lookup_roots_the_generated_builtin_family() {
 
 #[test]
 fn computed_global_lookup_conservatively_roots_supported_python_builtins() {
-    let wasm = deferred_lookup_wasm(None, "module_get_global", false, WasmProfile::Auto);
+    let wasm = deferred_lookup_wasm(
+        None,
+        molt_ir::OpKind::ModuleGetGlobal,
+        false,
+        WasmProfile::Auto,
+    );
     wasmparser::Validator::new().validate_all(&wasm).unwrap();
     let data = wasm_data_segment_payloads(&wasm);
     for spec in PYTHON_BUILTIN_CALLABLES {
@@ -128,7 +140,7 @@ fn computed_global_lookup_conservatively_roots_supported_python_builtins() {
 fn unrelated_global_names_do_not_root_python_builtins() {
     let wasm = deferred_lookup_wasm(
         Some("application_global"),
-        "module_get_global",
+        molt_ir::OpKind::ModuleGetGlobal,
         false,
         WasmProfile::Pure,
     );
@@ -145,7 +157,12 @@ fn unrelated_global_names_do_not_root_python_builtins() {
 
 #[test]
 fn supported_deferred_builtin_lookup_is_valid_in_pure_profile() {
-    let wasm = deferred_lookup_wasm(Some("print"), "module_get_global", false, WasmProfile::Pure);
+    let wasm = deferred_lookup_wasm(
+        Some("print"),
+        molt_ir::OpKind::ModuleGetGlobal,
+        false,
+        WasmProfile::Pure,
+    );
     wasmparser::Validator::new().validate_all(&wasm).unwrap();
     assert!(
         wasm_data_segment_payloads(&wasm)
@@ -158,23 +175,34 @@ fn supported_deferred_builtin_lookup_is_valid_in_pure_profile() {
 fn resolver_candidates_are_admitted_by_profile_without_requiring_capabilities() {
     for profile in [WasmProfile::Auto, WasmProfile::Pure] {
         for reloc_enabled in [false, true] {
-            let mut name = wasm_test_op("const_str", Some("name"), vec![]);
+            let mut name = wasm_test_op(molt_ir::OpKind::ConstStr, Some("name"), vec![]);
             name.s_value = Some("molt_open_builtin".into());
             let data = wasm_test_function(
                 "intrinsic_name_as_data",
                 vec![],
                 None,
-                vec![name.clone(), wasm_test_op("ret", None, vec!["name"])],
+                vec![
+                    name.clone(),
+                    wasm_test_op(molt_ir::OpKind::Ret, None, vec!["name"]),
+                ],
             );
             // A real optional intrinsic, using the runtime's explicit alias.
             name.s_value = Some("_molt_time_time".into());
-            let mut optional = wasm_test_op("call", Some("value"), vec!["name", "namespace"]);
+            let mut optional = wasm_test_op(
+                molt_ir::OpKind::Call,
+                Some("value"),
+                vec!["name", "namespace"],
+            );
             optional.s_value = Some("molt_load_intrinsic_runtime".into());
             let lookup = wasm_test_function(
                 "optional_intrinsic_lookup",
                 vec!["namespace"],
                 None,
-                vec![name, optional, wasm_test_op("ret", None, vec!["value"])],
+                vec![
+                    name,
+                    optional,
+                    wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
+                ],
             );
             let wasm = compile_lookup_functions(vec![data, lookup], reloc_enabled, profile);
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
@@ -197,7 +225,7 @@ fn resolver_candidates_are_admitted_by_profile_without_requiring_capabilities() 
 #[test]
 #[should_panic(expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'")]
 fn required_builtin_materialization_is_not_weakened_by_candidate_admission() {
-    let mut builtin = wasm_test_op("builtin_func", Some("value"), vec![]);
+    let mut builtin = wasm_test_op(molt_ir::OpKind::BuiltinFunc, Some("value"), vec![]);
     builtin.s_value = Some("molt_open_builtin".into());
     builtin.value = Some(
         molt_ir::runtime_callable_abi_generated::runtime_callable_abi("molt_open_builtin")
@@ -208,7 +236,10 @@ fn required_builtin_materialization_is_not_weakened_by_candidate_admission() {
         "required_open",
         vec![],
         None,
-        vec![builtin, wasm_test_op("ret", None, vec!["value"])],
+        vec![
+            builtin,
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
+        ],
     );
     compile_lookup_functions(vec![function], false, WasmProfile::Pure);
 }
@@ -216,13 +247,23 @@ fn required_builtin_materialization_is_not_weakened_by_candidate_admission() {
 #[test]
 #[should_panic(expected = "WASM pure profile cannot admit reachable runtime import 'open_builtin'")]
 fn unavailable_deferred_builtin_is_rejected_before_import_table_emission() {
-    deferred_lookup_wasm(Some("open"), "module_get_global", false, WasmProfile::Pure);
+    deferred_lookup_wasm(
+        Some("open"),
+        molt_ir::OpKind::ModuleGetGlobal,
+        false,
+        WasmProfile::Pure,
+    );
 }
 
 #[test]
 #[should_panic(expected = "WASM pure profile cannot admit reachable runtime import")]
 fn unproven_dynamic_builtin_closure_is_rejected_for_pure_profile() {
-    deferred_lookup_wasm(None, "module_get_global", false, WasmProfile::Pure);
+    deferred_lookup_wasm(
+        None,
+        molt_ir::OpKind::ModuleGetGlobal,
+        false,
+        WasmProfile::Pure,
+    );
 }
 
 #[test]
@@ -231,7 +272,7 @@ fn unreachable_runtime_callables_are_not_imported() {
         "no_runtime_callable_roots",
         vec![],
         None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+        vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -265,7 +306,7 @@ fn poll_table_runtime_callables_remain_table_roots() {
         "poll_table_roots",
         vec![],
         None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+        vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -295,14 +336,17 @@ fn poll_table_runtime_callables_remain_table_roots() {
 
 #[test]
 fn reachable_builtin_runtime_callable_is_imported() {
-    let mut abs_builtin = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    let mut abs_builtin = wasm_test_op(molt_ir::OpKind::BuiltinFunc, Some("fn"), vec![]);
     abs_builtin.s_value = Some("molt_abs_builtin".to_string());
     abs_builtin.value = Some(1);
     let func = wasm_test_function(
         "reachable_builtin_callable",
         vec![],
         None,
-        vec![abs_builtin, wasm_test_op("ret_void", None, vec![])],
+        vec![
+            abs_builtin,
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        ],
     );
     let ir = SimpleIR {
         functions: vec![func],

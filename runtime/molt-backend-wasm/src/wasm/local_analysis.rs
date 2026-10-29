@@ -51,21 +51,25 @@ mod tests {
     use crate::OpIR;
     use std::collections::BTreeSet;
 
-    fn op(kind: &str, args: Option<Vec<&str>>, var: Option<&str>, out: Option<&str>) -> OpIR {
+    fn op(
+        kind: molt_ir::OpKind,
+        args: Option<Vec<&str>>,
+        var: Option<&str>,
+        out: Option<&str>,
+    ) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
             args: args.map(|a| a.into_iter().map(String::from).collect()),
             var: var.map(String::from),
             out: out.map(String::from),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
     #[test]
     fn read_vars_includes_args_and_var() {
         let ops = vec![
-            op("add", Some(vec!["a", "b"]), None, Some("c")),
-            op("load", None, Some("d"), Some("e")),
+            op(molt_ir::OpKind::Add, Some(vec!["a", "b"]), None, Some("c")),
+            op(molt_ir::OpKind::Load, None, Some("d"), Some("e")),
         ];
         let (read_vars, _) = collect_value_names(&ops);
         assert!(read_vars.contains("a"), "arg 'a' should be in read set");
@@ -84,8 +88,8 @@ mod tests {
     #[test]
     fn read_vars_output_becomes_live_when_later_read() {
         let ops = vec![
-            op("const", None, None, Some("x")),
-            op("add", Some(vec!["x", "y"]), None, Some("z")),
+            op(molt_ir::OpKind::Const, None, None, Some("x")),
+            op(molt_ir::OpKind::Add, Some(vec!["x", "y"]), None, Some("z")),
         ];
         let (read_vars, _) = collect_value_names(&ops);
         assert!(
@@ -102,9 +106,9 @@ mod tests {
     #[test]
     fn dead_local_all_outputs_dead() {
         let ops = vec![
-            op("const", None, None, Some("a")),
-            op("const", None, None, Some("b")),
-            op("const", None, None, Some("c")),
+            op(molt_ir::OpKind::Const, None, None, Some("a")),
+            op(molt_ir::OpKind::Const, None, None, Some("b")),
+            op(molt_ir::OpKind::Const, None, None, Some("c")),
         ];
         let (read_vars, _) = collect_value_names(&ops);
         assert!(read_vars.is_empty(), "no variable is ever read");
@@ -114,31 +118,31 @@ mod tests {
     fn binding_destinations_snapshots_and_unpack_outputs_share_field_roles() {
         let ops = vec![
             op(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 Some(vec!["source"]),
                 Some("slot"),
                 Some("snapshot"),
             ),
             op(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 Some(vec!["source"]),
                 None,
                 Some("binding_only"),
             ),
             op(
-                "store_var",
+                molt_ir::OpKind::StoreVar,
                 Some(vec!["source"]),
                 Some("discarded_slot"),
                 Some("none"),
             ),
             op(
-                "unpack_sequence",
+                molt_ir::OpKind::UnpackSequence,
                 Some(vec!["sequence", "first", "second"]),
                 None,
                 None,
             ),
             op(
-                "copy_var",
+                molt_ir::OpKind::CopyVar,
                 Some(vec!["source"]),
                 Some("metadata_only"),
                 Some("copy"),
@@ -166,19 +170,39 @@ mod tests {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             params: vec!["source".into(), "replacement".into()],
             ops: vec![
-                op("store_var", Some(vec!["source"]), Some("__tmp_slot"), None),
-                op("inc_ref", Some(vec!["__tmp_slot"]), None, None),
-                op("store_var", Some(vec!["source"]), Some("__tmp_live"), None),
+                op(
+                    molt_ir::OpKind::StoreVar,
+                    Some(vec!["source"]),
+                    Some("__tmp_slot"),
+                    None,
+                ),
+                op(
+                    molt_ir::OpKind::IncRef,
+                    Some(vec!["__tmp_slot"]),
+                    None,
+                    None,
+                ),
+                op(
+                    molt_ir::OpKind::StoreVar,
+                    Some(vec!["source"]),
+                    Some("__tmp_live"),
+                    None,
+                ),
                 // `__tmp_slot` is dead here, but the write still lands in its
                 // physical local while `__tmp_live` is live.
                 op(
-                    "store_var",
+                    molt_ir::OpKind::StoreVar,
                     Some(vec!["replacement"]),
                     Some("__tmp_slot"),
                     None,
                 ),
-                op("inc_ref", Some(vec!["__tmp_live"]), None, None),
-                op("ret_void", None, None, None),
+                op(
+                    molt_ir::OpKind::IncRef,
+                    Some(vec!["__tmp_live"]),
+                    None,
+                    None,
+                ),
+                op(molt_ir::OpKind::RetVoid, None, None, None),
             ],
             ..crate::FunctionIR::default()
         };

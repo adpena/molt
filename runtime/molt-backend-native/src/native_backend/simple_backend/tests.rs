@@ -16,6 +16,7 @@ use cranelift_codegen::ir::{
     Block, BlockArg, ExternalName, Function, Inst, InstructionData, Opcode, Value, ValueDef,
 };
 use cranelift_module::{FuncId, Module};
+use molt_ir::OpKind;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 
@@ -93,41 +94,33 @@ fn trace_probe_ir(execution_context: crate::ir::ExecutionContextPolicy) -> Simpl
             ops: if execution_context == crate::ir::ExecutionContextPolicy::Local {
                 vec![
                     OpIR {
-                        kind: "trace_enter_slot".to_string(),
                         s_value: Some("molt_main".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::TraceEnterSlot)
                     },
                     OpIR {
-                        kind: "check_exception".to_string(),
                         value: Some(1),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::CheckException)
                     },
                     OpIR {
-                        kind: "trace_exit".to_string(),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::TraceExit)
                     },
                     OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::RetVoid)
                     },
                     OpIR {
-                        kind: "label".to_string(),
                         value: Some(1),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::Label)
                     },
                     OpIR {
-                        kind: "trace_exit".to_string(),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::TraceExit)
                     },
                     OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
+                        ..OpIR::new(OpKind::RetVoid)
                     },
                 ]
             } else {
                 vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 }]
             },
             param_types: None,
@@ -323,28 +316,24 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
         source_file: Some("fixture.py".into()),
         ops: vec![
             OpIR {
-                kind: "drop_inserted".into(),
-                ..Default::default()
+                ..OpIR::new(OpKind::DropInserted)
             },
             OpIR {
-                kind: "const_int".into(),
                 out: Some("limb".into()),
                 value: Some(1_i64 << 31),
-                ..Default::default()
+                ..OpIR::new(OpKind::ConstInt)
             },
             OpIR {
-                kind: "checked_mul".into(),
                 args: Some(vec!["limb".into(), "limb".into()]),
                 var: Some("wide".into()),
                 out: Some("overflow".into()),
                 source_line: Some(17),
                 source_op_idx: Some(91),
-                ..Default::default()
+                ..OpIR::new(OpKind::CheckedMul)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["wide".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         ..Default::default()
@@ -357,9 +346,8 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
     callback.ops.insert(
         1,
         OpIR {
-            kind: "call_func".into(),
             args: Some(vec!["borrowed".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::CallFunc)
         },
     );
     // The preserved tuple constructor has conservative callback effects even
@@ -370,11 +358,10 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
     allocation.ops.insert(
         allocation.ops.len() - 1,
         OpIR {
-            kind: "tuple_new".into(),
             args: Some(vec!["borrowed".into()]),
             out: Some("pair".into()),
             stack_eligible: Some(true),
-            ..Default::default()
+            ..OpIR::new(OpKind::TupleNew)
         },
     );
     allocation.ops.last_mut().unwrap().args = Some(vec!["pair".into()]);
@@ -585,7 +572,7 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
 // Regression  native codegen must compile the CANONICAL bare `get_attr`.
 //
 // `tir::lower_to_simple` emits the canonical `get_attr` for any `LoadAttr`
-// that carries no specialized `_original_kind` (its documented default,
+// that carries no specialized `origin` (its documented default,
 // exactly like `set_attr`/`del_attr`/`index`/`call`). A TIR pass that
 // yields a generic by-name attribute load reaches native codegen with that
 // bare spelling  observed for `__future__._Feature.__repr__` under

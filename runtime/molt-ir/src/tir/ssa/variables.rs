@@ -85,7 +85,7 @@ pub(super) fn visit_simple_ir_ssa_result_slots<'a>(
     });
 }
 
-pub(super) fn simple_var_field_is_transport_fact(kind: &str) -> bool {
+pub(super) fn simple_var_field_is_transport_fact(kind: crate::OpKind) -> bool {
     simpleir_var_field_role_table(kind) != SimpleIrVarFieldRole::Result
 }
 
@@ -99,13 +99,13 @@ mod tests {
 
     #[test]
     fn local_binding_and_snapshot_share_one_ssa_result() {
-        for kind in ["store_var", "store_fast"] {
+        for kind in [crate::OpKind::StoreVar, crate::OpKind::StoreFast] {
             let op = OpIR {
-                kind: kind.into(),
+                kind,
                 var: Some("local".into()),
                 out: Some("snapshot".into()),
                 args: Some(vec!["source".into()]),
-                ..OpIR::default()
+                ..crate::OpIR::new(kind)
             };
             let mut definitions = Vec::new();
             visit_simple_ir_ssa_definitions(&op, |name, index| definitions.push((name, index)));
@@ -120,9 +120,9 @@ mod tests {
             vec!["source", "True", "first", "none", "second"],
         ] {
             let op = OpIR {
-                kind: "unpack_sequence".into(),
+                kind: crate::OpKind::UnpackSequence,
                 args: Some(names.into_iter().map(str::to_string).collect()),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::UnpackSequence)
             };
             let mut definitions = Vec::new();
             visit_simple_ir_ssa_definitions(&op, |name, index| definitions.push((name, index)));
@@ -132,7 +132,11 @@ mod tests {
 
     #[test]
     fn fixed_result_positions_survive_missing_and_reserved_names() {
-        for kind in ["checked_add", "checked_mul", "iter_next_unboxed"] {
+        for kind in [
+            crate::OpKind::CheckedAdd,
+            crate::OpKind::CheckedMul,
+            crate::OpKind::IterNextUnboxed,
+        ] {
             for discard in [None, Some("none")] {
                 for (var, out, expected) in [
                     (discard, Some("flag"), vec![("flag", 1)]),
@@ -140,10 +144,10 @@ mod tests {
                     (discard, discard, vec![]),
                 ] {
                     let op = OpIR {
-                        kind: kind.into(),
+                        kind,
                         var: var.map(str::to_string),
                         out: out.map(str::to_string),
-                        ..OpIR::default()
+                        ..crate::OpIR::new(kind)
                     };
                     let mut definitions = Vec::new();
                     visit_simple_ir_ssa_definitions(&op, |name, index| {

@@ -373,11 +373,10 @@ impl RustBackend {
     /// ordinary call.
     pub(super) fn emit_op_load_method(&mut self, op: &OpIR) {
         let attribute = OpIR {
-            kind: "get_attr".to_string(),
             args: op.args.clone(),
             s_value: op.s_value.clone(),
             out: op.var.clone(),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::GetAttr)
         };
         self.emit_op_get_attr(&attribute);
         let self_or_null = out_var(op);

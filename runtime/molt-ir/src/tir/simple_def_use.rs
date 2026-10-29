@@ -48,12 +48,12 @@ pub struct SimpleIrBinding<'a> {
 /// never becomes a snapshot. Reserved destination filtering remains with the
 /// definition visitor and existing admission checks.
 pub fn simple_ir_binding(op: &OpIR) -> Option<SimpleIrBinding<'_>> {
-    if simpleir_var_field_role_table(op.kind.as_str()) != SimpleIrVarFieldRole::Definition {
+    if simpleir_var_field_role_table(op.kind) != SimpleIrVarFieldRole::Definition {
         return None;
     }
     let destination = op.var.as_deref().or(op.out.as_deref())?;
     let result = op.out.as_deref().filter(|out| {
-        *out != "none" && *out != destination && !simpleir_out_field_is_metadata(op.kind.as_str())
+        *out != "none" && *out != destination && !simpleir_out_field_is_metadata(op.kind)
     });
     Some(SimpleIrBinding {
         destination,
@@ -66,7 +66,7 @@ pub fn simple_ir_binding(op: &OpIR) -> Option<SimpleIrBinding<'_>> {
 /// This is the canonical SimpleIR field-role authority used by CFG liveness,
 /// dead-operation elimination, megafunction ABI planning, and backends.
 pub fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
-    match simpleir_var_field_role_table(op.kind.as_str()) {
+    match simpleir_var_field_role_table(op.kind) {
         SimpleIrVarFieldRole::Read => true,
         SimpleIrVarFieldRole::MetadataWhenArgs => op.args.as_ref().is_none_or(Vec::is_empty),
         SimpleIrVarFieldRole::Definition
@@ -79,13 +79,13 @@ pub fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
 /// expose only their optional snapshot, never their mutable destination, and
 /// generated out metadata is not a result.
 pub fn visit_simple_ir_results<'a>(op: &'a OpIR, mut visit: impl FnMut(SimpleIrResult<'a>)) {
-    if simpleir_var_field_role_table(op.kind.as_str()) == SimpleIrVarFieldRole::Result {
+    if simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Result {
         visit(SimpleIrResult {
             name: op.var.as_deref().filter(|name| *name != "none"),
             field: SimpleIrResultField::Var,
         });
     }
-    if !simpleir_out_field_is_metadata(op.kind.as_str()) {
+    if !simpleir_out_field_is_metadata(op.kind) {
         let name = if let Some(binding) = simple_ir_binding(op) {
             binding.result
         } else {
@@ -96,7 +96,7 @@ pub fn visit_simple_ir_results<'a>(op: &'a OpIR, mut visit: impl FnMut(SimpleIrR
             field: SimpleIrResultField::Out,
         });
     }
-    if let Some(first_result) = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+    if let Some(first_result) = simpleir_first_trailing_result_arg_table(op.kind)
         && let Some(args) = op.args.as_deref()
     {
         for (index, name) in args.iter().enumerate().skip(first_result) {
@@ -148,7 +148,7 @@ fn push_name(out: &mut Vec<String>, seen: &mut BTreeSet<String>, name: &str) {
 // in-place rewriting must visit the identical generated field-role projection.
 fn simple_ir_read_fields(op: &OpIR) -> impl Iterator<Item = SimpleIrReadField> + use<> {
     let arg_count = op.args.as_ref().map_or(0, Vec::len);
-    let read_arity = simpleir_first_trailing_result_arg_table(op.kind.as_str())
+    let read_arity = simpleir_first_trailing_result_arg_table(op.kind)
         .unwrap_or(arg_count)
         .min(arg_count);
     (0..read_arity).map(SimpleIrReadField::Arg).chain(
@@ -209,7 +209,7 @@ pub fn visit_simple_ir_reads_mut(
 /// that family, `args` is the sole value carrier. Every CFG, SSA, splitter, and
 /// backend-side structural transform must consume this helper.
 pub fn visit_simple_ir_return_values<'a>(op: &'a OpIR, mut visit: impl FnMut(&'a str)) {
-    if simpleir_return_shape(op.kind.as_str()) != SimpleIrReturnShape::Value {
+    if simpleir_return_shape(op.kind) != SimpleIrReturnShape::Value {
         return;
     }
     if let Some(value) = op.args.as_deref().and_then(|args| args.first()) {
@@ -310,30 +310,30 @@ fn simple_ir_defined_names(op: &OpIR) -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn op(kind: &str) -> OpIR {
+    fn op(kind: crate::OpKind) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
-            ..OpIR::default()
+            kind,
+            ..crate::OpIR::new(kind)
         }
     }
 
     #[test]
     fn mutable_reads_share_field_roles_and_preserve_nonread_collisions() {
         for kind in [
-            "copy",
-            "copy_var",
-            "load_var",
-            "store_var",
-            "store_fast",
-            "delete_var",
-            "checked_add",
-            "checked_mul",
-            "iter_next_unboxed",
-            "unpack_sequence",
-            "store_index",
-            "ret",
-            "ret_void",
-            "unmapped_transport",
+            crate::OpKind::Copy,
+            crate::OpKind::CopyVar,
+            crate::OpKind::LoadVar,
+            crate::OpKind::StoreVar,
+            crate::OpKind::StoreFast,
+            crate::OpKind::DeleteVar,
+            crate::OpKind::CheckedAdd,
+            crate::OpKind::CheckedMul,
+            crate::OpKind::IterNextUnboxed,
+            crate::OpKind::UnpackSequence,
+            crate::OpKind::StoreIndex,
+            crate::OpKind::Ret,
+            crate::OpKind::RetVoid,
+            crate::OpKind::ListAppend,
         ] {
             for args in [None, Some(vec![]), Some(vec!["same".into(); 3])] {
                 for var in [None, Some("same".into())] {
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn local_slot_store_targets_are_definitions_not_reads() {
-        for kind in ["store_var", "store_fast"] {
+        for kind in [crate::OpKind::StoreVar, crate::OpKind::StoreFast] {
             let mut store = op(kind);
             store.var = Some("_bb1_arg0".into());
             store.args = Some(vec!["incoming".into()]);
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn local_stores_distinguish_binding_destinations_from_optional_value_results() {
-        for kind in ["store_var", "store_fast"] {
+        for kind in [crate::OpKind::StoreVar, crate::OpKind::StoreFast] {
             for (binding, output, results, definitions) in [
                 (None, Some("local"), vec![], vec!["local"]),
                 (Some("local"), None, vec![], vec!["local"]),
@@ -419,7 +419,7 @@ mod tests {
                 );
             }
         }
-        let mut delete = op("delete_var");
+        let mut delete = op(crate::OpKind::DeleteVar);
         delete.var = Some("local".into());
         delete.out = Some("diagnostic_metadata".into());
         assert!(simple_ir_result_names(&delete).is_empty());
@@ -435,7 +435,11 @@ mod tests {
 
     #[test]
     fn binding_view_preserves_field_shape_without_becoming_name_admission() {
-        for kind in ["store_var", "store_fast", "delete_var"] {
+        for kind in [
+            crate::OpKind::StoreVar,
+            crate::OpKind::StoreFast,
+            crate::OpKind::DeleteVar,
+        ] {
             assert_eq!(simple_ir_binding(&op(kind)), None);
             for destination in ["none", ""] {
                 let binding = OpIR {
@@ -443,7 +447,7 @@ mod tests {
                     out: Some("snapshot".into()),
                     ..op(kind)
                 };
-                let result = (kind != "delete_var").then_some("snapshot");
+                let result = (kind != crate::OpKind::DeleteVar).then_some("snapshot");
                 assert_eq!(
                     simple_ir_binding(&binding),
                     Some(SimpleIrBinding {
@@ -458,7 +462,12 @@ mod tests {
                 assert_eq!(simple_ir_defined_names(&binding), expected);
             }
         }
-        for kind in ["copy_var", "load_var", "iter_next_unboxed", "unknown"] {
+        for kind in [
+            crate::OpKind::CopyVar,
+            crate::OpKind::LoadVar,
+            crate::OpKind::IterNextUnboxed,
+            crate::OpKind::ListAppend,
+        ] {
             let nonbinding = OpIR {
                 var: Some("source".into()),
                 out: Some("result".into()),
@@ -470,7 +479,7 @@ mod tests {
 
     #[test]
     fn unpack_sequence_reads_only_input_and_defines_output_args() {
-        let mut unpack = op("unpack_sequence");
+        let mut unpack = op(crate::OpKind::UnpackSequence);
         unpack.args = Some(vec!["sequence".into(), "first".into(), "second".into()]);
 
         assert_eq!(
@@ -488,7 +497,7 @@ mod tests {
 
     #[test]
     fn args_based_local_copies_treat_var_as_metadata() {
-        for kind in ["copy_var", "load_var"] {
+        for kind in [crate::OpKind::CopyVar, crate::OpKind::LoadVar] {
             let mut copy = op(kind);
             copy.var = Some("local_name".into());
             copy.args = Some(vec!["source".into()]);
@@ -501,7 +510,11 @@ mod tests {
 
     #[test]
     fn every_var_result_sibling_defines_var_then_out() {
-        for kind in ["checked_add", "checked_mul", "iter_next_unboxed"] {
+        for kind in [
+            crate::OpKind::CheckedAdd,
+            crate::OpKind::CheckedMul,
+            crate::OpKind::IterNextUnboxed,
+        ] {
             let mut multi = op(kind);
             multi.args = Some(vec!["lhs".into(), "rhs".into()]);
             multi.var = Some("primary".into());
@@ -527,7 +540,11 @@ mod tests {
 
     #[test]
     fn positional_result_fields_keep_discarded_sibling_positions() {
-        for kind in ["checked_add", "checked_mul", "iter_next_unboxed"] {
+        for kind in [
+            crate::OpKind::CheckedAdd,
+            crate::OpKind::CheckedMul,
+            crate::OpKind::IterNextUnboxed,
+        ] {
             for discarded in [None, Some("none")] {
                 for discard_first in [true, false] {
                     let mut multi = op(kind);
@@ -570,7 +587,7 @@ mod tests {
                 }
             }
         }
-        let mut unpack = op("unpack_sequence");
+        let mut unpack = op(crate::OpKind::UnpackSequence);
         unpack.args = Some(vec![
             "source".into(),
             "first".into(),
@@ -605,21 +622,21 @@ mod tests {
     #[test]
     fn ordinary_result_projection_excludes_metadata_and_binding_only_destinations() {
         for kind in [
-            "store_index",
-            "store",
-            "guarded_field_set",
-            "raise",
-            "store_var",
+            crate::OpKind::StoreIndex,
+            crate::OpKind::Store,
+            crate::OpKind::GuardedFieldSet,
+            crate::OpKind::Raise,
+            crate::OpKind::StoreVar,
         ] {
             let mut effect = op(kind);
             effect.out = Some("existing".into());
             assert_eq!(simple_ir_out_result(&effect), None, "{kind}");
         }
-        let mut binding = op("store_var");
+        let mut binding = op(crate::OpKind::StoreVar);
         binding.var = Some("slot".into());
         binding.out = Some("snapshot".into());
         assert_eq!(simple_ir_out_result(&binding), Some("snapshot"));
-        let mut checked = op("checked_add");
+        let mut checked = op(crate::OpKind::CheckedAdd);
         checked.var = Some("value".into());
         checked.out = Some("overflow".into());
         assert_eq!(simple_ir_out_result(&checked), Some("overflow"));
@@ -627,7 +644,12 @@ mod tests {
 
     #[test]
     fn side_effect_out_metadata_is_not_a_definition() {
-        for kind in ["store_index", "module_cache_set", "dec_ref", "raise"] {
+        for kind in [
+            crate::OpKind::StoreIndex,
+            crate::OpKind::ModuleCacheSet,
+            crate::OpKind::DecRef,
+            crate::OpKind::Raise,
+        ] {
             let mut side_effect = op(kind);
             side_effect.args = Some(vec!["input".into()]);
             side_effect.out = Some("transport_only".into());
@@ -639,7 +661,7 @@ mod tests {
 
     #[test]
     fn generated_return_family_shares_one_value_carrier_authority() {
-        let mut terminator = op("ret");
+        let mut terminator = op(crate::OpKind::Ret);
         terminator.args = Some(vec!["value".into()]);
 
         let mut values = Vec::new();
@@ -647,8 +669,8 @@ mod tests {
         assert_eq!(values, ["value"]);
         assert!(simple_ir_return_has_value(&terminator));
 
-        assert!(!simple_ir_return_has_value(&op("ret_void")));
-        let mut non_terminator = op("call");
+        assert!(!simple_ir_return_has_value(&op(crate::OpKind::RetVoid)));
+        let mut non_terminator = op(crate::OpKind::Call);
         non_terminator.args = Some(vec!["not_a_return".into()]);
         assert!(!simple_ir_return_has_value(&non_terminator));
     }
@@ -661,22 +683,22 @@ mod definition_fact_tests {
     fn parameter_and_mutable_destinations_are_not_immutable_snapshots() {
         let ops = vec![
             OpIR {
-                kind: "store_var".into(),
+                kind: crate::OpKind::StoreVar,
                 var: Some("slot".into()),
                 out: Some("first_snapshot".into()),
                 args: Some(vec!["parameter".into()]),
-                ..Default::default()
+                ..crate::OpIR::new(crate::OpKind::StoreVar)
             },
             OpIR {
-                kind: "delete_var".into(),
+                kind: crate::OpKind::DeleteVar,
                 var: Some("slot".into()),
-                ..Default::default()
+                ..crate::OpIR::new(crate::OpKind::DeleteVar)
             },
             OpIR {
-                kind: "copy_var".into(),
+                kind: crate::OpKind::CopyVar,
                 out: Some("parameter".into()),
                 args: Some(vec!["first_snapshot".into()]),
-                ..Default::default()
+                ..crate::OpIR::new(crate::OpKind::CopyVar)
             },
         ];
         let facts = SimpleDefinitionFacts::compute(&["parameter".into(), "unchanged".into()], &ops);

@@ -2263,12 +2263,14 @@ def test_shared_rust_admission_proof_requires_dominating_validation(tmp_path):
     assert proven_rejected_kinds(tmp_path, consumer) is None
 
 
-def test_dispatch_admission_projection_preserves_unknown_and_guarded_arms():
+def test_dispatch_admission_projection_preserves_guarded_arms():
     from tools.structural_audit_rust_admission import literal_dispatch_arm_ranges
 
-    source = 'match op.kind.as_str() { "denied" | "other" => self.refuse(op), "conditional" if allowed(op) => self.refuse(op), _ => self.refuse(op), }'
-    arms = literal_dispatch_arm_ranges(source)
-    assert [kinds for _, _, kinds in arms] == [frozenset({"denied", "other"})]
+    source = "match op.kind { OpKind::Yield | OpKind::YieldFrom => self.refuse(op), OpKind::Call if allowed(op) => self.refuse(op), _ => self.refuse(op), }"
+    arms = literal_dispatch_arm_ranges(
+        source, {"Yield": "yield", "YieldFrom": "yield_from", "Call": "call"}
+    )
+    assert [kinds for _, _, kinds in arms] == [frozenset({"yield", "yield_from"})]
 
 
 def _copy_live_rust_admission_sources(destination):
@@ -2334,8 +2336,8 @@ def test_live_rust_admitted_domains_close_refusal_paths(tmp_path):
         (
             "runtime/molt-ir/src/ir_schema.rs",
             "validate_normalized_simple_ir_ops",
-            "if simpleir_kind_is_pre_ssa_rewritten(&op.kind)",
-            "if false && simpleir_kind_is_pre_ssa_rewritten(&op.kind)",
+            "if op.kind.is_pre_ssa_rewritten()",
+            "if false && op.kind.is_pre_ssa_rewritten()",
         ),
         (
             "runtime/molt-ir/src/ir_schema.rs",
@@ -2345,9 +2347,9 @@ def test_live_rust_admitted_domains_close_refusal_paths(tmp_path):
         ),
         (
             "runtime/molt-ir/src/tir/op_kinds_generated.rs",
-            "simpleir_kind_is_pre_ssa_rewritten",
-            '"loop_index_next"',
-            '"nop"',
+            "is_pre_ssa_rewritten",
+            "OpKind::LoopIndexNext",
+            "OpKind::Nop",
         ),
     ],
 )
@@ -2397,7 +2399,7 @@ def test_rust_normalized_flow_projection_requires_declared_generated_agreement(
     )
 
 
-def test_live_rust_operand_projection_uses_registered_current_validators():
+def test_live_rust_operand_projection_uses_current_payload_validators():
     from tools.structural_audit_rust_domains import _operand_shapes
 
     schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
@@ -2406,38 +2408,16 @@ def test_live_rust_operand_projection_uses_registered_current_validators():
     )
     shapes = _operand_shapes(schema, generated)
     assert shapes is not None
-    # Independent wire expectations: these emitters consume exactly one value;
-    # an invented wire spelling must not acquire a shape from the recognizer.
+    # Independent wire expectations: these emitters consume exactly one value.
     assert shapes["warn_stderr"] == 1
     assert shapes["type_guard"] == 1
     assert shapes["module_slot"] == 0
     assert shapes["code_slot_set"] == 2
-    assert "__unregistered_wire" not in shapes
 
 
 @pytest.mark.parametrize(
     ("owner", "before", "after"),
     [
-        (
-            "validate_registered_op_kind",
-            "if !simpleir_kind_is_registered(kind)",
-            "if simpleir_kind_is_registered(kind)",
-        ),
-        (
-            "validate_registered_op_kind",
-            "validate_op_not_retired(kind)?;",
-            "return Ok(());",
-        ),
-        (
-            "validate_simple_op_shape",
-            "validate_registered_op_kind(&op.kind)?;",
-            "let _ = validate_registered_op_kind(&op.kind);",
-        ),
-        (
-            "validate_simple_op_shape",
-            "validate_registered_op_kind(&op.kind)?;",
-            'validate_registered_op_kind("warn_stderr")?;',
-        ),
         (
             "validate_simple_op_shape",
             "op.args.as_ref().map(Vec::len)",
@@ -2450,13 +2430,13 @@ def test_live_rust_operand_projection_uses_registered_current_validators():
         ),
         (
             "validate_simple_op_shape",
-            "validate_program_slot_symbol(&op.kind, op.s_value.as_deref())?;",
-            "let _ = validate_program_slot_symbol(&op.kind, op.s_value.as_deref());",
+            "validate_program_slot_symbol(op.kind, op.s_value.as_deref())?;",
+            "let _ = validate_program_slot_symbol(op.kind, op.s_value.as_deref());",
         ),
         (
             "validate_simple_op_shape",
-            'op.kind == "module_slot"',
-            'op.kind == "different_module_slot"',
+            "op.kind == crate::OpKind::ModuleSlot",
+            "op.kind == crate::OpKind::Nop",
         ),
         (
             "validate_simple_op_shape",
@@ -2475,12 +2455,12 @@ def test_live_rust_operand_projection_uses_registered_current_validators():
         ),
         (
             "validate_op_shape",
-            "kind: shape.kind.into(),",
+            "kind: shape.kind.to_string(),",
             'kind: "different-operation".into(),',
         ),
         (
             "validate_simple_op_shape",
-            "kind: shape.kind.into(),",
+            "kind: shape.kind.to_string(),",
             'kind: "different-operation".into(),',
         ),
     ],
@@ -2502,7 +2482,7 @@ def test_rust_operand_projection_rejects_changed_admission_or_operands(
     assert _operand_shapes(changed, generated) is None
 
 
-def test_rust_operand_projection_requires_generated_registration_membership():
+def test_rust_operand_projection_requires_matching_shape_row():
     from tools.structural_audit_rust_admission import _body
     from tools.structural_audit_rust_domains import _operand_shapes
 
@@ -2511,15 +2491,13 @@ def test_rust_operand_projection_requires_generated_registration_membership():
         encoding="utf-8"
     )
     assert _operand_shapes(schema, generated) is not None
-    body = _body(generated, "simpleir_kind_is_registered")
+    body = _body(generated, "simpleir_op_shape")
     assert body is not None and generated.count(body) == 1
-    assert body.count('"warn_stderr"') == 1
-    for changed_body in (
-        body.replace('"warn_stderr"', '"__unregistered_wire"'),
-        "true",
-    ):
-        changed = generated.replace(body, changed_body, 1)
-        assert _operand_shapes(schema, changed) is None
+    before = "OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[6])"
+    after = "OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[14])"
+    assert body.count(before) == 1
+    changed = generated.replace(body, body.replace(before, after, 1), 1)
+    assert _operand_shapes(schema, changed) is None
 
 
 @pytest.mark.parametrize(
@@ -2587,18 +2565,6 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
         ),
         (
             "runtime/molt-ir/src/ir_schema.rs",
-            "if !simpleir_kind_is_registered(kind)",
-            "if simpleir_kind_is_registered(kind)",
-            "rust_backend_rejection_applicability",
-        ),
-        (
-            "runtime/molt-ir/src/ir_schema.rs",
-            "validate_registered_op_kind(&op.kind)?;",
-            "let _ = validate_registered_op_kind(&op.kind);",
-            "rust_backend_rejection_applicability",
-        ),
-        (
-            "runtime/molt-ir/src/ir_schema.rs",
             "operands.unwrap_or(0) != shape.operands",
             "operands.unwrap_or(0) > shape.operands",
             "rust_backend_rejection_applicability",
@@ -2611,8 +2577,8 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
         ),
         (
             "runtime/molt-ir/src/ir_schema.rs",
-            "simpleir_op_shape(&op.kind).map_or(1, |shape| shape.operands)",
-            "simpleir_op_shape(&op.kind).map_or(0, |shape| shape.operands)",
+            "simpleir_op_shape(op.kind).map_or(1, |shape| shape.operands)",
+            "simpleir_op_shape(op.kind).map_or(0, |shape| shape.operands)",
             "rust_backend_rejection_applicability",
         ),
         (
@@ -2635,8 +2601,8 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
         ),
         (
             "runtime/molt-ir/src/tir/op_kinds_generated.rs",
-            '"build_tuple" | "tuple_new" => Some(SimpleIrRuntimeRequirements(2))',
-            '"build_tuple" | "tuple_new" => Some(SimpleIrRuntimeRequirements(0))',
+            "OpKind::BuildTuple | OpKind::TupleNew => Some(SimpleIrRuntimeRequirements(2))",
+            "OpKind::BuildTuple | OpKind::TupleNew => Some(SimpleIrRuntimeRequirements(0))",
             "rust_backend_lowering_gap",
         ),
         (
@@ -2647,14 +2613,14 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
         ),
         (
             "runtime/molt-backend-rust/src/rust/op_emitter.rs",
-            '"warn_stderr" => self.emit_op_warn_stderr(op),',
-            "",
+            "molt_ir::OpKind::WarnStderr => self.emit_op_warn_stderr(op),",
+            "molt_ir::OpKind::WarnStderr => self.emit_op_other(op),",
             "rust_backend_lowering_gap",
         ),
         (
             "runtime/molt-ir/src/tir/op_kinds_generated.rs",
-            'kind: "type_guard",\n        family: "value_transport",\n        operands: 1,',
-            'kind: "type_guard",\n        family: "value_transport",\n        operands: 2,',
+            'kind: OpKind::TypeGuard,\n        family: "value_transport",\n        operands: 1,',
+            'kind: OpKind::TypeGuard,\n        family: "value_transport",\n        operands: 2,',
             "rust_backend_rejection_applicability",
         ),
         (
@@ -2684,7 +2650,7 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
         (
             "runtime/molt-backend-rust/src/rust.rs",
             "let is_main = func.name",
-            "self.emit_op_local_copy(&OpIR::default()); let is_main = func.name",
+            "self.emit_op_local_copy(&OpIR::new(molt_ir::OpKind::Copy)); let is_main = func.name",
             "rust_backend_rejection_applicability",
         ),
         (
@@ -2714,72 +2680,66 @@ def test_rust_branch_projection_preserves_semantic_string_tokens():
 
     assert not _same('name == "none"', 'name == "n one"')
     arms = match_arms(
-        'match op.kind.as_str() { "live" => { self.ok(op); } _ => self.fail(op), }',
-        "op.kind.as_str()",
+        'match status { "live" => { self.ok(op); } _ => self.fail(op), }',
+        "status",
     )
     assert arms is not None and len(arms) == 2
     assert arms[0].pattern.strip() == '"live"'
     assert arms[1].pattern.strip() == "_"
 
 
-def test_rust_branch_projection_sibling_parsers_keep_exact_literal_ranges():
+def test_rust_branch_projection_sibling_parsers_keep_exact_typed_ranges():
     from tools.structural_audit_rust_admission import literal_dispatch_arm_ranges
     from tools.structural_audit_rust_domains import match_arms
 
     source = (
-        'match op.kind.as_str() { /* before */ "first" | "_alias" => self.one(op), '
-        '"guarded" if predicate("=>") => self.two(op), '
-        '"last" => { self.three(op); } _ => self.fail(op), }'
+        "match op.kind { /* before */ OpKind::Copy | OpKind::CopyVar => self.one(op), "
+        'OpKind::Call if predicate("=>") => self.two(op), '
+        "OpKind::Add => { self.three(op); } _ => self.fail(op), }"
     )
-    arms = match_arms(source, "op.kind.as_str()")
+    arms = match_arms(source, "op.kind")
     assert arms is not None and len(arms) == 4
-    ranges = literal_dispatch_arm_ranges(source)
+    ranges = literal_dispatch_arm_ranges(
+        source,
+        {"Copy": "copy", "CopyVar": "copy_var", "Call": "call", "Add": "add"},
+    )
     assert [names for _, _, names in ranges] == [
-        frozenset({"first", "_alias"}),
-        frozenset({"last"}),
+        frozenset({"copy", "copy_var"}),
+        frozenset({"add"}),
     ]
     assert [start for start, _, _ in ranges] == [
-        source.index('"first"'),
-        source.index('"last"'),
+        source.index("OpKind::Copy"),
+        source.index("OpKind::Add"),
     ]
     assert "self.one(op)" in source[ranges[0][0] : ranges[0][1]]
     assert "self.fail(op)" not in source[ranges[1][0] : ranges[1][1]]
     assert arms[-1].start == source.index("_ =>")
 
 
-def test_generated_literal_table_preserves_wire_literal_content():
-    from tools.structural_audit_rust_admission import _generated_literal_table
+def test_generated_typed_table_preserves_wire_literal_content():
+    from tools.structural_audit_rust import generated_kind_table, op_kind_wire_names
 
-    source = 'match kind { "nop" => Some(Mask(0)), /* skip */ _ => None, }'
+    declaration = 'pub enum OpKind { #[serde(rename = "nop")] Nop, #[serde(rename = "add")] Add, }'
+    names = op_kind_wire_names(declaration)
+    assert names == {"Nop": "nop", "Add": "add"}
+    source = (
+        "match kind { OpKind::Nop => Some(Mask(0)), /* skip */ OpKind::Add => None, }"
+    )
     result = r"Some\(Mask\((?P<value>\d+)\)\)"
-    assert _generated_literal_table(source, result, "_=>None,") == {"nop": "0"}
-    assert (
-        _generated_literal_table(source.replace('"nop"', '"n op"'), result, "_=>None,")
-        is None
-    )
-    assert (
-        _generated_literal_table(
-            source.replace('"nop"', 'r#"nop"#'), result, "_=>None,"
+    assert generated_kind_table(source, result, "None", names) == {"nop": "0"}
+    assert op_kind_wire_names(declaration.replace('"nop"', '"n op"')) is None
+    assert op_kind_wire_names(declaration.replace('"nop"', 'r#"nop"#')) is None
+    for replacement in ("_", "OpKind::Unknown", "OpKind::Nop if predicate()"):
+        assert (
+            generated_kind_table(
+                source.replace("OpKind::Nop", replacement), result, "None", names
+            )
+            is None
         )
-        is None
-    )
 
 
-def test_rust_admitted_domain_unknown_wire_requires_fail_closed_admission(tmp_path):
+def test_rust_admitted_domain_unclassified_requirements_fail_closed(tmp_path):
     _copy_live_rust_admission_sources(tmp_path)
-    dispatcher = tmp_path / "runtime/molt-backend-rust/src/rust/op_emitter.rs"
-    source = dispatcher.read_text(encoding="utf-8")
-    assert "_ => self.emit_op_other(op)," in source
-    dispatcher.write_text(
-        source.replace(
-            "_ => self.emit_op_other(op),",
-            '"__unregistered_wire" => self.emit_op_other(op),\n_ => self.emit_op_other(op),',
-            1,
-        ),
-        encoding="utf-8",
-    )
-    # An unknown spelling does not become an admitted operation merely because
-    # a dispatcher contains an explicit refusal for it.
     assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
     runtime = tmp_path / "runtime/molt-tir/src/target_admission/runtime.rs"
     source = runtime.read_text(encoding="utf-8")

@@ -6,7 +6,7 @@ use crate::{FunctionIR, OpIR};
 fn op_shapes(
     ops: &[OpIR],
 ) -> Vec<(
-    String,
+    molt_ir::OpKind,
     Option<i64>,
     Option<String>,
     Option<String>,
@@ -16,7 +16,7 @@ fn op_shapes(
     ops.iter()
         .map(|op| {
             (
-                op.kind.clone(),
+                op.kind,
                 op.value,
                 op.out.clone(),
                 op.var.clone(),
@@ -31,54 +31,54 @@ fn op_shapes(
 fn try_elision_preserves_try_finally_cleanup_shape() {
     let mut ops = vec![
         OpIR {
-            kind: "exception_push".to_string(),
+            kind: molt_ir::OpKind::ExceptionPush,
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionPush)
         },
         OpIR {
-            kind: "try_start".to_string(),
+            kind: molt_ir::OpKind::TryStart,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TryStart)
         },
         OpIR {
-            kind: "line".to_string(),
+            kind: molt_ir::OpKind::Line,
             value: Some(1),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Line)
         },
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
         OpIR {
-            kind: "try_end".to_string(),
+            kind: molt_ir::OpKind::TryEnd,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TryEnd)
         },
         OpIR {
-            kind: "jump".to_string(),
+            kind: molt_ir::OpKind::Jump,
             value: Some(11),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         },
         OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(11),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "const_none".to_string(),
+            kind: molt_ir::OpKind::ConstNone,
             out: Some("finally_value".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstNone)
         },
         OpIR {
-            kind: "exception_pop".to_string(),
+            kind: molt_ir::OpKind::ExceptionPop,
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionPop)
         },
     ];
 
@@ -96,69 +96,69 @@ fn try_elision_preserves_try_finally_cleanup_shape() {
 fn try_except_elision_preserves_raising_bodies_and_removes_only_safe_checks() {
     let mut ops = vec![
         OpIR {
-            kind: "exception_push".to_string(),
+            kind: molt_ir::OpKind::ExceptionPush,
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionPush)
         },
         OpIR {
-            kind: "try_start".to_string(),
+            kind: molt_ir::OpKind::TryStart,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TryStart)
         },
         OpIR {
-            kind: "const".to_string(),
+            kind: molt_ir::OpKind::Const,
             value: Some(1),
             out: Some("x".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         },
         OpIR {
-            kind: "check_exception".to_string(),
+            kind: molt_ir::OpKind::CheckException,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
         OpIR {
-            kind: "store_var".to_string(),
+            kind: molt_ir::OpKind::StoreVar,
             var: Some("total".to_string()),
             args: Some(vec!["x".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
         OpIR {
-            kind: "try_end".to_string(),
+            kind: molt_ir::OpKind::TryEnd,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TryEnd)
         },
         OpIR {
-            kind: "jump".to_string(),
+            kind: molt_ir::OpKind::Jump,
             value: Some(11),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         },
         OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "exception_last".to_string(),
+            kind: molt_ir::OpKind::ExceptionLast,
             out: Some("exc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionLast)
         },
         OpIR {
-            kind: "exception_match_builtin".to_string(),
+            kind: molt_ir::OpKind::ExceptionMatchBuiltin,
             value: Some(3),
             s_value: Some("ValueError".to_string()),
             args: Some(vec!["exc".to_string()]),
             out: Some("matched".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionMatchBuiltin)
         },
         OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(11),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "exception_pop".to_string(),
+            kind: molt_ir::OpKind::ExceptionPop,
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionPop)
         },
     ];
 
@@ -166,9 +166,9 @@ fn try_except_elision_preserves_raising_bodies_and_removes_only_safe_checks() {
     // frontend check is not a proof that its producer cannot throw.
     let mut checked_entry = ops.clone();
     checked_entry[2] = OpIR {
-        kind: "trace_enter_slot".into(),
+        kind: molt_ir::OpKind::TraceEnterSlot,
         s_value: Some("checked_entry".into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
     };
     checked_entry.remove(4); // The scalar-only fixture's store has no producer here.
     assert!(
@@ -180,11 +180,14 @@ fn try_except_elision_preserves_raising_bodies_and_removes_only_safe_checks() {
 
     elide_useless_try_blocks(&mut ops);
 
-    let kinds: Vec<&str> = ops.iter().map(|op| op.kind.as_str()).collect();
-    assert_eq!(kinds, vec!["const", "store_var"]);
+    let kinds: Vec<molt_ir::OpKind> = ops.iter().map(|op| op.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![molt_ir::OpKind::Const, molt_ir::OpKind::StoreVar]
+    );
     assert!(
         ops.iter()
-            .all(|op| !(op.kind == "check_exception" && op.value == Some(10))),
+            .all(|op| !(op.kind == molt_ir::OpKind::CheckException && op.value == Some(10))),
         "eliding a safe try/except body must not leave stale handler checks: {ops:?}"
     );
 }
@@ -192,10 +195,10 @@ fn try_except_elision_preserves_raising_bodies_and_removes_only_safe_checks() {
 #[test]
 fn try_except_elision_keeps_transport_hinted_unknown_add() {
     let add = OpIR {
-        kind: "add".to_string(),
+        kind: molt_ir::OpKind::Add,
         args: Some(vec!["left".to_string(), "right".to_string()]),
         out: Some("sum".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Add)
     };
     let mut func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -209,64 +212,64 @@ fn try_except_elision_keeps_transport_hinted_unknown_add() {
         execution_context: Default::default(),
         ops: vec![
             OpIR {
-                kind: "exception_push".to_string(),
+                kind: molt_ir::OpKind::ExceptionPush,
                 out: Some("none".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionPush)
             },
             OpIR {
-                kind: "try_start".to_string(),
+                kind: molt_ir::OpKind::TryStart,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryStart)
             },
             add,
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "store_var".to_string(),
+                kind: molt_ir::OpKind::StoreVar,
                 var: Some("result".to_string()),
                 args: Some(vec!["sum".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
             OpIR {
-                kind: "try_end".to_string(),
+                kind: molt_ir::OpKind::TryEnd,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryEnd)
             },
             OpIR {
-                kind: "jump".to_string(),
+                kind: molt_ir::OpKind::Jump,
                 value: Some(11),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             },
             OpIR {
-                kind: "label".to_string(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
             OpIR {
-                kind: "exception_last".to_string(),
+                kind: molt_ir::OpKind::ExceptionLast,
                 out: Some("exc".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionLast)
             },
             OpIR {
-                kind: "exception_match_builtin".to_string(),
+                kind: molt_ir::OpKind::ExceptionMatchBuiltin,
                 value: Some(3),
                 s_value: Some("ValueError".to_string()),
                 args: Some(vec!["exc".to_string()]),
                 out: Some("matched".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionMatchBuiltin)
             },
             OpIR {
-                kind: "label".to_string(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(11),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
             OpIR {
-                kind: "exception_pop".to_string(),
+                kind: molt_ir::OpKind::ExceptionPop,
                 out: Some("none".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionPop)
             },
         ],
     };
@@ -277,8 +280,10 @@ fn try_except_elision_keeps_transport_hinted_unknown_add() {
     );
 
     assert!(
-        func.ops.iter().any(|op| op.kind == "exception_push")
-            && func.ops.iter().any(|op| op.kind == "add"),
+        func.ops
+            .iter()
+            .any(|op| op.kind == molt_ir::OpKind::ExceptionPush)
+            && func.ops.iter().any(|op| op.kind == molt_ir::OpKind::Add),
         "transport hints alone must not elide try/except around Python arithmetic: {:?}",
         func.ops
     );
@@ -298,69 +303,69 @@ fn try_except_elision_uses_typed_int_body_without_transport_hints() {
         execution_context: Default::default(),
         ops: vec![
             OpIR {
-                kind: "exception_push".to_string(),
+                kind: molt_ir::OpKind::ExceptionPush,
                 out: Some("none".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionPush)
             },
             OpIR {
-                kind: "try_start".to_string(),
+                kind: molt_ir::OpKind::TryStart,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryStart)
             },
             OpIR {
-                kind: "add".to_string(),
+                kind: molt_ir::OpKind::Add,
                 args: Some(vec!["left".to_string(), "right".to_string()]),
                 out: Some("sum".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Add)
             },
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "store_var".to_string(),
+                kind: molt_ir::OpKind::StoreVar,
                 var: Some("result".to_string()),
                 args: Some(vec!["sum".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::StoreVar)
             },
             OpIR {
-                kind: "try_end".to_string(),
+                kind: molt_ir::OpKind::TryEnd,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TryEnd)
             },
             OpIR {
-                kind: "jump".to_string(),
+                kind: molt_ir::OpKind::Jump,
                 value: Some(11),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             },
             OpIR {
-                kind: "label".to_string(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(10),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
             OpIR {
-                kind: "exception_last".to_string(),
+                kind: molt_ir::OpKind::ExceptionLast,
                 out: Some("exc".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionLast)
             },
             OpIR {
-                kind: "exception_match_builtin".to_string(),
+                kind: molt_ir::OpKind::ExceptionMatchBuiltin,
                 value: Some(3),
                 s_value: Some("ValueError".to_string()),
                 args: Some(vec!["exc".to_string()]),
                 out: Some("matched".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionMatchBuiltin)
             },
             OpIR {
-                kind: "label".to_string(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(11),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
             OpIR {
-                kind: "exception_pop".to_string(),
+                kind: molt_ir::OpKind::ExceptionPop,
                 out: Some("none".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ExceptionPop)
             },
         ],
     };
@@ -370,65 +375,65 @@ fn try_except_elision_uses_typed_int_body_without_transport_hints() {
         &crate::tir::target_info::TargetInfo::native_release_fast(),
     );
 
-    let kinds: Vec<&str> = func.ops.iter().map(|op| op.kind.as_str()).collect();
-    assert_eq!(kinds, vec!["add", "store_var"]);
+    let kinds: Vec<molt_ir::OpKind> = func.ops.iter().map(|op| op.kind).collect();
+    assert_eq!(kinds, vec![molt_ir::OpKind::Add, molt_ir::OpKind::StoreVar]);
 }
 
 #[test]
 fn try_except_elision_aborts_when_body_branches_to_removed_wrapper_label() {
     let mut ops = vec![
         OpIR {
-            kind: "exception_push".to_string(),
+            kind: molt_ir::OpKind::ExceptionPush,
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionPush)
         },
         OpIR {
-            kind: "try_start".to_string(),
+            kind: molt_ir::OpKind::TryStart,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TryStart)
         },
         OpIR {
-            kind: "jump".to_string(),
+            kind: molt_ir::OpKind::Jump,
             value: Some(11),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         },
         OpIR {
-            kind: "try_end".to_string(),
+            kind: molt_ir::OpKind::TryEnd,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TryEnd)
         },
         OpIR {
-            kind: "jump".to_string(),
+            kind: molt_ir::OpKind::Jump,
             value: Some(11),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Jump)
         },
         OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(10),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "exception_last".to_string(),
+            kind: molt_ir::OpKind::ExceptionLast,
             out: Some("exc".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionLast)
         },
         OpIR {
-            kind: "exception_match_builtin".to_string(),
+            kind: molt_ir::OpKind::ExceptionMatchBuiltin,
             value: Some(3),
             s_value: Some("ValueError".to_string()),
             args: Some(vec!["exc".to_string()]),
             out: Some("matched".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionMatchBuiltin)
         },
         OpIR {
-            kind: "label".to_string(),
+            kind: molt_ir::OpKind::Label,
             value: Some(11),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
         OpIR {
-            kind: "exception_pop".to_string(),
+            kind: molt_ir::OpKind::ExceptionPop,
             out: Some("none".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionPop)
         },
     ];
 
@@ -446,58 +451,58 @@ fn try_except_elision_aborts_when_body_branches_to_removed_wrapper_label() {
 fn rewrite_phi_to_store_load_rewrites_merge_phi() {
     let mut ops = vec![
         OpIR {
-            kind: "const_bool".to_string(),
+            kind: molt_ir::OpKind::ConstBool,
             value: Some(1),
             out: Some("cond".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstBool)
         },
         OpIR {
-            kind: "if".to_string(),
+            kind: molt_ir::OpKind::If,
             args: Some(vec!["cond".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::If)
         },
         OpIR {
-            kind: "const".to_string(),
+            kind: molt_ir::OpKind::Const,
             value: Some(1),
             out: Some("then_val".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         },
         OpIR {
-            kind: "else".to_string(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::Else,
+            ..OpIR::new(molt_ir::OpKind::Else)
         },
         OpIR {
-            kind: "const".to_string(),
+            kind: molt_ir::OpKind::Const,
             value: Some(2),
             out: Some("else_val".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         },
         OpIR {
-            kind: "end_if".to_string(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::EndIf,
+            ..OpIR::new(molt_ir::OpKind::EndIf)
         },
         OpIR {
-            kind: "phi".to_string(),
+            kind: molt_ir::OpKind::Phi,
             out: Some("merged".to_string()),
             args: Some(vec!["then_val".to_string(), "else_val".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Phi)
         },
         OpIR {
-            kind: "ret".to_string(),
+            kind: molt_ir::OpKind::Ret,
             args: Some(vec!["merged".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         },
     ];
 
     rewrite_phi_to_store_load(&mut ops);
 
     assert!(
-        ops.iter().all(|op| op.kind != "phi"),
+        ops.iter().all(|op| op.kind != molt_ir::OpKind::Phi),
         "phi should be eliminated: {ops:?}"
     );
     assert!(
         ops.iter().any(|op| {
-            op.kind == "store_var"
+            op.kind == molt_ir::OpKind::StoreVar
                 && op.var.as_deref() == Some("_phi_merged")
                 && op
                     .args
@@ -508,7 +513,7 @@ fn rewrite_phi_to_store_load_rewrites_merge_phi() {
     );
     assert!(
         ops.iter().any(|op| {
-            op.kind == "store_var"
+            op.kind == molt_ir::OpKind::StoreVar
                 && op.var.as_deref() == Some("_phi_merged")
                 && op
                     .args
@@ -519,7 +524,7 @@ fn rewrite_phi_to_store_load_rewrites_merge_phi() {
     );
     assert!(
         ops.iter().any(|op| {
-            op.kind == "load_var"
+            op.kind == molt_ir::OpKind::LoadVar
                 && op.var.as_deref() == Some("_phi_merged")
                 && op.out.as_deref() == Some("merged")
         }),

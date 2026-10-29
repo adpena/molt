@@ -41,6 +41,7 @@ fn make_const_int(result: u32, value: i64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -54,6 +55,7 @@ fn make_const_float(result: u32, value: f64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("f_value".into(), AttrValue::Float(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstFloat,
         operands: vec![],
@@ -67,6 +69,7 @@ fn make_const_bool(result: u32, value: bool) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Bool(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -78,6 +81,7 @@ fn make_const_bool(result: u32, value: bool) -> TirOp {
 
 fn make_binop(opcode: OpCode, result: u32, lhs: u32, rhs: u32) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(lhs), ValueId(rhs)],
@@ -91,6 +95,7 @@ fn make_check_exception(target_label: i64) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(target_label));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -106,12 +111,16 @@ fn fold_int_addition() {
     let ops = vec![
         make_const_int(0, 1),
         make_const_int(1, 2),
-        make_binop(OpCode::Add, 2, 0, 1),
+        make_binop(OpCode::Add, 2, 0, 1).with_origin(molt_ir::OpKind::Add),
     ];
     let (result_ops, _) = run_sccp_on_ops(ops, 3);
     // The Add op should be rewritten to ConstInt(3).
     assert_eq!(result_ops[2].opcode, OpCode::ConstInt);
     assert_eq!(result_ops[2].attrs.get("value"), Some(&AttrValue::Int(3)));
+    assert_eq!(
+        result_ops[2].origin, None,
+        "the constant replaces the source operation"
+    );
 }
 
 #[test]
@@ -322,6 +331,7 @@ fn make_const_str(result: u32, value: &str) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("s_value".into(), AttrValue::Str(value.into()));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -335,6 +345,7 @@ fn make_call_builtin(result: u32, name: &str, args: Vec<u32>) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("name".into(), AttrValue::Str(name.into()));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: args.into_iter().map(ValueId).collect(),
@@ -354,6 +365,7 @@ fn make_call_method(result: u32, method: &str, args: Vec<u32>) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("method".into(), AttrValue::Str(method.into()));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallMethod,
         operands: args.into_iter().map(ValueId).collect(),
@@ -464,6 +476,7 @@ fn no_fold_print_builtin() {
 
 fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildList,
         operands: elements.into_iter().map(ValueId).collect(),
@@ -475,6 +488,7 @@ fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
 
 fn make_build_tuple(result: u32, elements: Vec<u32>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildTuple,
         operands: elements.into_iter().map(ValueId).collect(),
@@ -486,6 +500,7 @@ fn make_build_tuple(result: u32, elements: Vec<u32>) -> TirOp {
 
 fn make_build_dict(result: u32, kv_pairs: Vec<u32>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildDict,
         operands: kv_pairs.into_iter().map(ValueId).collect(),
@@ -889,9 +904,7 @@ fn dedicated_range_does_not_fix_public_length_lookup() {
         (i64::MIN, i64::MAX, 1, None),
     ] {
         let mut range = make_call_builtin(3, "range", vec![0, 1, 2]);
-        range
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str("range_new".into()));
+        range.origin = Some(molt_ir::OpKind::RangeNew);
         let (after, _) = run_sccp_on_ops(
             vec![
                 make_const_int(0, start),
@@ -1030,6 +1043,7 @@ fn builtin_dispatch_view_separates_name_and_arguments_and_rejects_conflicts() {
         let mut call = make_call_builtin(2, "len", vec![1]);
         if dynamic {
             call.attrs.clear();
+            call.origin = None;
             call.operands.insert(0, ValueId(0));
         }
         let (after, _) = run_sccp_on_ops(
@@ -1038,14 +1052,23 @@ fn builtin_dispatch_view_separates_name_and_arguments_and_rejects_conflicts() {
         );
         assert_eq!(after[2].opcode, OpCode::CallBuiltin);
     }
-    for (key, value) in [
-        ("_original_kind", AttrValue::Str("print".into())),
-        ("_original_kind", AttrValue::Str("unknown_builtin".into())),
-        ("name", AttrValue::Int(1)),
-        ("s_value", AttrValue::Str("abs".into())),
-        ("callee", AttrValue::Str("molt_is_truthy".into())),
+    for (origin, key, value) in [
+        (
+            Some(molt_ir::OpKind::Print),
+            "name",
+            AttrValue::Str("len".into()),
+        ),
+        (
+            Some(molt_ir::OpKind::Add),
+            "name",
+            AttrValue::Str("len".into()),
+        ),
+        (None, "name", AttrValue::Int(1)),
+        (None, "s_value", AttrValue::Str("abs".into())),
+        (None, "callee", AttrValue::Str("molt_is_truthy".into())),
     ] {
         let mut call = make_call_builtin(1, "len", vec![0]);
+        call.origin = origin;
         call.attrs.insert(key.into(), value);
         // These are deliberately malformed local-analysis inputs, not
         // admitted pipeline fixtures. Prove rejection at the real boundary

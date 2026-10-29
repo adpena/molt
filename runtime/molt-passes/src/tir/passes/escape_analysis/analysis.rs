@@ -26,7 +26,7 @@ fn is_transparent_copy(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy
         && op.operands.len() == 1
         && op.results.len() == 1
-        && is_pure_move_copy(&op.attrs)
+        && is_pure_move_copy(op.origin)
 }
 
 /// One transport projection for escape propagation, containment, and

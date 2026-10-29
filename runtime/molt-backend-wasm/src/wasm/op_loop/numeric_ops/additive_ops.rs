@@ -105,6 +105,7 @@ pub(super) fn emit_additive_numeric_op(
             operands,
             import_ids,
             import_name,
+            selection.op_loop_kind,
             locals,
             reloc_enabled,
             |func, scratch_local| {

@@ -77,6 +77,7 @@ use crate::tir::values::TirValue;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -264,10 +265,7 @@ fn scalar_binding_views_preserve_recurrences_ranges_and_carriers() {
                 if is_integer {
                     let view = func.fresh_value();
                     let mut store = op(OpCode::Copy, vec![value], vec![view]);
-                    store.attrs.insert(
-                        "_original_kind".into(),
-                        AttrValue::Str("frame_home_store".into()),
-                    );
+                    store.origin = Some(molt_ir::OpKind::FrameHomeStore);
                     store.attrs.insert("value".into(), AttrValue::Int(0));
                     published.push(store);
                     views.insert(value, view);
@@ -286,10 +284,7 @@ fn scalar_binding_views_preserve_recurrences_ranges_and_carriers() {
             let next = increment.results[0];
             let next_view = func.fresh_value();
             let mut store = op(OpCode::Copy, vec![next], vec![next_view]);
-            store.attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("frame_home_store".into()),
-            );
+            store.origin = Some(molt_ir::OpKind::FrameHomeStore);
             store.attrs.insert("value".into(), AttrValue::Int(0));
             func.blocks.get_mut(&body).unwrap().ops.push(store);
             if let Terminator::Branch { args, .. } =
@@ -334,10 +329,7 @@ fn effectful_binding_views_do_not_forward_container_lengths() {
     let list = func.fresh_value();
     let view = func.fresh_value();
     let mut store = op(OpCode::Copy, vec![list], vec![view]);
-    store.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("frame_home_store".into()),
-    );
+    store.origin = Some(molt_ir::OpKind::FrameHomeStore);
     store.attrs.insert("value".into(), AttrValue::Int(0));
     func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
         cint(element, 1),

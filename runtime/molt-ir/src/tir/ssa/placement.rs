@@ -402,9 +402,7 @@ impl<'a> SsaContext<'a> {
             producer.opcode = OpCode::IterNextUnboxed;
             producer.results = vec![plan.value.result, plan.done.result];
             producer.attrs.remove("_simple_out");
-            producer
-                .attrs
-                .insert("_original_kind".into(), AttrValue::Str("iter_next".into()));
+            producer.origin = Some(crate::OpKind::IterNext);
             producer.attrs.insert(
                 "_simple_result_0".into(),
                 AttrValue::Str(plan.value.name.clone()),
@@ -754,7 +752,7 @@ impl<'a> SsaContext<'a> {
             for idx in bb.start_op..bb.end_op {
                 let op = &self.ops[idx];
 
-                let structural = is_structural(&op.kind);
+                let structural = is_structural(op.kind);
                 if !structural {
                     op_indices.push(idx);
                 }

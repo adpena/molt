@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import textwrap
 from pathlib import Path
 
@@ -14,12 +13,7 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_REGISTERED_KINDS,
     validate_serialized_kind,
 )
-from tools.audit_op_kinds import (
-    _rust_function_source,
-    extract_frontend_kinds,
-    extract_match_arms,
-)
-from tools.gen_op_kinds import load_table
+from tools.audit_op_kinds import extract_frontend_kinds
 from tools.op_kinds.census import FrontendCensus, frontend_census
 from tools.op_kinds.errors import OpKindTableError
 from tools.op_kinds.registration import validate_registration
@@ -351,29 +345,6 @@ def test_backend_private_kinds_cannot_escape_frontend_serialization(kind: str) -
     assert kind.upper() not in FRONTEND_REGISTERED_KINDS
     with pytest.raises(ValueError, match="backend-private SimpleIR op kind"):
         validate_serialized_kind(kind, "frontend_function")
-
-
-def test_luau_dispatch_and_synthetic_operations_are_registered() -> None:
-    # Use actual dispatch arms, excluding nested builtin-name/operator matches.
-    # This checks the consumer vocabulary independently of registry projection.
-    root = ROOT / "runtime/molt-backend-luau/src"
-    discovered: set[str] = set()
-    for path in sorted((root / "luau").glob("op_*.rs")):
-        source = path.read_text(encoding="utf-8")
-        for function in re.findall(r"fn (emit_\w+op)\(", source):
-            # Dispatch wrappers/helpers do not own a kind match.
-            body = _rust_function_source(path, function)
-            if "match op.kind.as_str()" in body:
-                discovered.update(
-                    extract_match_arms(path, function, "match op.kind.as_str()")
-                )
-    rewrites = (root / "luau_backend/ir_rewrites.rs").read_text(encoding="utf-8")
-    discovered.update(re.findall(r'kind: "([a-z_]+)"\.into\(\)', rewrites))
-    assert {"pcall_wrap_begin", "string_splitlines", "string_rfind_slice"} <= discovered
-    assert not discovered - SIMPLEIR_REGISTERED_KINDS
-    private = load_table()["simpleir_backend_private_kinds"]
-    assert {row["backend"] for row in private} == {"luau"}
-    assert not SIMPLEIR_BACKEND_PRIVATE_KINDS - discovered
 
 
 @pytest.mark.parametrize(

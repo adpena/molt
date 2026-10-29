@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn boxed_or_retains_selected_operand_result() {
@@ -13,6 +14,7 @@ fn boxed_or_retains_selected_operand_result() {
     let result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Or,
         operands: vec![ValueId(0), ValueId(1)],
@@ -114,6 +116,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_none_def(operand));
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![operand],
@@ -198,9 +201,8 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
                 "integer".to_string(),
             ],
             ops: vec![crate::ir::OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["value".to_string()]),
-                ..crate::ir::OpIR::default()
+                ..crate::ir::OpIR::new(OpKind::Ret)
             }],
             param_types: Some(vec![
                 "float".to_string(),
@@ -216,15 +218,13 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
         if exact_return {
             typed_provider.ops = vec![
                 crate::ir::OpIR {
-                    kind: "const_float".to_string(),
                     out: Some("exact_value".to_string()),
                     f_value: Some(1.25),
-                    ..crate::ir::OpIR::default()
+                    ..crate::ir::OpIR::new(OpKind::ConstFloat)
                 },
                 crate::ir::OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["exact_value".to_string()]),
-                    ..crate::ir::OpIR::default()
+                    ..crate::ir::OpIR::new(OpKind::Ret)
                 },
             ];
         }
@@ -233,8 +233,7 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
             name: "void_provider".to_string(),
             params: vec![],
             ops: vec![crate::ir::OpIR {
-                kind: "ret_void".to_string(),
-                ..crate::ir::OpIR::default()
+                ..crate::ir::OpIR::new(OpKind::RetVoid)
             }],
             param_types: None,
             source_file: None,
@@ -419,12 +418,12 @@ fn preserved_runtime_call_rejects_name_only_symbol_drift() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
     std::sync::Arc::make_mut(&mut backend.runtime_callable_symbols)
-        .insert("molt_unclassified_runtime_symbol".to_string());
+        .insert("molt_binop".to_string());
 
-    let err = lower_preserved_kind_ir(&backend, "unclassified_runtime_symbol", 2, true, None)
+    let err = lower_preserved_kind_ir(&backend, OpKind::Binop, 2, true, None)
         .expect_err("name-only preserved runtime symbols must fail before LLVM declaration");
     assert_lowering_error_contains(&err, "has no positional boxed-value ABI classification");
-    assert_lowering_error_contains(&err, "molt_unclassified_runtime_symbol");
+    assert_lowering_error_contains(&err, "molt_binop");
 }
 
 #[test]

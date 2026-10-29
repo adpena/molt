@@ -48,7 +48,7 @@ pub(crate) enum WasmConstLirFastPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WasmConstOpPolicySpec {
-    pub(crate) kind: &'static str,
+    pub(crate) kind: molt_ir::OpKind,
     pub(crate) inline_seed: WasmConstInlineSeed,
     pub(crate) materializer_import: Option<WasmRuntimeImport>,
     pub(crate) literal_payload: Option<OwnedLiteralPayloadKind>,
@@ -60,7 +60,7 @@ pub(crate) struct WasmConstOpPolicySpec {
 
 pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
     WasmConstOpPolicySpec {
-        kind: "const",
+        kind: molt_ir::OpKind::Const,
         inline_seed: WasmConstInlineSeed::Int,
         materializer_import: Some(WasmRuntimeImport::IntFromI64),
         literal_payload: None,
@@ -70,7 +70,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Lower,
     },
     WasmConstOpPolicySpec {
-        kind: "const_bool",
+        kind: molt_ir::OpKind::ConstBool,
         inline_seed: WasmConstInlineSeed::Bool,
         materializer_import: None,
         literal_payload: None,
@@ -80,7 +80,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Lower,
     },
     WasmConstOpPolicySpec {
-        kind: "const_float",
+        kind: molt_ir::OpKind::ConstFloat,
         inline_seed: WasmConstInlineSeed::Float,
         materializer_import: None,
         literal_payload: None,
@@ -90,7 +90,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Lower,
     },
     WasmConstOpPolicySpec {
-        kind: "const_none",
+        kind: molt_ir::OpKind::ConstNone,
         inline_seed: WasmConstInlineSeed::NoneValue,
         materializer_import: None,
         literal_payload: None,
@@ -100,7 +100,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Lower,
     },
     WasmConstOpPolicySpec {
-        kind: "const_not_implemented",
+        kind: molt_ir::OpKind::ConstNotImplemented,
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some(WasmRuntimeImport::NotImplemented),
         literal_payload: None,
@@ -110,7 +110,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
-        kind: "const_ellipsis",
+        kind: molt_ir::OpKind::ConstEllipsis,
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some(WasmRuntimeImport::Ellipsis),
         literal_payload: None,
@@ -120,7 +120,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
-        kind: "const_str",
+        kind: molt_ir::OpKind::ConstStr,
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some(WasmRuntimeImport::StringFromBytes),
         literal_payload: Some(OwnedLiteralPayloadKind::String),
@@ -130,7 +130,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
-        kind: "const_bigint",
+        kind: molt_ir::OpKind::ConstBigint,
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some(WasmRuntimeImport::BigintFromBytes),
         literal_payload: Some(OwnedLiteralPayloadKind::BigintBytes),
@@ -140,7 +140,7 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
         lir_fast: WasmConstLirFastPolicy::Materialize,
     },
     WasmConstOpPolicySpec {
-        kind: "const_bytes",
+        kind: molt_ir::OpKind::ConstBytes,
         inline_seed: WasmConstInlineSeed::None,
         materializer_import: Some(WasmRuntimeImport::BytesFromBytes),
         literal_payload: Some(OwnedLiteralPayloadKind::Bytes),
@@ -152,7 +152,9 @@ pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[
 ];
 
 #[inline]
-pub(crate) fn wasm_const_op_policy(kind: &str) -> Option<&'static WasmConstOpPolicySpec> {
+pub(crate) fn wasm_const_op_policy(
+    kind: molt_ir::OpKind,
+) -> Option<&'static WasmConstOpPolicySpec> {
     WASM_CONST_OP_POLICIES
         .iter()
         .find(|policy| policy.kind == kind)
@@ -162,7 +164,7 @@ pub(crate) fn wasm_const_op_policy(kind: &str) -> Option<&'static WasmConstOpPol
 pub(crate) fn wasm_const_op_policy_for_opcode(
     opcode: OpCode,
 ) -> Option<&'static WasmConstOpPolicySpec> {
-    wasm_const_op_policy(opcode_canonical_kind_table(opcode))
+    opcode_canonical_kind_table(opcode).and_then(wasm_const_op_policy)
 }
 
 impl WasmConstOpPolicySpec {

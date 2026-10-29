@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use molt_backend::tir::lir::{LirFunction, LirRepr};
-use molt_backend::tir::ops::{AttrValue, OpCode, TirOp};
+use molt_backend::tir::ops::{OpCode, TirOp};
 use molt_backend::tir::types::TirType;
 use molt_backend::tir::values::ValueId;
 
@@ -87,8 +87,8 @@ pub(crate) fn report_opcode_name(op: &TirOp) -> String {
     if op.opcode != OpCode::Copy {
         return format!("{:?}", op.opcode);
     }
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => format!("Copy::{kind}"),
+    match op.origin {
+        Some(kind) => format!("Copy::{kind}"),
         _ => "Copy".to_string(),
     }
 }

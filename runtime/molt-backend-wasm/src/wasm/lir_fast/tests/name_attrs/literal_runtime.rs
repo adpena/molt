@@ -4,21 +4,21 @@ use super::super::*;
 fn literal_name_attrs_without_site_id_stay_lir_fast_runtime_calls() {
     let cases = [
         (
-            "get_attr_special_obj",
+            molt_ir::OpKind::GetAttrSpecialObj,
             OpCode::LoadAttr,
             1,
             true,
             vec!["get_attr_special"],
         ),
         (
-            "del_attr_generic_ptr",
+            molt_ir::OpKind::DelAttrGenericPtr,
             OpCode::DelAttr,
             1,
             false,
             vec!["del_attr_object"],
         ),
         (
-            "del_attr_generic_obj",
+            molt_ir::OpKind::DelAttrGenericObj,
             OpCode::DelAttr,
             1,
             false,
@@ -26,7 +26,8 @@ fn literal_name_attrs_without_site_id_stay_lir_fast_runtime_calls() {
         ),
     ];
 
-    for (name, opcode, operand_count, has_result, runtime_calls) in cases {
+    for (kind, opcode, operand_count, has_result, runtime_calls) in cases {
+        let name = kind.as_str();
         let mut func = TirFunction::new(
             name.into(),
             vec![TirType::DynBox; operand_count],
@@ -44,13 +45,14 @@ fn literal_name_attrs_without_site_id_stay_lir_fast_runtime_calls() {
         });
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
             results: result_id.into_iter().collect(),
             attrs: {
                 let mut m = AttrDict::new();
-                m.insert("_original_kind".into(), AttrValue::Str(name.into()));
+
                 m.insert("name".into(), AttrValue::Str("field".into()));
                 m
             },

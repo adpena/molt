@@ -11,7 +11,7 @@ use super::types::TirType;
 use super::values::{TirValue, ValueId};
 use crate::{ExecutionContextPolicy, FunctionReturnAbi};
 
-const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v3\0";
+const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v4\0";
 
 #[derive(Serialize, Deserialize)]
 struct TirFunctionArtifact {
@@ -47,8 +47,11 @@ struct TirBlockArtifact {
 struct TirOpArtifact {
     dialect: Dialect,
     opcode: OpCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<crate::OpKind>,
     operands: Vec<ValueId>,
     results: Vec<ValueId>,
+    #[serde(deserialize_with = "deserialize_op_attr_entries")]
     attrs: Vec<(String, AttrValue)>,
     source_span: Option<(u32, u32)>,
 }
@@ -87,10 +90,21 @@ struct TirBlockArtifactRef<'a> {
 struct TirOpArtifactRef<'a> {
     dialect: Dialect,
     opcode: OpCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<crate::OpKind>,
     operands: &'a [ValueId],
     results: &'a [ValueId],
     attrs: Vec<(&'a String, &'a AttrValue)>,
     source_span: Option<(u32, u32)>,
+}
+
+fn deserialize_op_attr_entries<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Vec<(String, AttrValue)>, D::Error> {
+    let attrs = <Vec<(String, AttrValue)> as serde::Deserialize>::deserialize(decoder)?;
+    super::ops::validate_op_attr_keys(attrs.iter().map(|(key, _)| key.as_str()))
+        .map_err(serde::de::Error::custom)?;
+    Ok(attrs)
 }
 
 fn sorted_entry_refs<K: Ord, V>(map: &HashMap<K, V>) -> Vec<(&K, &V)> {
@@ -127,6 +141,7 @@ fn artifact_op_ref(op: &TirOp) -> TirOpArtifactRef<'_> {
     TirOpArtifactRef {
         dialect: op.dialect,
         opcode: op.opcode,
+        origin: op.origin,
         operands: &op.operands,
         results: &op.results,
         attrs: sorted_entry_refs(&op.attrs),
@@ -179,6 +194,7 @@ impl From<TirOpArtifact> for TirOp {
         Self {
             dialect: op.dialect,
             opcode: op.opcode,
+            origin: op.origin,
             operands: op.operands,
             results: op.results,
             attrs: op.attrs.into_iter().collect::<AttrDict>(),
@@ -258,6 +274,74 @@ pub fn deserialize_tir_function(bytes: &[u8]) -> Option<TirFunction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_origin_roundtrips_and_legacy_identity_channels_are_rejected() {
+        let mut function = TirFunction::new(
+            "origin".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            FunctionReturnAbi::Value,
+        );
+        let arg = function.blocks[&function.entry_block].args[0].id;
+        let result = ValueId(function.next_value);
+        function.next_value += 1;
+        let block = function.blocks.get_mut(&function.entry_block).unwrap();
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            origin: Some(crate::OpKind::Len),
+            operands: vec![arg],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        block.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let encoded = serialize_tir_function(&function).unwrap();
+        let restored = deserialize_tir_function(&encoded).expect("typed origin survives the cache");
+        assert_eq!(
+            restored.blocks[&restored.entry_block].ops[0].origin,
+            Some(crate::OpKind::Len)
+        );
+        for invalid in [
+            serde_json::json!(2),
+            serde_json::json!("future_unregistered_op"),
+        ] {
+            let mut artifact: serde_json::Value =
+                rmp_serde::from_slice(&encoded[TIR_FUNCTION_CACHE_MAGIC.len()..]).unwrap();
+            artifact["blocks"][0][1]["ops"][0]["origin"] = invalid.clone();
+            let mut poisoned_cache = TIR_FUNCTION_CACHE_MAGIC.to_vec();
+            poisoned_cache.extend(rmp_serde::to_vec_named(&artifact).unwrap());
+            assert!(deserialize_tir_function(&poisoned_cache).is_none());
+
+            let mut operation =
+                serde_json::to_value(&function.blocks[&function.entry_block].ops[0]).unwrap();
+            operation["origin"] = invalid;
+            assert!(serde_json::from_value::<TirOp>(operation.clone()).is_err());
+            assert!(
+                rmp_serde::from_slice::<TirOp>(&rmp_serde::to_vec_named(&operation).unwrap())
+                    .is_err()
+            );
+        }
+        let mut old_version = encoded.clone();
+        old_version[..TIR_FUNCTION_CACHE_MAGIC.len()].copy_from_slice(b"MOLT:TIRFUNC:v3\0");
+        assert!(deserialize_tir_function(&old_version).is_none());
+        let op = &mut function.blocks.get_mut(&function.entry_block).unwrap().ops[0];
+        op.origin = None;
+        op.attrs
+            .insert("_original_kind".into(), AttrValue::Str("len".into()));
+        let legacy = serde_json::to_vec(op).unwrap();
+        assert!(
+            serde_json::from_slice::<TirOp>(&legacy)
+                .unwrap_err()
+                .to_string()
+                .contains("typed origin")
+        );
+        assert!(super::super::verify::verify_function(&function).is_err());
+        assert!(deserialize_tir_function(&serialize_tir_function(&function).unwrap()).is_none());
+    }
 
     #[test]
     fn value_abi_survives_semantic_none_and_no_surviving_payload_returns() {
@@ -349,6 +433,7 @@ mod tests {
         }
         let mut entry = function.blocks.remove(&function.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
