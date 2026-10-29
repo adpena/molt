@@ -4544,6 +4544,10 @@ description = "Op-kind registry: generated-file sync, fail-closed frontend admis
 globs = [
   "tools/gen_op_kinds.py",
   "tools/audit_op_kinds.py",
+  # tests/test_gen_op_kinds.py reads pass and verifier sources through
+  # tools/op_kinds/paths.py, so a change there must select it.
+  "runtime/molt-passes/src/tir/**/*.rs",
+  "runtime/molt-tir/src/tir/**/*.rs",
   "tools/op_kinds/**/*.py",
   "runtime/molt-ir/src/tir/op_kinds.toml",
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",

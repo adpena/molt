@@ -10387,6 +10387,8 @@
         "globs": [
           "tools/gen_op_kinds.py",
           "tools/audit_op_kinds.py",
+          "runtime/molt-passes/src/tir/**/*.rs",
+          "runtime/molt-tir/src/tir/**/*.rs",
           "tools/op_kinds/**/*.py",
           "runtime/molt-ir/src/tir/op_kinds.toml",
           "runtime/molt-ir/src/tir/op_kinds_generated.rs",
