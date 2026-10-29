@@ -83,11 +83,34 @@ def is_link_like(path: Path) -> bool:
     return metadata_is_link_like(metadata)
 
 
+def _is_system_link(path: Path, metadata: os.stat_result) -> bool:
+    """Whether a POSIX symlink belongs to the operating system.
+
+    macOS ships ``/var``, ``/tmp`` and ``/etc`` as root-owned links into
+    ``/private``, so its platform temp directory lies behind one. Only root can
+    create or replace a root-owned link in a root-owned directory that no group
+    or other user may write; a link anyone else can plant stays refused. This
+    is OpenSSH's StrictModes ownership rule for path components (``safe_path``).
+    """
+    if os.name == "nt" or not stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != 0:
+        return False
+    try:
+        parent = path.parent.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(parent.st_mode)
+        and parent.st_uid == 0
+        and not parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    )
+
+
 def resolve_owned_path(path: Path) -> Path:
     """Resolve custody only after rejecting each lexical link/reparse component.
 
     Check the supplied spelling before resolution can erase an indirect root,
     including dangling links and components preceding a parent traversal.
+    Operating-system links (``_is_system_link``) are not custody hazards.
     Windows DOS and UNC paths have one spelling, independent of whether the
     caller or the filesystem resolver supplied an extended-length prefix.
     """
@@ -98,7 +121,11 @@ def resolve_owned_path(path: Path) -> Path:
     cursor = Path(lexical.anchor)
     for part in lexical.parts[1:]:
         cursor /= part
-        if is_link_like(cursor):
+        try:
+            metadata = cursor.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        if metadata_is_link_like(metadata) and not _is_system_link(cursor, metadata):
             raise ValueError(f"owned path traverses a link or junction: {cursor}")
     resolved = lexical.resolve()
     if os.name == "nt":
