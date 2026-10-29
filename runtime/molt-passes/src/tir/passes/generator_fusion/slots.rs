@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
     CfgEdgePolicy, build_dom_children, build_pred_map_with, compute_dominance_frontiers,
-    compute_idoms_with, dom_tree_preorder, exception_label_to_block, exception_successors,
+    compute_dominator_tree_with, dom_tree_preorder, exception_label_to_block, exception_successors,
     iterated_dominance_frontier, reachable_blocks_with,
 };
 use crate::tir::function::TirFunction;
@@ -127,10 +127,10 @@ fn frame_access(op: &TirOp, index: usize, frame: ValueId) -> Result<Option<Frame
 pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     let frame = poll.blocks.get(&poll.entry_block)?.args.first()?.id;
     let pred_map = build_pred_map_with(poll, CfgEdgePolicy::TerminatorOnly);
-    let idoms = compute_idoms_with(poll, &pred_map, CfgEdgePolicy::TerminatorOnly);
+    let tree = compute_dominator_tree_with(poll, &pred_map, CfgEdgePolicy::TerminatorOnly);
     // The blocks the poll's own control flow enters, those any edge enters,
     // and those an exception edge enters.
-    let body: HashSet<BlockId> = idoms.keys().copied().collect();
+    let body: HashSet<BlockId> = tree.blocks().iter().copied().collect();
     let executable = reachable_blocks_with(poll, CfgEdgePolicy::Full);
     let labels = exception_label_to_block(poll);
     let exception_targets: HashSet<BlockId> = executable
@@ -251,7 +251,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
 
     // Each slot joins where its stores' iterated dominance frontier meets its
     // liveness. Slots are visited in order, so each join lists them ascending.
-    let frontiers = compute_dominance_frontiers(&idoms, &pred_map, &body);
+    let frontiers = compute_dominance_frontiers(&tree, &pred_map);
     let mut joins: BTreeMap<BlockId, Vec<usize>> = BTreeMap::new();
     for (slot, (slot_stores, slot_live)) in stores.iter().zip(&live).enumerate() {
         for block in iterated_dominance_frontier(slot_stores, &frontiers) {
@@ -264,13 +264,13 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     // Rename in dominator-tree preorder: a block starts from its immediate
     // dominator's exit, or the frame's initial state at the entry, and its
     // joins shadow that.
-    let children = build_dom_children(&idoms);
+    let children = build_dom_children(&tree);
     let mut exit_state: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::new();
     let mut reads: HashMap<ValueId, SlotDef> = HashMap::new();
     let mut arguments: BTreeSet<usize> = BTreeSet::new();
     let mut promoted_stores: BTreeSet<(BlockId, usize)> = BTreeSet::new();
     for block in dom_tree_preorder(poll.entry_block, &children) {
-        let mut state = match idoms.get(&block).copied().flatten() {
+        let mut state = match tree.idom(block) {
             Some(parent) => exit_state[&parent].clone(),
             None => initial.clone(),
         };

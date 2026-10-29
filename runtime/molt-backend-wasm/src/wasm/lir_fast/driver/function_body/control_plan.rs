@@ -53,11 +53,14 @@ impl ControlPlan {
         } else {
             let predecessors =
                 dominators::build_pred_map_with(graph, CfgEdgePolicy::TerminatorOnly);
-            let idoms =
-                dominators::compute_idoms_with(graph, &predecessors, CfgEdgePolicy::TerminatorOnly);
+            let tree = dominators::compute_dominator_tree_with(
+                graph,
+                &predecessors,
+                CfgEdgePolicy::TerminatorOnly,
+            );
             let mut headers = HashSet::new();
             for (source, target) in backward_edges {
-                if !dominators::dominates(target, source, &idoms) {
+                if !tree.dominates(target, source) {
                     reject("irreducible cycle: backward edge does not target a dominating header");
                 }
                 headers.insert(target);
@@ -67,7 +70,7 @@ impl ControlPlan {
                 .map(|header| {
                     (
                         header,
-                        dominators::collect_loop_blocks(graph, &predecessors, &idoms, header),
+                        dominators::collect_loop_blocks(graph, &predecessors, &tree, header),
                     )
                 })
                 .collect()

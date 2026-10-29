@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use crate::tir::analysis::{AnalysisManager, ImmediateDoms, LoopForest, PredMap};
 use crate::tir::blocks::BlockId;
-use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp};
 
@@ -23,7 +22,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let def_map = build_def_map(func);
     let pred_map = am.get::<PredMap>(func).clone();
-    let idoms = am.get::<ImmediateDoms>(func).clone();
+    let tree = am.get::<ImmediateDoms>(func).clone();
     let loop_forest = am.get::<LoopForest>(func).clone();
 
     let loop_headers = derive_loop_headers(&loop_forest, &pred_map);
@@ -62,7 +61,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if loop_info.body.contains(&def_block) {
                 continue;
             }
-            if !dominates(def_block, header, &idoms) {
+            if !tree.dominates(def_block, header) {
                 continue;
             }
             hoist_list.push(HoistWork {
