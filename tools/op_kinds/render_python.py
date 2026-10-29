@@ -35,7 +35,13 @@ def _canonical_kinds_for_opcodes(data: dict, opcodes: set[str]) -> list[str]:
 
 
 def _render_py_frozenset(name: str, values: list[str]) -> str:
-    out: list[str] = [f"{name}: frozenset[str] = frozenset(\n", "    {\n"]
+    kind_type = (
+        "FrontendOpKind"
+        if name.startswith("FRONTEND_")
+        or name in {"RAISING_KIND_NAMES", "CHECK_EXCEPTION_SKIP_KINDS"}
+        else "WireOpKind"
+    )
+    out: list[str] = [f"{name}: frozenset[{kind_type}] = frozenset(\n", "    {\n"]
     for value in sorted(values):
         out.append(f'        "{value}",\n')
     out.extend(["    }\n", ")\n\n"])
@@ -189,7 +195,7 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     out.append("# derive from [[simpleir_control_kind]], and frontend-only\n")
     out.append("# overrides come from [[frontend_effect_kind]]. May-raise facts\n")
     out.append("# are rendered separately from [[frontend_raising_kind]].\n")
-    out.append("FRONTEND_EFFECT_CLASS: dict[str, str] = {\n")
+    out.append("FRONTEND_EFFECT_CLASS: dict[FrontendOpKind, str] = {\n")
     for kind in sorted(effects):
         out.append(f'    "{kind}": "{effects[kind]}",\n')
     out.append("}\n\n")
@@ -218,7 +224,7 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
     out.append(
         "# Explicit false differs from an unregistered kind, which fails closed.\n"
     )
-    out.append("FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {\n")
+    out.append("FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {\n")
     for kind, may_access in sorted(_frontend_arbitrary_heap_map(data).items()):
         out.append(f'    "{kind}": {may_access},\n')
     out.append("}\n\n")
@@ -364,7 +370,7 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
         ("writes_heap", "FRONTEND_EFFECT_WRITES_HEAP_KINDS"),
         ("control", "FRONTEND_EFFECT_CONTROL_KINDS"),
     ):
-        out.append(f"{const_name}: frozenset[str] = frozenset(\n")
+        out.append(f"{const_name}: frozenset[FrontendOpKind] = frozenset(\n")
         out.append("    {\n")
         for kind in sorted(
             kind for kind, row_effect in effects.items() if row_effect == effect
@@ -403,14 +409,62 @@ _PY_HEADER = """\
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Final, Literal
 
 """
 
 
+def _render_py_kind_types(data: dict) -> str:
+    out: list[str] = []
+    for name, domain in (
+        ("FrontendOpKind", registered_frontend_kinds(data)),
+        ("WireOpKind", registered_simpleir_kinds(data)),
+    ):
+        out.append(f"{name} = Literal[\n")
+        out.extend(f"    {kind!r},\n" for kind in sorted(domain))
+        out.append("]\n\n")
+    # Literal's str equality accepts unrelated strings. Named constants make
+    # handwritten equality tests resolve a checked member instead of spelling
+    # an unchecked string; they remain ordinary strings at runtime.
+    for name, domain in (
+        ("FrontendKinds", registered_frontend_kinds(data)),
+        ("WireKinds", registered_simpleir_kinds(data)),
+    ):
+        out.append(f"class {name}:\n")
+        for kind in sorted(domain):
+            member = kind.upper() if name == "WireKinds" else kind
+            out.append(f"    {member}: Final = {kind!r}\n")
+        out.append("\n\n")
+    out.append(
+        "# Declared lowering spellings; never derive identity with str.lower().\n"
+    )
+    out.append("FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {\n")
+    lowering: dict[str, str] = {}
+    for wire in sorted(
+        registered_simpleir_kinds(data) - backend_private_kinds(data).keys()
+    ):
+        for frontend in frontend_kinds_for_wire_kind(data, wire):
+            lowering[frontend] = wire
+    for row in data.get("kind", []):
+        if row.get("group") == "gpu":
+            for wire in (row["canonical"], *row.get("aliases", [])):
+                lowering[wire] = wire
+    for frontend, wire in sorted(lowering.items()):
+        out.append(f"    {frontend!r}: {wire!r},\n")
+    out.append("}\n\n")
+    out.append("def frontend_wire_kind(kind: FrontendOpKind) -> WireOpKind:\n")
+    out.append('    """Project a directly lowered operation through the registry."""\n')
+    out.append("    return FRONTEND_WIRE_KIND[kind]\n\n\n")
+    return "".join(out)
+
+
 def render_py(data: dict) -> str:
     kinds = data.get("kind", [])
-    out: list[str] = [_PY_HEADER, render_primitive_effects_py(data)]
+    out: list[str] = [
+        _PY_HEADER,
+        _render_py_kind_types(data),
+        render_primitive_effects_py(data),
+    ]
     out.append(
         _render_py_frozenset(
             "SIMPLEIR_REGISTERED_KINDS", sorted(registered_simpleir_kinds(data))
@@ -427,7 +481,9 @@ def render_py(data: dict) -> str:
         )
     )
     out.append("# Explicit frontend spellings replacing the uppercase wire default.\n")
-    out.append("FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {\n")
+    out.append(
+        "FRONTEND_LOWERING_KINDS_BY_WIRE: dict[WireOpKind, tuple[FrontendOpKind, ...]] = {\n"
+    )
     for wire in sorted(
         {row["wire_kind"] for row in data.get("frontend_lowering_kind", ())}
     ):
@@ -470,7 +526,7 @@ def render_py(data: dict) -> str:
             "FRONTEND_CALLBACK_OPERATOR_KINDS", sorted(callback_operators)
         )
     )
-    out.append("FRONTEND_PREDICATE_SEMANTICS: dict[str, str] = {\n")
+    out.append("FRONTEND_PREDICATE_SEMANTICS: dict[FrontendOpKind, str] = {\n")
     for spelling, category in sorted(comparisons.items()):
         out.append(f"    {spelling!r}: {category!r},\n")
     out.append("}\n\n")
@@ -482,7 +538,7 @@ def render_py(data: dict) -> str:
             out.append(f"    {hint!r}: ({index}, {domain['ordering']!r}),\n")
     out.append("}\n\n")
     out.append(
-        "def frontend_predicate_facts(kind: str, *operands: str | None) -> tuple[bool, bool] | None:\n"
+        "def frontend_predicate_facts(kind: FrontendOpKind, *operands: str | None) -> tuple[bool, bool] | None:\n"
     )
     out.append("    category = FRONTEND_PREDICATE_SEMANTICS.get(kind)\n")
     out.append("    if category is None:\n        return None\n")
@@ -526,10 +582,10 @@ def render_py(data: dict) -> str:
         for kind in frontend_kinds_for_wire_kind(data, spelling)
     }
     out.append(
-        f"FRONTEND_COMMUTATIVE_DOMAINS: dict[str, str] = {dict(sorted(frontend_commutative.items()))!r}\n\n"
+        f"FRONTEND_COMMUTATIVE_DOMAINS: dict[FrontendOpKind, str] = {dict(sorted(frontend_commutative.items()))!r}\n\n"
     )
     out.append(
-        "def frontend_can_reorder_commutative(kind: str, *operands: str | None) -> bool:\n"
+        "def frontend_can_reorder_commutative(kind: FrontendOpKind, *operands: str | None) -> bool:\n"
     )
     out.append("    if len(operands) != 2:\n        return False\n")
     out.append(
@@ -561,7 +617,7 @@ def render_py(data: dict) -> str:
             if "exact_scalar_result_type" in row
         }
     )
-    out.append("FRONTEND_INTRINSIC_SCALAR_RESULTS: dict[str, str] = {\n")
+    out.append("FRONTEND_INTRINSIC_SCALAR_RESULTS: dict[FrontendOpKind, str] = {\n")
     for row in kinds:
         if row.get("mapper_opcode") not in intrinsic_types:
             continue
@@ -581,7 +637,7 @@ def render_py(data: dict) -> str:
         for row in data["opcode"]
         if row["name"] in intrinsic_types
     }
-    out.append("FRONTEND_INTRINSIC_SCALAR_ARITIES: dict[str, int] = {\n")
+    out.append("FRONTEND_INTRINSIC_SCALAR_ARITIES: dict[FrontendOpKind, int] = {\n")
     for row in kinds:
         if row.get("mapper_opcode") in intrinsic_arities:
             for spelling in (row["canonical"], *row.get("aliases", [])):
@@ -639,9 +695,15 @@ def render_py(data: dict) -> str:
             data.get("simpleir_out_metadata_kinds", []),
         )
     )
-    out.append("SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[str, int] = {\n")
+    out.append("SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[WireOpKind, int] = {\n")
     for row in data.get("simpleir_trailing_arg_result", []):
         out.append(f'    "{row["kind"]}": {row["first_result_arg"]},\n')
+    out.append("}\n\n")
+
+    out.append("FRONTEND_FIRST_TRAILING_RESULT_ARG: dict[FrontendOpKind, int] = {\n")
+    for row in data.get("simpleir_trailing_arg_result", []):
+        for kind in frontend_kinds_for_wire_kind(data, row["kind"]):
+            out.append(f'    "{kind}": {row["first_result_arg"]},\n')
     out.append("}\n\n")
 
     # -- frontend op.kind tables (F2a) --------------------------------------
@@ -658,7 +720,7 @@ def render_py(data: dict) -> str:
     out.append(
         "# [[opcode]] oracle at generation) or a documented frontend-specific kind.\n"
     )
-    out.append("RAISING_KIND_NAMES: frozenset[str] = frozenset(\n")
+    out.append("RAISING_KIND_NAMES: frozenset[FrontendOpKind] = frozenset(\n")
     out.append("    {\n")
     for row in raising:
         out.append(f'        "{row["kind"]}",\n')
@@ -674,7 +736,7 @@ def render_py(data: dict) -> str:
     out.append(
         "# STATE_TRANSITION). NOT the complement of may_throw; see op_kinds.toml.\n"
     )
-    out.append("CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(\n")
+    out.append("CHECK_EXCEPTION_SKIP_KINDS: frozenset[FrontendOpKind] = frozenset(\n")
     out.append("    {\n")
     for row in skip:
         out.append(f'        "{row["kind"]}",\n')
@@ -690,7 +752,7 @@ def render_py(data: dict) -> str:
     out.append(
         "# (visit_BinOp). EXHAUSTIVE over ast.operator (generation-time checked).\n"
     )
-    out.append("BINOP_OP_KIND: dict[str, str] = {\n")
+    out.append("BINOP_OP_KIND: dict[str, FrontendOpKind] = {\n")
     for row in binary:
         out.append(f'    "{row["ast_op"]}": "{row["binop_kind"]}",\n')
     out.append("}\n\n")
@@ -704,7 +766,7 @@ def render_py(data: dict) -> str:
     out.append(
         "# (__iadd__/__ifloordiv__/...) before the binary fallback, matching CPython.\n"
     )
-    out.append("AUGASSIGN_OP_KIND: dict[str, str] = {\n")
+    out.append("AUGASSIGN_OP_KIND: dict[str, FrontendOpKind] = {\n")
     for row in binary:
         out.append(f'    "{row["ast_op"]}": "{row["augassign_kind"]}",\n')
     out.append("}\n\n\n")

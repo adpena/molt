@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+)
+
 from typing import Any
 
 from molt.frontend._types import (
@@ -10,13 +14,16 @@ from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
-from molt.frontend.lowering.serialization_context import SerializationContext
+from molt.frontend.lowering.serialization_context import (
+    SerializationContext,
+    SimpleIROp,
+)
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
 class SerializationFunctionOpsMixin(GeneratorMixinBase):
     def _serialize_function_op(self, op: MoltOp, ctx: SerializationContext) -> bool:
-        if op.kind == "CODE_SLOTS_INIT":
+        if op.kind == FrontendKinds.CODE_SLOTS_INIT:
             # The program wrapper owns global allocation. A module record
             # contains symbolic owners only, even after a program projection.
             if ctx.module_init_symbol is None:
@@ -26,7 +33,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                         "value": int(op.args[0]),
                     }
                 )
-        elif op.kind == "CLASS_DEF":
+        elif op.kind == FrontendKinds.CLASS_DEF:
             ctx.json_ops.append(
                 {
                     "kind": "class_def",
@@ -38,14 +45,14 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MISSING":
+        elif op.kind == FrontendKinds.MISSING:
             ctx.json_ops.append(
                 {
                     "kind": "missing",
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "COPY":
+        elif op.kind == FrontendKinds.COPY:
             ctx.json_ops.append(
                 {
                     "kind": "copy",
@@ -53,7 +60,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BUILTIN_TYPE":
+        elif op.kind == FrontendKinds.BUILTIN_TYPE:
             ctx.json_ops.append(
                 {
                     "kind": "builtin_type",
@@ -61,7 +68,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "TYPE_OF":
+        elif op.kind == FrontendKinds.TYPE_OF:
             ctx.json_ops.append(
                 {
                     "kind": "type_of",
@@ -69,7 +76,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CLASS_SET_DEFINITION":
+        elif op.kind == FrontendKinds.CLASS_SET_DEFINITION:
             (created_class,) = op.args
             ctx.json_ops.append(
                 {
@@ -79,7 +86,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "GUARD_LAYOUT":
+        elif op.kind == FrontendKinds.GUARD_LAYOUT:
             obj, expected_version = op.args
             ctx.json_ops.append(
                 {
@@ -89,7 +96,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ISINSTANCE":
+        elif op.kind == FrontendKinds.ISINSTANCE:
             ctx.json_ops.append(
                 {
                     "kind": "isinstance",
@@ -97,7 +104,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "EXCEPTION_MATCH_BUILTIN":
+        elif op.kind == FrontendKinds.EXCEPTION_MATCH_BUILTIN:
             metadata = op.metadata or {}
             ctx.json_ops.append(
                 {
@@ -108,7 +115,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "value": int(metadata["exception_tag"]),
                 }
             )
-        elif op.kind == "ISSUBCLASS":
+        elif op.kind == FrontendKinds.ISSUBCLASS:
             ctx.json_ops.append(
                 {
                     "kind": "issubclass",
@@ -116,11 +123,11 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "OBJECT_NEW":
+        elif op.kind == FrontendKinds.OBJECT_NEW:
             ctx.json_ops.append(
                 {"kind": "object_new", "args": [], "out": op.result.name}
             )
-        elif op.kind == "OBJECT_NEW_BOUND":
+        elif op.kind == FrontendKinds.OBJECT_NEW_BOUND:
             # Phase-1-sibling class-instantiation fast path:
             # `Point(args)` for a known non-dynamic class lowers to
             # `OBJECT_NEW_BOUND(class_ref)` (allocates instance with
@@ -130,7 +137,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
             # See `_try_emit_class_static_call` for the predicates.
             # Static payload extent supports typed-field analysis; it does
             # not authorize frame placement. The runtime owns allocation size.
-            _onb_op: dict[str, Any] = {
+            _onb_op: SimpleIROp = {
                 "kind": "object_new_bound",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -153,7 +160,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
             if _del_info is not None:
                 _onb_op["defines_del"] = True
             ctx.json_ops.append(_onb_op)
-        elif op.kind == "CLASSMETHOD_NEW":
+        elif op.kind == FrontendKinds.CLASSMETHOD_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "classmethod_new",
@@ -161,7 +168,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STATICMETHOD_NEW":
+        elif op.kind == FrontendKinds.STATICMETHOD_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "staticmethod_new",
@@ -169,7 +176,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "PROPERTY_NEW":
+        elif op.kind == FrontendKinds.PROPERTY_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "property_new",
@@ -177,7 +184,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BOUND_METHOD_NEW":
+        elif op.kind == FrontendKinds.BOUND_METHOD_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "bound_method_new",
@@ -185,7 +192,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_NEW":
+        elif op.kind == FrontendKinds.MODULE_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "module_new",
@@ -193,14 +200,14 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_CACHE_GET":
-            entry = {
+        elif op.kind == FrontendKinds.MODULE_CACHE_GET:
+            entry: SimpleIROp = {
                 "kind": "module_cache_get",
                 "args": [op.args[0].name],
                 "out": op.result.name,
             }
             ctx.json_ops.append(entry)
-        elif op.kind == "MODULE_IMPORT":
+        elif op.kind == FrontendKinds.MODULE_IMPORT:
             ctx.json_ops.append(
                 {
                     "kind": "module_import",
@@ -208,7 +215,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_CACHE_SET":
+        elif op.kind == FrontendKinds.MODULE_CACHE_SET:
             ctx.json_ops.append(
                 {
                     "kind": "module_cache_set",
@@ -216,7 +223,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_CACHE_DEL":
+        elif op.kind == FrontendKinds.MODULE_CACHE_DEL:
             ctx.json_ops.append(
                 {
                     "kind": "module_cache_del",
@@ -224,8 +231,8 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_GET_ATTR":
-            entry = {
+        elif op.kind == FrontendKinds.MODULE_GET_ATTR:
+            entry: SimpleIROp = {
                 "kind": "module_get_attr",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -241,8 +248,8 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind == "MODULE_IMPORT_FROM":
-            entry = {
+        elif op.kind == FrontendKinds.MODULE_IMPORT_FROM:
+            entry: SimpleIROp = {
                 "kind": "module_import_from",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -258,8 +265,8 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind == "MODULE_GET_GLOBAL":
-            entry = {
+        elif op.kind == FrontendKinds.MODULE_GET_GLOBAL:
+            entry: SimpleIROp = {
                 "kind": "module_get_global",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -275,7 +282,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                 ):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
             ctx.json_ops.append(entry)
-        elif op.kind == "MODULE_DEL_GLOBAL":
+        elif op.kind == FrontendKinds.MODULE_DEL_GLOBAL:
             ctx.json_ops.append(
                 {
                     "kind": "module_del_global",
@@ -283,7 +290,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_DEL_GLOBAL_IF_PRESENT":
+        elif op.kind == FrontendKinds.MODULE_DEL_GLOBAL_IF_PRESENT:
             ctx.json_ops.append(
                 {
                     "kind": "module_del_global_if_present",
@@ -291,7 +298,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_SET_ATTR":
+        elif op.kind == FrontendKinds.MODULE_SET_ATTR:
             ctx.json_ops.append(
                 {
                     "kind": "module_set_attr",
@@ -299,7 +306,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "MODULE_IMPORT_STAR":
+        elif op.kind == FrontendKinds.MODULE_IMPORT_STAR:
             ctx.json_ops.append(
                 {
                     "kind": "module_import_star",
@@ -307,7 +314,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CONTEXT_ENTER":
+        elif op.kind == FrontendKinds.CONTEXT_ENTER:
             ctx.json_ops.append(
                 {
                     "kind": "context_enter",
@@ -315,7 +322,7 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CONTEXT_EXIT":
+        elif op.kind == FrontendKinds.CONTEXT_EXIT:
             ctx.json_ops.append(
                 {
                     "kind": "context_exit",

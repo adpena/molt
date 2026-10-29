@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+)
+
 import ast
 from contextlib import nullcontext
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -460,7 +464,7 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
             attr_node, receiver, obj_name, exact_class, method_load=method_form
         )
         load = self._op_by_result.get(callee.name)
-        if load is None or load.kind != "LOAD_METHOD":
+        if load is None or load.kind != FrontendKinds.LOAD_METHOD:
             return self._emit_dynamic_call(node, callee)
         return self._emit_loaded_method_call(node, callee, load)
 

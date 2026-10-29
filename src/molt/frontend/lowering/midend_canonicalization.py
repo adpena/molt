@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FRONTEND_ARBITRARY_HEAP_EFFECT,
+    FRONTEND_EFFECT_CLASS,
+    FRONTEND_INTRINSIC_SCALAR_ARITIES,
+    FRONTEND_INTRINSIC_SCALAR_RESULTS,
+    FRONTEND_OPERATOR_OPCODE,
+    FRONTEND_PREDICATE_SEMANTICS,
+    FRONTEND_TRUTHINESS_CONTROL_KINDS,
+    FrontendKinds,
+    FrontendOpKind,
+    frontend_can_reorder_commutative,
+    frontend_operator_facts,
+    frontend_predicate_facts,
+)
+
+
 from molt.opcode_literal_payloads import integer_literal_bytes, integer_literal_value
 
 from typing import Any, cast
@@ -21,20 +37,71 @@ from molt.frontend._types import (
     _INLINE_INT_MAX,
     _INLINE_INT_MIN,
 )
-from molt.frontend.lowering.op_kinds_generated import (
-    FRONTEND_EFFECT_CLASS,
-    FRONTEND_ARBITRARY_HEAP_EFFECT,
-    FRONTEND_INTRINSIC_SCALAR_ARITIES,
-    FRONTEND_INTRINSIC_SCALAR_RESULTS,
-    FRONTEND_OPERATOR_OPCODE,
-    FRONTEND_PREDICATE_SEMANTICS,
-    FRONTEND_TRUTHINESS_CONTROL_KINDS,
-    frontend_can_reorder_commutative,
-    frontend_operator_facts,
-    frontend_predicate_facts,
+
+_IS_CANONICALIZATION_BARRIER_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"RAISE", "ret_void", "ret"}
+)
+_CONST_CACHE_KEY_FOR_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"CONST_NOT_IMPLEMENTED", "CONST_NONE", "CONST_ELLIPSIS"}
+)
+_CONST_CACHE_KEY_FOR_OP_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {"CONST_BOOL", "CONST_STR", "CONST_BIGINT", "CONST_FLOAT"}
+)
+_HEAP_ALIAS_CLASS_FOR_READ_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {
+        "GETATTR",
+        "GUARDED_GETATTR",
+        "GETATTR_SPECIAL_OBJ",
+        "HASATTR_NAME",
+        "GETATTR_GENERIC_OBJ",
+        "GETATTR_GENERIC_PTR",
+        "GETATTR_NAME_DEFAULT",
+        "MODULE_GET_ATTR",
+    }
+)
+_DETECT_INDUCTION_STEP_FROM_RECURRENCE_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"SUB", "ADD"}
+)
+_NORMALIZE_COMPARE_FOR_INDUCTION_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"LE", "GE", "LT", "GT"}
+)
+_VALUE_NUMBER_KEY_FOR_OP_KINDS_1: frozenset[FrontendOpKind] = frozenset({"AND", "OR"})
+_VALUE_NUMBER_KEY_FOR_OP_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {"GE", "EQ", "LT", "LE", "NE", "GT"}
+)
+_VALUE_NUMBER_KEY_FOR_OP_KINDS_3: frozenset[FrontendOpKind] = frozenset(
+    {"MUL", "SUB", "ADD"}
+)
+_VALUE_NUMBER_KEY_FOR_OP_KINDS_4: frozenset[FrontendOpKind] = frozenset({"NE", "EQ"})
+_CANONICALIZE_BLOCK_WITH_STATE_KINDS_1: frozenset[FrontendOpKind] = frozenset(
+    {"MUL", "SUB", "ADD", "POW"}
+)
+_CANONICALIZE_BLOCK_WITH_STATE_KINDS_2: frozenset[FrontendOpKind] = frozenset(
+    {"LSHIFT", "RSHIFT", "BIT_OR", "BIT_XOR", "INVERT", "BIT_AND"}
+)
+_CANONICALIZE_BLOCK_WITH_STATE_KINDS_3: frozenset[FrontendOpKind] = frozenset(
+    {
+        "GE",
+        "AND",
+        "EQ",
+        "LT",
+        "NOT",
+        "IS",
+        "OR",
+        "LE",
+        "NE",
+        "EXCEPTION_MATCH_BUILTIN",
+        "ISINSTANCE",
+        "GT",
+    }
+)
+_RESOLVE_KINDS_1: frozenset[FrontendOpKind] = frozenset({"CONST_BIGINT", "CONST"})
+_CANONICALIZE_BLOCK_WITH_STATE_KINDS_4: frozenset[FrontendOpKind] = frozenset(
+    {"TYPE_OF", "LEN"}
 )
 
-_EXACT_BUILTIN_CONTAINER_PRODUCERS = {
+
+_EXACT_BUILTIN_CONTAINER_PRODUCERS: dict[FrontendOpKind, str] = {
     "DICT_NEW": "dict",
     "LIST_NEW": "list",
     "TUPLE_NEW": "tuple",
@@ -78,8 +145,8 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             }
         return value
 
-    def _is_canonicalization_barrier_op(self, op_kind: str) -> bool:
-        if op_kind in {"ret", "ret_void", "RAISE"}:
+    def _is_canonicalization_barrier_op(self, op_kind: FrontendOpKind) -> bool:
+        if op_kind in _IS_CANONICALIZATION_BARRIER_OP_KINDS_1:
             return True
         if op_kind.startswith("EXCEPTION_"):
             return True
@@ -88,19 +155,19 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         return False
 
     def _const_type_tag(self, op: MoltOp) -> int | None:
-        if op.kind == "CONST_BOOL":
+        if op.kind == FrontendKinds.CONST_BOOL:
             return BUILTIN_TYPE_TAGS["bool"]
-        if op.kind == "CONST":
+        if op.kind == FrontendKinds.CONST:
             value = op.args[0]
             if isinstance(value, int) and not isinstance(value, bool):
                 return BUILTIN_TYPE_TAGS["int"]
-        if op.kind == "CONST_BIGINT":
+        if op.kind == FrontendKinds.CONST_BIGINT:
             return BUILTIN_TYPE_TAGS["int"]
-        if op.kind == "CONST_FLOAT":
+        if op.kind == FrontendKinds.CONST_FLOAT:
             return BUILTIN_TYPE_TAGS["float"]
-        if op.kind == "CONST_STR":
+        if op.kind == FrontendKinds.CONST_STR:
             return BUILTIN_TYPE_TAGS["str"]
-        if op.kind == "CONST_BYTES":
+        if op.kind == FrontendKinds.CONST_BYTES:
             return BUILTIN_TYPE_TAGS["bytes"]
         return None
 
@@ -142,15 +209,15 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         cast(Any, state).pop(_CANONICALIZATION_STATE_SIGNATURE_CACHE_KEY, None)
 
     def _const_cache_key_for_op(self, op: MoltOp) -> tuple[Any, ...] | None:
-        if op.kind in {"CONST_NONE", "CONST_NOT_IMPLEMENTED", "CONST_ELLIPSIS"}:
+        if op.kind in _CONST_CACHE_KEY_FOR_OP_KINDS_1:
             return (op.kind,)
-        if op.kind == "CONST_BYTES":
+        if op.kind == FrontendKinds.CONST_BYTES:
             return ("CONST_BYTES", bytes(op.args[0]))
-        if op.kind in {"CONST_BOOL", "CONST_BIGINT", "CONST_FLOAT", "CONST_STR"}:
+        if op.kind in _CONST_CACHE_KEY_FOR_OP_KINDS_2:
             value = op.args[0]
             identity = literal_identity_key(value)
             return (op.kind, identity) if identity is not None else None
-        if op.kind == "CONST":
+        if op.kind == FrontendKinds.CONST:
             value = op.args[0]
             identity = literal_identity_key(value)
             return ("CONST", identity) if identity is not None else None
@@ -204,7 +271,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 or producer.result.name != value.name
             ):
                 return None
-            if producer.kind == "CONST" and len(producer.args) == 1:
+            if producer.kind == FrontendKinds.CONST and len(producer.args) == 1:
                 return literal_type(producer.args[0])
             exact_builtin = _EXACT_BUILTIN_CONTAINER_PRODUCERS.get(producer.kind)
             if exact_builtin is not None and all(
@@ -230,7 +297,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             visiting.add(value.name)
             try:
                 if (
-                    producer.kind == "COPY"
+                    producer.kind == FrontendKinds.COPY
                     and len(producer.args) == 1
                     and not producer.metadata
                 ):
@@ -252,7 +319,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         self, op: MoltOp, const_by_name: dict[str, Any] | None = None
     ) -> tuple[str, bool] | None:
         operands = self._exact_primitive_operand_types(op, const_by_name)
-        if op.kind == "TYPE_OF" and len(operands) == 1:
+        if op.kind == FrontendKinds.TYPE_OF and len(operands) == 1:
             # The returned tag is always an exact integer, but an arbitrary
             # object's __class__ can change between observations.
             return ("pure" if operands[0] is not None else "reads_heap", True)
@@ -262,13 +329,13 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             assert predicate is not None
             _, nothrow = predicate
             return ("control", nothrow)
-        if op.kind == "LEN":
+        if op.kind == FrontendKinds.LEN:
             if len(operands) == 1 and operands[0] in _EXACT_LEN_RECEIVER_TYPES:
                 # Exact ranges can represent more than Py_ssize_t elements;
                 # len(range(...)) then raises OverflowError on the target.
                 return ("reads_heap", operands[0] != "range")
             return None
-        if op.kind == "INDEX":
+        if op.kind == FrontendKinds.INDEX:
             if (
                 len(operands) == 2
                 and operands[0] in _EXACT_SEQUENCE_INDEX_RECEIVER_TYPES
@@ -386,7 +453,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         if not op.args:
             return None
         exact_types = self._exact_primitive_operand_types(op, const_by_name)
-        if op.kind == "LEN":
+        if op.kind == FrontendKinds.LEN:
             receiver_type = exact_types[0] if len(exact_types) == 1 else None
             if receiver_type == "dict":
                 return "dict"
@@ -395,7 +462,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             if receiver_type in _EXACT_LEN_RECEIVER_TYPES:
                 return "immutable_len"
             return "indexable"
-        if op.kind == "INDEX":
+        if op.kind == FrontendKinds.INDEX:
             receiver_type = exact_types[0] if len(exact_types) == 2 else None
             if receiver_type == "list":
                 return "list"
@@ -406,7 +473,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         if not isinstance(primary, MoltValue):
             return "indexable"
         type_tag = value_type_tags.get(primary.name)
-        if op.kind == "CONTAINS":
+        if op.kind == FrontendKinds.CONTAINS:
             if type_tag in {
                 BUILTIN_TYPE_TAGS["str"],
                 BUILTIN_TYPE_TAGS["bytes"],
@@ -420,16 +487,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             if type_tag == BUILTIN_TYPE_TAGS["list"]:
                 return "list"
             return "indexable"
-        if op.kind in {
-            "GETATTR",
-            "HASATTR_NAME",
-            "GETATTR_SPECIAL_OBJ",
-            "GETATTR_GENERIC_OBJ",
-            "GETATTR_GENERIC_PTR",
-            "GETATTR_NAME_DEFAULT",
-            "GUARDED_GETATTR",
-            "MODULE_GET_ATTR",
-        }:
+        if op.kind in _HEAP_ALIAS_CLASS_FOR_READ_OP_KINDS_1:
             return "attr"
         return "indexable"
 
@@ -440,13 +498,13 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         exact_types = self._exact_primitive_operand_types(op)
         if (
             (
-                op.kind == "LIST_APPEND"
+                op.kind == FrontendKinds.LIST_APPEND
                 and len(exact_types) == 2
                 and exact_types[0] == "list"
             )
-            or (op.kind == "LIST_REVERSE" and exact_types == ("list",))
+            or (op.kind == FrontendKinds.LIST_REVERSE and exact_types == ("list",))
             or (
-                op.kind == "LIST_INSERT"
+                op.kind == FrontendKinds.LIST_INSERT
                 and len(exact_types) == 3
                 and exact_types[0] == "list"
                 and exact_types[1] in {"int", "bool"}
@@ -500,32 +558,32 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             op = definitions.get(value_name)
             resolved: int | None = None
             if op is not None:
-                if op.kind in {"CONST", "CONST_BIGINT"} and op.args:
+                if op.kind in _RESOLVE_KINDS_1 and op.args:
                     raw = op.args[0]
-                    if op.kind == "CONST_BIGINT":
+                    if op.kind == FrontendKinds.CONST_BIGINT:
                         resolved = integer_literal_value(raw)
                     elif isinstance(raw, int) and not isinstance(raw, bool):
                         resolved = raw
-                elif op.kind in {"ADD", "SUB", "MUL"} and len(op.args) == 2:
+                elif op.kind in _VALUE_NUMBER_KEY_FOR_OP_KINDS_3 and len(op.args) == 2:
                     lhs = op.args[0]
                     rhs = op.args[1]
                     if isinstance(lhs, MoltValue) and isinstance(rhs, MoltValue):
                         lhs_const = resolve(lhs.name)
                         rhs_const = resolve(rhs.name)
                         if lhs_const is not None and rhs_const is not None:
-                            if op.kind == "ADD":
+                            if op.kind == FrontendKinds.ADD:
                                 resolved = lhs_const + rhs_const
-                            elif op.kind == "SUB":
+                            elif op.kind == FrontendKinds.SUB:
                                 resolved = lhs_const - rhs_const
                             else:
                                 resolved = lhs_const * rhs_const
-                elif op.kind == "ABS" and len(op.args) == 1:
+                elif op.kind == FrontendKinds.ABS and len(op.args) == 1:
                     arg = op.args[0]
                     if isinstance(arg, MoltValue):
                         arg_const = resolve(arg.name)
                         if arg_const is not None:
                             resolved = abs(arg_const)
-                elif op.kind == "PHI" and op.args:
+                elif op.kind == FrontendKinds.PHI and op.args:
                     phi_values: list[int] = []
                     for arg in op.args:
                         if not isinstance(arg, MoltValue):
@@ -544,25 +602,30 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
 
         return resolve(name)
 
-    def _compare_int_truth(self, op_kind: str, lhs: int, rhs: int) -> bool | None:
-        if op_kind == "EQ":
+    def _compare_int_truth(
+        self, op_kind: FrontendOpKind, lhs: int, rhs: int
+    ) -> bool | None:
+        if op_kind == FrontendKinds.EQ:
             return lhs == rhs
-        if op_kind == "NE":
+        if op_kind == FrontendKinds.NE:
             return lhs != rhs
-        if op_kind == "LT":
+        if op_kind == FrontendKinds.LT:
             return lhs < rhs
-        if op_kind == "LE":
+        if op_kind == FrontendKinds.LE:
             return lhs <= rhs
-        if op_kind == "GT":
+        if op_kind == FrontendKinds.GT:
             return lhs > rhs
-        if op_kind == "GE":
+        if op_kind == FrontendKinds.GE:
             return lhs >= rhs
         return None
 
     def _detect_induction_step_from_recurrence(
         self, phi_name: str, recurrence: MoltOp, definitions: dict[str, MoltOp]
     ) -> int | None:
-        if recurrence.kind not in {"ADD", "SUB"} or len(recurrence.args) != 2:
+        if (
+            recurrence.kind not in _DETECT_INDUCTION_STEP_FROM_RECURRENCE_KINDS_1
+            or len(recurrence.args) != 2
+        ):
             return None
         lhs = recurrence.args[0]
         rhs = recurrence.args[1]
@@ -574,26 +637,26 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             rhs_const = self._int_const_from_definition(rhs.name, definitions)
             if rhs_const is None:
                 return None
-            if recurrence.kind == "ADD":
+            if recurrence.kind == FrontendKinds.ADD:
                 return rhs_const
             return -rhs_const
         if (
             isinstance(rhs, MoltValue)
             and rhs.name == phi_name
             and isinstance(lhs, MoltValue)
-            and recurrence.kind == "ADD"
+            and recurrence.kind == FrontendKinds.ADD
         ):
             return self._int_const_from_definition(lhs.name, definitions)
         return None
 
     def _normalize_compare_for_induction(
-        self, compare_op: str, lhs_is_iv: bool
-    ) -> str | None:
+        self, compare_op: FrontendOpKind, lhs_is_iv: bool
+    ) -> FrontendOpKind | None:
         if lhs_is_iv:
-            if compare_op in {"LT", "LE", "GT", "GE"}:
+            if compare_op in _NORMALIZE_COMPARE_FOR_INDUCTION_KINDS_1:
                 return compare_op
             return None
-        swapped = {
+        swapped: dict[FrontendOpKind, FrontendOpKind] = {
             "LT": "GT",
             "LE": "GE",
             "GT": "LT",
@@ -611,31 +674,31 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             return self._compare_int_truth(compare_op, start, bound)
 
         if step > 0:
-            if compare_op == "LT" and start >= bound:
+            if compare_op == FrontendKinds.LT and start >= bound:
                 return False
-            if compare_op == "LE" and start > bound:
+            if compare_op == FrontendKinds.LE and start > bound:
                 return False
-            if compare_op == "GT" and start > bound:
+            if compare_op == FrontendKinds.GT and start > bound:
                 return True
-            if compare_op == "GE" and start >= bound:
+            if compare_op == FrontendKinds.GE and start >= bound:
                 return True
-            if compare_op == "EQ" and start > bound:
+            if compare_op == FrontendKinds.EQ and start > bound:
                 return False
-            if compare_op == "NE" and start > bound:
+            if compare_op == FrontendKinds.NE and start > bound:
                 return True
             return None
 
-        if compare_op == "LT" and start < bound:
+        if compare_op == FrontendKinds.LT and start < bound:
             return True
-        if compare_op == "LE" and start <= bound:
+        if compare_op == FrontendKinds.LE and start <= bound:
             return True
-        if compare_op == "GT" and start <= bound:
+        if compare_op == FrontendKinds.GT and start <= bound:
             return False
-        if compare_op == "GE" and start < bound:
+        if compare_op == FrontendKinds.GE and start < bound:
             return False
-        if compare_op == "EQ" and start < bound:
+        if compare_op == FrontendKinds.EQ and start < bound:
             return False
-        if compare_op == "NE" and start < bound:
+        if compare_op == FrontendKinds.NE and start < bound:
             return True
         return None
 
@@ -664,7 +727,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             def_op = definitions.get(value.name)
             if (
                 def_op is None
-                or def_op.kind not in {"ADD", "SUB"}
+                or def_op.kind not in _DETECT_INDUCTION_STEP_FROM_RECURRENCE_KINDS_1
                 or len(def_op.args) != 2
             ):
                 return None
@@ -682,13 +745,13 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 c = self._int_const_from_definition(rhs.name, definitions)
                 if c is None:
                     return None
-                if def_op.kind == "SUB":
+                if def_op.kind == FrontendKinds.SUB:
                     c = -c
                 return lhs_term[0], lhs_term[1] + c
             if (
                 rhs_term is not None
                 and isinstance(lhs, MoltValue)
-                and def_op.kind == "ADD"
+                and def_op.kind == FrontendKinds.ADD
             ):
                 c = self._int_const_from_definition(lhs.name, definitions)
                 if c is None:
@@ -703,7 +766,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             induction_by_phi: dict[str, tuple[int, int]] = {}
             for idx in range(loop_start + 1, loop_end):
                 op = ops[idx]
-                if op.kind != "PHI" or not op.args or op.result.name == "none":
+                if (
+                    op.kind != FrontendKinds.PHI
+                    or not op.args
+                    or op.result.name == "none"
+                ):
                     continue
                 phi_name = op.result.name
                 start_value: int | None = None
@@ -732,10 +799,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
 
             for idx in range(loop_start + 1, loop_end):
                 op = ops[idx]
-                if (
-                    op.kind not in {"LT", "LE", "GT", "GE", "EQ", "NE"}
-                    or len(op.args) != 2
-                ):
+                if op.kind not in _VALUE_NUMBER_KEY_FOR_OP_KINDS_2 or len(op.args) != 2:
                     continue
                 lhs = op.args[0]
                 rhs = op.args[1]
@@ -744,7 +808,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
 
                 iv_name: str | None = None
                 bound_value: int | None = None
-                normalized_op: str | None = None
+                normalized_op: FrontendOpKind | None = None
                 lhs_term = resolve_affine_iv_term(lhs, induction_by_phi)
                 rhs_term = resolve_affine_iv_term(rhs, induction_by_phi)
                 if lhs_term is not None and rhs_term is None:
@@ -810,7 +874,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             def_op = definitions.get(value.name)
             if (
                 def_op is None
-                or def_op.kind not in {"ADD", "SUB"}
+                or def_op.kind not in _DETECT_INDUCTION_STEP_FROM_RECURRENCE_KINDS_1
                 or len(def_op.args) != 2
             ):
                 return None
@@ -830,13 +894,13 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                 rhs_const = self._int_const_from_definition(rhs.name, definitions)
                 if rhs_const is None:
                     return None
-                if def_op.kind == "SUB":
+                if def_op.kind == FrontendKinds.SUB:
                     rhs_const = -rhs_const
                 return lhs_term[0], lhs_term[1] + rhs_const
             if (
                 rhs_term is not None
                 and isinstance(lhs, MoltValue)
-                and def_op.kind == "ADD"
+                and def_op.kind == FrontendKinds.ADD
             ):
                 lhs_const = self._int_const_from_definition(lhs.name, definitions)
                 if lhs_const is None:
@@ -851,7 +915,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             induction_by_phi: dict[str, tuple[int, int]] = {}
             for idx in range(loop_start + 1, loop_end):
                 op = ops[idx]
-                if op.kind != "PHI" or not op.args or op.result.name == "none":
+                if (
+                    op.kind != FrontendKinds.PHI
+                    or not op.args
+                    or op.result.name == "none"
+                ):
                     continue
                 phi_name = op.result.name
                 start_value: int | None = None
@@ -880,10 +948,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
 
             for idx in range(loop_start + 1, loop_end):
                 op = ops[idx]
-                if (
-                    op.kind not in {"LT", "LE", "GT", "GE", "EQ", "NE"}
-                    or len(op.args) != 2
-                ):
+                if op.kind not in _VALUE_NUMBER_KEY_FOR_OP_KINDS_2 or len(op.args) != 2:
                     continue
                 lhs = op.args[0]
                 rhs = op.args[1]
@@ -914,7 +979,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             op.result.name: op for op in ops if op.result.name != "none"
         }
         for op in ops:
-            if op.kind != "PHI" or not op.args or op.result.name == "none":
+            if op.kind != FrontendKinds.PHI or not op.args or op.result.name == "none":
                 continue
             phi_name = op.result.name
             for arg in op.args:
@@ -967,36 +1032,36 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         if const_key is not None:
             return ("CONST",) + const_key
 
-        if op.kind == "IS" and len(op.args) == 2:
+        if op.kind == FrontendKinds.IS and len(op.args) == 2:
             lhs = self._normalize_value_operand_key(op.args[0], const_int_values)
             rhs = self._normalize_value_operand_key(op.args[1], const_int_values)
             if lhs is not None and rhs is not None:
                 return ("IS", lhs, rhs)
 
-        if op.kind == "TYPE_OF" and len(op.args) == 1:
+        if op.kind == FrontendKinds.TYPE_OF and len(op.args) == 1:
             arg = self._normalize_value_operand_key(op.args[0], const_int_values)
             if arg is not None:
                 if effect_class == "reads_heap":
                     return ("READ_HEAP", memory_epoch, "TYPE_OF", arg)
                 return ("TYPE_OF", arg)
 
-        if op.kind == "NOT" and len(op.args) == 1:
+        if op.kind == FrontendKinds.NOT and len(op.args) == 1:
             arg = self._normalize_value_operand_key(op.args[0], const_int_values)
             if arg is not None:
                 return ("NOT", arg)
 
-        if op.kind == "ABS" and len(op.args) == 1:
+        if op.kind == FrontendKinds.ABS and len(op.args) == 1:
             arg = self._normalize_value_operand_key(op.args[0], const_int_values)
             if arg is not None:
                 return ("ABS", arg)
 
-        if op.kind in {"AND", "OR"} and len(op.args) == 2:
+        if op.kind in _VALUE_NUMBER_KEY_FOR_OP_KINDS_1 and len(op.args) == 2:
             lhs = self._normalize_value_operand_key(op.args[0], const_int_values)
             rhs = self._normalize_value_operand_key(op.args[1], const_int_values)
             if lhs is not None and rhs is not None:
                 return ("BOOL_BINOP", op.kind, lhs, rhs)
 
-        if op.kind in {"EQ", "NE", "LT", "LE", "GT", "GE"} and len(op.args) == 2:
+        if op.kind in _VALUE_NUMBER_KEY_FOR_OP_KINDS_2 and len(op.args) == 2:
             lhs_key = self._normalize_operand_key_for_value_numbering(
                 op.args[0], const_int_values
             )
@@ -1005,11 +1070,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             )
             if lhs_key is None or rhs_key is None:
                 return None
-            if op.kind in {"EQ", "NE"} and rhs_key < lhs_key:
+            if op.kind in _VALUE_NUMBER_KEY_FOR_OP_KINDS_4 and rhs_key < lhs_key:
                 lhs_key, rhs_key = rhs_key, lhs_key
             return ("CMP_PURE", op.kind, lhs_key, rhs_key)
 
-        if op.kind in {"ADD", "SUB", "MUL"} and len(op.args) == 2:
+        if op.kind in _VALUE_NUMBER_KEY_FOR_OP_KINDS_3 and len(op.args) == 2:
             lhs_key = self._normalize_value_operand_key(op.args[0], const_int_values)
             rhs_key = self._normalize_value_operand_key(op.args[1], const_int_values)
             if lhs_key is None or rhs_key is None:
@@ -1023,7 +1088,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             lhs = op.args[0]
             rhs = op.args[1]
             if (
-                op.kind in {"ADD", "SUB"}
+                op.kind in _DETECT_INDUCTION_STEP_FROM_RECURRENCE_KINDS_1
                 and isinstance(lhs, MoltValue)
                 and isinstance(rhs, MoltValue)
                 and lhs.name in induction_steps
@@ -1279,7 +1344,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             if result_name != "none":
                 self._kill_value_in_canonicalization_state(state, result_name)
 
-            if canonical_op.kind == "PHI" and canonical_op.args:
+            if canonical_op.kind == FrontendKinds.PHI and canonical_op.args:
                 phi_args = canonical_op.args
                 if all(
                     isinstance(arg, MoltValue) and arg.name == phi_args[0].name
@@ -1295,7 +1360,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     continue
 
             if (
-                canonical_op.kind == "GUARD_TAG"
+                canonical_op.kind == FrontendKinds.GUARD_TAG
                 and len(canonical_op.args) == 2
                 and canonical_op.result.name == "none"
             ):
@@ -1347,7 +1412,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             # to prevent Cranelift 0.130 constant-folding miscompilation.
             _folded_to_bigint = False
             if (
-                canonical_op.kind in {"ADD", "SUB", "MUL", "POW"}
+                canonical_op.kind in _CANONICALIZE_BLOCK_WITH_STATE_KINDS_1
                 and len(canonical_op.args) == 2
             ):
                 lhs, rhs = canonical_op.args
@@ -1355,11 +1420,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     lhs_const = const_int_values.get(lhs.name)
                     rhs_const = const_int_values.get(rhs.name)
                     if lhs_const is not None and rhs_const is not None:
-                        if canonical_op.kind == "ADD":
+                        if canonical_op.kind == FrontendKinds.ADD:
                             folded = lhs_const + rhs_const
-                        elif canonical_op.kind == "SUB":
+                        elif canonical_op.kind == FrontendKinds.SUB:
                             folded = lhs_const - rhs_const
-                        elif canonical_op.kind == "MUL":
+                        elif canonical_op.kind == FrontendKinds.MUL:
                             folded = lhs_const * rhs_const
                         else:
                             # POW – only fold for small non-negative exponents
@@ -1382,7 +1447,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                                 end_col_offset=canonical_op.end_col_offset,
                             )
                             _folded_to_bigint = True
-                        elif canonical_op.kind == "POW":
+                        elif canonical_op.kind == FrontendKinds.POW:
                             canonical_op = MoltOp(
                                 kind="CONST",
                                 args=[folded],
@@ -1398,19 +1463,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             # known integer constants, compute the result at compile time.
             if (
                 not _folded_to_bigint
-                and canonical_op.kind
-                in {
-                    "BIT_AND",
-                    "BIT_OR",
-                    "BIT_XOR",
-                    "LSHIFT",
-                    "RSHIFT",
-                    "INVERT",
-                }
+                and canonical_op.kind in _CANONICALIZE_BLOCK_WITH_STATE_KINDS_2
                 and len(canonical_op.args) >= 1
             ):
                 args = canonical_op.args
-                if canonical_op.kind == "INVERT" and len(args) == 1:
+                if canonical_op.kind == FrontendKinds.INVERT and len(args) == 1:
                     arg = args[0]
                     if isinstance(arg, MoltValue):
                         arg_const = const_int_values.get(arg.name)
@@ -1425,15 +1482,15 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                         lc = const_int_values.get(lhs_bw.name)
                         rc = const_int_values.get(rhs_bw.name)
                         if lc is not None and rc is not None:
-                            if canonical_op.kind == "BIT_AND":
+                            if canonical_op.kind == FrontendKinds.BIT_AND:
                                 folded_bw = lc & rc
-                            elif canonical_op.kind == "BIT_OR":
+                            elif canonical_op.kind == FrontendKinds.BIT_OR:
                                 folded_bw = lc | rc
-                            elif canonical_op.kind == "BIT_XOR":
+                            elif canonical_op.kind == FrontendKinds.BIT_XOR:
                                 folded_bw = lc ^ rc
-                            elif canonical_op.kind == "LSHIFT":
+                            elif canonical_op.kind == FrontendKinds.LSHIFT:
                                 folded_bw = lc << rc if 0 <= rc <= 128 else None
-                            elif canonical_op.kind == "RSHIFT":
+                            elif canonical_op.kind == FrontendKinds.RSHIFT:
                                 folded_bw = lc >> rc if 0 <= rc <= 128 else None
                             else:
                                 folded_bw = None
@@ -1455,12 +1512,12 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
 
             out.append(canonical_op)
 
-            if not _folded_to_bigint and canonical_op.kind == "CONST":
+            if not _folded_to_bigint and canonical_op.kind == FrontendKinds.CONST:
                 value = canonical_op.args[0]
                 if isinstance(value, int) and not isinstance(value, bool):
                     const_int_values[result_name] = value
                     state_dirty = True
-            elif canonical_op.kind == "ABS" and len(canonical_op.args) == 1:
+            elif canonical_op.kind == FrontendKinds.ABS and len(canonical_op.args) == 1:
                 arg = canonical_op.args[0]
                 if isinstance(arg, MoltValue):
                     arg_const = const_int_values.get(arg.name)
@@ -1469,24 +1526,14 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                         state_dirty = True
             type_tag = self._const_type_tag(canonical_op)
             if type_tag is None and result_name != "none":
-                if canonical_op.kind in {
-                    "NOT",
-                    "IS",
-                    "AND",
-                    "OR",
-                    "EQ",
-                    "NE",
-                    "LT",
-                    "LE",
-                    "GT",
-                    "GE",
-                    "ISINSTANCE",
-                    "EXCEPTION_MATCH_BUILTIN",
-                }:
+                if canonical_op.kind in _CANONICALIZE_BLOCK_WITH_STATE_KINDS_3:
                     type_tag = BUILTIN_TYPE_TAGS["bool"]
-                elif canonical_op.kind in {"LEN", "TYPE_OF"}:
+                elif canonical_op.kind in _CANONICALIZE_BLOCK_WITH_STATE_KINDS_4:
                     type_tag = BUILTIN_TYPE_TAGS["int"]
-                elif canonical_op.kind == "ABS" and len(canonical_op.args) == 1:
+                elif (
+                    canonical_op.kind == FrontendKinds.ABS
+                    and len(canonical_op.args) == 1
+                ):
                     abs_arg = canonical_op.args[0]
                     if isinstance(abs_arg, MoltValue):
                         abs_arg_tag = value_type_tags.get(abs_arg.name)
@@ -1502,7 +1549,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
             if type_tag is not None and result_name != "none":
                 value_type_tags[result_name] = type_tag
                 state_dirty = True
-            if canonical_op.kind == "IS" and result_name != "none":
+            if canonical_op.kind == FrontendKinds.IS and result_name != "none":
                 value_type_tags[result_name] = BUILTIN_TYPE_TAGS["bool"]
                 state_dirty = True
             if value_key is not None and result_name != "none":

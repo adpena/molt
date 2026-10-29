@@ -2,22 +2,36 @@
 
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import (
+    FrontendKinds,
+    WireKinds,
+    WireOpKind,
+)
+
 from typing import Any
 
 from molt.frontend._types import (
     MoltOp,
     MoltValue,
 )
-from molt.frontend.lowering.serialization_context import SerializationContext
+from molt.frontend.lowering.serialization_context import (
+    SerializationContext,
+    SimpleIROp,
+)
 from molt.frontend._mixin_base import GeneratorMixinBase
+
+
+_SERIALIZE_LOOP_STRING_ASYNC_OP_KINDS_1: frozenset[WireOpKind] = frozenset(
+    {"bool", "int"}
+)
 
 
 class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
     def _serialize_loop_string_async_op(
         self, op: MoltOp, ctx: SerializationContext
     ) -> bool:
-        if op.kind == "STORE_INDEX":
-            si_entry: dict[str, Any] = {
+        if op.kind == FrontendKinds.STORE_INDEX:
+            si_entry: SimpleIROp = {
                 "kind": "store_index",
                 "args": [arg.name for arg in op.args],
                 "out": op.result.name,
@@ -34,7 +48,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     if len(op.args) >= 3 and isinstance(op.args[2], MoltValue)
                     else None
                 )
-                if value_hint == "int":
+                if value_hint == WireKinds.INT:
                     if op.result.name != "none":
                         ctx.json_list_int_containers.add(op.result.name)
                 else:
@@ -54,7 +68,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             ):
                 si_entry["container_type"] = "list"
             ctx.json_ops.append(si_entry)
-        elif op.kind == "DEL_INDEX":
+        elif op.kind == FrontendKinds.DEL_INDEX:
             ctx.json_ops.append(
                 {
                     "kind": "del_index",
@@ -62,9 +76,9 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LOOP_START":
+        elif op.kind == FrontendKinds.LOOP_START:
             ctx.json_ops.append({"kind": "loop_start"})
-        elif op.kind == "LOOP_INDEX_START":
+        elif op.kind == FrontendKinds.LOOP_INDEX_START:
             ctx.json_ops.append(
                 {
                     "kind": "loop_index_start",
@@ -72,7 +86,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LOOP_INDEX_NEXT":
+        elif op.kind == FrontendKinds.LOOP_INDEX_NEXT:
             ctx.json_ops.append(
                 {
                     "kind": "loop_index_next",
@@ -80,37 +94,37 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LOOP_BREAK_IF_TRUE":
-            _lbit_entry: dict[str, Any] = {
+        elif op.kind == FrontendKinds.LOOP_BREAK_IF_TRUE:
+            _lbit_entry: SimpleIROp = {
                 "kind": "loop_break_if_true",
                 "args": [op.args[0].name],
             }
             _lbit_cond = op.args[0]
-            if isinstance(_lbit_cond, MoltValue) and _lbit_cond.type_hint in {
-                "int",
-                "bool",
-            }:
+            if (
+                isinstance(_lbit_cond, MoltValue)
+                and _lbit_cond.type_hint in _SERIALIZE_LOOP_STRING_ASYNC_OP_KINDS_1
+            ):
                 _lbit_entry["type_hint"] = _lbit_cond.type_hint
             ctx.json_ops.append(_lbit_entry)
-        elif op.kind == "LOOP_BREAK_IF_FALSE":
-            _lbif_entry: dict[str, Any] = {
+        elif op.kind == FrontendKinds.LOOP_BREAK_IF_FALSE:
+            _lbif_entry: SimpleIROp = {
                 "kind": "loop_break_if_false",
                 "args": [op.args[0].name],
             }
             _lbif_cond = op.args[0]
-            if isinstance(_lbif_cond, MoltValue) and _lbif_cond.type_hint in {
-                "int",
-                "bool",
-            }:
+            if (
+                isinstance(_lbif_cond, MoltValue)
+                and _lbif_cond.type_hint in _SERIALIZE_LOOP_STRING_ASYNC_OP_KINDS_1
+            ):
                 _lbif_entry["type_hint"] = _lbif_cond.type_hint
             ctx.json_ops.append(_lbif_entry)
-        elif op.kind == "LOOP_BREAK":
+        elif op.kind == FrontendKinds.LOOP_BREAK:
             ctx.json_ops.append({"kind": "loop_break"})
-        elif op.kind == "LOOP_CONTINUE":
+        elif op.kind == FrontendKinds.LOOP_CONTINUE:
             ctx.json_ops.append({"kind": "loop_continue"})
-        elif op.kind == "LOOP_END":
+        elif op.kind == FrontendKinds.LOOP_END:
             ctx.json_ops.append({"kind": "loop_end"})
-        elif op.kind == "VEC_SUM":
+        elif op.kind == FrontendKinds.VEC_SUM:
             ctx.json_ops.append(
                 {
                     "kind": "vec_sum",
@@ -118,7 +132,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "VEC_PROD":
+        elif op.kind == FrontendKinds.VEC_PROD:
             ctx.json_ops.append(
                 {
                     "kind": "vec_prod",
@@ -126,7 +140,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "VEC_MIN":
+        elif op.kind == FrontendKinds.VEC_MIN:
             ctx.json_ops.append(
                 {
                     "kind": "vec_min",
@@ -134,7 +148,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "VEC_MAX":
+        elif op.kind == FrontendKinds.VEC_MAX:
             ctx.json_ops.append(
                 {
                     "kind": "vec_max",
@@ -142,7 +156,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SLICE":
+        elif op.kind == FrontendKinds.SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "slice",
@@ -150,7 +164,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "SLICE_NEW":
+        elif op.kind == FrontendKinds.SLICE_NEW:
             ctx.json_ops.append(
                 {
                     "kind": "slice_new",
@@ -160,7 +174,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_FIND":
+        elif op.kind == FrontendKinds.BYTES_FIND:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_find",
@@ -168,7 +182,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_FIND_SLICE":
+        elif op.kind == FrontendKinds.BYTES_FIND_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_find_slice",
@@ -176,7 +190,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_FIND":
+        elif op.kind == FrontendKinds.BYTEARRAY_FIND:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_find",
@@ -184,7 +198,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_FIND_SLICE":
+        elif op.kind == FrontendKinds.BYTEARRAY_FIND_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_find_slice",
@@ -192,7 +206,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_STARTSWITH":
+        elif op.kind == FrontendKinds.BYTES_STARTSWITH:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_startswith",
@@ -200,7 +214,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_STARTSWITH_SLICE":
+        elif op.kind == FrontendKinds.BYTES_STARTSWITH_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_startswith_slice",
@@ -208,7 +222,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_STARTSWITH":
+        elif op.kind == FrontendKinds.BYTEARRAY_STARTSWITH:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_startswith",
@@ -216,7 +230,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_STARTSWITH_SLICE":
+        elif op.kind == FrontendKinds.BYTEARRAY_STARTSWITH_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_startswith_slice",
@@ -224,7 +238,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_ENDSWITH":
+        elif op.kind == FrontendKinds.BYTES_ENDSWITH:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_endswith",
@@ -232,7 +246,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_ENDSWITH_SLICE":
+        elif op.kind == FrontendKinds.BYTES_ENDSWITH_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_endswith_slice",
@@ -240,7 +254,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_ENDSWITH":
+        elif op.kind == FrontendKinds.BYTEARRAY_ENDSWITH:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_endswith",
@@ -248,7 +262,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_ENDSWITH_SLICE":
+        elif op.kind == FrontendKinds.BYTEARRAY_ENDSWITH_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_endswith_slice",
@@ -256,7 +270,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_COUNT":
+        elif op.kind == FrontendKinds.BYTES_COUNT:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_count",
@@ -264,7 +278,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_COUNT":
+        elif op.kind == FrontendKinds.BYTEARRAY_COUNT:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_count",
@@ -272,7 +286,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_COUNT_SLICE":
+        elif op.kind == FrontendKinds.BYTES_COUNT_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_count_slice",
@@ -280,7 +294,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_COUNT_SLICE":
+        elif op.kind == FrontendKinds.BYTEARRAY_COUNT_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_count_slice",
@@ -288,7 +302,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STR_FROM_OBJ":
+        elif op.kind == FrontendKinds.STR_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "str_from_obj",
@@ -296,7 +310,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "OPERATOR_INDEX":
+        elif op.kind == FrontendKinds.OPERATOR_INDEX:
             ctx.json_ops.append(
                 {
                     "kind": "operator_index",
@@ -304,7 +318,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "REPR_FROM_OBJ":
+        elif op.kind == FrontendKinds.REPR_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "repr_from_obj",
@@ -312,7 +326,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ASCII_FROM_OBJ":
+        elif op.kind == FrontendKinds.ASCII_FROM_OBJ:
             ctx.json_ops.append(
                 {
                     "kind": "ascii_from_obj",
@@ -320,7 +334,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_FIND":
+        elif op.kind == FrontendKinds.STRING_FIND:
             ctx.json_ops.append(
                 {
                     "kind": "string_find",
@@ -328,7 +342,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_FIND_SLICE":
+        elif op.kind == FrontendKinds.STRING_FIND_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "string_find_slice",
@@ -336,7 +350,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_FORMAT":
+        elif op.kind == FrontendKinds.STRING_FORMAT:
             ctx.json_ops.append(
                 {
                     "kind": "string_format",
@@ -344,7 +358,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_STARTSWITH":
+        elif op.kind == FrontendKinds.STRING_STARTSWITH:
             ctx.json_ops.append(
                 {
                     "kind": "string_startswith",
@@ -352,7 +366,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_STARTSWITH_SLICE":
+        elif op.kind == FrontendKinds.STRING_STARTSWITH_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "string_startswith_slice",
@@ -360,7 +374,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_ENDSWITH":
+        elif op.kind == FrontendKinds.STRING_ENDSWITH:
             ctx.json_ops.append(
                 {
                     "kind": "string_endswith",
@@ -368,7 +382,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_ENDSWITH_SLICE":
+        elif op.kind == FrontendKinds.STRING_ENDSWITH_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "string_endswith_slice",
@@ -376,7 +390,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_COUNT":
+        elif op.kind == FrontendKinds.STRING_COUNT:
             ctx.json_ops.append(
                 {
                     "kind": "string_count",
@@ -384,7 +398,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_COUNT_SLICE":
+        elif op.kind == FrontendKinds.STRING_COUNT_SLICE:
             ctx.json_ops.append(
                 {
                     "kind": "string_count_slice",
@@ -392,7 +406,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_JOIN":
+        elif op.kind == FrontendKinds.STRING_JOIN:
             ctx.json_ops.append(
                 {
                     "kind": "string_join",
@@ -400,7 +414,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_SPLIT":
+        elif op.kind == FrontendKinds.STRING_SPLIT:
             ctx.json_ops.append(
                 {
                     "kind": "string_split",
@@ -408,7 +422,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_SPLIT_MAX":
+        elif op.kind == FrontendKinds.STRING_SPLIT_MAX:
             ctx.json_ops.append(
                 {
                     "kind": "string_split_max",
@@ -416,7 +430,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_LOWER":
+        elif op.kind == FrontendKinds.STRING_LOWER:
             ctx.json_ops.append(
                 {
                     "kind": "string_lower",
@@ -424,7 +438,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_UPPER":
+        elif op.kind == FrontendKinds.STRING_UPPER:
             ctx.json_ops.append(
                 {
                     "kind": "string_upper",
@@ -432,7 +446,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_CAPITALIZE":
+        elif op.kind == FrontendKinds.STRING_CAPITALIZE:
             ctx.json_ops.append(
                 {
                     "kind": "string_capitalize",
@@ -440,7 +454,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_STRIP":
+        elif op.kind == FrontendKinds.STRING_STRIP:
             ctx.json_ops.append(
                 {
                     "kind": "string_strip",
@@ -448,7 +462,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_LSTRIP":
+        elif op.kind == FrontendKinds.STRING_LSTRIP:
             ctx.json_ops.append(
                 {
                     "kind": "string_lstrip",
@@ -456,7 +470,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_RSTRIP":
+        elif op.kind == FrontendKinds.STRING_RSTRIP:
             ctx.json_ops.append(
                 {
                     "kind": "string_rstrip",
@@ -464,7 +478,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STRING_REPLACE":
+        elif op.kind == FrontendKinds.STRING_REPLACE:
             ctx.json_ops.append(
                 {
                     "kind": "string_replace",
@@ -472,7 +486,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_SPLIT":
+        elif op.kind == FrontendKinds.BYTES_SPLIT:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_split",
@@ -480,7 +494,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_SPLIT_MAX":
+        elif op.kind == FrontendKinds.BYTES_SPLIT_MAX:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_split_max",
@@ -488,7 +502,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_SPLIT":
+        elif op.kind == FrontendKinds.BYTEARRAY_SPLIT:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_split",
@@ -496,7 +510,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_SPLIT_MAX":
+        elif op.kind == FrontendKinds.BYTEARRAY_SPLIT_MAX:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_split_max",
@@ -504,7 +518,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTES_REPLACE":
+        elif op.kind == FrontendKinds.BYTES_REPLACE:
             ctx.json_ops.append(
                 {
                     "kind": "bytes_replace",
@@ -512,7 +526,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "BYTEARRAY_REPLACE":
+        elif op.kind == FrontendKinds.BYTEARRAY_REPLACE:
             ctx.json_ops.append(
                 {
                     "kind": "bytearray_replace",
@@ -520,7 +534,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STORE_VAR":
+        elif op.kind == FrontendKinds.STORE_VAR:
             var_name = op.metadata["var"] if op.metadata else ""
             ctx.json_ops.append(
                 {
@@ -529,7 +543,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "args": [op.args[0].name],
                 }
             )
-        elif op.kind == "LOAD_VAR":
+        elif op.kind == FrontendKinds.LOAD_VAR:
             var_name = op.metadata["var"] if op.metadata else ""
             ctx.json_ops.append(
                 {
@@ -543,13 +557,13 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
             # the output name is also a list_int container.
             if var_name in ctx.json_list_int_containers:
                 ctx.json_list_int_containers.add(op.result.name)
-        elif op.kind == "ret":
+        elif op.kind == FrontendKinds.ret:
             ctx.json_ops.append({"kind": "ret", "args": [op.args[0].name]})
-        elif op.kind == "ret_void":
+        elif op.kind == FrontendKinds.ret_void:
             ctx.json_ops.append({"kind": "ret_void"})
-        elif op.kind == "STATE_SWITCH":
+        elif op.kind == FrontendKinds.STATE_SWITCH:
             ctx.json_ops.append({"kind": "state_switch"})
-        elif op.kind == "STATE_TRANSITION":
+        elif op.kind == FrontendKinds.STATE_TRANSITION:
             if len(op.args) == 3:
                 future, pending_state, next_state = op.args
                 slot_arg = None
@@ -567,7 +581,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STATE_YIELD":
+        elif op.kind == FrontendKinds.STATE_YIELD:
             value, next_state = op.args
             ctx.json_ops.append(
                 {
@@ -577,10 +591,10 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STATE_SET":
+        elif op.kind == FrontendKinds.STATE_SET:
             (state,) = op.args
             ctx.json_ops.append({"kind": "state_set", "value": state})
-        elif op.kind == "GEN_SEND":
+        elif op.kind == FrontendKinds.GEN_SEND:
             gen, val = op.args
             ctx.json_ops.append(
                 {
@@ -589,7 +603,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "GEN_CLOSE":
+        elif op.kind == FrontendKinds.GEN_CLOSE:
             ctx.json_ops.append(
                 {
                     "kind": "gen_close",
@@ -597,7 +611,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "IS_GENERATOR":
+        elif op.kind == FrontendKinds.IS_GENERATOR:
             ctx.json_ops.append(
                 {
                     "kind": "is_generator",
@@ -605,7 +619,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "IS_CALLABLE":
+        elif op.kind == FrontendKinds.IS_CALLABLE:
             ctx.json_ops.append(
                 {
                     "kind": "is_callable",
@@ -613,7 +627,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "LOAD_CLOSURE":
+        elif op.kind == FrontendKinds.LOAD_CLOSURE:
             self_ptr, offset = op.args
             ctx.json_ops.append(
                 {
@@ -623,7 +637,7 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "STORE_CLOSURE":
+        elif op.kind == FrontendKinds.STORE_CLOSURE:
             self_ptr, offset, val = op.args
             ctx.json_ops.append(
                 {

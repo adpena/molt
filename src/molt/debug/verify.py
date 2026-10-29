@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 import json
@@ -81,7 +83,7 @@ class VerificationFinding:
 
 # Each frontend op kind and the backend lane its serialization must emit.
 # Checked by serializing the op, so a refactor that keeps the lowering passes.
-FRONTEND_LOWERING_LANES: Mapping[str, str] = MappingProxyType(
+FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
     {
         "CALL_INDIRECT": "call_indirect",
         "GUARD_TAG": "guard_tag",
@@ -348,7 +350,7 @@ def check_ir_inventory(
     return failures
 
 
-def _serialized_frontend_kinds(kind: str) -> list[str]:
+def _serialized_frontend_kinds(kind: FrontendOpKind) -> list[str]:
     from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 
     op = MoltOp(
@@ -361,7 +363,7 @@ def _serialized_frontend_kinds(kind: str) -> list[str]:
 
 
 def check_frontend_lowering_lanes(
-    serialize: Callable[[str], list[str]] = _serialized_frontend_kinds,
+    serialize: Callable[[FrontendOpKind], list[str]] = _serialized_frontend_kinds,
 ) -> list[str]:
     """Serialize each op kind and compare the emitted lane with its contract."""
 
