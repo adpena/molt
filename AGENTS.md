@@ -194,7 +194,7 @@ over stale prose or precedent.
 - TIR facts and generation: `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py`
 - Runtime and ABI manifests: `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
   `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml`
-- CI failure triage (NEW versus main, ledger owners): `python3 tools/ci_triage.py RUN_ID`
+- CI or JUnit failure triage (NEW versus main, owners): `tools/ci_triage.py RUN_ID|--junit FILE`
 - Loop anatomy and cost buckets: `tools/opt_explorer.py`, `tools/PERF_AUTHORITY.md`
 
 Load only the authority the task needs, and update it when its facts change.

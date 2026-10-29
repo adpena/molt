@@ -19,12 +19,12 @@ temporary names and numbers removed. Each cause names its owning open rows,
 the rows that name its test files, and how many of those files no proof-plan
 command runs (`tools/check_test_ownership.py`).
 
-Usage:
-    python3 tools/ci_triage.py RUN_ID
-    python3 tools/ci_triage.py --branch verify/train-32
-    python3 tools/ci_triage.py RUN_ID --compare none --json
-    python3 tools/ci_triage.py RUN_ID --verify
-    python3 tools/ci_triage.py --junit junit.xml [--json]
+Usage (`uv run --python 3.12 python` as the interpreter):
+    tools/ci_triage.py RUN_ID
+    tools/ci_triage.py --branch verify/train-32
+    tools/ci_triage.py RUN_ID --compare none --json
+    tools/ci_triage.py RUN_ID --verify
+    tools/ci_triage.py --junit junit.xml [--json]
 
 Exit status: 0 completed successful CI (and verified coverage with --verify),
 1 failed CI/proofs, 2 unavailable verification, 3 unfinished CI. NEW/main
