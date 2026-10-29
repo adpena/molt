@@ -6,7 +6,7 @@ use std::collections::HashSet;
 /// Helper to create an `OpIR` with just a `kind`.
 pub(super) fn op(kind: crate::OpKind) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         ..crate::OpIR::new(kind)
     }
 }
@@ -14,7 +14,7 @@ pub(super) fn op(kind: crate::OpKind) -> OpIR {
 /// Helper to create an `OpIR` with `kind`, `args`, and `out`.
 pub(super) fn op_args_out(kind: crate::OpKind, args: &[&str], out: &str) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         out: Some(out.to_string()),
         ..crate::OpIR::new(kind)
@@ -24,7 +24,7 @@ pub(super) fn op_args_out(kind: crate::OpKind, args: &[&str], out: &str) -> OpIR
 /// Helper to create an `OpIR` with `kind` and `args`.
 pub(super) fn op_args(kind: crate::OpKind, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         ..crate::OpIR::new(kind)
     }
@@ -33,7 +33,7 @@ pub(super) fn op_args(kind: crate::OpKind, args: &[&str]) -> OpIR {
 /// Helper to create an `OpIR` with `kind` and `value`.
 pub(super) fn op_val(kind: crate::OpKind, value: i64) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         value: Some(value),
         ..crate::OpIR::new(kind)
     }
@@ -42,7 +42,7 @@ pub(super) fn op_val(kind: crate::OpKind, value: i64) -> OpIR {
 /// Helper to create an `OpIR` with `kind`, `out`, and `value`.
 pub(super) fn op_val_out(kind: crate::OpKind, value: i64, out: &str) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         value: Some(value),
         out: Some(out.to_string()),
         ..crate::OpIR::new(kind)

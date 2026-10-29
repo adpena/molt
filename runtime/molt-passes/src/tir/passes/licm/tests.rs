@@ -720,11 +720,7 @@ fn fallback_semantic_copy_is_not_hoisted() {
                 opcode: OpCode::Copy,
                 operands: vec![module, attr_name],
                 results: vec![lookup],
-                attrs: {
-                    let attrs = AttrDict::new();
-
-                    attrs
-                },
+                attrs: { AttrDict::new() },
                 source_span: None,
             }],
             terminator: Terminator::Branch {

@@ -9,7 +9,7 @@ fn eliminate_dead_ops(ir: &mut SimpleIR) {
 
 fn make_op(kind: molt_ir::OpKind) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         ..OpIR::new(kind)
     }
 }
@@ -79,7 +79,7 @@ fn manifest_func(ops: Vec<OpIR>) -> FunctionIR {
 
 fn make_arith(kind: molt_ir::OpKind, args: &[&str], out: &str) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         out: Some(out.to_string()),
         ..OpIR::new(kind)
@@ -88,7 +88,7 @@ fn make_arith(kind: molt_ir::OpKind, args: &[&str], out: &str) -> OpIR {
 
 fn make_ref_op(kind: molt_ir::OpKind, arg: &str) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(vec![arg.to_string()]),
         ..OpIR::new(kind)
     }

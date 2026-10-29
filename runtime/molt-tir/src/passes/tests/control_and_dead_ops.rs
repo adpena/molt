@@ -107,11 +107,11 @@ fn exception_elision_preserves_polling_observers_and_unproven_entry_state() {
             },
             make_op(molt_ir::OpKind::ConstNone),
             OpIR {
-                kind: kind,
+                kind,
                 async_work_poll: poll,
                 out: out.map(str::to_string),
                 value: target,
-                ..OpIR::new(kind.into())
+                ..OpIR::new(kind)
             },
         ]);
         elide_safe_exception_checks(&mut func);
@@ -168,9 +168,9 @@ fn untargeted_observers_cannot_hide_pending_failures_from_later_checks() {
             ops.push(make_op(literal));
         }
         ops.push(OpIR {
-            kind: kind,
+            kind,
             async_work_poll: poll,
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         });
         ops.push(check());
         let expected_len = ops.len();
@@ -625,10 +625,10 @@ fn runtime_guards_keep_profile_events_and_elide_only_nonthrowing_observation() {
                 make_const_int("source", 7),
                 make_const_int("tag", 5),
                 OpIR {
-                    kind: kind,
+                    kind,
                     args: Some(vec!["source".into(), "tag".into()]),
                     out: Some("unused".into()),
-                    ..OpIR::new(kind.into())
+                    ..OpIR::new(kind)
                 },
                 check(),
                 make_op(molt_ir::OpKind::RetVoid),

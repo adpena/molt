@@ -7,7 +7,7 @@ pub(crate) fn op(
     args: &[&str],
 ) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         out: out.map(str::to_string),
         var: var.map(str::to_string),
         args: (!args.is_empty()).then(|| args.iter().map(|arg| arg.to_string()).collect()),

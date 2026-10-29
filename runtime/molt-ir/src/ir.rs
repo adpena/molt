@@ -626,7 +626,7 @@ fn deserialize_wire_kind<'de, D: serde::Deserializer<'de>>(
 impl OpIR {
     pub fn new(kind: crate::OpKind) -> Self {
         Self {
-            kind: kind,
+            kind,
             value: Default::default(),
             state_targets: Default::default(),
             f_value: Default::default(),
@@ -1637,8 +1637,8 @@ mod json_parse_tests {
                 name: "value_without_payload".into(),
                 return_abi: super::FunctionReturnAbi::Value,
                 ops: vec![OpIR {
-                    kind: kind.into(),
-                    ..crate::OpIR::new(kind.into())
+                    kind,
+                    ..crate::OpIR::new(kind)
                 }],
                 ..FunctionIR::default()
             };
@@ -2507,7 +2507,7 @@ mod json_parse_tests {
                     params: args.clone(),
                     ops: vec![
                         OpIR {
-                            kind: kind,
+                            kind,
                             args: Some(args),
                             s_value: Some(declaration.name.clone()),
                             out: Some("result".to_string()),
@@ -2885,18 +2885,18 @@ mod json_parse_tests {
         ]
         .into_iter()
         .map(|kind| OpIR {
-            kind: kind.into(),
+            kind,
             s_value: Some(symbol.into()),
-            ..crate::OpIR::new(kind.into())
+            ..crate::OpIR::new(kind)
         })
         .collect();
         carriers.extend(
             SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS
                 .iter()
                 .map(|kind| OpIR {
-                    kind: (*kind).into(),
+                    kind: (*kind),
                     runtime_symbol: Some(symbol.into()),
-                    ..crate::OpIR::new((*kind).into())
+                    ..crate::OpIR::new(*kind)
                 }),
         );
         carriers.push(OpIR {
@@ -3003,11 +3003,12 @@ mod json_parse_tests {
                 "out": "callable"
             })));
         }
-        for op in [OpIR {
-            kind: crate::OpKind::ModuleGetAttr,
-            runtime_requirement_bits: u32::MAX,
-            ..crate::OpIR::new(crate::OpKind::ModuleGetAttr)
-        }] {
+        {
+            let op = OpIR {
+                kind: crate::OpKind::ModuleGetAttr,
+                runtime_requirement_bits: u32::MAX,
+                ..crate::OpIR::new(crate::OpKind::ModuleGetAttr)
+            };
             assert!(
                 op.runtime_requirements().is_none(),
                 "admission must fail closed"
@@ -3815,11 +3816,11 @@ mod json_parse_tests {
                 params: vec!["callable".into(), "value".into()],
                 ops: vec![
                     OpIR {
-                        kind: kind.into(),
+                        kind,
                         args: Some(vec!["callable".into(), "value".into()]),
                         argument_custody: Some(custody),
                         out: Some("result".into()),
-                        ..crate::OpIR::new(kind.into())
+                        ..crate::OpIR::new(kind)
                     },
                     OpIR {
                         kind: crate::OpKind::RetVoid,

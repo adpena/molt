@@ -9,10 +9,10 @@ fn constant_integer_facts_require_one_canonical_producer() {
         molt_ir::OpKind::LoadConst,
     ] {
         let constant = |name: &str| OpIR {
-            kind: kind,
+            kind,
             out: Some(name.into()),
             value: Some(7),
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         };
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -463,7 +463,7 @@ fn generated_function_references_retain_exact_symbols_without_guessed_companions
                     function(
                         "entry",
                         vec![OpIR {
-                            kind: kind,
+                            kind,
                             s_value: Some(target.to_string()),
                             ..OpIR::new(kind)
                         }],
@@ -495,7 +495,8 @@ fn generated_function_references_retain_exact_symbols_without_guessed_companions
 
 #[test]
 fn non_reference_operations_do_not_retain_defined_functions() {
-    for kind in [molt_ir::OpKind::ConstStr] {
+    {
+        let kind = molt_ir::OpKind::ConstStr;
         let function = |name: &str, ops: Vec<OpIR>| FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.to_string(),
@@ -513,7 +514,7 @@ fn non_reference_operations_do_not_retain_defined_functions() {
                 function(
                     "entry",
                     vec![OpIR {
-                        kind: kind,
+                        kind,
                         s_value: Some("opaque_body".to_string()),
                         ..OpIR::new(kind)
                     }],

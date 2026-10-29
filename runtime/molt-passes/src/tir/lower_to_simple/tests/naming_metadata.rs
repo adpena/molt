@@ -793,12 +793,12 @@ fn mapped_binding_reads_materialize_none_in_var_and_argument_forms() {
                         ..OpIR::new(molt_ir::OpKind::ConstNone)
                     },
                     OpIR {
-                        kind: kind,
+                        kind,
                         var: var.map(str::to_string),
                         args: args.clone(),
                         out: Some("result".into()),
                         source_op_idx: Some(701),
-                        ..OpIR::new(kind.into())
+                        ..OpIR::new(kind)
                     },
                     OpIR {
                         kind: molt_ir::OpKind::Ret,
@@ -1135,12 +1135,12 @@ fn tir_round_trip_preserves_method_loads_as_first_class_ops() {
     let load =
         |kind: molt_ir::OpKind, args: &[&str], name: &str, callable: &str, self_or_null: &str| {
             OpIR {
-                kind: kind,
+                kind,
                 args: Some(args.iter().map(|arg| arg.to_string()).collect()),
                 s_value: Some(name.into()),
                 var: Some(callable.into()),
                 out: Some(self_or_null.into()),
-                ..OpIR::new(kind.into())
+                ..OpIR::new(kind)
             }
         };
     let call = |callable: &str, self_or_null: &str, out: &str| OpIR {

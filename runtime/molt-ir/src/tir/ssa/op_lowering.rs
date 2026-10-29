@@ -404,7 +404,7 @@ mod positional_result_tests {
                             ..crate::OpIR::new(crate::OpKind::ConstInt)
                         },
                         OpIR {
-                            kind: kind.into(),
+                            kind,
                             var: var.map(str::to_string),
                             out: out.map(str::to_string),
                             args: Some(if kind == crate::OpKind::IterNextUnboxed {
@@ -412,24 +412,20 @@ mod positional_result_tests {
                             } else {
                                 vec!["source".into(), "source".into()]
                             }),
-                            ..crate::OpIR::new(kind.into())
+                            ..crate::OpIR::new(kind)
                         },
                         OpIR {
                             kind: if returned.is_some() {
                                 crate::OpKind::Ret
                             } else {
                                 crate::OpKind::RetVoid
-                            }
-                            .into(),
+                            },
                             args: returned.map(|name| vec![name.to_string()]),
-                            ..crate::OpIR::new(
-                                if returned.is_some() {
-                                    crate::OpKind::Ret
-                                } else {
-                                    crate::OpKind::RetVoid
-                                }
-                                .into(),
-                            )
+                            ..crate::OpIR::new(if returned.is_some() {
+                                crate::OpKind::Ret
+                            } else {
+                                crate::OpKind::RetVoid
+                            })
                         },
                     ];
                     let cfg = CFG::build(&ops);

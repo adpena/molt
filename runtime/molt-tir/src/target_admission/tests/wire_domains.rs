@@ -9,11 +9,11 @@ fn preserved_iterator_spelling_requires_the_iterable_protocol() {
         molt_ir::OpKind::IterNextUnboxed,
     ] {
         let op = OpIR {
-            kind: kind,
+            kind,
             args: Some(vec!["source".into()]),
             out: Some("iterator".into()),
             var: (kind == molt_ir::OpKind::IterNextUnboxed).then(|| "item".into()),
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         };
         assert!(
             op.runtime_requirements()
@@ -77,8 +77,8 @@ fn runtime_aliases_and_typed_siblings_cannot_escape_existing_capabilities() {
         molt_ir::OpKind::GpuBarrier,
     ] {
         let ir = function_ir(vec![OpIR {
-            kind: kind,
-            ..OpIR::new(kind.into())
+            kind,
+            ..OpIR::new(kind)
         }]);
         let error =
             validate_runtime_target_contract(&ir, &TargetInfo::rust_release_fast()).unwrap_err();
@@ -105,10 +105,10 @@ fn canonical_integer_literal_aliases_share_exact_admission() {
         molt_ir::OpKind::LoadConst,
     ] {
         let op = OpIR {
-            kind: kind,
+            kind,
             value: Some(-7),
             out: Some("value".into()),
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         };
         assert_eq!(exact_integer_literal_value(&op, 7), Some(-7));
         assert_eq!(exact_integer_literal_value(&op, 6), None);

@@ -1456,7 +1456,7 @@ mod tests {
                 let original = kind;
                 check(
                     OpCode::Call,
-                    original.clone(),
+                    original,
                     Some(("s_value", AttrValue::Str("fixture_target".into()))),
                     operands,
                     true,
@@ -1467,7 +1467,7 @@ mod tests {
                     Some(("s_value", AttrValue::Str(String::new()))),
                     Some(("s_value", AttrValue::Int(1))),
                 ] {
-                    check(OpCode::Call, original.clone(), target, operands, false);
+                    check(OpCode::Call, original, target, operands, false);
                 }
             }
         }
@@ -1662,7 +1662,7 @@ mod tests {
                 TirType::None,
                 crate::FunctionReturnAbi::Void,
             );
-            let origin = Some(shape.kind.into());
+            let origin = Some(shape.kind);
             let mut attrs = AttrDict::new();
             if shape.value_rule == SimpleIrOpValueRule::NonNegative {
                 attrs.insert("value".into(), AttrValue::Int(0));

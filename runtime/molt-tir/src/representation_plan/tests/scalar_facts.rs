@@ -307,7 +307,7 @@ fn scalar_store_facts_project_both_checked_results_and_all_constant_spellings() 
                 Some(OpCode::CheckedAdd | OpCode::CheckedMul)
             ));
             let mut seed = const_int("seed", 1_i64 << 31);
-            seed.kind = constant_kind.into();
+            seed.kind = constant_kind;
             let function = function(
                 "checked_result_store_facts",
                 &[],

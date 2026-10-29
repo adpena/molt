@@ -133,9 +133,9 @@ mod tests {
     use super::*;
     fn op(kind: crate::OpKind, value: Option<i64>) -> OpIR {
         OpIR {
-            kind: kind.into(),
+            kind,
             value,
-            ..crate::OpIR::new(kind.into())
+            ..crate::OpIR::new(kind)
         }
     }
     #[test]

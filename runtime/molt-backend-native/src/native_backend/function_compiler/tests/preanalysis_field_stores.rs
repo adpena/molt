@@ -178,7 +178,7 @@ fn observers_captures_and_unrelated_callbacks_permanently_revoke_history() {
         field_store(OpKind::Store, "heap", "obj", 0),
         field_store(OpKind::Store, "heap", "zero", 0),
     ] {
-        let kind = observer.kind.clone();
+        let kind = observer.kind;
         let func = field_fixture(
             OpKind::ObjectNewBound,
             Some(24),

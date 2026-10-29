@@ -27,9 +27,9 @@ fn singleton_materialization_does_not_authorize_identity_or_unknown_spellings() 
         molt_ir::OpKind::Missing,
     ] {
         let literal = OpIR {
-            kind: kind,
+            kind,
             out: Some("singleton".into()),
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         };
         let ir = function_ir(vec![
             literal.clone(),
@@ -76,9 +76,9 @@ fn singleton_materialization_does_not_authorize_identity_or_unknown_spellings() 
 #[test]
 fn shared_graph_admission_precedes_target_representation_planning() {
     let labelled = |kind: molt_ir::OpKind, value: i64| OpIR {
-        kind: kind,
+        kind,
         value: Some(value),
-        ..OpIR::new(kind.into())
+        ..OpIR::new(kind)
     };
     let cases = [
         (
@@ -186,10 +186,10 @@ fn representation_shape_admission_precedes_every_target_plan() {
             ] {
                 let mut ir = function_ir(vec![
                     OpIR {
-                        kind: kind,
+                        kind,
                         args,
                         var: var.map(str::to_owned),
-                        ..OpIR::new(kind.into())
+                        ..OpIR::new(kind)
                     },
                     OpIR {
                         kind: molt_ir::OpKind::RetVoid,
@@ -228,8 +228,8 @@ fn lexical_cells_require_real_storage_and_capture_transport() {
     ]
     .into_iter()
     .map(|kind| OpIR {
-        kind: kind,
-        ..OpIR::new(kind.into())
+        kind,
+        ..OpIR::new(kind)
     })
     .collect();
     for symbol in [
@@ -257,16 +257,16 @@ fn lexical_cells_require_real_storage_and_capture_transport() {
             molt_ir::OpKind::BuiltinFunc,
         ] {
             operations.push(OpIR {
-                kind: kind,
+                kind,
                 s_value: Some(symbol.into()),
-                ..OpIR::new(kind.into())
+                ..OpIR::new(kind)
             });
         }
         for kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
             operations.push(OpIR {
-                kind: (*kind).into(),
+                kind: (*kind),
                 runtime_symbol: Some(symbol.into()),
-                ..OpIR::new((*kind).into())
+                ..OpIR::new(*kind)
             });
         }
     }
@@ -294,8 +294,8 @@ fn import_protocol_is_independent_of_object_storage_and_callable_transport() {
     ]
     .into_iter()
     .map(|kind| OpIR {
-        kind: kind,
-        ..OpIR::new(kind.into())
+        kind,
+        ..OpIR::new(kind)
     })
     .collect();
     for symbol in [
@@ -326,9 +326,9 @@ fn import_protocol_is_independent_of_object_storage_and_callable_transport() {
             molt_ir::OpKind::BuiltinFunc,
         ] {
             operations.push(OpIR {
-                kind: kind,
+                kind,
                 s_value: Some(symbol.into()),
-                ..OpIR::new(kind.into())
+                ..OpIR::new(kind)
             });
         }
         operations.push(OpIR {
@@ -403,7 +403,7 @@ fn binary(kind: molt_ir::OpKind, ty: &str) -> SimpleIR {
             name: "f".to_string(),
             params: vec!["lhs".to_string(), "rhs".to_string()],
             ops: vec![OpIR {
-                kind: kind,
+                kind,
                 args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
                 out: Some("out".to_string()),
                 ..OpIR::new(kind)
@@ -641,7 +641,7 @@ fn execution_frames_are_distinct_from_python_introspection() {
         molt_ir::OpKind::TraceExit,
     ] {
         let ir = function_ir(vec![OpIR {
-            kind: kind,
+            kind,
             args: match kind {
                 molt_ir::OpKind::FrameContextSet => {
                     Some(vec!["arg0".into(), "kind".into(), "class_cell".into()])
@@ -688,7 +688,7 @@ fn super_context_intrinsics_require_execution_frames_not_locals_introspection() 
         ]
         .into_iter()
         .map(|kind| OpIR {
-            kind: kind,
+            kind,
             s_value: Some(symbol.to_string()),
             ..OpIR::new(kind)
         })
@@ -855,7 +855,7 @@ fn every_canonical_runtime_symbol_field_shares_frame_introspection_admission() {
             ]
             .into_iter()
             .map(|kind| OpIR {
-                kind: kind,
+                kind,
                 s_value: Some(symbol.to_string()),
                 ..OpIR::new(kind)
             }),
@@ -889,7 +889,7 @@ fn runtime_symbol_text_is_not_callable_identity_on_opaque_or_literal_operations(
             molt_ir::OpKind::InvokeFfi,
         ] {
             let op = OpIR {
-                kind: kind,
+                kind,
                 s_value: Some(symbol.to_string()),
                 ..OpIR::new(kind)
             };

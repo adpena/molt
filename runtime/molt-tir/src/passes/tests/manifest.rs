@@ -22,18 +22,14 @@ fn app_callable_manifest_publication_retains_the_supported_builtin_namespace() {
                     molt_ir::OpKind::Call
                 } else {
                     molt_ir::OpKind::ModuleCacheSet
-                }
-                .into(),
+                },
                 s_value: target.map(str::to_owned),
                 args: Some(vec!["name".into(), "module".into()]),
-                ..OpIR::new(
-                    if target.is_some() {
-                        molt_ir::OpKind::Call
-                    } else {
-                        molt_ir::OpKind::ModuleCacheSet
-                    }
-                    .into(),
-                )
+                ..OpIR::new(if target.is_some() {
+                    molt_ir::OpKind::Call
+                } else {
+                    molt_ir::OpKind::ModuleCacheSet
+                })
             });
             let expected = match name {
                 Some("_io") => BTreeSet::from(["molt_open_builtin".to_owned()]),
@@ -92,19 +88,15 @@ fn app_callable_manifest_retains_every_named_builtin_without_specializing_lookup
                     molt_ir::OpKind::Call
                 } else {
                     molt_ir::OpKind::ModuleGetGlobal
-                }
-                .into(),
+                },
                 s_value: target.map(str::to_owned),
                 args: Some(vec!["module".into(), "name".into()]),
                 out: Some("callable".into()),
-                ..OpIR::new(
-                    if target.is_some() {
-                        molt_ir::OpKind::Call
-                    } else {
-                        molt_ir::OpKind::ModuleGetGlobal
-                    }
-                    .into(),
-                )
+                ..OpIR::new(if target.is_some() {
+                    molt_ir::OpKind::Call
+                } else {
+                    molt_ir::OpKind::ModuleGetGlobal
+                })
             };
             let function = manifest_func(vec![make_const_str("name", spec.python_name), lookup]);
             let result = compute_app_callable_manifest(std::slice::from_ref(&function), &symbols);

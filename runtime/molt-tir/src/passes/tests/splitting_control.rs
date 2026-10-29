@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 
 fn label_op(kind: molt_ir::OpKind, target: i64) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         value: Some(target),
-        ..OpIR::new(kind.into())
+        ..OpIR::new(kind)
     }
 }
 

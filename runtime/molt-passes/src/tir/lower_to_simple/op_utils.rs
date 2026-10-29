@@ -99,7 +99,7 @@ pub(super) fn annotate_lowered_op(
 
 pub(super) fn binary_op(kind: molt_ir::OpKind, op: &TirOp, out: Option<String>) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(operand_args(op)),
         out,
         ..OpIR::new(kind)
@@ -108,7 +108,7 @@ pub(super) fn binary_op(kind: molt_ir::OpKind, op: &TirOp, out: Option<String>) 
 
 pub(super) fn unary_op(kind: molt_ir::OpKind, op: &TirOp, out: Option<String>) -> OpIR {
     OpIR {
-        kind: kind,
+        kind,
         args: Some(operand_args(op)),
         out,
         ..OpIR::new(kind)

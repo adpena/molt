@@ -1348,11 +1348,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
             opcode: OpCode::Copy,
             operands,
             results: vec![result],
-            attrs: {
-                let attrs = AttrDict::new();
-
-                attrs
-            },
+            attrs: { AttrDict::new() },
             source_span: None,
         });
     }

@@ -237,11 +237,7 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -388,11 +384,7 @@ fn lower_dynamic_set_attr_name_uses_operand_name() {
         opcode: OpCode::StoreAttr,
         operands: vec![ValueId(0), ValueId(1), ValueId(2)],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -423,11 +415,7 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
         opcode: OpCode::DelAttr,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -466,11 +454,7 @@ fn lower_preserved_has_attr_name_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![obj_bits, name_bits],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -541,11 +525,7 @@ fn lower_call_bind_preserves_callargs_builder_abi() {
         opcode: OpCode::Call,
         operands: vec![callable, builder],
         results: vec![result],
-        attrs: {
-            let attrs = AttrDict::new();
-
-            attrs
-        },
+        attrs: { AttrDict::new() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {

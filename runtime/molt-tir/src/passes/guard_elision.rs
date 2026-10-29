@@ -310,12 +310,12 @@ mod tests {
     }
     fn guard(kind: molt_ir::OpKind, expected: &str) -> OpIR {
         OpIR {
-            kind: kind,
+            kind,
             args: Some(vec!["source".into(), expected.into()]),
             out: Some("checked".into()),
             s_value: Some("int".into()),
             source_line: Some(37),
-            ..OpIR::new(kind.into())
+            ..OpIR::new(kind)
         }
     }
 

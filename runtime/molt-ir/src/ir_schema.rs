@@ -66,15 +66,12 @@ pub struct OpShapeDiagnostic {
 
 impl std::fmt::Display for OpShapeDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.violation {
-            OpShapeViolation::BackendPrivate { backend } => {
-                return write!(
-                    f,
-                    "backend-private op kind `{}` belongs to {backend} internal lowering and cannot enter an external SimpleIR program",
-                    self.kind
-                );
-            }
-            _ => {}
+        if let OpShapeViolation::BackendPrivate { backend } = &self.violation {
+            return write!(
+                f,
+                "backend-private op kind `{}` belongs to {backend} internal lowering and cannot enter an external SimpleIR program",
+                self.kind
+            );
         }
         write!(f, "[family={}] `{}` ", self.family, self.kind)?;
         match &self.violation {
@@ -164,7 +161,7 @@ impl std::error::Error for OpShapeDiagnostic {}
 
 /// Retirement applies to both wire spellings and preserved origins, regardless
 /// of which typed opcode currently carries the operation.
-
+///
 /// Reject retired spellings and validate generated operand/integer shape without
 /// assuming a complete program, value definitions, slot-table initialization or
 /// execution-context ownership. Existing result-role/cardinality facts remain

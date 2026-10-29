@@ -109,9 +109,7 @@ pub fn scalar_value_source(op: &TirOp) -> Option<ValueId> {
     if op.opcode != OpCode::Copy || op.results.len() != 1 || op.operands.len() != 1 {
         return None;
     }
-    let Some(kind) = op.origin else {
-        return None;
-    };
+    let kind = op.origin?;
     crate::tir::op_kinds_generated::copy_kind_forwards_scalar_value_table(kind)
         .then_some(op.operands[0])
 }

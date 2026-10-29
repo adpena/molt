@@ -326,8 +326,8 @@ mod tests {
             crate::OpKind::ConstFloat,
         ] {
             let op = OpIR {
-                kind: kind.into(),
-                ..crate::OpIR::new(kind.into())
+                kind,
+                ..crate::OpIR::new(kind)
             };
             assert!(validate_simple_literal(&op).is_err(), "{kind}");
             assert!(
@@ -341,9 +341,9 @@ mod tests {
             crate::OpKind::LoadConst,
         ] {
             let op = OpIR {
-                kind: kind.into(),
+                kind,
                 value: Some(-7),
-                ..crate::OpIR::new(kind.into())
+                ..crate::OpIR::new(kind)
             };
             let value = SimpleLiteral::from_simple(&op).unwrap().unwrap();
             assert_eq!(value.exact_integer_value(7), Some(-7));

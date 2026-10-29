@@ -931,16 +931,16 @@ fn paired_loop_closers_survive_terminal_body_paths() {
                     molt_ir::OpKind::LoopBreakIfFalse,
                 ] {
                     ops.push(OpIR {
-                        kind: kind,
-                        ..OpIR::new(kind.into())
+                        kind,
+                        ..OpIR::new(kind)
                     });
                 }
             }
             ops.push(OpIR {
-                kind: terminal.into(),
+                kind: terminal,
                 value: matches!(terminal, molt_ir::OpKind::Jump | molt_ir::OpKind::Goto)
                     .then_some(42),
-                ..OpIR::new(terminal.into())
+                ..OpIR::new(terminal)
             });
             ops.push(OpIR {
                 kind: molt_ir::OpKind::ConstInt,
@@ -1183,8 +1183,8 @@ fn shared_structure_verifier_rejects_orphaned_and_crossed_regions() {
         let ops: Vec<_> = kinds
             .iter()
             .map(|kind| OpIR {
-                kind: (*kind).into(),
-                ..OpIR::new((*kind).into())
+                kind: (*kind),
+                ..OpIR::new(*kind)
             })
             .collect();
         let mut errors = Vec::new();
