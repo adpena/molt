@@ -1620,13 +1620,30 @@ inventory. `--directory` and `--project` may not escape the admitted source
 root.
 
 Endpoint hashes are backed by live kernel mutation custody during the command.
-Windows `ReadDirectoryChangesW` and Linux inotify watch the admitted Git files,
-runtime roots, package trees, executables, and configuration bytes;
-queue overflow or watcher failure is fail-closed. A write, replacement, rename,
-delete, or metadata change remains an event even if the command restores the
-original bytes before completion, so mutate-execute-restore cannot produce
+Windows `ReadDirectoryChangesW`, Linux inotify and macOS FSEvents watch the
+admitted Git files, runtime roots, package trees, executables, and configuration
+bytes; queue overflow or watcher failure is fail-closed. A write, replacement,
+rename, delete, or metadata change remains an event even if the command restores
+the original bytes before completion, so mutate-execute-restore cannot produce
 eligible evidence. Platforms without a lossless implemented watcher reject
 execution rather than falling back to sampling.
+
+The receipt covers exactly the window between an arm fence and a drain fence,
+as Watchman's [cookie sync](https://facebook.github.io/watchman/docs/cookies.html)
+does. A fence writes a unique cookie into the monitor's own directory under
+`TMPDIR`, which the same queue watches (the one FSEvents stream, the one inotify
+descriptor), and waits up to 60 s for the watcher to deliver it. fseventsd reads
+kernel records asynchronously and, on 2026-10-29, delivered them up to seconds
+late and ordered records inside one batch arbitrarily, so a stop flag plus
+`FSEventStreamFlushSync` lost transient create/delete pairs and macOS fences
+take a second cookie written after the first arrives. A cookie that never
+arrives is an error, so a stalled watcher cannot certify a quiet window.
+Cookies never go into a root's existing directories: roots include unwritable
+system directories, and proofs that share a root would read a foreign cookie as
+an input mutation.
+Windows watches each root through its own handle, which no single cookie
+orders; after the stop fence each handle is read until a fresh read no longer
+completes at once from the change buffer, as inotify is read to `EAGAIN`.
 
 Python's startup selection owns each lexical/resolved location and whether its
 role admits a directory tree. Only actual import and standard-library

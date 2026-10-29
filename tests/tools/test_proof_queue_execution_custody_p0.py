@@ -8,7 +8,6 @@ import runpy
 import struct
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -2192,16 +2191,48 @@ def test_source_watch_records_create_execute_delete_transient(
         namespace = runpy.run_path(str(transient))
         assert namespace["EXECUTED"] is True
         transient.unlink()
-        # Kernel delivery is asynchronous even though enqueue is synchronous.
-        time.sleep(0.10)
+        # No wait: kernel delivery is asynchronous, and the drain fence alone
+        # must order these events into the receipt.
 
     assert tracked.read_bytes() == before
     assert not transient.exists()
     receipt = monitor.receipt()
     assert receipt["stable"] is False
+    assert receipt["errors"] == []
     assert any(
         Path(str(event["path"])).name == "transient.py" for event in receipt["events"]
     )
+
+
+def test_fence_cookies_never_enter_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = (tmp_path / "source").resolve()
+    source.mkdir()
+    # The hardest placement: the fence directory inside a broad watch root,
+    # so every cookie event is also an event of that root.
+    monkeypatch.setattr(execution_custody.tempfile, "tempdir", str(source))
+    monitor = execution_custody.LiveCustodyMonitor(
+        [execution_custody.WatchSpec(source, None)]
+    )
+
+    with monitor:
+        cookie_root = monitor._cookie_root
+
+    receipt = monitor.receipt()
+    assert receipt["errors"] == []
+    if sys.platform == "win32":
+        # Windows drains each root handle instead; it writes no cookies.
+        assert cookie_root is None
+        return
+    assert cookie_root is not None and cookie_root.parent == source
+    # Arm and drain each wrote cookies the watcher had to deliver.
+    assert len(monitor._cookies) == 2 * monitor._fence_rounds
+    assert not any(
+        Path(str(event["path"])).is_relative_to(cookie_root)
+        for event in (*receipt["events"], *receipt["apparatus_events"])
+    )
+    assert not cookie_root.exists()
 
 
 def _install_linux_inotify(monkeypatch, *, denied=(), read_next=None):
