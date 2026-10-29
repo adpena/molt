@@ -835,10 +835,23 @@ for those facts.
 A typed prelaunch refusal retains the validated capability and reason in the
 failed execution record, with no command return code, transcript, native
 policy/receipt or attested execution context. Queue terminal metadata remains
-explicitly non-evidence. The shared test adapter in
-`tests/proof_queue_custody_test_support.py` proves only this exact refusal branch;
-eligible launch failures cannot bypass the original execution assertions.
-Neither host-name checks nor skips/xfails replace those consumer controls.
+explicitly non-evidence. `supervisor_custody.missing_closure_authorities` is the
+one predicate for the authorities a mode needs; the decoder refuses an eligible
+plan that lacks one. A backend that lacks one declares an unsupported cell, and
+the refusal names it: `unsupported process-closure cell macos/leaf: backend
+seatbelt+ptrace lacks pre_entry_exec_authority, ...`. Every macOS mode is such a
+cell (HF-07).
+
+The shared test adapter in `tests/proof_queue_custody_test_support.py` proves
+this exact refusal branch, then ends the test through `report_refused_cell`. A
+refused test never passes, because its payload never ran (HF-552). An unsupported
+cell is a skip that carries the native reason. A refusal from a backend that
+holds every authority, such as Linux Yama `ptrace_scope=3`, fails the test.
+Eligible launch failures cannot bypass the original execution assertions. The
+native capability selects the outcome; no host-name check, skip condition or
+xfail replaces those consumer controls. On macOS, every real-execution test in
+`tests/tools/test_proof_queue.py` and the native verifier tests in
+`tests/tools/test_proof_queue_native_receipts.py` report as skipped.
 
 Executable and derived-root identities use canonical native paths at live
 filesystem boundaries. Safe Windows prefix simplification must preserve device
