@@ -3251,28 +3251,28 @@ pub(crate) fn module_set_attr(
             }
             return Ok(());
         }
-        let override_value =
-            match execution::module_metadata_override_bits(_py, module_bits, attr_bits) {
-                Ok(value) => value,
+        let (effective_val_bits, owned) =
+            match execution::module_metadata_store(_py, module_bits, attr_bits) {
+                Ok(execution::MetadataStore::Body) => (val_bits, None),
+                Ok(execution::MetadataStore::Value { bits, owned }) => {
+                    (bits, owned.then_some(bits))
+                }
+                Ok(execution::MetadataStore::Absent) => return Ok(()),
                 Err(_) => return Err(()),
             };
-        let effective_val_bits = override_value.map_or(val_bits, |(bits, _)| bits);
-        if !dict_set_in_place(_py, dict_ptr, attr_bits, effective_val_bits) {
-            if let Some((bits, true)) = override_value {
-                dec_ref_bits(_py, bits);
-            }
-            return Err(());
-        }
-        if execution::after_module_metadata_set(_py, module_bits, attr_bits, effective_val_bits)
-            .is_err()
-        {
-            if let Some((owned, true)) = override_value {
-                dec_ref_bits(_py, owned);
-            }
-            return Err(());
-        }
-        if let Some((bits, true)) = override_value {
+        let stored = dict_set_in_place(_py, dict_ptr, attr_bits, effective_val_bits)
+            && execution::after_module_metadata_set(
+                _py,
+                module_bits,
+                attr_bits,
+                effective_val_bits,
+            )
+            .is_ok();
+        if let Some(bits) = owned {
             dec_ref_bits(_py, bits);
+        }
+        if !stored {
+            return Err(());
         }
     }
     Ok(())

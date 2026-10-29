@@ -1,8 +1,9 @@
 """Python part of the warnings subsystem (CPython 3.12 ``Lib/warnings.py``).
 
-The runtime's warnings engine is CPython's ``_warnings``: it owns the filter
+``_warnings`` is the provider: the runtime's warnings engine owns the filter
 list, the once registry, the default action and the filters version, and it
-runs ``warn`` and ``warn_explicit``. ``filters`` and ``onceregistry`` here are
+runs ``warn`` and ``warn_explicit``. This module imports them from
+``_warnings``, as CPython's does, so ``filters`` and ``onceregistry`` here are
 the engine's own objects. While this module is loaded the engine reads its
 ``filters``, ``defaultaction`` and ``onceregistry`` attributes and displays
 through ``_showwarnmsg``, so ``catch_warnings`` and replaced ``showwarning`` or
@@ -13,6 +14,25 @@ import sys
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
+# filters contains a sequence of filter 5-tuples
+# The components of the 5-tuple are:
+# - an action: error, ignore, always, default, module, or once
+# - a compiled regex that must match the warning message
+# - a class representing the warning category
+# - a compiled regex that must match the module that is being warned
+# - a line number for the line being warning, or 0 to mean any line
+# If either if the compiled regexs are None, match anything.
+from _warnings import (
+    filters,
+    _defaultaction,
+    _onceregistry,
+    warn,
+    warn_explicit,
+    _filters_mutated,
+)
+
+defaultaction = _defaultaction
+onceregistry = _onceregistry
 
 __all__ = [
     "warn",
@@ -26,8 +46,6 @@ __all__ = [
     "deprecated",
 ]
 
-_MOLT_WARNINGS_WARN = _require_intrinsic("molt_warnings_warn")
-_MOLT_WARNINGS_WARN_EXPLICIT = _require_intrinsic("molt_warnings_warn_explicit")
 _MOLT_WARNINGS_FORMATWARNING = _require_intrinsic("molt_warnings_formatwarning")
 _MOLT_WARNINGS_SIMPLEFILTER = _require_intrinsic("molt_warnings_simplefilter")
 _MOLT_WARNINGS_FILTERWARNINGS = _require_intrinsic("molt_warnings_filterwarnings")
@@ -169,41 +187,6 @@ def simplefilter(action, category=Warning, lineno=0, append=False):
 def resetwarnings():
     """Clear the list of warning filters, so that no filters are active."""
     _MOLT_WARNINGS_RESETWARNINGS()
-
-
-def warn(message, category=None, stacklevel=1, source=None):
-    """Issue a warning, or maybe ignore it or raise an exception."""
-    # The engine attributes the warning as CPython's setup_context does,
-    # starting below this function's own frame.
-    _MOLT_WARNINGS_WARN(message, category, stacklevel)
-
-
-# CPython's `warn_explicit` names the module after the file only when the
-# caller omits `module`; an explicit None ignores the warning.
-_MODULE_FROM_FILENAME = object()
-
-
-def warn_explicit(
-    message,
-    category,
-    filename,
-    lineno,
-    module=_MODULE_FROM_FILENAME,
-    registry=None,
-    module_globals=None,
-    source=None,
-):
-    """Low-level interface to warnings functionality."""
-    if module is _MODULE_FROM_FILENAME:
-        module = filename
-        if isinstance(filename, str):
-            if not filename:
-                module = "<unknown>"
-            elif filename.endswith(".py"):
-                module = filename[:-3]
-    _MOLT_WARNINGS_WARN_EXPLICIT(
-        message, category, filename, lineno, module, registry, module_globals
-    )
 
 
 class WarningMessage(object):
@@ -413,16 +396,4 @@ def _deprecated(name, message=_DEPRECATED_MSG, *, remove, _version=sys.version_i
         warn(msg, DeprecationWarning, stacklevel=3)
 
 
-# filters contains a sequence of filter 5-tuples
-# The components of the 5-tuple are:
-# - an action: error, ignore, always, default, module, or once
-# - a compiled regex that must match the warning message
-# - a class representing the warning category
-# - a compiled regex that must match the module that is being warned
-# - a line number for the line being warning, or 0 to mean any line
-# If either if the compiled regexs are None, match anything.
-filters = _require_intrinsic("molt_warnings_filters_get")()
-onceregistry = _require_intrinsic("molt_warnings_onceregistry_get")()
-defaultaction = "default"
-_filters_mutated = _require_intrinsic("molt_warnings_filters_mutated")
 del _require_intrinsic

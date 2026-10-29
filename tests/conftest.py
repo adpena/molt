@@ -186,6 +186,30 @@ def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def unbound_checkout_family(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve this checkout's family as unbound inside the test process.
+
+    A developer host may bind the family's artifact root
+    (`.git/molt/artifact-root.json`); hosted CI never does. A test whose subject
+    is unbound selection for the real checkout uses this. Only this process
+    stops seeing the binding: a child process still reads it from disk, so a
+    test whose children resolve roots runs them on an unbound scratch clone.
+    """
+    from molt import custody_layout, dx
+
+    real_state = custody_layout.checkout_family_state_root(ROOT)
+    if real_state is None:
+        return
+    original = dx.artifact_root_binding_path
+
+    def binding_path(repo_root: Path) -> Path | None:
+        path = original(repo_root)
+        return None if path is not None and path.parent == real_state else path
+
+    monkeypatch.setattr(dx, "artifact_root_binding_path", binding_path)
+
+
+@pytest.fixture
 def checkout_run_context() -> dict[str, str]:
     """The session's run context, for a child that runs on the real checkout.
 
