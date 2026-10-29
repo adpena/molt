@@ -119,9 +119,9 @@ recorded source snapshots, not the current candidate's performance.
   require measurements on the integrated candidate.
 - **No instruction combining**: Adjacent load/store pairs, redundant boxing/unboxing sequences, and constant folding opportunities are not exploited at the WASM level.
 - **Dispatch structure**: Dense dispatch uses `br_table`; sparse remaps use the
-  state-dispatch planner. Functions above 512 blocks route through a bounded
-  scope tree (§1.7). Further changes require observed state distributions
-  and engine measurements.
+  state-dispatch planner. Functions with deeply overlapping far-targeted
+  scopes route through a bounded scope tree (§1.7). Further changes require
+  observed state distributions and engine measurements.
 - **No peephole optimization**: Patterns like `i64.const 0; i64.eq` (test for zero) could be simplified.
 - **Redundant type checks**: Tag checks for NaN-boxed values are emitted inline at every use site rather than being hoisted or eliminated when type information is available from the IR.
 
@@ -192,31 +192,35 @@ does not use those spellings, so frames kept one local per value name.
 
 The non-linear control emitter (`wasm/state_dispatch/`, Jumpful and Stateful
 frames) gives every physical block a `block` scope whose `end` precedes it, so
-a forward transfer is one `br`. One scope per block made a function nest as
-deep as it had blocks. The Falcon OCR driver's largest module body has 16,334
-blocks: 50 below the 16,384-label cap of WABT's binary reader. Binaryen 133
-`-Oz` turned its 3,412 exception edges, each to its own cleanup pad after the
-body, into 3,182 nested `if`s. `BinaryenIRWriter::visit` recurses once per
-`if` level, and the 544 KiB stack of a macOS worker thread overflowed at 2,128
-levels (HF-546). The writer walks first-position `block` chains iteratively,
-so the flat chain itself was safe; the optimizer's nested form was not.
+a forward transfer is one `br`. Most of those scopes are reached only from the
+adjacent block, and an optimizer folds them away. A scope reached from farther
+away stays open from its first such transfer to its block. The Falcon OCR
+driver's largest module body has 16,333 blocks. Its 3,412 exception checks
+enter one LIFO cleanup ladder that releases up to 185 owned locals, so 3,077
+far-targeted scopes overlap. Binaryen 133 `-Oz` rebuilt them as 3,182 nested
+`if`s. `BinaryenIRWriter::visit` recurses once per `if`, and the 544 KiB stack
+of a macOS worker thread overflowed at 2,128 levels (HF-546). The writer walks
+first-position `block` chains iteratively, so the flat chain itself was safe.
 
-**Rule.** A function of at most 512 blocks keeps the flat layout and its
-bytes. A larger function lays its scopes out as a radix tree of 128-way nodes
-(`state_dispatch/scope_tree.rs`). A transfer between blocks of one level-1
-node keeps its direct `br`. A transfer into another node stores the
-destination's radix digits below the common node in an i32 routing local and
-branches to the end of the destination child's scope; each node it enters
-selects its child with a `br_table` over one digit, and only nodes that some
-transfer enters at a child other than the first emit a selector. The root of
-a dispatching tree loads physical block indices from the existing operation
-map, so backward edges and stateful resumes take the same descent; a key
-outside the map traps. Emitted nesting is therefore at most 512 block scopes
-plus the frame, dispatch-loop and conditional wrappers: three levels (387
-scopes) cover every function body within the JS API's 7,654,321-byte limit.
-`wasm/tests/control_nesting.rs` checks the bound and the executed paths of
-forward-only, dispatching and stateful frames at both the production shape
-and a 4-way shape that reaches six levels.
+**Rule.** The plan measures the overlap of far-targeted scopes from its own
+forward edges and dispatch targets: CFGStackify's minimal nesting for the block
+order. A function keeps the flat layout, and its exact bytes, while at most
+1,024 far scopes overlap (about half the measured overflow depth) and it has at
+most 8,192 blocks (half WABT's 16,384-label reader cap). Otherwise its scopes
+form a radix tree of 128-way nodes (`state_dispatch/scope_tree.rs`). A transfer
+between blocks of one level-1 node keeps its direct `br`. A transfer into
+another node stores the destination's radix digits below the common node in an
+i32 routing local and branches to the end of the destination child's scope;
+each node it enters selects its child with a `br_table` over one digit, and
+only nodes that some transfer enters at a child other than the first emit a
+selector. The root of a dispatching tree loads physical block indices from the
+existing operation map, so backward edges and stateful resumes take the same
+descent; a key outside the map traps. Three levels (387 scopes) cover every
+function body within the JS API's 7,654,321-byte limit.
+`wasm/tests/control_nesting.rs` checks both bounds with oracles computed from
+the emitted bytes, the boundary of each limit, and the executed paths of
+forward-only, dispatching and stateful frames at the production shape and at a
+4-way shape that reaches six levels.
 
 **Sources.** The core specification lets implementations limit "the nesting
 depth of structured control instructions" (Appendix, Implementation
@@ -227,30 +231,27 @@ places one `block` per forward-branch target and lowers a switch to a
 `br_table` over up to 65,536 resume points (`cmd/internal/obj/wasm`). Neither
 bounds depth. Binaryen's `wasm-stack.h` (version_133) handles first-position
 block chains iteratively and recurses through every other structure. Molt
-deviates from the flat chain only above 512 blocks, for the measured reason
-above.
+deviates from the flat layout only past the measured limits above.
 
-**Measured trade (macOS arm64, Binaryen 133, 2026-10-28).** On the linked
-Falcon driver, the flat layout fails `wasm-opt -Oz` with SIGBUS after 25.8 s;
-with the tree it succeeds in 17.9 s at Binaryen's default threads. In the
-optimized module, the deepest nesting the writer recurses through (structured
-levels outside first-position block chains) drops from 3,182 to 58. Functions
-of at most 512 blocks keep identical bodies (3,467 of 3,721 app functions).
-The 254 larger ones grow, because each far transfer now sets the
-routing key and each destination needs a scope: app code +656,863 bytes
-(+4.8%), and the `-Oz` linked module 17,496,022 -> 18,984,426 bytes (+8.5%;
-gzip -9 4,664,180 -> 5,232,319, +12.2%) against a base module optimized
-single-threaded for comparison. Node 26 in-host export timings (median of
-nine interleaved processes): `init` 4 -> 4 ms; the first `ocr_tokens` call
-68 -> 75 ms, which lazily compiles the larger bodies; later calls 41 -> 42 ms
-and 38 -> 38 ms. The tracked `bench_sum` hot loop keeps its flat `main` and
-runs 0.534 -> 0.511 s per process. A 20M-iteration loop inside a
-400-statement function, whose backedge now descends one more `br_table`,
-runs 3.10 -> 3.23 s (+4.2%).
-Two improvements are open work: placing single-predecessor cleanup pads
-beside their checks would cut the far transfers this shape routes, and a
-static backward edge could carry its dispatch key, which would remove the
-bounds check and map load that every redispatch performs today.
+**Measured (macOS arm64, Binaryen 133, Node 26, 2026-10-28).** Linked Falcon
+driver; the base module was optimized single-threaded only to compare it;
+timings are medians of nine interleaved processes.
+
+| Layout | `wasm-opt -Oz` | Deepest writer recursion | App functions changed | App code | Linked `-Oz` raw | gzip -9 | `ocr_tokens` 1st / 2nd / 3rd |
+|---|---|---|---|---|---|---|---|
+| Flat (base) | SIGBUS at 25.8 s | 3,182 | — | 13,781,595 | 17,496,022 | 4,664,180 | 69 / 42 / 39 ms |
+| Tree above 512 blocks | 17.9 s | 95 | 254 | +656,863 | +1,488,404 | +568,139 | 77 / 42 / 39 ms |
+| Tree above 1,024 far scopes | 18.0 s | 1,061 | 2 | +39,641 | +84,958 | +42,382 | 69 / 41 / 38 ms |
+
+The deepest writer recursion counts structured levels outside first-position
+block chains in the optimized module. `bench_sum` emits the same bytes as base.
+A 20M-iteration loop inside a 400-statement function, which crosses the far
+scope limit and whose backedge descends one more `br_table`, runs 3.09 -> 3.22
+s (+4.4%). Placing each single-predecessor cleanup pad beside its check does
+not help this shape: on the exact block graph of the largest body it lowers the
+overlap from 3,077 to 2,527, still above the overflow depth, leaves all 3,216
+far targets, and raises the overlap of 4 of the 10 deepest functions. Shorter
+owned live ranges in module bodies would shorten the ladders at their source.
 
 ### 1.3 Missing Features
 
