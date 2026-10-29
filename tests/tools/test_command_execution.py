@@ -35,7 +35,7 @@ def test_executor_preserves_rule_through_real_guard_context(
 ):
     from tools import harness_memory_guard
 
-    monkeypatch.setenv("MOLT_TEST_MEMORY_GUARD_POLL_SEC", "0.11")
+    monkeypatch.setenv("MOLT_PYTEST_MEMORY_GUARD_POLL_SEC", "0.11")
     monkeypatch.setenv("MOLT_SESSION_ID", "ambient-session")
     values = {
         "molt_test_memory_guard_poll_sec": "0.37",
@@ -64,7 +64,7 @@ def test_executor_preserves_rule_through_real_guard_context(
     monkeypatch.setattr(
         harness_memory_guard.HarnessExecutionContext, "run", observe_run
     )
-    command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT).run(
+    command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT).run(
         ["python", "fixture.py"], env=supplied
     )
     context = captured["context"]
@@ -890,7 +890,7 @@ def test_bound_executor_retains_source_owner_with_foreign_compiler_inputs(
 
         monkeypatch.setattr(authority.ProcessStateUse, "__enter__", enter)
         command = ["git", "rev-parse", "--show-toplevel"]
-    result = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT).run(
+    result = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT).run(
         command,
         env=dict(os.environ),
         cwd=ROOT,
@@ -990,7 +990,7 @@ def test_guarded_timeout_requests_owner_without_killing_guard(tmp_path, finishes
             pytest.fail("must never kill a guard with live child custody")
 
     owned, _startup, _terminal = _interactive_guard_fixture(tmp_path, Process())
-    executor = command_execution.CommandExecutor(prefix="TEST", repo_root=ROOT)
+    executor = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT)
     with pytest.raises(subprocess.TimeoutExpired) as caught:
         executor.wait_owned(owned, timeout=0.1, terminate_timeout=0.2)
     assert owned.cancellation_path.is_file()
@@ -1112,7 +1112,7 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
     env, managed_roots = _managed_command_roots(tmp_path)
     env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "guard-state")
     executor = command_execution.CommandExecutor(
-        prefix="MOLT_TEST_INTERACTIVE_GUARD", repo_root=ROOT
+        prefix="MOLT_PYTEST", repo_root=ROOT
     )
     with tempfile.TemporaryFile(mode="w+b") as stderr:
         owned = executor.start_guarded(
@@ -1222,7 +1222,7 @@ def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
         )
 
     monkeypatch.setattr(command_execution.CommandExecutor, "start_owned", held_start)
-    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+    executor = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT)
     owned = executor.start_guarded(
         [
             sys.executable,
@@ -1381,7 +1381,7 @@ def test_harness_owner_observes_a_guard_slower_than_one_window(tmp_path, monkeyp
     monkeypatch.setattr(
         command_execution.CommandExecutor, "start_owned", progressing_start
     )
-    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+    executor = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT)
     owned = executor.start_guarded(
         [
             sys.executable,
@@ -1457,7 +1457,7 @@ def test_harness_launch_binds_relative_executable_to_worker_root(tmp_path, monke
         return SimpleNamespace(pid=42)
 
     monkeypatch.setattr(command_execution.CommandExecutor, "start_owned", start)
-    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=root)
+    executor = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=root)
     owned = executor.start_guarded(
         ["bin/guest", "payload"],
         cwd=root / "other",
@@ -1526,7 +1526,7 @@ def test_guard_resource_owner_survives_gc_after_unresolved_wait(
     stack.enter_context(
         checkout_state_use(checkout_state_environment_roots(ROOT, environment))
     )
-    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+    executor = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT)
     process = executor.start_owned(
         [sys.executable, "-c", HUNG_CHILD_SOURCE], env=environment
     )
@@ -1580,7 +1580,7 @@ def test_guard_resource_owner_survives_gc_after_unresolved_wait(
 
 def test_guard_launch_failure_releases_prelaunch_managed_use(tmp_path, monkeypatch):
     environment, roots = _managed_command_roots(tmp_path)
-    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+    executor = command_execution.CommandExecutor(prefix="MOLT_PYTEST", repo_root=ROOT)
 
     def refuse(self, command, **kwargs):
         _assert_retirement_binding(roots, False)
@@ -1638,7 +1638,7 @@ def test_guardian_isolates_startup_without_changing_workload_environment(
         "from tools.import_file import bind_repository_imports\n"
         f"bind_repository_imports({str(ROOT / 'tools' / 'command_execution.py')!r})\n"
         "from tools.command_execution import CommandExecutor\n"
-        f"executor=CommandExecutor(prefix='MOLT_TEST',repo_root=Path({str(ROOT)!r}))\n"
+        f"executor=CommandExecutor(prefix='MOLT_PYTEST',repo_root=Path({str(ROOT)!r}))\n"
         f"owned=executor.start_guarded([sys.executable,'-c',{workload!r}],"
         f"env=os.environ,harness={harness!r},timeout=20,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8')\n"
         "try:\n"

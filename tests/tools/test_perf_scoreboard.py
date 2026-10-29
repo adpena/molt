@@ -2098,7 +2098,7 @@ def test_inner_repeat_output_is_one_shot_repeated_n_times() -> None:
 
     one = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", _LOOPABLE_BENCH],
-        prefix="MOLT_TEST",
+        prefix="MOLT_PYTEST",
         capture_output=True,
         text=True,
         timeout=30.0,
@@ -2111,7 +2111,7 @@ def test_inner_repeat_output_is_one_shot_repeated_n_times() -> None:
     try:
         looped = harness_memory_guard.guarded_completed_process(
             [sys.executable, path],
-            prefix="MOLT_TEST",
+            prefix="MOLT_PYTEST",
             capture_output=True,
             text=True,
             timeout=30.0,

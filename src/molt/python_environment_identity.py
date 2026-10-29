@@ -85,6 +85,7 @@ if not __package__:
     sys.path.insert(0, _bootstrap_root)
 
 from molt import python_environment_contract as _contract  # noqa: E402
+from molt.guard_stems_generated import GuardStem  # noqa: E402
 from molt.python_identity_common import (  # noqa: E402
     PythonEnvironmentIdentityError as PythonEnvironmentIdentityError,
 )
@@ -273,7 +274,7 @@ class PythonIdentityVerifier:
         self,
         command: Sequence[str],
         *,
-        memory_guard_prefix: str,
+        memory_guard_prefix: GuardStem,
         env: Mapping[str, str] | None = None,
         cwd: str | Path | None = None,
         capture_output: bool = False,

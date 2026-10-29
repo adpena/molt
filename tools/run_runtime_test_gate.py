@@ -65,7 +65,7 @@ from tools.runtime_test_gate_plan import (  # noqa: E402
     parse_arguments,
 )
 
-COMMANDS = CommandExecutor.for_file(__file__)
+COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 ISOLATED = (
     "async_rt::sockets::state::socket_runtime_state_tests::cold_socket_and_websocket_retirement_never_starts_services",
     # Runtime restart rebuilds previously exposed static C types. Only a new

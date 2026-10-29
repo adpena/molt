@@ -10,11 +10,12 @@ from typing import Any, Mapping, Sequence
 
 from molt import process_guard as _process_guard
 from molt.cli import progress as _progress
+from molt.guard_stems_generated import GuardStem
 from molt.source_root import compiler_source_root
 
 _CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
-_CROSS_MEMORY_GUARD_PREFIX = "MOLT_CROSS"
-_DIFF_MEMORY_GUARD_PREFIX = "MOLT_DIFF"
+_CROSS_MEMORY_GUARD_PREFIX: GuardStem = "MOLT_CROSS"
+_DIFF_MEMORY_GUARD_PREFIX: GuardStem = "MOLT_DIFF"
 
 
 def _finish_build_input_custody(
@@ -39,7 +40,7 @@ def _load_cli_harness_memory_guard(
 
 def _with_memory_guard_env(
     env: ProcessEnvironment | None,
-    memory_guard_prefix: str,
+    memory_guard_prefix: GuardStem,
 ) -> ProcessEnvironment | None:
     return _process_guard.with_memory_guard_env(env, memory_guard_prefix)
 
@@ -65,7 +66,7 @@ def _run_completed_command(
     env: ProcessEnvironment | None,
     cwd: Path | None,
     capture_output: bool,
-    memory_guard_prefix: str | None,
+    memory_guard_prefix: GuardStem | None,
     input: str | None = None,
     timeout: float | None = None,
     encoding: str = "utf-8",
@@ -113,7 +114,7 @@ def _run_subprocess_captured_to_tempfiles(
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
     progress_label: str | None = None,
-    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
+    memory_guard_prefix: GuardStem = _CLI_MEMORY_GUARD_PREFIX,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a subprocess while capturing stdout/stderr via temporary files."""
     harness_memory_guard = _load_cli_harness_memory_guard(compiler_source_root())

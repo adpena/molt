@@ -3399,7 +3399,7 @@ def test_common_diagnostics_include_real_timeout_incident_after_passing_neighbor
     }
     result = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", HUNG_CHILD_SOURCE],
-        prefix="MOLT_TEST_DIAGNOSTIC_EXPORT",
+        prefix="MOLT_PYTEST",
         env=environment,
         timeout=2.0,
     )
@@ -3415,7 +3415,7 @@ def test_common_diagnostics_include_real_timeout_incident_after_passing_neighbor
     )
     neighbor = harness_memory_guard.guarded_completed_process(
         [sys.executable, "-c", "pass"],
-        prefix="MOLT_TEST_DIAGNOSTIC_EXPORT",
+        prefix="MOLT_PYTEST",
         env={
             **environment,
             "PYTEST_CURRENT_TEST": "fixture/neighbor.py::passing (call)",

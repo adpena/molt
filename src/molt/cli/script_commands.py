@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from molt.compilation_target import target_name
+from molt.guard_stems_generated import GuardStem
 
 from molt.compilation_target import Target, TargetKind
 
@@ -808,7 +809,7 @@ _JIT_BUILD_FAILURE_STATUS = 1
 
 
 def _run_wasm_with_guest_stderr(
-    command: list[str], *, env: ProcessEnvironment, cwd: Path, memory_guard_prefix: str
+    command: list[str], *, env: ProcessEnvironment, cwd: Path, memory_guard_prefix: GuardStem
 ) -> tuple[_TimedResult, str]:
     """Capture the guest stream through the existing runner, after guard closure."""
     owner = OwnedTemporaryDirectory(prefix="molt-run-wasm-")
@@ -877,7 +878,7 @@ def _run_program(
     timing: bool,
     build_duration_s: float,
     start_receipt: Path | None,
-    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
+    memory_guard_prefix: GuardStem = _CLI_MEMORY_GUARD_PREFIX,
     wasm_guest_stderr: bool = False,
 ) -> int:
     """Run a built program and report it.

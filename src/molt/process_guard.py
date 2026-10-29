@@ -17,29 +17,30 @@ from .cargo_execution_policy import cargo_subprocess_environment
 from .process_environment import NameRule as NameRule
 from .process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from .source_root import compiler_source_root
+from .guard_scope import require_guard_stem
+from .guard_stems_generated import GUARD_FAMILY_SUFFIXES, GuardStem
 from .process_spawn import ProcessStateUse, native_popen_command
 
 
-CLI_MEMORY_GUARD_PREFIX = "MOLT_CLI"
+CLI_MEMORY_GUARD_PREFIX: GuardStem = "MOLT_CLI"
 
+# The memory budgets a child inherits when its caller passes an explicit
+# environment: the registry's memory ``[[family]]`` suffixes.
 _MEMORY_GUARD_ENV_SUFFIXES = (
-    "MEMORY_GUARD",
-    "MEMORY_GUARD_POLL_SEC",
-    "MAX_PROCESS_RSS_GB",
-    "MAX_RSS_GB",
-    "MAX_TOTAL_RSS_GB",
-    "MAX_TREE_RSS_GB",
-    "GLOBAL_RSS_LIMIT_GB",
-    "MAX_GLOBAL_RSS_GB",
-    "CHILD_RLIMIT_GB",
-    "MAX_CHILD_RLIMIT_GB",
-    "TOTAL_MEMORY_GB",
-    "MEMORY_TOTAL_GB",
-    "MEM_AVAILABLE_GB",
-    "MEMORY_AVAILABLE_GB",
-    "MEMORY_RESERVE_GB",
-    "MEM_RESERVE_GB",
+    "_CHILD_RLIMIT_GB",
+    "_MAX_GLOBAL_RSS_GB",
+    "_MAX_PROCESS_RSS_GB",
+    "_MAX_TOTAL_RSS_GB",
+    "_MEMORY_AVAILABLE_GB",
+    "_MEMORY_GUARD_POLL_SEC",
+    "_MEMORY_RESERVE_GB",
+    "_MEMORY_TOTAL_GB",
 )
+if not GUARD_FAMILY_SUFFIXES.issuperset(_MEMORY_GUARD_ENV_SUFFIXES):
+    raise RuntimeError(
+        "process_guard forwards a suffix that is not a registry [[family]] row: "
+        f"{sorted(set(_MEMORY_GUARD_ENV_SUFFIXES) - GUARD_FAMILY_SUFFIXES)}"
+    )
 
 
 class GuardLoader(Protocol):
@@ -194,17 +195,17 @@ def load_harness_memory_guard(
 
 def with_memory_guard_env(
     env: ProcessEnvironment | None,
-    memory_guard_prefix: str,
+    memory_guard_prefix: GuardStem,
 ) -> ProcessEnvironment | None:
     if env is None:
         return None
     merged = ProcessEnvironmentBuilder(env)
     inherited = ProcessEnvironment(os.environ, rule=env.rule)
-    normalized = memory_guard_prefix.strip().upper().rstrip("_")
+    stem = require_guard_stem(memory_guard_prefix)
     names: list[str] = []
-    if normalized:
-        names.extend(f"{normalized}_{suffix}" for suffix in _MEMORY_GUARD_ENV_SUFFIXES)
-    names.extend(f"MOLT_{suffix}" for suffix in _MEMORY_GUARD_ENV_SUFFIXES)
+    if stem:
+        names.extend(f"{stem}{suffix}" for suffix in _MEMORY_GUARD_ENV_SUFFIXES)
+    names.extend(f"MOLT{suffix}" for suffix in _MEMORY_GUARD_ENV_SUFFIXES)
     for name in dict.fromkeys(names):
         if name not in merged and name in inherited:
             merged[name] = inherited[name]
@@ -212,7 +213,7 @@ def with_memory_guard_env(
 
 
 def timeout_from_env(
-    memory_guard_prefix: str,
+    memory_guard_prefix: GuardStem,
     env: Mapping[str, str] | None,
     *,
     explicit: float | None = None,
@@ -238,7 +239,7 @@ def run_completed_command(
     stdout_capture_path: str | Path | None = None,
     stderr_capture_path: str | Path | None = None,
     capture_tail_bytes: int | None = None,
-    memory_guard_prefix: str | None = CLI_MEMORY_GUARD_PREFIX,
+    memory_guard_prefix: GuardStem | None = CLI_MEMORY_GUARD_PREFIX,
     input: str | bytes | None = None,
     timeout: float | None = None,
     text: bool | None = True,
@@ -400,7 +401,7 @@ def run_completed_command(
     return result
 
 
-def source_command_executor(prefix: str) -> Any:
+def source_command_executor(prefix: GuardStem) -> Any:
     """Use the existing interactive process owner from this compiler's sources."""
     root = _molt_repo_root()
     load_harness_memory_guard(root)

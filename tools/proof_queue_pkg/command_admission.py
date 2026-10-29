@@ -47,7 +47,7 @@ _PYTHON_CUSTODY_BOOTSTRAP = Path(__file__).with_name("python_custody_bootstrap.p
 
 ENVELOPE_SCHEMA = "molt.proof-command-envelope.v8"
 EXECUTION_SCHEMA = "molt.proof-command-execution.v5"
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 
 
 @dataclass(frozen=True)

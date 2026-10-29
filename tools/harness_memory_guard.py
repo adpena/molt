@@ -49,6 +49,7 @@ from molt.dx import (  # noqa: E402
     prefers_external_artifacts,
 )
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
+from molt.guard_scope import require_guard_stem  # noqa: E402
 from molt.memory_guard_paths import harness_guard_artifact_dir  # noqa: E402
 from molt.llvm_linker_roles import lexical_executable_path  # noqa: E402
 from molt import process_model as _process_model  # noqa: E402
@@ -205,7 +206,7 @@ def _sentinel_active() -> bool:
 
 
 def repo_sentinel_active_env_key(prefix: str) -> str:
-    normalized = _normalize_prefix(prefix) or "MOLT"
+    normalized = require_guard_stem(prefix) or "MOLT"
     return f"{normalized}_REPO_SENTINEL_ACTIVE"
 
 
@@ -214,7 +215,7 @@ def _external_repo_sentinel_active(
     env: Mapping[str, str] | None,
 ) -> bool:
     source = _effective_env(env)
-    normalized = _normalize_prefix(prefix) or "MOLT"
+    normalized = require_guard_stem(prefix) or "MOLT"
     return _env_bool(
         source,
         [repo_sentinel_active_env_key(normalized), "MOLT_REPO_SENTINEL_ACTIVE"],
@@ -336,11 +337,10 @@ class HarnessMemoryLimitDefaults:
     child_rlimit_gb: float | None = None
 
 
-_normalize_prefix = memory_guard.normalize_env_prefix
 
 
 def _label_from_prefix(prefix: str) -> str:
-    normalized = _normalize_prefix(prefix).lower() or "molt"
+    normalized = require_guard_stem(prefix).lower() or "molt"
     return "".join(ch if ch.isalnum() else "_" for ch in normalized)
 
 
@@ -508,7 +508,7 @@ def limits_from_env(
     strict: bool = False,
 ) -> HarnessMemoryLimits:
     source = _effective_env(env)
-    normalized = _normalize_prefix(prefix)
+    normalized = require_guard_stem(prefix)
     resolved_defaults = defaults or HarnessMemoryLimitDefaults()
     adaptive_budget = memory_guard.adaptive_memory_budget(normalized, source)
     process_override = _env_float_optional(
@@ -685,7 +685,7 @@ def timeout_from_env(
     if explicit is not None:
         return explicit
     source = _effective_env(env)
-    normalized = _normalize_prefix(prefix)
+    normalized = require_guard_stem(prefix)
     for name in (f"{normalized}_TIMEOUT_SEC", "MOLT_TEST_PROCESS_TIMEOUT_SEC"):
         raw = source.get(name)
         if raw is None or not raw.strip():
@@ -858,14 +858,14 @@ def _guard_repro_payload(
         # that caused enrichment to run.
         error_payload: dict[str, object] = {
             "schema": REPRO_ERROR_SCHEMA,
-            "prefix": _normalize_prefix(prefix) or "MOLT",
+            "prefix": require_guard_stem(prefix) or "MOLT",
             "error_type": type(error).__name__,
             "error": str(error)[:1000],
         }
         if operation_role is not None:
             error_payload["operation_role"] = operation_role
         return error_payload
-    payload["prefix"] = _normalize_prefix(prefix) or "MOLT"
+    payload["prefix"] = require_guard_stem(prefix) or "MOLT"
     if operation_role is not None:
         payload["operation_role"] = operation_role
     return payload
@@ -974,7 +974,7 @@ def _append_guarded_command_profile(
         "schema_version": "1.0",
         "event": "guarded_command_profile",
         "recorded_at": _utc_timestamp(),
-        "prefix": _normalize_prefix(prefix) or "MOLT",
+        "prefix": require_guard_stem(prefix) or "MOLT",
         "session_id": source.get("MOLT_SESSION_ID", ""),
         "cwd": str(Path(cwd).expanduser() if cwd is not None else Path.cwd()),
         "command": list(command),
@@ -1202,7 +1202,7 @@ def guarded_completed_process(
     )
     with sentinel_context:
         default_progress_label = (
-            f"memory_guard: {_normalize_prefix(prefix)}"
+            f"memory_guard: {require_guard_stem(prefix)}"
             f"{f' {operation_role}' if operation_role else ''} guarded command"
         )
         active_progress_label = (
@@ -1431,7 +1431,7 @@ def _subprocess_keepalive_interval_secs(
     prefix: str | None = None,
 ) -> float | None:
     source = _effective_env(env)
-    normalized = _normalize_prefix(prefix or "")
+    normalized = require_guard_stem(prefix or "")
     names: list[str] = []
     if normalized:
         names.append(f"{normalized}_KEEPALIVE_SEC")
@@ -2489,7 +2489,7 @@ class HarnessExecutionContext:
             root, canonical_env
         )
         return cls(
-            prefix=_normalize_prefix(prefix),
+            prefix=require_guard_stem(prefix),
             repo_root=root,
             env=canonical_env,
             limits=resolved_limits,

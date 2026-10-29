@@ -35,7 +35,7 @@ VERIFY_PY = DRIVER_DIR / "verify.py"
 def _run_test_process(args, **kwargs):
     return run_guarded_test_process(
         args,
-        prefix="MOLT_FALCON_TEST",
+        prefix="MOLT_PYTEST",
         default_timeout=900.0,
         **kwargs,
     )

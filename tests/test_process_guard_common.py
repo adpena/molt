@@ -151,16 +151,16 @@ def test_run_guarded_test_process_preserves_prefix_and_timeout(monkeypatch) -> N
 
     result = process_guard_common.run_guarded_test_process(
         ["python3", "-c", "print('ok')"],
-        prefix="MOLT_UNIT_TEST",
+        prefix="MOLT_PYTEST",
         env={
             **process_guard_common.guard_custody_env(),
-            "MOLT_UNIT_TEST_TIMEOUT_SEC": "12",
+            "MOLT_PYTEST_TIMEOUT_SEC": "12",
         },
     )
 
     assert result.returncode == 0
     assert captured["cmd"] == ["python3", "-c", "print('ok')"]
-    assert captured["kwargs"]["prefix"] == "MOLT_UNIT_TEST"
+    assert captured["kwargs"]["prefix"] == "MOLT_PYTEST"
     assert captured["kwargs"]["operation_role"] == "execution"
     assert captured["kwargs"]["timeout"] == 12
 
@@ -342,7 +342,7 @@ def test_run_guarded_test_process_preserves_check_semantics(monkeypatch) -> None
     try:
         process_guard_common.run_guarded_test_process(
             ["false"],
-            prefix="MOLT_UNIT_TEST",
+            prefix="MOLT_PYTEST",
             check=True,
         )
     except subprocess.CalledProcessError as exc:
@@ -376,7 +376,7 @@ def test_run_guarded_test_process_preserves_timeout_semantics(monkeypatch) -> No
     try:
         process_guard_common.run_guarded_test_process(
             ["sleep", "10"],
-            prefix="MOLT_UNIT_TEST",
+            prefix="MOLT_PYTEST",
             timeout=5,
         )
     except subprocess.TimeoutExpired as exc:
@@ -408,7 +408,7 @@ def test_run_guarded_test_process_does_not_infer_timeout_from_child_124(
 
     result = process_guard_common.run_guarded_test_process(
         ["child"],
-        prefix="MOLT_UNIT_TEST",
+        prefix="MOLT_PYTEST",
         timeout=5,
         check=False,
     )

@@ -657,7 +657,7 @@ class LocalHost:
 
     def _executor(self) -> CommandExecutor:
         if self._commands is None:
-            self._commands = CommandExecutor.for_file(__file__)
+            self._commands = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
         return self._commands
 
     def which(self, name: str) -> str | None:

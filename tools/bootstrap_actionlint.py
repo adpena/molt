@@ -30,7 +30,7 @@ from tools.command_execution import CommandExecutor  # type: ignore  # noqa: E40
 from molt.file_publication import atomic_write_bytes, durable_replace  # noqa: E402
 from molt.file_locks import _acquire_file_lock, _release_file_lock  # noqa: E402
 
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_CI")
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "config" / "actionlint.toml"

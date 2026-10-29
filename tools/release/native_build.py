@@ -95,7 +95,7 @@ from tools.release.release_model import ROOT, target_by_id  # noqa: E402
 
 SCHEMA = "molt.release-native-build.v7"
 RECEIPT_NAME = "native-build.json"
-_COMMANDS = CommandExecutor.for_file(__file__)
+_COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_RELEASE")
 
 
 @dataclass(frozen=True)
