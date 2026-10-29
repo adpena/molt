@@ -168,6 +168,9 @@ def test_scanner_gate_edits_select_direct_owners_without_ci_siblings():
         "tests/test_generator_manifest.py",
         "tests/test_structural_audit.py",
         "tests/tools/test_structural_audit_records.py",
+        # tools/structural_audit.py is a parser producer for these consumers.
+        "tests/test_rust_source_scan.py",
+        "tests/tools/test_gen_luau_support_matrix.py",
     }
     gates, _ = cfg.select(paths)
     # Narrowing the consumer run must retain every independent always gate.
