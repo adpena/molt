@@ -2111,7 +2111,7 @@ def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path):
     row = next(row for row in rows if row["source"] == str(tasks["idle"]))
     assert row["action"] == "keep"
     (active / "coordination.json").write_text(
-        json.dumps({"task": "integrator", "status": "done"})
+        json.dumps({"task": "integrator", "status": "done"}), encoding="utf-8"
     )
     with checkout_state_use(((active.parent, None),), publish=False):
         rows = molt_dev_storage.migrate(main, environment, apply=True)

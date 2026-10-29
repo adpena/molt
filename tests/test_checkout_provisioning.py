@@ -301,7 +301,8 @@ def test_package_environment_use_is_published_by_the_real_locked_producer(
     (checkout / "provision.py").write_text(
         _PROVISIONER.replace(
             'Path("tree")', 'Path("tools/browser_asset_graph/node_modules")'
-        )
+        ),
+        encoding="utf-8",
     )
     spec = dataclasses.replace(_tree(checkout), tree=tree)
     assert read_checkout_owner(tree) is None
