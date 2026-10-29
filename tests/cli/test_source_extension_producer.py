@@ -46,6 +46,7 @@ from molt.cli.source_extension_input_custody import (
     validate_source_extension_manifest_input_custody,
 )
 from molt.cli.source_extension_publication import (
+    SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
     _source_extension_publication_custody,
 )
 from molt.cli.source_extension_object_closure import (
@@ -190,7 +191,7 @@ def _held_publication_custody(destination: Path):
     lock_path = destination.parent / f".{destination.name}.producer.lock"
     handle = _acquire_file_lock(
         lock_path,
-        timeout_s=1.0,
+        timeout_s=SOURCE_EXTENSION_DESTINATION_LOCK_TIMEOUT_S,
         timeout_message=f"cannot acquire fixture publication lock {lock_path}",
     )
     try:
