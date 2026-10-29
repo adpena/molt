@@ -537,35 +537,17 @@ pub extern "C" fn molt_importlib_extension_loader_create_module(
     })
 }
 
-pub(super) fn importlib_exec_sourceless_impl(
-    _py: &PyToken<'_>,
-    module_bits: u64,
-    _namespace_ptr: *mut u8,
-    module_name: &str,
-    path: &str,
-) -> Result<(), u64> {
-    let _ = path;
-    importlib_exec_compiled_module(_py, module_bits, module_name)
-}
-
 pub(super) struct ImportlibLoaderExecContext {
     module_name_bits: u64,
     module_name: String,
-    spec_is_package: bool,
 }
 
-pub(super) enum ImportlibLoaderExecBody {
+/// The body a file loader's `exec_module` runs. As CPython's loaders do, it
+/// only executes the body: `module_from_spec` is the one site that runs
+/// `_init_module_attrs`, so execution sets no module metadata.
+pub(super) enum ImportlibLoaderExecBody<'a> {
     CompiledSource,
-    Extension,
-    Sourceless,
-}
-
-pub(super) struct ImportlibLoaderExecState {
-    origin: String,
-    is_package: bool,
-    module_package: String,
-    package_root: Option<String>,
-    body: ImportlibLoaderExecBody,
+    Extension { path: &'a str },
 }
 
 pub(super) fn importlib_loader_exec_context(
@@ -589,19 +571,9 @@ pub(super) fn importlib_loader_exec_context(
             "module name must be str",
         ));
     };
-    let spec_is_package = match importlib_module_spec_is_package_bits(_py, module_bits) {
-        Ok(value) => value,
-        Err(bits) => {
-            if !obj_from_bits(module_name_bits).is_none() {
-                dec_ref_bits(_py, module_name_bits);
-            }
-            return Err(bits);
-        }
-    };
     Ok(ImportlibLoaderExecContext {
         module_name_bits,
         module_name,
-        spec_is_package,
     })
 }
 
@@ -616,74 +588,43 @@ pub(super) fn importlib_loader_exec_context_release(
 
 pub(super) fn importlib_loader_exec_module_apply(
     _py: &PyToken<'_>,
+    module_bits: u64,
+    ctx: &ImportlibLoaderExecContext,
+    body: ImportlibLoaderExecBody<'_>,
+) -> Result<(), u64> {
+    // The target must be a module with a dictionary namespace.
+    importlib_module_dict_ptr_for_state(_py, module_bits)?;
+    match body {
+        ImportlibLoaderExecBody::CompiledSource => {
+            importlib_exec_compiled_module(_py, module_bits, &ctx.module_name)
+        }
+        ImportlibLoaderExecBody::Extension { path } => importlib_exec_extension_impl(
+            _py,
+            module_bits,
+            ctx.module_name_bits,
+            &ctx.module_name,
+            path,
+        ),
+    }
+}
+
+/// Run one loader body for `module` under its coerced name.
+fn importlib_loader_exec_module(
+    _py: &PyToken<'_>,
     loader_bits: u64,
     module_bits: u64,
-    module_spec_cls_bits: u64,
-    ctx: &ImportlibLoaderExecContext,
-    state: ImportlibLoaderExecState,
-) -> Result<(), u64> {
-    let origin_bits = alloc_str_bits(_py, &state.origin)?;
-    let mut module_package_bits = MoltObject::none().bits();
-    let mut package_root_bits = MoltObject::none().bits();
-    let out = (|| -> Result<(), u64> {
-        module_package_bits = alloc_str_bits(_py, &state.module_package)?;
-        package_root_bits = match state.package_root.as_deref() {
-            Some(root) => alloc_str_bits(_py, root)?,
-            None => MoltObject::none().bits(),
-        };
-
-        importlib_set_module_state_impl(
-            _py,
-            ImportlibModuleStateArgs {
-                module_bits,
-                module_name_bits: ctx.module_name_bits,
-                loader_bits,
-                origin_bits,
-                is_package: state.is_package,
-                module_package_bits,
-                package_root_bits,
-                module_spec_cls_bits,
-            },
-        )?;
-
-        let namespace_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
-        match &state.body {
-            ImportlibLoaderExecBody::CompiledSource => {
-                importlib_exec_compiled_module(_py, module_bits, &ctx.module_name)?;
-            }
-            ImportlibLoaderExecBody::Extension => {
-                importlib_exec_extension_impl(
-                    _py,
-                    module_bits,
-                    ctx.module_name_bits,
-                    &ctx.module_name,
-                    &state.origin,
-                )?;
-            }
-            ImportlibLoaderExecBody::Sourceless => {
-                importlib_exec_sourceless_impl(
-                    _py,
-                    module_bits,
-                    namespace_ptr,
-                    &ctx.module_name,
-                    &state.origin,
-                )?;
-            }
-        }
-
-        Ok(())
-    })();
-
-    if !obj_from_bits(package_root_bits).is_none() {
-        dec_ref_bits(_py, package_root_bits);
+    body: impl FnOnce(&ImportlibLoaderExecContext) -> Result<(), u64>,
+) -> u64 {
+    let ctx = match importlib_loader_exec_context(_py, module_bits, loader_bits) {
+        Ok(value) => value,
+        Err(bits) => return bits,
+    };
+    let out = body(&ctx);
+    importlib_loader_exec_context_release(_py, &ctx);
+    match out {
+        Ok(()) => MoltObject::none().bits(),
+        Err(bits) => bits,
     }
-    if !obj_from_bits(module_package_bits).is_none() {
-        dec_ref_bits(_py, module_package_bits);
-    }
-    if !obj_from_bits(origin_bits).is_none() {
-        dec_ref_bits(_py, origin_bits);
-    }
-    out
 }
 
 #[unsafe(no_mangle)]
@@ -691,39 +632,19 @@ pub extern "C" fn molt_importlib_sourcefileloader_exec_module(
     loader_bits: u64,
     module_bits: u64,
     path_bits: u64,
-    module_spec_cls_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let path = match string_arg_from_bits(_py, path_bits, "path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let ctx = match importlib_loader_exec_context(_py, module_bits, loader_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let out = {
-            let resolution = source_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
+        if let Err(bits) = string_arg_from_bits(_py, path_bits, "path") {
+            return bits;
+        }
+        importlib_loader_exec_module(_py, loader_bits, module_bits, |ctx| {
             importlib_loader_exec_module_apply(
                 _py,
-                loader_bits,
                 module_bits,
-                module_spec_cls_bits,
-                &ctx,
-                ImportlibLoaderExecState {
-                    origin: path,
-                    is_package: resolution.is_package,
-                    module_package: resolution.module_package,
-                    package_root: resolution.package_root,
-                    body: ImportlibLoaderExecBody::CompiledSource,
-                },
+                ctx,
+                ImportlibLoaderExecBody::CompiledSource,
             )
-        };
-        importlib_loader_exec_context_release(_py, &ctx);
-        match out {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
+        })
     })
 }
 
@@ -733,7 +654,6 @@ pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
     module_bits: u64,
     archive_path_bits: u64,
     inner_path_bits: u64,
-    module_spec_cls_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let archive_path = match string_arg_from_bits(_py, archive_path_bits, "archive path") {
@@ -744,38 +664,24 @@ pub extern "C" fn molt_importlib_zip_source_loader_exec_module(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let ctx = match importlib_loader_exec_context(_py, module_bits, loader_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let out = (|| -> Result<(), u64> {
-            let payload = importlib_zip_source_exec_payload_checked(
+        importlib_loader_exec_module(_py, loader_bits, module_bits, |ctx| {
+            // zipimporter.exec_module reads the archive member before running
+            // it; the read admits the capability and the member's presence.
+            let spec_is_package = importlib_module_spec_is_package_bits(_py, module_bits)?;
+            importlib_zip_source_exec_payload_checked(
                 _py,
                 &ctx.module_name,
                 &archive_path,
                 &inner_path,
-                ctx.spec_is_package,
+                spec_is_package,
             )?;
             importlib_loader_exec_module_apply(
                 _py,
-                loader_bits,
                 module_bits,
-                module_spec_cls_bits,
-                &ctx,
-                ImportlibLoaderExecState {
-                    origin: payload.origin,
-                    is_package: payload.is_package,
-                    module_package: payload.module_package,
-                    package_root: payload.package_root,
-                    body: ImportlibLoaderExecBody::CompiledSource,
-                },
+                ctx,
+                ImportlibLoaderExecBody::CompiledSource,
             )
-        })();
-        importlib_loader_exec_context_release(_py, &ctx);
-        match out {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
+        })
     })
 }
 
@@ -784,40 +690,20 @@ pub extern "C" fn molt_importlib_extension_loader_exec_module(
     loader_bits: u64,
     module_bits: u64,
     path_bits: u64,
-    module_spec_cls_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let ctx = match importlib_loader_exec_context(_py, module_bits, loader_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let out = {
-            let resolution =
-                extension_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
+        importlib_loader_exec_module(_py, loader_bits, module_bits, |ctx| {
             importlib_loader_exec_module_apply(
                 _py,
-                loader_bits,
                 module_bits,
-                module_spec_cls_bits,
-                &ctx,
-                ImportlibLoaderExecState {
-                    origin: path,
-                    is_package: resolution.is_package,
-                    module_package: resolution.module_package,
-                    package_root: resolution.package_root,
-                    body: ImportlibLoaderExecBody::Extension,
-                },
+                ctx,
+                ImportlibLoaderExecBody::Extension { path: &path },
             )
-        };
-        importlib_loader_exec_context_release(_py, &ctx);
-        match out {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
+        })
     })
 }
 
@@ -826,7 +712,6 @@ pub extern "C" fn molt_importlib_sourceless_loader_exec_module(
     loader_bits: u64,
     module_bits: u64,
     path_bits: u64,
-    module_spec_cls_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let path = match string_arg_from_bits(_py, path_bits, "path") {
@@ -836,33 +721,15 @@ pub extern "C" fn molt_importlib_sourceless_loader_exec_module(
         if importlib_is_archive_member_path(&path) {
             return raise_exception::<_>(_py, "NotADirectoryError", &path);
         }
-        let ctx = match importlib_loader_exec_context(_py, module_bits, loader_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let out = {
-            let resolution =
-                sourceless_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
+        // The compiled body stands in for the bytecode this loader would run.
+        importlib_loader_exec_module(_py, loader_bits, module_bits, |ctx| {
             importlib_loader_exec_module_apply(
                 _py,
-                loader_bits,
                 module_bits,
-                module_spec_cls_bits,
-                &ctx,
-                ImportlibLoaderExecState {
-                    origin: path,
-                    is_package: resolution.is_package,
-                    module_package: resolution.module_package,
-                    package_root: resolution.package_root,
-                    body: ImportlibLoaderExecBody::Sourceless,
-                },
+                ctx,
+                ImportlibLoaderExecBody::CompiledSource,
             )
-        };
-        importlib_loader_exec_context_release(_py, &ctx);
-        match out {
-            Ok(()) => MoltObject::none().bits(),
-            Err(bits) => bits,
-        }
+        })
     })
 }
 

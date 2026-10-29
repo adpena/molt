@@ -17,6 +17,7 @@ sys.modules[_HELPER_SPEC.name] = _HELPERS
 _HELPER_SPEC.loader.exec_module(_HELPERS)
 
 ROOT = _HELPERS.ROOT
+ARTIFACT_ROOT = _HELPERS.ARTIFACT_ROOT
 _build_and_run_with_env = _HELPERS._build_and_run_with_env
 
 
@@ -77,7 +78,7 @@ def test_native_sourcefileloader_load_module_transaction_matches_cpython(
         ),
         "sourcefileloader_load_module_transaction",
         session_id="pytest-native-importlib-load-module-transaction",
-        cache_dir=ROOT / ".molt_cache-importlib-load-module-transaction",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-importlib-load-module-transaction",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={

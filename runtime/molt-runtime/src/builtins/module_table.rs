@@ -556,7 +556,8 @@ impl InterpreterSysNamespace {
 }
 
 /// Synthetic test namespaces enter through the real initializer publication
-/// bridge. RuntimeTestTransaction escrows and restores this role and table row.
+/// bridge. RuntimeTestTransaction escrows and restores this role, its table row
+/// and its public `sys.modules['sys']` entry.
 #[cfg(test)]
 pub(crate) fn publish_interpreter_sys_for_test(py: &PyToken<'_>, bits: u64) -> u64 {
     tests::install_test_registry();
@@ -584,12 +585,22 @@ pub(crate) fn publish_interpreter_sys_for_test(py: &PyToken<'_>, bits: u64) -> u
     result
 }
 
+/// One test transaction's custody of the whole `sys` bootstrap: the
+/// interpreter roles, the `sys` table row and the public `sys.modules['sys']`
+/// entry. The sys initializer publishes the role and the entry together, so
+/// detaching only the role would leave a state production never reaches (a
+/// public `sys` with no bootstrap), where public-cache precedence returns the
+/// entry without running the initializer and every importlib entry point
+/// fails to find `sys.modules` (HF-540).
 #[cfg(test)]
 pub(crate) struct InterpreterSysTestSnapshot {
     defaults: crate::builtins::platform::ImportDefaultsTestSnapshot,
     namespace: u64,
     builtins: u64,
     table: Option<(u8, u64, u64)>,
+    /// The owned public `sys` entry, `None` when the canonical dictionary
+    /// has none (or does not exist yet).
+    public: Option<u64>,
 }
 
 #[cfg(test)]
@@ -607,11 +618,25 @@ impl InterpreterSysTestSnapshot {
                 table.initialization().specs[index].swap(0, Ordering::AcqRel),
             ))
         });
+        let public = existing_module_dictionary(py).and_then(|modules| {
+            let key = crate::attr_name_bits_from_bytes(py, b"sys").expect("sys name");
+            let detached = unsafe {
+                crate::object::ops::dict_del_deferred(py, crate::ptr_from_bits(modules), key)
+            }
+            .expect("detach the public sys entry");
+            dec_ref_bits(py, key);
+            detached.map(|entry| {
+                let [key, value] = entry.into_owned_storage();
+                dec_ref_bits(py, key);
+                value
+            })
+        });
         Self {
             defaults,
             namespace,
             builtins,
             table,
+            public,
         }
     }
 
@@ -634,10 +659,26 @@ impl InterpreterSysTestSnapshot {
                 table.initialization().specs[index].swap(spec, Ordering::AcqRel),
             ))
         });
+        // The test's own entry is released with the other fresh owners below.
+        let key = crate::attr_name_bits_from_bytes(py, b"sys").expect("sys name");
+        let current_public = existing_module_dictionary(py).and_then(|modules| {
+            let modules = crate::ptr_from_bits(modules);
+            match self.public {
+                Some(bits) => {
+                    unsafe { crate::object::ops::dict_set_deferred(py, modules, key, bits) }
+                        .map(Some)
+                }
+                None => unsafe { crate::object::ops::dict_del_deferred(py, modules, key) },
+            }
+            .expect("restore the public sys entry")
+        });
+        dec_ref_bits(py, key);
         // Restore the entire interpreter role before retiring any fresh owner:
         // list/module finalizers must see matching sys and bootstrap custody.
         self.defaults.restore(py);
+        drop(current_public);
         for bits in [
+            self.public,
             Some(current),
             Some(current_builtins),
             current_table.map(|entry| entry.0),

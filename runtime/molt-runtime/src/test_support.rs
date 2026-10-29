@@ -1048,7 +1048,7 @@ fn transaction_rejects_gil_before_process_state_lock() {
 pub(crate) struct EmptyImportResolver {
     sys: u64,
     previous_meta_path: Option<u64>,
-    previous_sys: Option<u64>,
+    /// Escrows the interpreter role, the `sys` row and public membership.
     sys_snapshot: Option<crate::builtins::module_table::InterpreterSysTestSnapshot>,
     defaults_snapshot: Option<crate::builtins::platform::ImportDefaultsTestSnapshot>,
 }
@@ -1059,14 +1059,11 @@ impl EmptyImportResolver {
             crate::MoltObject::none().bits()
         }
         use crate::{MoltObject, dec_ref_bits, inc_ref_bits};
-        let mut previous_sys = None;
         let mut sys_snapshot = None;
         let sys = if let Some(sys) = crate::builtins::modules::interpreter_sys_module(py) {
             inc_ref_bits(py, sys);
             sys
         } else {
-            previous_sys = crate::builtins::module_table::module_lookup(py, "sys")
-                .expect("snapshot public sys membership");
             sys_snapshot =
                 Some(crate::builtins::module_table::InterpreterSysTestSnapshot::detach(py));
             let name = crate::attr_name_bits_from_bytes(py, b"sys").unwrap();
@@ -1115,7 +1112,6 @@ impl EmptyImportResolver {
         Self {
             sys,
             previous_meta_path,
-            previous_sys,
             sys_snapshot,
             defaults_snapshot,
         }
@@ -1143,15 +1139,7 @@ impl Drop for EmptyImportResolver {
                 snapshot.restore(py);
             }
             if let Some(snapshot) = self.sys_snapshot.take() {
-                let removed = crate::builtins::module_table::replace_module_owned_for_test(
-                    py,
-                    "sys",
-                    self.previous_sys.take(),
-                );
                 snapshot.restore(py);
-                if let Some(bits) = removed {
-                    crate::dec_ref_bits(py, bits);
-                }
             }
             crate::dec_ref_bits(py, self.sys);
         });
