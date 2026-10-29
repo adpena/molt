@@ -836,6 +836,14 @@ def _molt_build_params(
         if arg.startswith("--stdlib-profile="):
             request = replace(request, stdlib_profile=arg.split("=", maxsplit=1)[1])
             continue
+        if arg == "--capabilities":
+            if not remaining:
+                raise ValueError("--capabilities requires a value")
+            request = replace(request, capabilities=remaining.popleft())
+            continue
+        if arg.startswith("--capabilities="):
+            request = replace(request, capabilities=arg.split("=", maxsplit=1)[1])
+            continue
         raise ValueError(f"unsupported benchmark Molt build arg: {arg}")
     return build_request_to_payload(request)
 
