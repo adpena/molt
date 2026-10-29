@@ -74,6 +74,7 @@ pub(super) fn emit_ordered_compare_op(
             operands,
             import_ids,
             import_name,
+            compare_op,
             locals,
             reloc_enabled,
             |func, _scratch_local| {

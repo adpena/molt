@@ -13,14 +13,22 @@ pub(super) fn emit_named_attribute_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "get_attr_name" => emit_get_attr_name(func, op, import_ids, locals, reloc_enabled),
-        "get_attr_name_default" => {
+    match op.kind {
+        molt_ir::OpKind::GetAttrName => {
+            emit_get_attr_name(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::GetAttrNameDefault => {
             emit_get_attr_name_default(func, op, import_ids, locals, reloc_enabled)
         }
-        "has_attr_name" => emit_has_attr_name(func, op, import_ids, locals, reloc_enabled),
-        "set_attr_name" => emit_set_attr_name(func, op, import_ids, locals, reloc_enabled),
-        "del_attr_name" => emit_del_attr_name(func, op, import_ids, locals, reloc_enabled),
+        molt_ir::OpKind::HasAttrName => {
+            emit_has_attr_name(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::SetAttrName => {
+            emit_set_attr_name(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::DelAttrName => {
+            emit_del_attr_name(func, op, import_ids, locals, reloc_enabled)
+        }
         _ => return false,
     }
     true

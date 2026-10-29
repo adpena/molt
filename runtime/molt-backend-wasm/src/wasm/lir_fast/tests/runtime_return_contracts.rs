@@ -42,6 +42,7 @@ fn sink_body(
     let output = result.map(|repr| value(args.len() as u32, repr));
     let op = LirOp {
         tir_op: TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: (0..args.len()).map(|index| ValueId(index as u32)).collect(),
@@ -123,7 +124,12 @@ fn lir_import_result_sink_rejects_width_and_lifetime_mismatches() {
     }
     // The ordinary preserved-Copy path must also retain the exact call token
     // through its no-result sink, not merely pass a synthetic sink test.
-    let function = make_copy_original_kind_runtime_func("discard_module", "module_new", 1, false);
+    let function = make_copy_original_kind_runtime_func(
+        "discard_module",
+        molt_ir::OpKind::ModuleNew,
+        1,
+        false,
+    );
     let body = lower_tir_to_wasm(&function);
     assert_eq!(body.bail_to_generic_reason(), None);
     assert!(body.test_view().runtime_calls.contains(&"dec_ref_obj"));

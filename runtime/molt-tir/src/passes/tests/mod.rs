@@ -7,37 +7,37 @@ fn eliminate_dead_ops(ir: &mut SimpleIR) {
     super::eliminate_dead_ops(ir, &TargetInfo::native_release_fast());
 }
 
-fn make_op(kind: &str) -> OpIR {
+fn make_op(kind: molt_ir::OpKind) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
-        ..Default::default()
+        kind,
+        ..OpIR::new(kind)
     }
 }
 
 fn make_const_int(out: &str, val: i64) -> OpIR {
     OpIR {
-        kind: "const".to_string(),
+        kind: molt_ir::OpKind::Const,
         value: Some(val),
         out: Some(out.to_string()),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::Const)
     }
 }
 
 fn make_store_var(var: &str, arg: &str) -> OpIR {
     OpIR {
-        kind: "store_var".to_string(),
+        kind: molt_ir::OpKind::StoreVar,
         var: Some(var.to_string()),
         args: Some(vec![arg.to_string()]),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::StoreVar)
     }
 }
 
 fn make_const_str(out: &str, value: &str) -> OpIR {
     OpIR {
-        kind: "const_str".to_string(),
+        kind: molt_ir::OpKind::ConstStr,
         out: Some(out.to_string()),
         s_value: Some(value.to_string()),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::ConstStr)
     }
 }
 
@@ -45,20 +45,20 @@ fn make_call_func(out: &str, callee: &str, args: &[&str]) -> OpIR {
     let mut full_args = vec![callee.to_string()];
     full_args.extend(args.iter().map(|a| a.to_string()));
     OpIR {
-        kind: "call_func".to_string(),
+        kind: molt_ir::OpKind::CallFunc,
         out: Some(out.to_string()),
         args: Some(full_args),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::CallFunc)
     }
 }
 
 fn make_builtin_func(out: &str, runtime_name: &str, arity: i64) -> OpIR {
     OpIR {
-        kind: "builtin_func".to_string(),
+        kind: molt_ir::OpKind::BuiltinFunc,
         out: Some(out.to_string()),
         s_value: Some(runtime_name.to_string()),
         value: Some(arity),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
     }
 }
 
@@ -77,20 +77,20 @@ fn manifest_func(ops: Vec<OpIR>) -> FunctionIR {
     }
 }
 
-fn make_arith(kind: &str, args: &[&str], out: &str) -> OpIR {
+fn make_arith(kind: molt_ir::OpKind, args: &[&str], out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         out: Some(out.to_string()),
-        ..Default::default()
+        ..OpIR::new(kind)
     }
 }
 
-fn make_ref_op(kind: &str, arg: &str) -> OpIR {
+fn make_ref_op(kind: molt_ir::OpKind, arg: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(vec![arg.to_string()]),
-        ..Default::default()
+        ..OpIR::new(kind)
     }
 }
 

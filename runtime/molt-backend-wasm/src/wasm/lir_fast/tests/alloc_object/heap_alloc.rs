@@ -12,6 +12,7 @@ fn heap_alloc_stays_lir_fast_through_immediate_runtime_call() {
     func.value_types.insert(result_id, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Alloc,
         operands: vec![],
@@ -64,6 +65,7 @@ fn released_heap_alloc_publishes_before_releasing_its_owner() {
     func.value_types.insert(result, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Alloc,
         operands: vec![],
@@ -72,6 +74,7 @@ fn released_heap_alloc_publishes_before_releasing_its_owner() {
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DecRef,
         operands: vec![result],

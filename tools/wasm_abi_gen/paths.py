@@ -13,7 +13,6 @@ LEGACY_OUT_RS = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated.rs"
 OUT_RS_DIR = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated"
 OUT_RS_FILES = {
     "mod.rs": OUT_RS_DIR / "mod.rs",
-    "bulk_memory_ops.rs": OUT_RS_DIR / "bulk_memory_ops.rs",
     "callable_table.rs": OUT_RS_DIR / "callable_table.rs",
     "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
     "static_types.rs": OUT_RS_DIR / "static_types.rs",

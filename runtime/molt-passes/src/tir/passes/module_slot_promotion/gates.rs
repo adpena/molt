@@ -60,8 +60,8 @@ pub(super) fn is_marker_passthrough(op: &TirOp) -> bool {
     if op.opcode != OpCode::Copy {
         return false;
     }
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(k)) => k == "line" || crate::tir::is_structural(k),
+    match op.origin {
+        Some(k) => k == molt_ir::OpKind::Line || crate::tir::is_structural(k),
         _ => false,
     }
 }

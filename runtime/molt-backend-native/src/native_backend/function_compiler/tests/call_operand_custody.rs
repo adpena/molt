@@ -6,6 +6,7 @@ use super::*;
 use crate::native_backend::simple_backend::tests::{
     compile_selected_functions_direct, emit_direct_object,
 };
+use molt_ir::OpKind;
 use molt_ir::ParameterCustody::{Borrowed, Transferred};
 
 mod cargo_test_artifacts {
@@ -21,9 +22,9 @@ mod native_object_execution {
     ));
 }
 
-fn fixture(name: &str, kind: &str) -> FunctionIR {
+fn fixture(name: &str, kind: OpKind) -> FunctionIR {
     let (arguments, custody, symbol): (Vec<&str>, Vec<_>, Option<&str>) = match kind {
-        "call" | "call_internal" => (
+        OpKind::Call | OpKind::CallInternal => (
             vec![
                 "wide", "wide", "wide", "wider", "existing", "existing", "other", "wider",
             ],
@@ -42,7 +43,7 @@ fn fixture(name: &str, kind: &str) -> FunctionIR {
         _ => (
             vec!["existing", "wide", "wide", "wider", "existing", "other"],
             vec![Transferred; 6],
-            if kind == "call_guarded" {
+            if kind == OpKind::CallGuarded {
                 Some("custody_guard_target")
             } else {
                 None
@@ -57,46 +58,39 @@ fn fixture(name: &str, kind: &str) -> FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         ops: vec![
             OpIR {
-                kind: "drop_inserted".into(),
-                ..Default::default()
+                ..OpIR::new(OpKind::DropInserted)
             },
             OpIR {
-                kind: "const_int".into(),
                 out: Some("limb".into()),
                 value: Some(1_i64 << 31),
-                ..Default::default()
+                ..OpIR::new(OpKind::ConstInt)
             },
             OpIR {
-                kind: "checked_mul".into(),
                 args: Some(vec!["limb".into(), "limb".into()]),
                 var: Some("wide".into()),
                 out: Some("overflow".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::CheckedMul)
             },
             OpIR {
-                kind: "checked_add".into(),
                 args: Some(vec!["wide".into(), "limb".into()]),
                 var: Some("wider".into()),
                 out: Some("overflow2".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::CheckedAdd)
             },
             OpIR {
-                kind: "inc_ref".into(),
                 args: Some(vec!["existing".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::IncRef)
             },
             OpIR {
-                kind: kind.into(),
                 args: Some(arguments.into_iter().map(str::to_owned).collect()),
                 argument_custody: Some(custody),
                 s_value: symbol.map(str::to_owned),
                 out: Some("result".into()),
-                ..Default::default()
+                ..OpIR::new(kind)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["result".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         ..Default::default()
@@ -115,22 +109,21 @@ fn fixture(name: &str, kind: &str) -> FunctionIR {
 }
 
 fn builder_fixture(name: &str, borrowed_callable: bool) -> FunctionIR {
-    let mut function = fixture(name, "call_func");
+    let mut function = fixture(name, OpKind::CallFunc);
     function.params = vec!["builder".into()];
     function.param_types = Some(vec!["dyn".into()]);
     function.parameter_custody = vec![Transferred];
-    function.ops.retain(|op| op.kind != "inc_ref");
+    function.ops.retain(|op| op.kind != OpKind::IncRef);
     let call = function
         .ops
         .iter_mut()
-        .find(|op| op.kind == "call_func")
+        .find(|op| op.kind == OpKind::CallFunc)
         .unwrap();
     call.kind = if borrowed_callable {
-        "call_indirect"
+        OpKind::CallIndirect
     } else {
-        "call_bind"
-    }
-    .into();
+        OpKind::CallBind
+    };
     call.args = Some(vec!["wide".into(), "builder".into()]);
     call.argument_custody = Some(vec![
         if borrowed_callable {
@@ -144,19 +137,17 @@ fn builder_fixture(name: &str, borrowed_callable: bool) -> FunctionIR {
 }
 
 fn loop_fixture() -> FunctionIR {
-    let mut function = fixture("custody_loop", "call");
+    let mut function = fixture("custody_loop", OpKind::Call);
     function.params.clear();
     function.param_types = None;
     function.parameter_custody.clear();
     function.ops.truncate(4);
     function.ops.extend([
         OpIR {
-            kind: "label".into(),
             value: Some(10),
-            ..Default::default()
+            ..OpIR::new(OpKind::Label)
         },
         OpIR {
-            kind: "call".into(),
             s_value: Some("custody_loop_target".into()),
             args: Some(
                 ["wide", "wide", "wide", "wider", "wider"]
@@ -171,35 +162,30 @@ fn loop_fixture() -> FunctionIR {
                 Borrowed,
             ]),
             out: Some("result".into()),
-            ..Default::default()
+            ..OpIR::new(OpKind::Call)
         },
         OpIR {
-            kind: "release".into(),
             args: Some(vec!["result".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::Release)
         },
         OpIR {
-            kind: "call_internal".into(),
             s_value: Some("custody_loop_continue".into()),
             args: Some(vec![]),
             out: Some("again".into()),
-            ..Default::default()
+            ..OpIR::new(OpKind::CallInternal)
         },
         OpIR {
-            kind: "br_if".into(),
             args: Some(vec!["again".into()]),
             value: Some(10),
-            ..Default::default()
+            ..OpIR::new(OpKind::BrIf)
         },
         OpIR {
-            kind: "const_none".into(),
             out: Some("none".into()),
-            ..Default::default()
+            ..OpIR::new(OpKind::ConstNone)
         },
         OpIR {
-            kind: "ret".into(),
             args: Some(vec!["none".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::Ret)
         },
     ]);
     function
@@ -209,7 +195,7 @@ fn loop_fixture() -> FunctionIR {
 /// exception edge is before TRY_END and the next effect, on the production
 /// native function compiler path used by the rest of this family fixture.
 fn home_store_fixture() -> FunctionIR {
-    let mut function = fixture("custody_home_store", "call_func");
+    let mut function = fixture("custody_home_store", OpKind::CallFunc);
     function.params.clear();
     function.param_types = None;
     function.parameter_custody.clear();
@@ -217,66 +203,54 @@ fn home_store_fixture() -> FunctionIR {
     function.ops.truncate(3); // drop marker, inline limb, checked wide product
     function.ops.extend([
         OpIR {
-            kind: "try_start".into(),
             value: Some(51),
-            ..Default::default()
+            ..OpIR::new(OpKind::TryStart)
         },
         OpIR {
-            kind: "frame_home_store".into(),
             value: Some(0),
             args: Some(vec!["wide".into()]),
             out: Some("view".into()),
-            ..Default::default()
+            ..OpIR::new(OpKind::FrameHomeStore)
         },
         OpIR {
-            kind: "check_exception".into(),
             value: Some(51),
-            ..Default::default()
+            ..OpIR::new(OpKind::CheckException)
         },
         OpIR {
-            kind: "try_end".into(),
             value: Some(51),
-            ..Default::default()
+            ..OpIR::new(OpKind::TryEnd)
         },
         OpIR {
-            kind: "call".into(),
             s_value: Some("custody_home_success".into()),
             args: Some(vec!["view".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::Call)
         },
         OpIR {
-            kind: "frame_home_clear".into(),
             value: Some(0),
-            ..Default::default()
+            ..OpIR::new(OpKind::FrameHomeClear)
         },
         OpIR {
-            kind: "ret_void".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::RetVoid)
         },
         OpIR {
-            kind: "label".into(),
             value: Some(51),
-            ..Default::default()
+            ..OpIR::new(OpKind::Label)
         },
         OpIR {
-            kind: "try_end".into(),
             value: Some(51),
-            ..Default::default()
+            ..OpIR::new(OpKind::TryEnd)
         },
         OpIR {
-            kind: "call".into(),
             s_value: Some("custody_home_failure".into()),
             args: Some(vec![]),
-            ..Default::default()
+            ..OpIR::new(OpKind::Call)
         },
         OpIR {
-            kind: "frame_home_clear".into(),
             value: Some(0),
-            ..Default::default()
+            ..OpIR::new(OpKind::FrameHomeClear)
         },
         OpIR {
-            kind: "ret_void".into(),
-            ..Default::default()
+            ..OpIR::new(OpKind::RetVoid)
         },
     ]);
     let plan = ScalarRepresentationPlan::for_function_ir_for_target(
@@ -297,15 +271,14 @@ fn home_store_alias_fixture() -> FunctionIR {
     let end = function
         .ops
         .iter()
-        .position(|op| op.kind == "try_end")
+        .position(|op| op.kind == OpKind::TryEnd)
         .unwrap();
     function.ops.insert(
         end,
         OpIR {
-            kind: "identity_alias".into(),
             args: Some(vec!["view".into()]),
             out: Some("view_alias".into()),
-            ..Default::default()
+            ..OpIR::new(OpKind::IdentityAlias)
         },
     );
     let call = function
@@ -332,46 +305,39 @@ fn home_store_numeric_fixture() -> FunctionIR {
         call..=call,
         [
             OpIR {
-                kind: "checked_add".into(),
                 args: Some(vec!["view".into(), "limb".into()]),
                 var: Some("numeric".into()),
                 out: Some("numeric_overflow".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::CheckedAdd)
             },
             OpIR {
-                kind: "const_int".into(),
                 value: Some((1_i64 << 62) + (1_i64 << 31)),
                 out: Some("numeric_expected".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::ConstInt)
             },
             OpIR {
-                kind: "eq".into(),
                 args: Some(vec!["numeric".into(), "numeric_expected".into()]),
                 out: Some("numeric_ok".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::Eq)
             },
             OpIR {
-                kind: "br_if".into(),
                 args: Some(vec!["numeric_ok".into()]),
                 value: Some(60),
-                ..Default::default()
+                ..OpIR::new(OpKind::BrIf)
             },
             OpIR {
-                kind: "call".into(),
                 s_value: Some("custody_home_numeric_bad".into()),
                 args: Some(vec![]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "label".into(),
                 value: Some(60),
-                ..Default::default()
+                ..OpIR::new(OpKind::Label)
             },
             OpIR {
-                kind: "call".into(),
                 s_value: Some("custody_home_numeric_ok".into()),
                 args: Some(vec![]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Call)
             },
         ],
     );
@@ -405,13 +371,12 @@ fn home_store_bitwise_fixture(observed: bool) -> FunctionIR {
     let index = function
         .ops
         .iter()
-        .position(|op| op.kind == "checked_add")
+        .position(|op| op.kind == OpKind::CheckedAdd)
         .unwrap();
     function.ops[index] = OpIR {
-        kind: "bit_and".into(),
         args: Some(vec!["view".into(), "limb".into()]),
         out: Some("numeric".into()),
-        ..Default::default()
+        ..OpIR::new(OpKind::BitAnd)
     };
     function
         .ops
@@ -425,16 +390,14 @@ fn home_store_bitwise_fixture(observed: bool) -> FunctionIR {
         index..index,
         [
             OpIR {
-                kind: "not".into(),
                 args: Some(vec!["view".into()]),
                 out: Some("wide_is_zero".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::Not)
             },
             OpIR {
-                kind: "br_if".into(),
                 args: Some(vec!["wide_is_zero".into()]),
                 value: Some(61),
-                ..Default::default()
+                ..OpIR::new(OpKind::BrIf)
             },
         ],
     );
@@ -446,24 +409,22 @@ fn home_store_bitwise_fixture(observed: bool) -> FunctionIR {
     function.ops.insert(
         failure,
         OpIR {
-            kind: "label".into(),
             value: Some(61),
-            ..Default::default()
+            ..OpIR::new(OpKind::Label)
         },
     );
     if observed {
         let index = function
             .ops
             .iter()
-            .position(|op| op.kind == "bit_and")
+            .position(|op| op.kind == OpKind::BitAnd)
             .unwrap();
         function.ops.insert(
             index,
             OpIR {
-                kind: "call".into(),
                 s_value: Some("custody_home_success".into()),
                 args: Some(vec!["view".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Call)
             },
         );
         function
@@ -499,23 +460,19 @@ fn method_receiver_prefix_fixture() -> FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         ops: vec![
             OpIR {
-                kind: "drop_inserted".into(),
-                ..Default::default()
+                ..OpIR::new(OpKind::DropInserted)
             },
             OpIR {
-                kind: "callargs_push_method_receiver".into(),
                 args: Some(vec!["builder".into(), "receiver".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::CallargsPushMethodReceiver)
             },
             OpIR {
-                kind: "const_none".into(),
                 out: Some("nothing".into()),
-                ..Default::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["nothing".into()]),
-                ..Default::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         ..Default::default()
@@ -526,16 +483,16 @@ fn method_receiver_prefix_fixture() -> FunctionIR {
 fn native_call_operands_execute_identity_custody_and_mint_failure() {
     let rustc = native_object_execution::rustc_path();
     let cases = [
-        ("custody_direct", "call"),
-        ("custody_internal", "call_internal"),
-        ("custody_guarded", "call_guarded"),
-        ("custody_dynamic", "call_func"),
-        ("custody_method", "call_method"),
-        ("custody_loaded_method", "call_loaded_method"),
+        ("custody_direct", OpKind::Call),
+        ("custody_internal", OpKind::CallInternal),
+        ("custody_guarded", OpKind::CallGuarded),
+        ("custody_dynamic", OpKind::CallFunc),
+        ("custody_method", OpKind::CallMethod),
+        ("custody_loaded_method", OpKind::CallLoadedMethod),
     ];
     let mut functions: Vec<_> = cases
         .iter()
-        .map(|(name, kind)| fixture(name, kind))
+        .map(|(name, kind)| fixture(name, *kind))
         .collect();
     functions.push(builder_fixture("custody_bind", false));
     functions.push(builder_fixture("custody_indirect", true));

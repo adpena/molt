@@ -118,19 +118,17 @@ mod tests {
                 param_types: None,
                 ops: vec![
                     OpIR {
-                        kind: "call".to_string(),
                         s_value: Some("opaque_helper".to_string()),
                         args: Some(Vec::new()),
                         out: Some("result".to_string()),
                         source_line: Some(3),
                         col_offset: Some(4),
                         end_col_offset: Some(18),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Call)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["result".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 source_file: Some("app.py".to_string()),
@@ -215,17 +213,15 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, target)| OpIR {
-                    kind: "call".into(),
                     s_value: Some((*target).into()),
                     args: Some(Vec::new()),
                     out: Some(format!("result_{index}")),
                     source_line: Some(7 + index as i64),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 })
                 .chain(std::iter::once(OpIR {
-                    kind: "ret".into(),
                     args: Some(vec![format!("result_{}", targets.len() - 1)]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 }))
                 .collect(),
             ..FunctionIR::default()
@@ -297,10 +293,7 @@ mod tests {
                 name: "molt_main".to_string(),
                 params: Vec::new(),
                 param_types: None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,

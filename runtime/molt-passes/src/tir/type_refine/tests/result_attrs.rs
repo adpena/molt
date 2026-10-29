@@ -13,7 +13,7 @@ fn attribute_overrides_cannot_bypass_snapshot_shape_admission() {
         (OpCode::LoadMethod, "name", "upper"),
         (OpCode::LoadSuperMethod, "name", "compute"),
         (OpCode::CallBuiltin, "name", "len"),
-        (OpCode::Copy, "_original_kind", "len"),
+        (OpCode::Copy, "name", "len"),
     ] {
         for operand_count in 0..=3 {
             for result_count in 1..=2 {
@@ -26,11 +26,16 @@ fn attribute_overrides_cannot_bypass_snapshot_shape_admission() {
                 let results: Vec<_> = (0..result_count)
                     .map(|index| ValueId(8 + index as u32))
                     .collect();
-                let attrs = [(key.into(), AttrValue::Str(value.into()))].into();
-                let mut func = single_block_func(
-                    vec![make_op(opcode, operands.clone(), results.clone(), attrs)],
-                    8 + result_count as u32,
-                );
+                let attrs = if opcode == OpCode::Copy {
+                    AttrDict::new()
+                } else {
+                    [(key.into(), AttrValue::Str(value.into()))].into()
+                };
+                let mut op = make_op(opcode, operands.clone(), results.clone(), attrs);
+                if opcode == OpCode::Copy {
+                    op.origin = Some(molt_ir::OpKind::Len);
+                }
+                let mut func = single_block_func(vec![op], 8 + result_count as u32);
                 for operand in operands {
                     func.value_types.insert(operand, TirType::DynBox);
                 }
@@ -207,10 +212,7 @@ fn builtin_reference_results_are_dynamic_independent_of_name_operands() {
         let name_value = ValueId(0);
         let result = ValueId(1);
         let mut attrs = AttrDict::new();
-        attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("builtin_func".into()),
-        );
+
         attrs.insert("s_value".into(), AttrValue::Str("molt_len".into()));
         attrs.insert("value".into(), AttrValue::Int(1));
         if let Some(name) = name {
@@ -229,7 +231,8 @@ fn builtin_reference_results_are_dynamic_independent_of_name_operands() {
                     vec![name_value],
                     str_attr(name.unwrap_or("unused")),
                 ),
-                make_op(OpCode::Copy, operands, vec![result], attrs),
+                make_op(OpCode::Copy, operands, vec![result], attrs)
+                    .with_origin(molt_ir::OpKind::BuiltinFunc),
             ],
             2,
         );

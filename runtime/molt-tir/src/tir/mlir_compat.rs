@@ -301,9 +301,9 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::StateSwitch => "state_switch",
         OpCode::StateTransition => "state_transition",
         OpCode::StateYield => "state_yield",
-        OpCode::StateSet | OpCode::IsPending | OpCode::TaskWait => {
-            super::op_kinds_generated::opcode_canonical_kind_table(*op)
-        }
+        OpCode::StateSet => "state_set",
+        OpCode::IsPending => "is_pending",
+        OpCode::TaskWait => "task_wait",
         OpCode::ClosureLoad => "closure_load",
         OpCode::ClosureStore => "closure_store",
         OpCode::FrameContextSet => "frame_context_set",
@@ -363,6 +363,7 @@ mod tests {
         let v2 = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -426,6 +427,7 @@ mod tests {
         let mut f = make_add_func();
         let entry = f.blocks.get_mut(&f.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -469,6 +471,7 @@ mod tests {
                 args: vec![],
                 terminator: Terminator::Return { values: vec![v1] },
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -488,6 +491,7 @@ mod tests {
                 args: vec![],
                 terminator: Terminator::Return { values: vec![v2] },
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -522,6 +526,7 @@ mod tests {
             (OpCode::TaskWait, vec![ValueId(0)], vec![]),
         ] {
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,

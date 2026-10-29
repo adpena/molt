@@ -2,24 +2,24 @@ use crate::OpIR;
 use std::collections::BTreeSet;
 
 #[inline]
-fn is_exception_observer_kind(kind: &str) -> bool {
-    molt_ir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind)
+fn is_exception_observer_kind(kind: molt_ir::OpKind) -> bool {
+    kind.is_exception_check()
 }
 
 pub(super) fn observes_pending_exception(ops: &[OpIR]) -> bool {
     // Without a local pending-state observer, host errors can unwind directly
     // to the caller's capture. Such functions need no extra operation scopes.
     ops.iter().any(|op| {
-        is_exception_observer_kind(&op.kind)
+        is_exception_observer_kind(op.kind)
             || matches!(
-                op.kind.as_str(),
-                "try_start"
-                    | "loop_break_if_exception"
-                    | "exception_pending"
-                    | "exception_current"
-                    | "exception_last"
-                    | "exception_last_pending"
-                    | "exception_finally_pending_observer"
+                op.kind,
+                molt_ir::OpKind::TryStart
+                    | molt_ir::OpKind::LoopBreakIfException
+                    | molt_ir::OpKind::ExceptionPending
+                    | molt_ir::OpKind::ExceptionCurrent
+                    | molt_ir::OpKind::ExceptionLast
+                    | molt_ir::OpKind::ExceptionLastPending
+                    | molt_ir::OpKind::ExceptionFinallyPendingObserver
             )
     })
 }
@@ -38,14 +38,13 @@ pub(super) fn lower_exception_captures_with_counter(
 ) -> Vec<OpIR> {
     use molt_ir::tir::op_kinds_generated::{
         copy_kind_is_inert_marker_table, kind_to_opcode_table, opcode_may_throw_table,
-        simpleir_kind_is_cfg_or_ssa_consumed, simpleir_kind_is_suspend,
     };
     use molt_ir::tir::simple_def_use::visit_simple_ir_defined_names;
 
     let mut result = Vec::with_capacity(ops.len());
     for op in ops {
-        let kind = op.kind.as_str();
-        if matches!(kind, "try_start" | "try_end") {
+        let kind = op.kind;
+        if matches!(kind, molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd) {
             continue;
         }
         // This target projects pending/handled state directly, without host
@@ -54,31 +53,31 @@ pub(super) fn lower_exception_captures_with_counter(
         // are the synthetic loops and captures introduced by these rewrites.
         let protocol_or_control = matches!(
             kind,
-            "exception_push"
-                | "exception_pop"
-                | "exception_stack_enter"
-                | "exception_stack_exit"
-                | "exception_stack_depth"
-                | "exception_stack_set_depth"
-                | "exception_stack_clear"
-                | "exception_context_set"
-                | "exception_clear"
-                | "exception_set_last"
-                | "exception_last"
-                | "exception_last_pending"
-                | "exception_finally_pending_observer"
-                | "exception_active"
-                | "exception_current"
-                | "exception_pending"
-                | "raise"
-                | "for_range"
-                | "for_iter"
-                | "end_for"
-                | "pcall_wrap_begin"
-                | "pcall_wrap_end"
+            molt_ir::OpKind::ExceptionPush
+                | molt_ir::OpKind::ExceptionPop
+                | molt_ir::OpKind::ExceptionStackEnter
+                | molt_ir::OpKind::ExceptionStackExit
+                | molt_ir::OpKind::ExceptionStackDepth
+                | molt_ir::OpKind::ExceptionStackSetDepth
+                | molt_ir::OpKind::ExceptionStackClear
+                | molt_ir::OpKind::ExceptionContextSet
+                | molt_ir::OpKind::ExceptionClear
+                | molt_ir::OpKind::ExceptionSetLast
+                | molt_ir::OpKind::ExceptionLast
+                | molt_ir::OpKind::ExceptionLastPending
+                | molt_ir::OpKind::ExceptionFinallyPendingObserver
+                | molt_ir::OpKind::ExceptionActive
+                | molt_ir::OpKind::ExceptionCurrent
+                | molt_ir::OpKind::ExceptionPending
+                | molt_ir::OpKind::Raise
+                | molt_ir::OpKind::ForRange
+                | molt_ir::OpKind::ForIter
+                | molt_ir::OpKind::EndFor
+                | molt_ir::OpKind::PcallWrapBegin
+                | molt_ir::OpKind::PcallWrapEnd
         ) || is_exception_observer_kind(kind)
-            || simpleir_kind_is_cfg_or_ssa_consumed(kind)
-            || simpleir_kind_is_suspend(kind)
+            || kind.is_cfg_or_ssa_consumed()
+            || kind.is_suspend()
             || copy_kind_is_inert_marker_table(kind);
         let may_throw = observes_pending
             && !protocol_or_control
@@ -91,18 +90,16 @@ pub(super) fn lower_exception_captures_with_counter(
                 }
             });
             result.push(OpIR {
-                kind: "pcall_wrap_begin".into(),
                 args: Some(outputs),
                 value: Some(*counter),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::PcallWrapBegin)
             });
         }
         result.push(op.clone());
         if may_throw {
             result.push(OpIR {
-                kind: "pcall_wrap_end".into(),
                 value: Some(*counter),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::PcallWrapEnd)
             });
             *counter += 1;
         }
@@ -118,19 +115,19 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         .iter()
         .filter_map(|op| {
             matches!(
-                op.kind.as_str(),
-                "jump"
-                    | "goto"
-                    | "br_if"
-                    | "branch"
-                    | "branch_false"
-                    | "check_exception"
-                    | "async_work_poll"
-                    | "try_start"
-                    | "state_block_start"
-                    | "loop_break_if_true"
-                    | "loop_break_if_false"
-                    | "loop_break_if_exception"
+                op.kind,
+                molt_ir::OpKind::Jump
+                    | molt_ir::OpKind::Goto
+                    | molt_ir::OpKind::BrIf
+                    | molt_ir::OpKind::Branch
+                    | molt_ir::OpKind::BranchFalse
+                    | molt_ir::OpKind::CheckException
+                    | molt_ir::OpKind::AsyncWorkPoll
+                    | molt_ir::OpKind::TryStart
+                    | molt_ir::OpKind::StateBlockStart
+                    | molt_ir::OpKind::LoopBreakIfTrue
+                    | molt_ir::OpKind::LoopBreakIfFalse
+                    | molt_ir::OpKind::LoopBreakIfException
             )
             .then_some(op.value)
             .flatten()
@@ -138,12 +135,21 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         .collect();
 
     for op in ops {
-        let kind = op.kind.as_str();
+        let kind = op.kind;
 
         // Track structured nesting.
-        let is_open = matches!(kind, "if" | "loop_start" | "for_range" | "for_iter");
-        let is_mid = matches!(kind, "else");
-        let is_close = matches!(kind, "end_if" | "loop_end" | "end_for");
+        let is_open = matches!(
+            kind,
+            molt_ir::OpKind::If
+                | molt_ir::OpKind::LoopStart
+                | molt_ir::OpKind::ForRange
+                | molt_ir::OpKind::ForIter
+        );
+        let is_mid = matches!(kind, molt_ir::OpKind::Else);
+        let is_close = matches!(
+            kind,
+            molt_ir::OpKind::EndIf | molt_ir::OpKind::LoopEnd | molt_ir::OpKind::EndFor
+        );
 
         if is_open {
             if dead_at_depth.is_none() {
@@ -179,7 +185,7 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
 
         // Keep path-local metadata intact until the exception capture projection
         // consumes it; these markers never adjust lexical reachability depth.
-        if matches!(kind, "try_start" | "try_end") {
+        if matches!(kind, molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd) {
             result.push(op.clone());
             continue;
         }
@@ -187,7 +193,7 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         // Out-of-line exception handlers and branch targets can legally appear
         // after a return in the linearized stream. A live label starts a new
         // reachable block even when the preceding block is closed.
-        if matches!(kind, "label" | "state_label")
+        if matches!(kind, molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel)
             && op
                 .value
                 .is_some_and(|label| referenced_labels.contains(&label))
@@ -207,7 +213,7 @@ pub(super) fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         }
 
         // Check if this op is an unconditional return.
-        let is_return = molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind);
+        let is_return = kind.is_return_terminator();
         result.push(op.clone());
 
         if is_return {

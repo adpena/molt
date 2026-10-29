@@ -18,11 +18,11 @@
 
 ## Progress Summary (Generated)
 - Total audited modules: `949`
-- `intrinsic-backed`: `38`
+- `intrinsic-backed`: `39`
 - `intrinsic-partial`: `164`
 - `intrinsic-support`: `27`
-- `python-compiled`: `341`
-- `stub`: `379`
+- `python-compiled`: `343`
+- `stub`: `376`
 - `policy-gate`: `0`
 
 ## Priority Lowering Queue (Generated)
@@ -105,6 +105,7 @@
 - `selectors`
 - `socket`
 - `struct`
+- `sysconfig`
 - `this`
 - `time`
 - `types`
@@ -323,6 +324,7 @@
 - `_markupbase`
 - `_md5`
 - `_multibytecodec`
+- `_osx_support`
 - `_py_abc`
 - `_py_warnings`
 - `_pydatetime`
@@ -331,6 +333,7 @@
 - `_sha2`
 - `_sha3`
 - `_strptime`
+- `_sysconfig`
 - `_threading_local`
 - `_tracemalloc`
 - `argparse`
@@ -664,7 +667,6 @@
 - `_interpreters`
 - `_ios_support`
 - `_msi`
-- `_osx_support`
 - `_overlapped`
 - `_posixshmem`
 - `_pyrepl`
@@ -700,7 +702,6 @@
 - `_stat`
 - `_suggestions`
 - `_symtable`
-- `_sysconfig`
 - `_winapi`
 - `_wmi`
 - `_zstd`
@@ -967,7 +968,6 @@
 - `sndhdr`
 - `spwd`
 - `sunau`
-- `sysconfig`
 - `sysconfig.__main__`
 - `syslog`
 - `telnetlib`

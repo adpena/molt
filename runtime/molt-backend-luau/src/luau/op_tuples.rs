@@ -2,8 +2,8 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_tuple_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "tuple_new" | "tuple_from_list" => {
+        match op.kind {
+            molt_ir::OpKind::TupleNew | molt_ir::OpKind::TupleFromList => {
                 let out = self.out_var(op);
                 if let Some(ref out_name) = op.out {
                     self.tuple_vars.insert(out_name.clone());
@@ -18,7 +18,7 @@ impl LuauBackend {
                     .join(", ");
                 self.emit_line(&format!("local {out} = molt_pack_tuple({items})"));
             }
-            "unpack_sequence" => {
+            molt_ir::OpKind::UnpackSequence => {
                 let mut src_name = None;
                 molt_tir::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
                     src_name.get_or_insert(read.name);

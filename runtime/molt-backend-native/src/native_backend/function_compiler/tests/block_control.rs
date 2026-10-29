@@ -1,5 +1,6 @@
 use super::super::seal_block_once;
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn block_transport_plan_emits_typed_args_and_rebinds_values() {
@@ -110,36 +111,30 @@ fn empty_ssa_values() -> NativeSsaValues {
 #[test]
 fn unique_dominating_definition_still_requires_earlier_emission() {
     let initializer = OpIR {
-        kind: "const".into(),
         out: Some("immutable".into()),
-        ..Default::default()
+        ..OpIR::new(OpKind::Const)
     };
     let ops = vec![
         OpIR {
-            kind: "jump".into(),
             value: Some(9),
-            ..Default::default()
+            ..OpIR::new(OpKind::Jump)
         },
         OpIR {
-            kind: "label".into(),
             value: Some(7),
-            ..Default::default()
+            ..OpIR::new(OpKind::Label)
         },
         OpIR {
-            kind: "ret".into(),
             args: Some(vec!["immutable".into()]),
-            ..Default::default()
+            ..OpIR::new(OpKind::Ret)
         },
         OpIR {
-            kind: "label".into(),
             value: Some(9),
-            ..Default::default()
+            ..OpIR::new(OpKind::Label)
         },
         initializer,
         OpIR {
-            kind: "jump".into(),
             value: Some(7),
-            ..Default::default()
+            ..OpIR::new(OpKind::Jump)
         },
     ];
     let names = crate::tir::cfg_liveness::analyze_simple_cfg_liveness_facts(&ops).names;

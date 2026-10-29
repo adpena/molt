@@ -2,15 +2,19 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_control_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "label" => {}
-            "jump" | "goto" | "br_if" | "branch" | "branch_false" => {
+        match op.kind {
+            molt_ir::OpKind::Label => {}
+            molt_ir::OpKind::Jump
+            | molt_ir::OpKind::Goto
+            | molt_ir::OpKind::BrIf
+            | molt_ir::OpKind::Branch
+            | molt_ir::OpKind::BranchFalse => {
                 self.emit_unsupported_op_with_reason(
                     op,
                     "labelled control flow must use the canonical logical-flow emitter",
                 );
             }
-            "if" => {
+            molt_ir::OpKind::If => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond) = args.first() {
                     let cond_ident = sanitize_ident(cond);
@@ -22,35 +26,35 @@ impl LuauBackend {
                     self.push_indent();
                 }
             }
-            "else" => {
+            molt_ir::OpKind::Else => {
                 self.pop_indent();
                 self.emit_line("else");
                 self.push_indent();
             }
-            "end_if" => {
+            molt_ir::OpKind::EndIf => {
                 self.pop_indent();
                 self.emit_line("end");
             }
-            "loop_start" => {
+            molt_ir::OpKind::LoopStart => {
                 self.emit_line("while true do");
                 self.push_indent();
             }
-            "loop_index_start" => {}
-            "loop_end" => {
+            molt_ir::OpKind::LoopIndexStart => {}
+            molt_ir::OpKind::LoopEnd => {
                 self.pop_indent();
                 self.emit_line("end");
             }
-            "loop_break" => {
+            molt_ir::OpKind::LoopBreak => {
                 self.emit_line("break");
             }
-            "loop_break_if_true" => {
+            molt_ir::OpKind::LoopBreakIfTrue => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond_raw) = args.first() {
                     let cond = self.guard_truthiness(cond_raw);
                     self.emit_line(&format!("if {cond} then break end"));
                 }
             }
-            "loop_break_if_false" => {
+            molt_ir::OpKind::LoopBreakIfFalse => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(cond_raw) = args.first() {
                     let cond = self.guard_truthiness(cond_raw);
@@ -61,10 +65,10 @@ impl LuauBackend {
                     }
                 }
             }
-            "loop_continue" => {
+            molt_ir::OpKind::LoopContinue => {
                 self.emit_line("continue");
             }
-            "loop_index_next" => {
+            molt_ir::OpKind::LoopIndexNext => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let args = op.args.as_deref().unwrap_or(&[]);
@@ -74,8 +78,8 @@ impl LuauBackend {
                     }
                 }
             }
-            "loop_carry_init" | "loop_carry_update" => {}
-            "for_range" => {
+            molt_ir::OpKind::LoopCarryInit | molt_ir::OpKind::LoopCarryUpdate => {}
+            molt_ir::OpKind::ForRange => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -103,7 +107,7 @@ impl LuauBackend {
                     self.push_indent();
                 }
             }
-            "for_iter" => {
+            molt_ir::OpKind::ForIter => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(iterable_raw) = args.first() {
@@ -150,7 +154,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "end_for" => {
+            molt_ir::OpKind::EndFor => {
                 self.pop_indent();
                 self.emit_line("end");
             }

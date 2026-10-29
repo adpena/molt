@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 /// Executable native ownership, carried through Cranelift SSA rather than
 /// recorded in source-emission order. Each alias root has one boxed owner
@@ -47,7 +48,7 @@ impl NativeCleanupRoots {
                             || preanalyze_alias_source(op).is_none_or(|source| {
                                 native_alias_mints_owner(aliases, source, name)
                             }))
-                        && op.kind != "delete_var"
+                        && op.kind != OpKind::DeleteVar
                     {
                         let root = alias_root_name(aliases, name);
                         roots
@@ -58,7 +59,7 @@ impl NativeCleanupRoots {
                 // No-result retains are explicit credits, not another automatic
                 // owner. Their matching explicit release must not erase the
                 // original root's independent cleanup obligation.
-                if matches!(op.kind.as_str(), "inc_ref" | "borrow")
+                if matches!(op.kind, OpKind::IncRef | OpKind::Borrow)
                     && op.out.as_deref().is_none_or(|name| name == "none")
                     && let Some(source) = op.args.as_ref().and_then(|args| args.first())
                 {

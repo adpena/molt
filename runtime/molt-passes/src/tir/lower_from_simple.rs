@@ -86,7 +86,15 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     }
     if backend_env::var(BackendEnv::MOLT_TRACE_SIMPLE_IMPORT).as_deref() == Ok("1") {
         for op in &ir.ops {
-            if op.kind.contains("import") {
+            if matches!(
+                op.kind,
+                molt_ir::OpKind::Import
+                    | molt_ir::OpKind::ImportFrom
+                    | molt_ir::OpKind::ImportName
+                    | molt_ir::OpKind::ModuleImport
+                    | molt_ir::OpKind::ModuleImportFrom
+                    | molt_ir::OpKind::ModuleImportStar
+            ) {
                 eprintln!(
                     "Simple import trace: func={} kind={} args={:?} var={:?} out={:?} s_value={:?}",
                     ir.name, op.kind, op.args, op.var, op.out, op.s_value
@@ -131,13 +139,13 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     // them before CFG/SSA construction and preserve them as function attrs.
     let had_drop_inserted_marker = working_ops
         .iter()
-        .any(|op| op.kind == crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
-    let had_exception_region_drops_marker = working_ops.iter().any(|op| {
-        op.kind == crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
-    });
+        .any(|op| op.kind == molt_ir::OpKind::DropInserted);
+    let had_exception_region_drops_marker = working_ops
+        .iter()
+        .any(|op| op.kind == molt_ir::OpKind::ExceptionRegionDropsInserted);
     working_ops.retain(|op| {
-        op.kind != crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR
-            && op.kind != crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+        op.kind != molt_ir::OpKind::DropInserted
+            && op.kind != molt_ir::OpKind::ExceptionRegionDropsInserted
     });
     // Memory SSA: rewrite cell-based locals (store_index/index on a 1-elem
     // list "cell") to store_var/load_var so SSA generates proper phi nodes
@@ -291,14 +299,17 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         // Scan the ops in this block for a leading label/state_label.
         for op_idx in bb.start_op..bb.end_op {
             let op = &ir.ops[op_idx];
-            if matches!(op.kind.as_str(), "label" | "state_label") {
+            if matches!(
+                op.kind,
+                molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+            ) {
                 if let Some(label_val) = op.value {
                     label_id_map.insert(bid as u32, label_val);
                 }
                 break; // Only care about the first label in the block.
             }
             // If we hit a non-structural op before finding a label, stop.
-            if !is_structural(&op.kind) {
+            if !is_structural(op.kind) {
                 break;
             }
         }

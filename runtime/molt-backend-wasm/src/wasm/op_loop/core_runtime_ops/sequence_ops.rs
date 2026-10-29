@@ -26,18 +26,23 @@ pub(super) fn emit_sequence_runtime_op(
         guard_profile_local: None,
     };
 
-    match op.kind.as_str() {
-        "index" => {
+    match op.kind {
+        molt_ir::OpKind::Index => {
             // Dispatch: list_int / dict / tuple -> generic.
-            let import_key = selected_container_runtime_import(scalar_plan, op_idx, "index", op)
-                .unwrap_or(WasmRuntimeImport::Index);
+            let import_key =
+                selected_container_runtime_import(scalar_plan, op_idx, molt_ir::OpKind::Index, op)
+                    .unwrap_or(WasmRuntimeImport::Index);
             emit_op_loop_local_prefix_call(&call_context, func, op, import_key, 2, &func_ir.name);
         }
-        "store_index" => {
+        molt_ir::OpKind::StoreIndex => {
             // Dispatch: list_int / dict -> generic.
-            let import_key =
-                selected_container_runtime_import(scalar_plan, op_idx, "store_index", op)
-                    .unwrap_or(WasmRuntimeImport::StoreIndex);
+            let import_key = selected_container_runtime_import(
+                scalar_plan,
+                op_idx,
+                molt_ir::OpKind::StoreIndex,
+                op,
+            )
+            .unwrap_or(WasmRuntimeImport::StoreIndex);
             emit_op_loop_local_prefix_call(&call_context, func, op, import_key, 3, &func_ir.name);
         }
         _ => return false,

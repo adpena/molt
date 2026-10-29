@@ -3,6 +3,7 @@ use super::*;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{Function, InstructionData, Opcode};
+use molt_ir::OpKind;
 use std::collections::HashSet;
 
 fn masked_operand(func: &Function, value: Value, mask: i64) -> Option<Value> {
@@ -162,29 +163,25 @@ fn field_store_modes_do_not_bypass_receiver_and_backing_guards() {
         let mut ops = Vec::new();
         if fresh {
             ops.push(OpIR {
-                kind: "object_new_bound".into(),
                 args: Some(vec!["class".into()]),
                 out: Some("object".into()),
                 value: Some(24),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ObjectNewBound)
             });
         }
         ops.push(OpIR {
-            kind: "const".into(),
             out: Some("scalar".into()),
             value: Some(1),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Const)
         });
         let store = OpIR {
-            kind: "store".into(),
             args: Some(vec!["object".into(), "scalar".into()]),
             value: Some(0),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Store)
         };
         ops.extend([store.clone(), store]);
         ops.push(OpIR {
-            kind: "ret_void".into(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         });
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -209,8 +206,8 @@ fn field_store_modes_do_not_bypass_receiver_and_backing_guards() {
 
 #[test]
 fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
-    for kind in ["load", "guarded_field_get"] {
-        let guarded = kind == "guarded_field_get";
+    for kind in [OpKind::Load, OpKind::GuardedFieldGet] {
+        let guarded = kind == OpKind::GuardedFieldGet;
         let params = if guarded {
             vec!["object".into(), "version".into()]
         } else {
@@ -222,18 +219,16 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
             params: params.clone(),
             ops: vec![
                 OpIR {
-                    kind: kind.into(),
                     args: Some(params),
                     out: Some("value".into()),
                     value: Some(0),
                     s_value: guarded.then(|| "field".into()),
                     class_definition: guarded.then(|| "class:m:Owner".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["value".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
             ],
             param_types: None,
@@ -288,27 +283,30 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
 
 #[test]
 fn native_guarded_object_helpers_receive_the_tagged_receiver() {
-    for kind in ["guarded_field_get", "guarded_field_set", "guard_layout"] {
+    for kind in [
+        OpKind::GuardedFieldGet,
+        OpKind::GuardedFieldSet,
+        OpKind::GuardLayout,
+    ] {
         let params: Vec<String> = match kind {
-            "guarded_field_set" => vec!["object", "version", "value"],
+            OpKind::GuardedFieldSet => vec!["object", "version", "value"],
             _ => vec!["object", "version"],
         }
         .into_iter()
         .map(str::to_owned)
         .collect();
         let mut ops = vec![OpIR {
-            kind: kind.into(),
             args: Some(params.clone()),
             out: Some("result".into()),
-            value: kind.starts_with("guarded_field").then_some(0),
-            s_value: kind.starts_with("guarded_field").then(|| "field".into()),
+            value: matches!(kind, OpKind::GuardedFieldGet | OpKind::GuardedFieldSet).then_some(0),
+            s_value: matches!(kind, OpKind::GuardedFieldGet | OpKind::GuardedFieldSet)
+                .then(|| "field".into()),
             class_definition: Some("class:m:Owner".into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }];
         ops.push(OpIR {
-            kind: "ret".into(),
             args: Some(vec!["result".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Ret)
         });
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,

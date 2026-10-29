@@ -1436,6 +1436,7 @@ stdlib:
   _sysconfig:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_sysconfig_6267ec7a.py
+      - tests/differential/stdlib/sysconfig_config_vars.py
   _thread:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_thread_415e8b76.py
@@ -2890,6 +2891,9 @@ stdlib:
   sysconfig:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_sysconfig_fecb416c.py
+      - tests/differential/stdlib/sysconfig_config_vars.py
+      - tests/differential/stdlib/sysconfig_platform.py
+      - tests/differential/stdlib/sysconfig_scheme_paths.py
   sysconfig.__main__:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_sysconfig_main_16157077.py

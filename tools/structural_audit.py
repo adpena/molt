@@ -80,6 +80,7 @@ from tools.scan_records import (  # noqa: E402
     open_scan_records,
     scan_result,
 )
+from tools.structural_audit_rust import op_kind_wire_names  # noqa: E402
 from tools.structural_audit_rust_admission import (  # noqa: E402
     RUST_CHECKED_ADMISSION_PREFIX,
     proven_admitted_wire_domain,
@@ -1714,7 +1715,7 @@ def _rust_match_arm_text_before(
 ) -> str:
     code = mask_rust_comments_and_strings("\n".join(lines))
     code_lines = code.split("\n")
-    floor = max(0, call_index - 50)
+    floor = 0
     window_start = sum(len(line) + 1 for line in code_lines[:floor])
     if call_end_offset is None:
         call_end_offset = sum(len(line) + 1 for line in code_lines[: call_index + 1])
@@ -1739,7 +1740,11 @@ def _rust_match_arm_text_before(
         if not previous:
             start -= 1
             continue
-        if previous.startswith('"') or previous.startswith('| "'):
+        if (
+            previous.startswith('"')
+            or previous.startswith('| "')
+            or re.match(r"(?:\|\s*)?(?:(?:molt_ir|crate)::)?OpKind::", previous)
+        ):
             start -= 1
             continue
         break
@@ -1752,8 +1757,17 @@ def _rust_match_arm_text_before(
     )
 
 
-def _rust_backend_lowering_gap_marker(arm_text: str) -> tuple[str, int]:
-    names = re.findall(r'"([a-z][a-z0-9_]*)"', arm_text)
+def _rust_backend_lowering_gap_marker(
+    arm_text: str, kind_names: dict[str, str]
+) -> tuple[str, int]:
+    variants = re.findall(
+        r"(?:(?:molt_ir|crate)::)?OpKind::([A-Za-z_][A-Za-z0-9_]*)", arm_text
+    )
+    names = [kind_names[variant] for variant in variants if variant in kind_names]
+    if variants and len(names) != len(variants):
+        return "unresolved typed dispatch pattern", 1
+    if not variants:
+        names = re.findall(r'"([a-z][a-z0-9_]*)"', arm_text)
     if names:
         marker = ", ".join(names[:10])
         if len(names) > 10:
@@ -2420,6 +2434,10 @@ def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
     lines = mask_rust_comments_and_strings(text, preserve_literals=True).split("\n")
     code_lines = mask_rust_comments_and_strings(text).split("\n")
     rejected, applicability, projection = _rust_rejection_family(root)
+    generated = root / "runtime/molt-ir/src/tir/op_kinds_generated.rs"
+    kind_names = (
+        op_kind_wire_names(_source_text(generated)) if generated.is_file() else None
+    )
     excluded = projection.dispatch if projection is not None else []
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
@@ -2450,7 +2468,7 @@ def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
         arm_text = _rust_match_arm_text_before(
             lines, line_no - 1, call_end_offset=call.end()
         )
-        marker, count = _rust_backend_lowering_gap_marker(arm_text)
+        marker, count = _rust_backend_lowering_gap_marker(arm_text, kind_names or {})
         key = (arm_text, marker)
         if key in seen:
             continue

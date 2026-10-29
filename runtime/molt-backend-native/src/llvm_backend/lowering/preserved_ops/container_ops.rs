@@ -1,32 +1,33 @@
 use super::*;
+use molt_ir::OpKind;
 
 // Only container operations with custom lowering belong here. Exact
 // `molt_<kind>` positional boxed calls deliberately fall through to the
 // generated runtime ABI dispatcher so argument boxing, availability, and
 // owned/borrowed result custody have one authority.
-pub(super) const HANDLED_KINDS: &[&str] = &[
-    "iter_next_unboxed",
-    "len",
-    "list_new",
-    "dict_new",
-    "tuple_new",
-    "set_new",
-    "frozenset_new",
-    "iter",
-    "unpack_sequence",
-];
+define_llvm_op_kinds!(
+    OpKind::IterNextUnboxed,
+    OpKind::Len,
+    OpKind::ListNew,
+    OpKind::DictNew,
+    OpKind::TupleNew,
+    OpKind::SetNew,
+    OpKind::FrozensetNew,
+    OpKind::Iter,
+    OpKind::UnpackSequence,
+);
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(in crate::llvm_backend::lowering) fn lower_preserved_container_op(
         &mut self,
         op: &TirOp,
-        kind: &str,
+        kind: OpKind,
     ) -> bool {
         let i64_ty = self.backend.context.i64_type();
         match kind {
-            "iter_next_unboxed" => self.emit_iter_next_unboxed_results(op),
+            OpKind::IterNextUnboxed => self.emit_iter_next_unboxed_results(op),
 
-            "len" => {
+            OpKind::Len => {
                 if op.operands.len() != 1 {
                     return false;
                 }
@@ -37,27 +38,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
 
-            "list_new" => {
+            OpKind::ListNew => {
                 self.emit_build_list(op);
                 true
             }
 
-            "dict_new" => {
+            OpKind::DictNew => {
                 self.emit_build_dict(op);
                 true
             }
 
-            "tuple_new" => {
+            OpKind::TupleNew => {
                 self.emit_build_tuple(op);
                 true
             }
 
-            "set_new" => {
+            OpKind::SetNew => {
                 self.emit_build_set(op);
                 true
             }
 
-            "frozenset_new" => {
+            OpKind::FrozensetNew => {
                 // Frozenset has no dedicated TIR opcode, but its raw-capacity
                 // constructor and in-place construction mutator share the same
                 // failure/ownership protocol as dict and set literals.
@@ -65,7 +66,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
 
-            "iter" => {
+            OpKind::Iter => {
                 if op.operands.len() != 1 {
                     return false;
                 }
@@ -75,7 +76,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
 
-            "unpack_sequence" => {
+            OpKind::UnpackSequence => {
                 if op.operands.len() != 1 {
                     return false;
                 }

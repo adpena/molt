@@ -30,6 +30,7 @@ fn fixture(opcode: OpCode, args: &[LirRepr], operands: &[u32], result: LirRepr) 
             .collect(),
         ops: vec![LirOp {
             tir_op: TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: operands.iter().copied().map(ValueId).collect(),
@@ -83,6 +84,7 @@ fn loop_fixture(lazy: bool) -> LirFunction {
     operation.extend([
         LirOp {
             tir_op: TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(3)],
@@ -94,6 +96,7 @@ fn loop_fixture(lazy: bool) -> LirFunction {
         },
         LirOp {
             tir_op: TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Not,
                 operands: vec![ValueId(2)],
@@ -459,11 +462,7 @@ fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
         if opcode == OpCode::Copy {
             function.blocks.get_mut(&function.entry_block).unwrap().ops[0]
                 .tir_op
-                .attrs
-                .insert(
-                    "_original_kind".into(),
-                    AttrValue::Str("binding_alias".into()),
-                );
+                .origin = Some(molt_ir::OpKind::BindingAlias);
         }
         let path = directory.join(format!("{name}.wasm"));
         fs::write(&path, executable_module(&lower_lir_to_wasm(&function))).unwrap();
@@ -491,6 +490,7 @@ fn emitted_materialization_scopes_execute_success_failure_and_transfers() {
             0,
             LirOp {
                 tir_op: TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![ValueId(0)],

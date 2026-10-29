@@ -230,11 +230,8 @@ fn fake_runtime(artifacts: &CargoTestArtifacts) -> PathBuf {
     image
 }
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 fn function(name: &str, returns_value: bool, ops: Vec<OpIR>) -> FunctionIR {
@@ -257,10 +254,10 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
     if let Some(symbol) = extra_import {
         main.push(OpIR {
             s_value: Some(symbol.to_string()),
-            ..op("call")
+            ..op(molt_ir::OpKind::Call)
         });
     }
-    main.push(op("ret_void"));
+    main.push(op(molt_ir::OpKind::RetVoid));
     let mut functions = vec![
         function("molt_main", false, main),
         function(
@@ -270,18 +267,22 @@ fn program(extra_import: Option<&str>, filler: usize) -> Vec<u8> {
                 OpIR {
                     out: Some("value".to_string()),
                     value: Some(BOOTSTRAP_VALUE),
-                    ..op("const")
+                    ..op(molt_ir::OpKind::Const)
                 },
                 OpIR {
                     args: Some(vec!["value".to_string()]),
-                    ..op("ret")
+                    ..op(molt_ir::OpKind::Ret)
                 },
             ],
         ),
     ];
-    functions.extend(
-        (0..filler).map(|index| function(&format!("filler_{index}"), false, vec![op("ret_void")])),
-    );
+    functions.extend((0..filler).map(|index| {
+        function(
+            &format!("filler_{index}"),
+            false,
+            vec![op(molt_ir::OpKind::RetVoid)],
+        )
+    }));
     // The content-addressed lease `src/molt/cli/jit_image.py` writes: every
     // body shipped, each named by its digest (backend daemon protocol 4).
     molt_ir::addressed_program::encode_complete_lease(&molt_ir::ir::BackendIrDocument {

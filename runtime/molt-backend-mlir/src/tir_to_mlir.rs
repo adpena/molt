@@ -19,11 +19,7 @@ use melior::{
     Context as MlirContext,
     ir::{BlockLike, Location, Module as MlirModule, operation::OperationLike},
 };
-use molt_backend::tir::{
-    blocks::Terminator,
-    function::TirFunction,
-    ops::{AttrValue, OpCode},
-};
+use molt_backend::tir::{blocks::Terminator, function::TirFunction, ops::OpCode};
 
 use self::function_builder::{build_func_op, build_state_dispatch_runtime_declaration};
 
@@ -130,18 +126,15 @@ fn preflight_tir_function(tir_func: &TirFunction) -> Result<(), String> {
                 ));
             }
             if op.opcode == OpCode::Copy {
-                let original_kind = match op.attrs.get("_original_kind") {
-                    Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-                    _ => None,
-                };
-                if !matches!(original_kind, Some(kind) if kind != "binding_alias")
+                let original_kind = op.origin;
+                if !matches!(original_kind, Some(kind) if kind != molt_backend::OpKind::BindingAlias)
                     && (op.operands.len() != 1 || op.results.len() != 1)
                 {
                     return Err(format!(
                         "{} ^bb{} op #{op_index} malformed {:?} copy requires one operand and one result",
                         tir_func.name,
                         block_id.0,
-                        original_kind.unwrap_or("SSA")
+                        original_kind.map_or("SSA", molt_backend::OpKind::as_str)
                     ));
                 }
             }

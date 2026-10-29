@@ -78,6 +78,7 @@ pub(super) fn emit_division_binary_op(
             operands,
             import_ids,
             import_name,
+            division_op,
             locals,
             reloc_enabled,
             |func, scratch_local| {

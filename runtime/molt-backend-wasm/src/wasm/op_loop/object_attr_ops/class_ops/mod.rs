@@ -18,11 +18,17 @@ pub(super) fn emit_class_object_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "class_def" => definition::emit_class_def(func, op, ctx, import_ids, locals, reloc_enabled),
-        "builtin_type" => metadata::emit_builtin_type(func, op, import_ids, locals, reloc_enabled),
-        "type_of" => metadata::emit_type_of(func, op, import_ids, locals, reloc_enabled),
-        "class_set_definition" => metadata::emit_class_set_definition(
+    match op.kind {
+        molt_ir::OpKind::ClassDef => {
+            definition::emit_class_def(func, op, ctx, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::BuiltinType => {
+            metadata::emit_builtin_type(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::TypeOf => {
+            metadata::emit_type_of(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::ClassSetDefinition => metadata::emit_class_set_definition(
             func,
             op,
             code_slots,
@@ -30,13 +36,19 @@ pub(super) fn emit_class_object_op(
             locals,
             reloc_enabled,
         ),
-        "isinstance" => relationships::emit_isinstance(func, op, import_ids, locals, reloc_enabled),
-        "exception_match_builtin" => {
+        molt_ir::OpKind::Isinstance => {
+            relationships::emit_isinstance(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::ExceptionMatchBuiltin => {
             relationships::emit_exception_match_builtin(func, op, import_ids, locals, reloc_enabled)
         }
-        "issubclass" => relationships::emit_issubclass(func, op, import_ids, locals, reloc_enabled),
-        "object_new" => allocation::emit_object_new(func, op, import_ids, locals, reloc_enabled),
-        "object_new_bound" => {
+        molt_ir::OpKind::Issubclass => {
+            relationships::emit_issubclass(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::ObjectNew => {
+            allocation::emit_object_new(func, op, import_ids, locals, reloc_enabled)
+        }
+        molt_ir::OpKind::ObjectNewBound => {
             allocation::emit_object_new_bound(func, op, import_ids, locals, reloc_enabled)
         }
         _ => return false,

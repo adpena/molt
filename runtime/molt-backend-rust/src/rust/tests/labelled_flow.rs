@@ -1,15 +1,14 @@
 use super::*;
 
-fn op(kind: &str, args: &[&str], out: Option<&str>) -> OpIR {
+fn op(kind: molt_ir::OpKind, args: &[&str], out: Option<&str>) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         args: (!args.is_empty()).then(|| args.iter().map(|arg| (*arg).to_string()).collect()),
         out: out.map(str::to_string),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
-fn label(kind: &str, value: i64) -> OpIR {
+fn label(kind: molt_ir::OpKind, value: i64) -> OpIR {
     OpIR {
         value: Some(value),
         ..op(kind, &[], None)
@@ -19,28 +18,28 @@ fn label(kind: &str, value: i64) -> OpIR {
 fn branch(condition: &str, target: i64) -> OpIR {
     OpIR {
         value: Some(target),
-        ..op("br_if", &[condition], None)
+        ..op(molt_ir::OpKind::BrIf, &[condition], None)
     }
 }
 
 fn float(name: &str, value: f64) -> OpIR {
     OpIR {
         f_value: Some(value),
-        ..op("const_float", &[], Some(name))
+        ..op(molt_ir::OpKind::ConstFloat, &[], Some(name))
     }
 }
 
 fn boolean(name: &str, value: bool) -> OpIR {
     OpIR {
         value: Some(i64::from(value)),
-        ..op("const_bool", &[], Some(name))
+        ..op(molt_ir::OpKind::ConstBool, &[], Some(name))
     }
 }
 
 fn store(name: &str, value: &str) -> OpIR {
     OpIR {
         var: Some(name.to_string()),
-        ..op("store_var", &[value], None)
+        ..op(molt_ir::OpKind::StoreVar, &[value], None)
     }
 }
 
@@ -63,13 +62,13 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
                 "forward",
                 &[],
                 vec![
-                    label("jump", 7),
+                    label(molt_ir::OpKind::Jump, 7),
                     float("unreachable_value", -1.0),
-                    op("ret", &["unreachable_value"], None),
+                    op(molt_ir::OpKind::Ret, &["unreachable_value"], None),
                     // This label is reachable despite the earlier lexical return.
-                    label("label", 7),
+                    label(molt_ir::OpKind::Label, 7),
                     float("answer", 7.0),
-                    op("ret", &["answer"], None),
+                    op(molt_ir::OpKind::Ret, &["answer"], None),
                 ],
             ),
             function(
@@ -78,13 +77,13 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
                 vec![
                     float("before_jump", 5.0),
                     store("value", "before_jump"),
-                    label("goto", 20),
-                    op("ret", &["value"], None),
-                    label("label", 20),
+                    label(molt_ir::OpKind::Goto, 20),
+                    op(molt_ir::OpKind::Ret, &["value"], None),
+                    label(molt_ir::OpKind::Label, 20),
                     // A jump must run this work, not return the last stored value.
                     float("after_jump", 9.0),
                     store("value", "after_jump"),
-                    op("ret", &["value"], None),
+                    op(molt_ir::OpKind::Ret, &["value"], None),
                 ],
             ),
             function(
@@ -93,87 +92,87 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
                 vec![
                     branch("flag", 11),
                     float("false_answer", 2.0),
-                    op("ret", &["false_answer"], None),
-                    label("label", 11),
+                    op(molt_ir::OpKind::Ret, &["false_answer"], None),
+                    label(molt_ir::OpKind::Label, 11),
                     float("true_answer", 1.0),
-                    op("ret", &["true_answer"], None),
+                    op(molt_ir::OpKind::Ret, &["true_answer"], None),
                 ],
             ),
             function(
                 "backward",
                 &[("run", "bool"), ("value", "float")],
                 vec![
-                    label("label", 1),
+                    label(molt_ir::OpKind::Label, 1),
                     branch("run", 2),
-                    op("ret", &["value"], None),
-                    label("label", 2),
+                    op(molt_ir::OpKind::Ret, &["value"], None),
+                    label(molt_ir::OpKind::Label, 2),
                     boolean("stop", false),
                     float("step", 1.0),
-                    op("add", &["value", "step"], Some("next_value")),
+                    op(molt_ir::OpKind::Add, &["value", "step"], Some("next_value")),
                     store("value", "next_value"),
                     store("run", "stop"),
-                    label("jump", 1),
+                    label(molt_ir::OpKind::Jump, 1),
                 ],
             ),
             function(
                 "backward_swap",
                 &[("run", "bool"), ("left", "float"), ("right", "float")],
                 vec![
-                    label("label", 1),
+                    label(molt_ir::OpKind::Label, 1),
                     branch("run", 2),
-                    op("ret", &["left"], None),
-                    label("label", 2),
+                    op(molt_ir::OpKind::Ret, &["left"], None),
+                    label(molt_ir::OpKind::Label, 2),
                     boolean("stop", false),
                     OpIR {
                         // Metadata deliberately differs from the SSA operand.
                         var: Some("right".to_string()),
-                        ..op("copy_var", &["left"], Some("old_left"))
+                        ..op(molt_ir::OpKind::CopyVar, &["left"], Some("old_left"))
                     },
                     store("left", "right"),
                     store("right", "old_left"),
                     store("run", "stop"),
-                    label("jump", 1),
+                    label(molt_ir::OpKind::Jump, 1),
                 ],
             ),
             function(
                 "structured_phi",
                 &[("flag", "bool")],
                 vec![
-                    label("label", 0),
-                    op("if", &["flag"], None),
+                    label(molt_ir::OpKind::Label, 0),
+                    op(molt_ir::OpKind::If, &["flag"], None),
                     float("left", 3.0),
-                    op("else", &[], None),
+                    op(molt_ir::OpKind::Else, &[], None),
                     float("right", 7.0),
-                    op("end_if", &[], None),
-                    op("phi", &["left", "right"], Some("selected")),
-                    label("jump", 20),
-                    label("label", 20),
+                    op(molt_ir::OpKind::EndIf, &[], None),
+                    op(molt_ir::OpKind::Phi, &["left", "right"], Some("selected")),
+                    label(molt_ir::OpKind::Jump, 20),
+                    label(molt_ir::OpKind::Label, 20),
                     OpIR {
                         var: Some("flag".to_string()),
-                        ..op("load_var", &["selected"], Some("copied"))
+                        ..op(molt_ir::OpKind::LoadVar, &["selected"], Some("copied"))
                     },
-                    op("ret", &["copied"], None),
+                    op(molt_ir::OpKind::Ret, &["copied"], None),
                 ],
             ),
             function(
                 "structured_loop",
                 &[],
                 vec![
-                    label("label", 0),
+                    label(molt_ir::OpKind::Label, 0),
                     boolean("seed", true),
-                    op("loop_start", &[], None),
-                    op("loop_index_start", &["seed"], Some("iterate")),
-                    op("if", &["iterate"], None),
-                    label("jump", 3),
-                    op("else", &[], None),
-                    op("loop_break", &[], None),
-                    op("end_if", &[], None),
-                    label("label", 3),
+                    op(molt_ir::OpKind::LoopStart, &[], None),
+                    op(molt_ir::OpKind::LoopIndexStart, &["seed"], Some("iterate")),
+                    op(molt_ir::OpKind::If, &["iterate"], None),
+                    label(molt_ir::OpKind::Jump, 3),
+                    op(molt_ir::OpKind::Else, &[], None),
+                    op(molt_ir::OpKind::LoopBreak, &[], None),
+                    op(molt_ir::OpKind::EndIf, &[], None),
+                    label(molt_ir::OpKind::Label, 3),
                     boolean("stop", false),
-                    op("loop_index_next", &["stop"], Some("iterate")),
-                    op("loop_continue", &[], None),
-                    op("loop_end", &[], None),
-                    op("ret", &["iterate"], None),
+                    op(molt_ir::OpKind::LoopIndexNext, &["stop"], Some("iterate")),
+                    op(molt_ir::OpKind::LoopContinue, &[], None),
+                    op(molt_ir::OpKind::LoopEnd, &[], None),
+                    op(molt_ir::OpKind::Ret, &["iterate"], None),
                 ],
             ),
             function(
@@ -182,22 +181,22 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
                 vec![
                     branch("flag", 1),
                     float("answer", 42.0),
-                    op("ret", &["answer"], None),
-                    label("label", 1),
-                    op("const_none", &[], Some("implicit_none")),
-                    op("ret", &["implicit_none"], None),
+                    op(molt_ir::OpKind::Ret, &["answer"], None),
+                    label(molt_ir::OpKind::Label, 1),
+                    op(molt_ir::OpKind::ConstNone, &[], Some("implicit_none")),
+                    op(molt_ir::OpKind::Ret, &["implicit_none"], None),
                 ],
             ),
             function(
                 "molt_main",
                 &[],
                 vec![
-                    label("jump", 1),
-                    op("ret_void", &[], None),
-                    label("label", 1),
+                    label(molt_ir::OpKind::Jump, 1),
+                    op(molt_ir::OpKind::RetVoid, &[], None),
+                    label(molt_ir::OpKind::Label, 1),
                     float("main_answer", 17.0),
-                    op("print", &["main_answer"], None),
-                    op("ret_void", &[], None),
+                    op(molt_ir::OpKind::Print, &["main_answer"], None),
+                    op(molt_ir::OpKind::RetVoid, &[], None),
                 ],
             ),
         ],
@@ -266,20 +265,24 @@ fn check_labelled_flow() {
 fn unreachable_terminators_trap_in_structured_and_labelled_flow() {
     let ir = SimpleIR {
         functions: vec![
-            function("structured_trap", &[], vec![op("unreachable", &[], None)]),
+            function(
+                "structured_trap",
+                &[],
+                vec![op(molt_ir::OpKind::Unreachable, &[], None)],
+            ),
             function(
                 "labelled_trap",
                 &[],
                 vec![
-                    label("jump", 1),
-                    label("label", 1),
-                    op("unreachable", &[], None),
+                    label(molt_ir::OpKind::Jump, 1),
+                    label(molt_ir::OpKind::Label, 1),
+                    op(molt_ir::OpKind::Unreachable, &[], None),
                 ],
             ),
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".into(),
-                ops: vec![op("ret_void", &[], None)],
+                ops: vec![op(molt_ir::OpKind::RetVoid, &[], None)],
                 ..FunctionIR::default()
             },
         ],
@@ -312,13 +315,13 @@ fn labelled_flow_rejects_residual_unstructured_phi_without_choosing_an_input() {
             vec![
                 branch("flag", 1),
                 float("right", 7.0),
-                label("jump", 2),
-                label("label", 1),
+                label(molt_ir::OpKind::Jump, 2),
+                label(molt_ir::OpKind::Label, 1),
                 float("left", 3.0),
-                label("jump", 2),
-                label("label", 2),
-                op("phi", &["left", "right"], Some("selected")),
-                op("ret", &["selected"], None),
+                label(molt_ir::OpKind::Jump, 2),
+                label(molt_ir::OpKind::Label, 2),
+                op(molt_ir::OpKind::Phi, &["left", "right"], Some("selected")),
+                op(molt_ir::OpKind::Ret, &["selected"], None),
             ],
         )],
         profile: None,
@@ -339,18 +342,30 @@ fn labelled_flow_rejects_residual_unstructured_phi_without_choosing_an_input() {
 #[test]
 fn labelled_flow_rejects_malformed_namespaces_before_emission() {
     let cases = [
-        (vec![label("jump", 99)], "invalid-jump-target"),
-        (vec![op("jump", &[], None)], "malformed-label-reference"),
+        (
+            vec![label(molt_ir::OpKind::Jump, 99)],
+            "invalid-jump-target",
+        ),
+        (
+            vec![op(molt_ir::OpKind::Jump, &[], None)],
+            "malformed-label-reference",
+        ),
         (
             vec![OpIR {
                 s_value: Some("exit".to_string()),
-                ..op("goto", &[], None)
+                ..op(molt_ir::OpKind::Goto, &[], None)
             }],
             "malformed-label-reference",
         ),
-        (vec![op("label", &[], None)], "malformed-label-definition"),
         (
-            vec![label("label", 1), label("label", 1)],
+            vec![op(molt_ir::OpKind::Label, &[], None)],
+            "malformed-label-definition",
+        ),
+        (
+            vec![
+                label(molt_ir::OpKind::Label, 1),
+                label(molt_ir::OpKind::Label, 1),
+            ],
             "duplicate-label-definition",
         ),
     ];
@@ -371,28 +386,38 @@ fn labelled_flow_rejects_malformed_namespaces_before_emission() {
 #[test]
 fn labelled_flow_does_not_bypass_runtime_capability_admission() {
     let cases = [
-        (label("check_exception", 1), "exception"),
-        (label("async_work_poll", 1), "exception"),
-        (op("state_switch", &[], None), "async scheduler"),
-        (op("list_new", &[], Some("object")), "aliasing"),
-        (label("jump", 1), "unstructured control-flow"),
+        (label(molt_ir::OpKind::CheckException, 1), "exception"),
+        (label(molt_ir::OpKind::AsyncWorkPoll, 1), "exception"),
+        (
+            op(molt_ir::OpKind::StateSwitch, &[], None),
+            "async scheduler",
+        ),
+        (
+            op(molt_ir::OpKind::ListNew, &[], Some("object")),
+            "aliasing",
+        ),
+        (label(molt_ir::OpKind::Jump, 1), "unstructured control-flow"),
         (
             OpIR {
                 value: Some(1),
-                ..op("br_if", &["flag"], None)
+                ..op(molt_ir::OpKind::BrIf, &["flag"], None)
             },
             "truthiness",
         ),
     ];
     for (unsupported, reason) in cases {
-        let kind = unsupported.kind.clone();
+        let kind = unsupported.kind;
         let mut backend = RustBackend::new();
         let error = backend
             .compile_checked(&SimpleIR {
                 functions: vec![function(
                     "runtime_gated_labels",
                     &[("flag", "bool")],
-                    vec![unsupported, label("label", 1), op("ret_void", &[], None)],
+                    vec![
+                        unsupported,
+                        label(molt_ir::OpKind::Label, 1),
+                        op(molt_ir::OpKind::RetVoid, &[], None),
+                    ],
                 )],
                 profile: None,
             })
@@ -402,7 +427,7 @@ fn labelled_flow_does_not_bypass_runtime_capability_admission() {
             "{kind}: {error}"
         );
         assert!(
-            error.contains(&kind) && error.contains(reason),
+            error.contains(kind.as_str()) && error.contains(reason),
             "{kind}: {error}"
         );
         assert!(backend.output.is_empty());

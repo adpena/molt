@@ -54,11 +54,8 @@ mod replacement;
 
 pub(crate) use replacement::{Replacements, owned_alias};
 
-pub(crate) fn original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
+pub(crate) fn original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
+    op.origin
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +66,7 @@ pub(crate) struct NoHeapCopyAlias {
 
 /// True when the result owns the operand lifetimes. This is generated fact-plane
 /// authority, split by representation: first-class TIR opcodes read the opcode
-/// table; Copy-preserved SimpleIR spellings read the `_original_kind` table.
+/// table; Copy-preserved SimpleIR spellings read the `origin` table.
 pub(crate) fn op_result_absorbs_operand_ownership(op: &TirOp) -> bool {
     opcode_result_absorbs_operand_ownership_table(op.opcode)
         || (op.opcode == OpCode::Copy
@@ -147,7 +144,7 @@ pub(crate) fn copy_transparent_alias(op: &TirOp) -> Option<NoHeapCopyAlias> {
     })
 }
 
-/// SSA values whose `_original_kind` marks a fresh exception CreationRef.
+/// SSA values whose `origin` marks a fresh exception CreationRef.
 /// DropInsertion owns the raise-boundary placement; this helper owns the
 /// lifetime fact that the value is released by the runtime exception-state
 /// transfer at `Raise`.
@@ -377,7 +374,7 @@ fn parameter_roots(func: &TirFunction, aliases: &AliasUnionFind, owned: bool) ->
 
 /// Whether `kind` is a binding-view spelling: a frame home store, cell store or
 /// load, whose result is a view of the binding its home holds.
-fn is_binding_view_kind(kind: &str) -> bool {
+fn is_binding_view_kind(kind: molt_ir::OpKind) -> bool {
     crate::tir::op_kinds_generated::copy_kind_is_binding_view_table(kind)
 }
 
@@ -695,7 +692,7 @@ impl PythonLifetimeFacts {
 
                 if op.opcode == OpCode::Copy {
                     match original_kind(op) {
-                        Some("store_var") => {
+                        Some(molt_ir::OpKind::StoreVar) => {
                             facts.local_store_roots.extend(
                                 op.operands
                                     .iter()
@@ -711,7 +708,7 @@ impl PythonLifetimeFacts {
                                     .map(|value| aliases.root(value)),
                             );
                         }
-                        Some("load_var") => {
+                        Some(molt_ir::OpKind::LoadVar) => {
                             facts.named_slot_roots.extend(
                                 op.operands
                                     .iter()

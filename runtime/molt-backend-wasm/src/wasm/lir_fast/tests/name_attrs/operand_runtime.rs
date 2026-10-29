@@ -3,18 +3,31 @@ use super::super::*;
 #[test]
 fn operand_name_attrs_stay_lir_fast_runtime_calls() {
     let cases = [
-        ("get_attr_name", OpCode::LoadAttr, 2, true, "get_attr_name"),
         (
-            "set_attr_name",
+            molt_ir::OpKind::GetAttrName,
+            OpCode::LoadAttr,
+            2,
+            true,
+            "get_attr_name",
+        ),
+        (
+            molt_ir::OpKind::SetAttrName,
             OpCode::StoreAttr,
             3,
             false,
             "set_attr_name",
         ),
-        ("del_attr_name", OpCode::DelAttr, 2, false, "del_attr_name"),
+        (
+            molt_ir::OpKind::DelAttrName,
+            OpCode::DelAttr,
+            2,
+            false,
+            "del_attr_name",
+        ),
     ];
 
-    for (name, opcode, operand_count, has_result, runtime_call) in cases {
+    for (kind, opcode, operand_count, has_result, runtime_call) in cases {
+        let name = kind.as_str();
         let mut func = TirFunction::new(
             name.into(),
             vec![TirType::DynBox; operand_count],
@@ -32,15 +45,12 @@ fn operand_name_attrs_stay_lir_fast_runtime_calls() {
         });
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
             results: result_id.into_iter().collect(),
-            attrs: {
-                let mut m = AttrDict::new();
-                m.insert("_original_kind".into(), AttrValue::Str(name.into()));
-                m
-            },
+            attrs: AttrDict::new(),
             source_span: None,
         });
         entry.terminator = Terminator::Return {

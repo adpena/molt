@@ -8,6 +8,7 @@ use molt_passes::tir::values::{TirValue, ValueId};
 
 fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -1110,10 +1111,7 @@ fn rc_pairs_do_not_cross_python_callbacks_or_unrelated_finalizers() {
             if has_result { vec![result] } else { vec![] },
         );
         if opcode == OpCode::Copy {
-            boundary.attrs.insert(
-                "_original_kind".into(),
-                molt_passes::tir::ops::AttrValue::Str("opaque_future_callback".into()),
-            );
+            boundary.origin = Some(molt_ir::OpKind::StrFromObj);
         }
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(make_op(OpCode::IncRef, vec![root], vec![]));

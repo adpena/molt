@@ -60,12 +60,11 @@ pub(super) fn wasm_representation_plan(func_ir: &FunctionIR) -> ScalarRepresenta
     )
 }
 
-pub(super) fn wasm_test_op(kind: &str, out: Option<&str>, args: Vec<&str>) -> OpIR {
+pub(super) fn wasm_test_op(kind: molt_ir::OpKind, out: Option<&str>, args: Vec<&str>) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
         out: out.map(str::to_string),
         args: Some(args.into_iter().map(str::to_string).collect()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -101,10 +100,13 @@ pub(super) fn wasm_compile_activation_fixture(
     wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir, code_slots)
 }
 
-pub(super) fn wasm_object_new_bound_ir(kind: &str, payload_size: Option<i64>) -> SimpleIR {
+pub(super) fn wasm_object_new_bound_ir(
+    kind: molt_ir::OpKind,
+    payload_size: Option<i64>,
+) -> SimpleIR {
     let mut allocate = wasm_test_op(kind, Some("obj"), vec!["cls"]);
     allocate.value = payload_size;
-    let mut ret = wasm_test_op("ret", None, vec!["obj"]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["obj"]);
     ret.args = Some(vec!["obj".to_string()]);
     SimpleIR {
         functions: vec![wasm_test_function(
@@ -119,10 +121,13 @@ pub(super) fn wasm_object_new_bound_ir(kind: &str, payload_size: Option<i64>) ->
 
 /// `load_kind` (`load_method` or `load_super_method`) of `selected_method`,
 /// then the loaded call with `extra_arg_count` positional arguments.
-pub(super) fn wasm_loaded_method_ir(load_kind: &str, extra_arg_count: usize) -> SimpleIR {
+pub(super) fn wasm_loaded_method_ir(
+    load_kind: molt_ir::OpKind,
+    extra_arg_count: usize,
+) -> SimpleIR {
     let load_args = match load_kind {
-        "load_method" => vec!["recv".to_string()],
-        "load_super_method" => vec!["cls".to_string(), "self_obj".to_string()],
+        molt_ir::OpKind::LoadMethod => vec!["recv".to_string()],
+        molt_ir::OpKind::LoadSuperMethod => vec!["cls".to_string(), "self_obj".to_string()],
         _ => panic!("unsupported method load kind {load_kind}"),
     };
     let call_args: Vec<String> = ["callable".to_string(), "self_or_null".to_string()]
@@ -130,25 +135,23 @@ pub(super) fn wasm_loaded_method_ir(load_kind: &str, extra_arg_count: usize) -> 
         .chain((0..extra_arg_count).map(|idx| format!("arg{idx}")))
         .collect();
     let load = OpIR {
-        kind: load_kind.to_string(),
         var: Some("callable".to_string()),
         out: Some("self_or_null".to_string()),
         args: Some(load_args.clone()),
         s_value: Some("selected_method".to_string()),
         source_op_idx: Some(0),
-        ..OpIR::default()
+        ..OpIR::new(load_kind)
     };
     let call = OpIR {
-        kind: "call_loaded_method".to_string(),
         out: Some("out".to_string()),
         argument_custody: Some(vec![
             molt_ir::ParameterCustody::Transferred;
             call_args.len()
         ]),
         args: Some(call_args.clone()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::CallLoadedMethod)
     };
-    let mut ret = wasm_test_op("ret", None, vec!["out"]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["out"]);
     ret.args = Some(vec!["out".to_string()]);
     let params = load_args
         .into_iter()
@@ -176,14 +179,14 @@ pub(super) fn wasm_native_callable_ir(abi: &str) -> SimpleIR {
 }
 
 pub(super) fn wasm_native_callable_ir_with_args(abi: &str, args: Vec<&str>) -> SimpleIR {
-    let mut native_call = wasm_test_op("invoke_ffi", Some("out"), args.clone());
+    let mut native_call = wasm_test_op(molt_ir::OpKind::InvokeFfi, Some("out"), args.clone());
     native_call.native_callable_export =
         Some("nativepkg.ndimage.distance_transform_edt".to_string());
     native_call.native_callable_binding = Some("direct_symbol".to_string());
     native_call.native_callable_symbol =
         Some("molt_nativepkg_ndimage_distance_transform_edt".to_string());
     native_call.native_callable_abi = Some(abi.to_string());
-    let mut ret = wasm_test_op("ret", None, vec!["out"]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["out"]);
     ret.args = Some(vec!["out".to_string()]);
     SimpleIR {
         functions: vec![wasm_test_function(
@@ -197,12 +200,12 @@ pub(super) fn wasm_native_callable_ir_with_args(abi: &str, args: Vec<&str>) -> S
 }
 
 pub(super) fn wasm_module_attr_native_callable_ir(abi: &str, args: Vec<&str>) -> SimpleIR {
-    let mut native_call = wasm_test_op("invoke_ffi", Some("out"), args.clone());
+    let mut native_call = wasm_test_op(molt_ir::OpKind::InvokeFfi, Some("out"), args.clone());
     native_call.native_callable_export =
         Some("nativepkg.ndimage.distance_transform_edt".to_string());
     native_call.native_callable_binding = Some("module_attr".to_string());
     native_call.native_callable_abi = Some(abi.to_string());
-    let mut ret = wasm_test_op("ret", None, vec!["out"]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["out"]);
     ret.args = Some(vec!["out".to_string()]);
     SimpleIR {
         functions: vec![wasm_test_function(

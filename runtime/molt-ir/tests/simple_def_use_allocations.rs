@@ -41,13 +41,13 @@ static GLOBAL: CountingAllocator = CountingAllocator;
 #[test]
 fn simple_ir_def_use_visitors_are_all_heap_allocation_free() {
     let op = OpIR {
-        kind: "unpack_sequence".to_string(),
+        kind: molt_ir::OpKind::UnpackSequence,
         args: Some(vec![
             "sequence".to_string(),
             "first".to_string(),
             "second".to_string(),
         ]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::UnpackSequence)
     };
 
     let mut checksum = 0;
@@ -61,6 +61,19 @@ fn simple_ir_def_use_visitors_are_all_heap_allocation_free() {
 
     assert_eq!(checksum, 300_000);
     assert_eq!(allocations, 0, "visitor traversal allocated on the heap");
+
+    // A closed kind decodes without allocating a String for each operation.
+    ALLOCATIONS.store(0, Ordering::Relaxed);
+    for _ in 0..10_000 {
+        let decoded: OpIR =
+            serde_json::from_str(std::hint::black_box(r#"{"kind":"add"}"#)).unwrap();
+        assert_eq!(std::hint::black_box(decoded.kind), molt_ir::OpKind::Add);
+    }
+    assert_eq!(
+        ALLOCATIONS.load(Ordering::Relaxed),
+        0,
+        "known wire-kind decoding allocated"
+    );
 
     // Keep all process-global allocator observations in this one test case.
     ssa_dead_name_chain_does_not_allocate_full_exit_environments();
@@ -77,21 +90,21 @@ fn ssa_dead_name_chain_does_not_allocate_full_exit_environments() {
         let mut ops = Vec::new();
         for index in 0..count {
             ops.push(OpIR {
-                kind: "label".into(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(index as i64),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             });
             ops.push(OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(index as i64),
                 out: Some(format!("dead_name_{index}")),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             });
         }
         ops.push(OpIR {
-            kind: "ret".into(),
+            kind: molt_ir::OpKind::Ret,
             args: Some(vec![format!("dead_name_{}", count - 1)]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         });
         let cfg = CFG::build(&ops);
         ALLOCATIONS.store(0, Ordering::Relaxed);
@@ -137,44 +150,44 @@ fn ssa_cleanup_ladders_keep_direct_bindings_without_triangular_arguments() {
         let mut ops = Vec::new();
         for index in 0..count {
             ops.push(OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(index as i64),
                 out: Some(format!("owned_{index}")),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             });
             ops.push(OpIR {
-                kind: "check_exception".into(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(index as i64),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             });
         }
         ops.push(OpIR {
-            kind: "ret_void".into(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::RetVoid,
+            ..OpIR::new(molt_ir::OpKind::RetVoid)
         });
         // Handler i releases value i then all preceding owned values. Physical
         // source is linear although the sum of handler live-ins is triangular.
         for index in (0..count).rev() {
             ops.push(OpIR {
-                kind: "label".into(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(index as i64),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             });
             ops.push(OpIR {
-                kind: "dec_ref".into(),
+                kind: molt_ir::OpKind::DecRef,
                 args: Some(vec![format!("owned_{index}")]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::DecRef)
             });
             ops.push(if index == 0 {
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 }
             } else {
                 OpIR {
-                    kind: "jump".into(),
+                    kind: molt_ir::OpKind::Jump,
                     value: Some(index as i64 - 1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 }
             });
         }

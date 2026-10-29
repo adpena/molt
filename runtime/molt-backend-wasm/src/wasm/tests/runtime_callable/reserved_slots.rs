@@ -2,14 +2,17 @@ use super::*;
 
 #[test]
 fn reserved_runtime_callable_function_objects_own_final_active_element_slots() {
-    let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
+    let mut import_transaction = wasm_test_op(molt_ir::OpKind::BuiltinFunc, Some("fn"), vec![]);
     import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());
     import_transaction.value = Some(5);
     let func = wasm_test_function(
         "molt_main",
         vec![],
         None,
-        vec![import_transaction, wasm_test_op("ret_void", None, vec![])],
+        vec![
+            import_transaction,
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        ],
     );
     let ir = SimpleIR {
         functions: vec![func],
@@ -98,7 +101,7 @@ fn relocatable_callable_plan_exports_every_fixed_slot() {
         "molt_main",
         vec![],
         None,
-        vec![wasm_test_op("ret_void", None, vec![])],
+        vec![wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![])],
     );
     let wasm = WasmBackend::with_options(WasmCompileOptions {
         native_eh_enabled: false,

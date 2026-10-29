@@ -61,7 +61,7 @@ fn bind_local(result: ValueId) -> [TirOp; 2] {
         .insert("bound_local".into(), AttrValue::Bool(true));
     [
         make,
-        original_copy_with_operands("store_var", vec![result], vec![]),
+        original_copy_with_operands(molt_ir::OpKind::StoreVar, vec![result], vec![]),
     ]
 }
 
@@ -193,7 +193,7 @@ fn ordinary_call_adopts_its_callable_and_expanded_call_borrows_it() {
         let mut func = function("calls_temporary_callable", &[]);
         let callable = owned(&mut func);
         let builder = owned(&mut func);
-        let mut new_builder = original_copy("callargs_new", vec![builder]);
+        let mut new_builder = original_copy(molt_ir::OpKind::CallargsNew, vec![builder]);
         if let Some(form) = form {
             new_builder
                 .attrs
@@ -205,7 +205,7 @@ fn ordinary_call_adopts_its_callable_and_expanded_call_borrows_it() {
                 produce(callable),
                 new_builder,
                 source_call(
-                    "call_bind",
+                    molt_ir::OpKind::CallBind,
                     None,
                     vec![callable, builder],
                     vec![],
@@ -321,7 +321,7 @@ fn loaded_method_pair_moves_into_its_call_or_ends_at_a_raise() {
                 produce(argument),
                 observe(45),
                 source_call(
-                    "call_loaded_method",
+                    molt_ir::OpKind::CallLoadedMethod,
                     None,
                     vec![callable, self_or_null, argument],
                     vec![],
@@ -572,7 +572,7 @@ fn rebinding_a_transferred_parameter_releases_the_argument_at_the_store() {
 /// The frontend's capture of a read that a later store in the same expression
 /// rebinds: an owned alias, CPython's `LOAD_FAST` stack reference.
 fn capture(read: ValueId, result: ValueId) -> TirOp {
-    original_copy_with_operands("binding_alias", vec![read], vec![result])
+    original_copy_with_operands(molt_ir::OpKind::BindingAlias, vec![read], vec![result])
 }
 
 /// `f(x, (x := g()))` with `x` a transferred parameter. The store releases the
@@ -669,7 +669,11 @@ fn callargs_builder_moves_into_call_bind() {
     let bind = call_bind(callee, builder, vec![]);
     body(
         &mut func,
-        vec![original_copy("callargs_new", vec![builder]), bind, marker()],
+        vec![
+            original_copy(molt_ir::OpKind::CallargsNew, vec![builder]),
+            bind,
+            marker(),
+        ],
         done(vec![]),
     );
     insert(&mut func);
@@ -831,7 +835,7 @@ fn call(callee: &TirFunction, operands: Vec<ValueId>, results: Vec<ValueId>) -> 
         .map(|position| callee.parameter_custody(position))
         .collect();
     source_call(
-        "call_internal",
+        molt_ir::OpKind::CallInternal,
         Some(&callee.name),
         operands,
         results,

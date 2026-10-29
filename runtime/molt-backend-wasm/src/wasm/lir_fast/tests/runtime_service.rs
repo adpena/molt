@@ -12,6 +12,7 @@ fn exception_pending_stays_lir_fast_with_bool_result_adapter() {
     func.value_types.insert(result_id, TirType::Bool);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ExceptionPending,
         operands: vec![],
@@ -151,16 +152,34 @@ fn fixed_runtime_service_and_module_ops_stay_lir_fast_runtime_calls() {
 #[test]
 fn preserved_copy_runtime_service_imports_stay_lir_fast_runtime_calls() {
     let cases = [
-        ("module_new", "module_new", 1, true, "module_new"),
+        (
+            "module_new",
+            molt_ir::OpKind::ModuleNew,
+            1,
+            true,
+            "module_new",
+        ),
         (
             "module_import_star",
-            "module_import_star",
+            molt_ir::OpKind::ModuleImportStar,
             2,
             true,
             "module_import_star",
         ),
-        ("context_enter", "context_enter", 1, true, "context_enter"),
-        ("context_exit", "context_exit", 2, true, "context_exit"),
+        (
+            "context_enter",
+            molt_ir::OpKind::ContextEnter,
+            1,
+            true,
+            "context_enter",
+        ),
+        (
+            "context_exit",
+            molt_ir::OpKind::ContextExit,
+            2,
+            true,
+            "context_exit",
+        ),
     ];
 
     for (name, original_kind, operand_count, has_result, runtime_call) in cases {
@@ -184,7 +203,7 @@ fn preserved_copy_runtime_service_imports_stay_lir_fast_runtime_calls() {
 fn unsupported_preserved_copy_runtime_service_bails_instead_of_aliasing_operand() {
     let func = make_copy_original_kind_runtime_func(
         "exception_new_builtin_empty",
-        "exception_new_builtin_empty",
+        molt_ir::OpKind::ExceptionNewBuiltinEmpty,
         0,
         true,
     );
@@ -208,9 +227,9 @@ fn unsupported_preserved_copy_runtime_service_bails_instead_of_aliasing_operand(
 
 #[test]
 fn runtime_guards_keep_both_reads_and_borrow_the_alias_result() {
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
         for bound in [false, true] {
-            let func = make_copy_original_kind_runtime_func(kind, kind, 2, bound);
+            let func = make_copy_original_kind_runtime_func(kind.as_str(), kind, 2, bound);
             let body = lower_tir_to_wasm(&func);
             let output = body.test_view();
             assert!(!output.bails_to_generic_path, "{kind}/{bound}");
@@ -234,9 +253,9 @@ fn runtime_guards_keep_both_reads_and_borrow_the_alias_result() {
 
 #[test]
 fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
-    for kind in ["guard_tag", "guard_type"] {
+    for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
         let mut func = make_scalar_const_return_func(
-            kind,
+            kind.as_str(),
             OpCode::ConstFloat,
             TirType::F64,
             AttrDict::from([("f_value".into(), AttrValue::Float(1.25))]),
@@ -246,6 +265,7 @@ fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         let source = entry.ops[0].results[0];
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -254,11 +274,12 @@ fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
             source_span: None,
         });
         entry.ops.push(TirOp {
+            origin: Some(kind),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source, tag],
             results: vec![result],
-            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            attrs: AttrDict::from([]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {

@@ -3,16 +3,16 @@ use super::super::*;
 #[test]
 #[should_panic(expected = "get_attr_generic_obj requires source op index")]
 fn generic_obj_literal_name_attr_without_source_op_index_fails_closed() {
-    lower_without_source_index("get_attr_generic_obj");
+    lower_without_source_index(molt_ir::OpKind::GetAttrGenericObj);
 }
 
 #[test]
 #[should_panic(expected = "get_attr_generic_ptr requires source op index")]
 fn generic_ptr_literal_name_attr_without_source_op_index_fails_closed() {
-    lower_without_source_index("get_attr_generic_ptr");
+    lower_without_source_index(molt_ir::OpKind::GetAttrGenericPtr);
 }
 
-fn lower_without_source_index(kind: &str) {
+fn lower_without_source_index(kind: molt_ir::OpKind) {
     let mut func = TirFunction::new(
         format!("{kind}_without_source"),
         vec![TirType::DynBox],
@@ -23,13 +23,14 @@ fn lower_without_source_index(kind: &str) {
     func.value_types.insert(result_id, TirType::DynBox);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: Some(kind),
         dialect: Dialect::Molt,
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0)],
         results: vec![result_id],
         attrs: {
             let mut m = AttrDict::new();
-            m.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+
             m.insert("name".into(), AttrValue::Str("field".into()));
             m
         },

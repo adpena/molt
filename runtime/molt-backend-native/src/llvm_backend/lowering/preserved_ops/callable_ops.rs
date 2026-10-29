@@ -1,30 +1,31 @@
 use super::*;
 use crate::runtime_import_abi::{MOLT_ASYNCGEN_NEW, MOLT_DEC_REF_OBJ};
+use molt_ir::OpKind;
 
-/// Handler-owned routing slice. `code_new` and the CallArgs push/expand
-/// steps are exact `molt_<kind>` boxed-ABI calls and take the shared admitted
-/// boxed-call path instead of an arm here.
-pub(super) const HANDLED_KINDS: &[&str] = &[
-    "builtin_func",
-    "func_new",
-    "func_new_closure",
-    "function_closure_bits",
-    "asyncgen_new",
-    "code_slot_set",
-    "code_slots_init",
-    "trace_enter_slot",
-    "trace_exit",
-    "frame_home_store",
-    "frame_home_cell",
-    "frame_home_private_cell",
-    "frame_home_load",
-    "frame_home_take",
-    "frame_home_clear",
-    "frame_locals",
-    "frame_locals_set",
-    "line",
-    "callargs_new",
-];
+// Handler-owned routing slice. `code_new` and the CallArgs push/expand
+// steps are exact `molt_<kind>` boxed-ABI calls and take the shared admitted
+// boxed-call path instead of an arm here.
+define_llvm_op_kinds!(
+    OpKind::BuiltinFunc,
+    OpKind::FuncNew,
+    OpKind::FuncNewClosure,
+    OpKind::FunctionClosureBits,
+    OpKind::AsyncgenNew,
+    OpKind::CodeSlotSet,
+    OpKind::CodeSlotsInit,
+    OpKind::TraceEnterSlot,
+    OpKind::TraceExit,
+    OpKind::FrameHomeStore,
+    OpKind::FrameHomeCell,
+    OpKind::FrameHomePrivateCell,
+    OpKind::FrameHomeLoad,
+    OpKind::FrameHomeTake,
+    OpKind::FrameHomeClear,
+    OpKind::FrameLocals,
+    OpKind::FrameLocalsSet,
+    OpKind::Line,
+    OpKind::CallargsNew,
+);
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// The code slots this function addresses in its frame's homes: one past
@@ -36,15 +37,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .flat_map(|block| &block.ops)
             .filter(|op| {
                 matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if matches!(
-                        kind.as_str(),
-                        "frame_home_store"
-                            | "frame_home_cell"
-                            | "frame_home_private_cell"
-                            | "frame_home_load"
-                            | "frame_home_take"
-                            | "frame_home_clear"
+                    op.origin,
+                    Some(
+                        OpKind::FrameHomeStore
+                            | OpKind::FrameHomeCell
+                            | OpKind::FrameHomePrivateCell
+                            | OpKind::FrameHomeLoad
+                            | OpKind::FrameHomeTake
+                            | OpKind::FrameHomeClear
                     )
                 )
             })
@@ -63,8 +63,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .flat_map(|block| &block.ops)
             .any(|op| {
                 matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "trace_enter_slot"
+                    op.origin,
+                    Some(kind) if kind == OpKind::TraceEnterSlot
                 )
             })
     }
@@ -364,10 +364,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 }
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: &str) -> bool {
+    pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
         let i64_ty = self.backend.context.i64_type();
         match kind {
-            "function_closure_bits" => {
+            OpKind::FunctionClosureBits => {
                 if op.operands.len() != 1 || op.results.len() > 1 {
                     return false;
                 }
@@ -379,12 +379,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     closure_fn,
                     &[RuntimeArg::Operand(op.operands[0])],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue),
-                    kind,
+                    kind.as_str(),
                     "function_closure_bits",
                 );
                 true
             }
-            "asyncgen_new" => {
+            OpKind::AsyncgenNew => {
                 if op.operands.len() != 1 || op.results.len() > 1 {
                     return false;
                 }
@@ -396,12 +396,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     wrap,
                     &[RuntimeArg::Operand(op.operands[0])],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "asyncgen_new",
                 );
                 true
             }
-            "builtin_func" => {
+            OpKind::BuiltinFunc => {
                 let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
                     _ => None,
@@ -460,12 +460,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     new_fn,
                     &args,
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "builtin_func_new",
                 );
                 true
             }
-            "func_new" => {
+            OpKind::FuncNew => {
                 let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
                     _ => None,
@@ -520,7 +520,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.bind_owned_runtime_result(op, result);
                 true
             }
-            "func_new_closure" => {
+            OpKind::FuncNewClosure => {
                 let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
                     AttrValue::Str(s) => Some(s.as_str()),
                     _ => None,
@@ -572,12 +572,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Word(i64_ty.const_int(custody, false).into()),
                     ],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "func_new_closure",
                 );
                 true
             }
-            "code_slot_set" => {
+            OpKind::CodeSlotSet => {
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
                 let slot_set_fn = self.ensure_runtime_i64_fn("molt_code_slot_set", 3);
                 // The slot ID is a raw ABI word; the code object and globals
@@ -591,12 +591,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(op.operands[1]),
                     ],
                     RuntimeResultCustody::SideEffect,
-                    kind,
+                    kind.as_str(),
                     "code_slot_set",
                 );
                 true
             }
-            "code_slots_init" => {
+            OpKind::CodeSlotsInit => {
                 let count = op
                     .attrs
                     .get("value")
@@ -617,7 +617,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
-            "trace_enter_slot" => {
+            OpKind::TraceEnterSlot => {
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
                 let enter_fn = self.ensure_runtime_i64_fn("molt_trace_enter_slot", 1);
                 let _ = self
@@ -633,7 +633,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "trace_exit" => {
+            OpKind::TraceExit => {
                 let exit_fn = self.ensure_runtime_i64_fn("molt_trace_exit", 0);
                 let _ = self
                     .backend
@@ -642,7 +642,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
-            "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+            OpKind::FrameHomeStore | OpKind::FrameHomeCell | OpKind::FrameHomePrivateCell => {
                 // The home takes operand 0's reference: the op consumes it. A
                 // raw integer carrier is stored raw, holding no reference. A
                 // boxed result is already an observation and must borrow the
@@ -665,14 +665,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .cloned()
                     .unwrap_or(TirType::DynBox);
                 let (home_kind, bits) = match (kind, &value_ty, value) {
-                    ("frame_home_store", TirType::I64, BasicValueEnum::IntValue(raw)) => {
+                    (OpKind::FrameHomeStore, TirType::I64, BasicValueEnum::IntValue(raw)) => {
                         (molt_codegen_abi::FRAME_HOME_RAW_INT, raw)
                     }
-                    ("frame_home_cell", ..) => (
+                    (OpKind::FrameHomeCell, ..) => (
                         molt_codegen_abi::FRAME_HOME_CELL,
                         self.adopted_storage_word(operand),
                     ),
-                    ("frame_home_private_cell", ..) => (
+                    (OpKind::FrameHomePrivateCell, ..) => (
                         molt_codegen_abi::FRAME_HOME_PRIVATE_CELL,
                         self.adopted_storage_word(operand),
                     ),
@@ -701,7 +701,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "frame_home_clear" => {
+            OpKind::FrameHomeClear => {
                 // `del`: the slot becomes unbound, then what it held goes.
                 let Some(slot) = op.attrs.get("value").and_then(|v| match v {
                     AttrValue::Int(v) => Some(*v),
@@ -717,7 +717,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 )
                 .is_some()
             }
-            "frame_home_load" => {
+            OpKind::FrameHomeLoad => {
                 // A borrowed view of the slot's plain binding: `PLAIN` read
                 // inline; the runtime boxes a raw integer into the home,
                 // reports an unbound slot as the missing sentinel and raises
@@ -808,7 +808,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "frame_home_take" => {
+            OpKind::FrameHomeTake => {
                 // PEP 709's save of an enclosing binding: the runtime moves it
                 // out of the home, which becomes unbound; the result owns it.
                 let Some(slot) = op.attrs.get("value").and_then(|v| match v {
@@ -833,12 +833,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     take_fn,
                     &[RuntimeArg::Word(home.into())],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "frame_home_take",
                 );
                 true
             }
-            "frame_locals" => {
+            OpKind::FrameLocals => {
                 // `locals()`: the runtime's one authority over the executing
                 // frame; the operand pairs serve targets that build the dict.
                 let locals_fn = self.ensure_runtime_i64_fn("molt_locals_builtin", 0);
@@ -847,12 +847,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     locals_fn,
                     &[],
                     RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
-                    kind,
+                    kind.as_str(),
                     "frame_locals",
                 );
                 true
             }
-            "frame_locals_set" => {
+            OpKind::FrameLocalsSet => {
                 let Some(&dict_id) = op.operands.first() else {
                     return false;
                 };
@@ -862,12 +862,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     frame_locals_fn,
                     &[RuntimeArg::Operand(dict_id)],
                     RuntimeResultCustody::SideEffect,
-                    kind,
+                    kind.as_str(),
                     "frame_locals_set",
                 );
                 true
             }
-            "line" => {
+            OpKind::Line => {
                 let line = op
                     .attrs
                     .get("value")
@@ -888,7 +888,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 true
             }
-            "callargs_new" => {
+            OpKind::CallargsNew => {
                 // The source call form picks the builder: a CALL_FUNCTION_EX
                 // call site's arguments are its own tuple and mapping.
                 let constructor = op

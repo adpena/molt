@@ -2,42 +2,40 @@ use super::*;
 
 fn wasm_const_int_op(out: &str, value: i64) -> OpIR {
     OpIR {
-        kind: "const".to_string(),
         out: Some(out.to_string()),
         value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Const)
     }
 }
 
 fn wasm_const_float_op(out: &str, value: f64) -> OpIR {
     OpIR {
-        kind: "const_float".to_string(),
         out: Some(out.to_string()),
         f_value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
     }
 }
 
 fn wasm_copy_var_op(out: &str, var: &str) -> OpIR {
-    let mut copy = wasm_test_op("copy_var", Some(out), Vec::<&str>::new());
+    let mut copy = wasm_test_op(molt_ir::OpKind::CopyVar, Some(out), Vec::<&str>::new());
     copy.var = Some(var.to_string());
     copy
 }
 
 fn wasm_store_var_op(var: &str, value: &str) -> OpIR {
-    let mut store = wasm_test_op("store_var", None, vec![value]);
+    let mut store = wasm_test_op(molt_ir::OpKind::StoreVar, None, vec![value]);
     store.var = Some(var.to_string());
     store
 }
 
 fn wasm_load_var_op(out: &str, var: &str) -> OpIR {
-    let mut load = wasm_test_op("load_var", Some(out), Vec::<&str>::new());
+    let mut load = wasm_test_op(molt_ir::OpKind::LoadVar, Some(out), Vec::<&str>::new());
     load.var = Some(var.to_string());
     load
 }
 
 fn wasm_ret_op(name: &str) -> OpIR {
-    let mut ret = wasm_test_op("ret", None, vec![name]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec![name]);
     ret.args = Some(vec![name.to_string()]);
     ret
 }
@@ -79,7 +77,7 @@ fn assert_molt_main_has_operator(wasm: &[u8], expected: &str) {
 
 #[test]
 fn scalar_fast_path_ignores_transport_hints() {
-    let mut add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+    let mut add = wasm_test_op(molt_ir::OpKind::Add, Some("sum"), vec!["lhs", "rhs"]);
     add.type_hint = Some("int".to_string());
     let func = wasm_test_function("hinted", vec!["lhs", "rhs"], None, vec![add.clone()]);
     let plan = wasm_representation_plan(&func);
@@ -89,9 +87,9 @@ fn scalar_fast_path_ignores_transport_hints() {
 
 #[test]
 fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
-    let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
-    let mul = wasm_test_op("mul", Some("product"), vec!["lhs", "rhs"]);
-    let div = wasm_test_op("div", Some("quot"), vec!["lhs", "rhs"]);
+    let add = wasm_test_op(molt_ir::OpKind::Add, Some("sum"), vec!["lhs", "rhs"]);
+    let mul = wasm_test_op(molt_ir::OpKind::Mul, Some("product"), vec!["lhs", "rhs"]);
+    let div = wasm_test_op(molt_ir::OpKind::Div, Some("quot"), vec!["lhs", "rhs"]);
     let func = wasm_test_function(
         "typed",
         vec!["lhs", "rhs"],
@@ -108,20 +106,24 @@ fn scalar_fast_path_uses_typed_operands_without_transport_hints() {
 
 #[test]
 fn proven_inline_int_add_lowers_without_boxed_add_call() {
-    let add = wasm_test_op("add", Some("i_next"), vec!["i_cur", "one"]);
+    let add = wasm_test_op(molt_ir::OpKind::Add, Some("i_next"), vec!["i_cur", "one"]);
     let output = compile_final_numeric_ops_with_diagnostics(vec![
         wasm_const_int_op("init", 0),
         wasm_const_int_op("one", 1),
         wasm_const_int_op("stop", 1_000_000),
         wasm_store_var_op("i", "init"),
-        wasm_test_op("loop_start", None, Vec::<&str>::new()),
+        wasm_test_op(molt_ir::OpKind::LoopStart, None, Vec::<&str>::new()),
         wasm_load_var_op("i_cur", "i"),
-        wasm_test_op("lt", Some("keep_going"), vec!["i_cur", "stop"]),
-        wasm_test_op("loop_break_if_false", None, vec!["keep_going"]),
+        wasm_test_op(
+            molt_ir::OpKind::Lt,
+            Some("keep_going"),
+            vec!["i_cur", "stop"],
+        ),
+        wasm_test_op(molt_ir::OpKind::LoopBreakIfFalse, None, vec!["keep_going"]),
         add,
         wasm_store_var_op("i", "i_next"),
-        wasm_test_op("loop_continue", None, Vec::<&str>::new()),
-        wasm_test_op("loop_end", None, Vec::<&str>::new()),
+        wasm_test_op(molt_ir::OpKind::LoopContinue, None, Vec::<&str>::new()),
+        wasm_test_op(molt_ir::OpKind::LoopEnd, None, Vec::<&str>::new()),
         wasm_load_var_op("i_after", "i"),
         wasm_ret_op("i_after"),
     ]);
@@ -149,7 +151,7 @@ fn proven_inline_int_add_lowers_without_boxed_add_call() {
 
 #[test]
 fn proven_float_add_lowers_without_boxed_add_call() {
-    let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+    let add = wasm_test_op(molt_ir::OpKind::Add, Some("sum"), vec!["lhs", "rhs"]);
     let output = compile_final_numeric_ops_with_diagnostics(vec![
         wasm_const_float_op("seed_lhs", 1.25),
         wasm_const_float_op("seed_rhs", 2.5),
@@ -182,7 +184,7 @@ fn proven_float_add_lowers_without_boxed_add_call() {
 
 #[test]
 fn annotated_float_add_preserves_boxed_runtime_dispatch() {
-    let add = wasm_test_op("add", Some("sum"), vec!["lhs", "rhs"]);
+    let add = wasm_test_op(molt_ir::OpKind::Add, Some("sum"), vec!["lhs", "rhs"]);
     let output = compile_final_numeric_function_with_diagnostics(
         vec!["param_lhs", "param_rhs"],
         Some(vec!["float", "float"]),
@@ -223,7 +225,7 @@ fn annotated_float_add_preserves_boxed_runtime_dispatch() {
 
 #[test]
 fn typed_int_floor_div_records_division_guarded_site() {
-    let floor_div = wasm_test_op("floordiv", Some("quot"), vec!["lhs", "rhs"]);
+    let floor_div = wasm_test_op(molt_ir::OpKind::Floordiv, Some("quot"), vec!["lhs", "rhs"]);
     let output = compile_final_numeric_function_with_diagnostics(
         vec!["param_lhs", "param_rhs"],
         Some(vec!["int", "int"]),
@@ -257,24 +259,28 @@ fn typed_int_floor_div_records_division_guarded_site() {
 
 #[test]
 fn proven_inline_int_bitwise_lowers_without_boxed_bit_or_call() {
-    let bit_or = wasm_test_op("bit_or", Some("masked"), vec!["i_cur", "one"]);
-    let add = wasm_test_op("add", Some("i_next"), vec!["i_cur", "one"]);
+    let bit_or = wasm_test_op(molt_ir::OpKind::BitOr, Some("masked"), vec!["i_cur", "one"]);
+    let add = wasm_test_op(molt_ir::OpKind::Add, Some("i_next"), vec!["i_cur", "one"]);
     let output = compile_final_numeric_ops_with_diagnostics(vec![
         wasm_const_int_op("init", 0),
         wasm_const_int_op("one", 1),
         wasm_const_int_op("stop", 10),
         wasm_store_var_op("i", "init"),
         wasm_store_var_op("last_mask", "init"),
-        wasm_test_op("loop_start", None, Vec::<&str>::new()),
+        wasm_test_op(molt_ir::OpKind::LoopStart, None, Vec::<&str>::new()),
         wasm_load_var_op("i_cur", "i"),
-        wasm_test_op("lt", Some("keep_going"), vec!["i_cur", "stop"]),
-        wasm_test_op("loop_break_if_false", None, vec!["keep_going"]),
+        wasm_test_op(
+            molt_ir::OpKind::Lt,
+            Some("keep_going"),
+            vec!["i_cur", "stop"],
+        ),
+        wasm_test_op(molt_ir::OpKind::LoopBreakIfFalse, None, vec!["keep_going"]),
         bit_or,
         wasm_store_var_op("last_mask", "masked"),
         add,
         wasm_store_var_op("i", "i_next"),
-        wasm_test_op("loop_continue", None, Vec::<&str>::new()),
-        wasm_test_op("loop_end", None, Vec::<&str>::new()),
+        wasm_test_op(molt_ir::OpKind::LoopContinue, None, Vec::<&str>::new()),
+        wasm_test_op(molt_ir::OpKind::LoopEnd, None, Vec::<&str>::new()),
         wasm_load_var_op("out", "last_mask"),
         wasm_ret_op("out"),
     ]);
@@ -316,8 +322,12 @@ fn proven_inline_int_bitwise_lowers_without_boxed_bit_or_call() {
 
 #[test]
 fn scalar_fast_path_keeps_list_repeat_on_runtime_mul() {
-    let list_new = wasm_test_op("list_new", Some("items"), vec!["item"]);
-    let repeat = wasm_test_op("mul", Some("repeated"), vec!["items", "count"]);
+    let list_new = wasm_test_op(molt_ir::OpKind::ListNew, Some("items"), vec!["item"]);
+    let repeat = wasm_test_op(
+        molt_ir::OpKind::Mul,
+        Some("repeated"),
+        vec!["items", "count"],
+    );
     let func = wasm_test_function(
         "list_repeat",
         vec!["item", "count"],

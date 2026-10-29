@@ -1,22 +1,23 @@
 use super::super::*;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
+use molt_ir::OpKind;
 
-/// Scalar add/sub/mul kind authority for [`handle_arith_op`]. The delegated
-/// `vec_*` reductions live in [`super::vec_reductions::HANDLED_KINDS`], and the
-/// quotient/power cluster lives in [`super::arith_division::HANDLED_KINDS`],
-/// not here. Mirror the `match op.kind.as_str()` arms below.
+// Scalar add/sub/mul kind authority for [`handle_arith_op`]. The delegated
+// `vec_*` reductions live in [`super::vec_reductions::HANDLED_KINDS`], and the
+// quotient/power cluster lives in [`super::arith_division::HANDLED_KINDS`],
+// not here. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "add",
-    "checked_add",
-    "checked_mul",
-    "inplace_add",
-    "sub",
-    "inplace_sub",
-    "mul",
-    "inplace_mul",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Add,
+    OpKind::CheckedAdd,
+    OpKind::CheckedMul,
+    OpKind::InplaceAdd,
+    OpKind::Sub,
+    OpKind::InplaceSub,
+    OpKind::Mul,
+    OpKind::InplaceMul,
+);
 
 /// Cranelift codegen dispatcher for scalar add/sub/mul arithmetic ops.
 /// Extracted from `compile_func_inner` as a move-only function split; the arm
@@ -48,8 +49,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) -> OpFlow {
-    match op.kind.as_str() {
-        "add" => handle_add_op(
+    match op.kind {
+        OpKind::Add => handle_add_op(
             op,
             &mut *module,
             &mut *import_ids,
@@ -61,7 +62,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             scalar_fast_paths_enabled,
             nbc,
         ),
-        "checked_add" => handle_checked_add_op(
+        OpKind::CheckedAdd => handle_checked_add_op(
             op,
             &mut *module,
             &mut *import_ids,
@@ -72,7 +73,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             representation_plan,
             nbc,
         ),
-        "checked_mul" => handle_checked_mul_op(
+        OpKind::CheckedMul => handle_checked_mul_op(
             op,
             &mut *module,
             &mut *import_ids,
@@ -83,7 +84,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             representation_plan,
             nbc,
         ),
-        "inplace_add" => handle_inplace_add_op(
+        OpKind::InplaceAdd => handle_inplace_add_op(
             op,
             &mut *module,
             &mut *import_ids,
@@ -99,7 +100,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
         // sum/prod/min/max, each `(it, acc, target)` through its exact
         // runtime kernel. Extracted to fc::vec_reductions (M1 phase 1) so the
         // handler is its own codegen unit lifted out of this monolith.
-        "vec_sum" | "vec_prod" | "vec_min" | "vec_max" => {
+        OpKind::VecSum | OpKind::VecProd | OpKind::VecMin | OpKind::VecMax => {
             fc::vec_reductions::handle_vec_reduction(
                 op,
                 &mut *module,
@@ -115,7 +116,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             );
             OpFlow::Proceed
         }
-        "sub" => handle_sub_op(
+        OpKind::Sub => handle_sub_op(
             op,
             op_idx,
             func_name,
@@ -130,7 +131,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             scalar_fast_paths_enabled,
             nbc,
         ),
-        "inplace_sub" => handle_inplace_sub_op(
+        OpKind::InplaceSub => handle_inplace_sub_op(
             op,
             op_idx,
             func_name,
@@ -144,7 +145,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             scalar_fast_paths_enabled,
             nbc,
         ),
-        "mul" => handle_mul_op(
+        OpKind::Mul => handle_mul_op(
             op,
             &mut *module,
             &mut *import_ids,
@@ -157,7 +158,7 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_op(
             scalar_fast_paths_enabled,
             nbc,
         ),
-        "inplace_mul" => handle_inplace_mul_op(
+        OpKind::InplaceMul => handle_inplace_mul_op(
             op,
             &mut *module,
             &mut *import_ids,

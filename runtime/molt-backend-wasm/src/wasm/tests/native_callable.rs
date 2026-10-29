@@ -13,7 +13,7 @@ use wasm_encoder::{
 #[test]
 fn guarded_python_calls_bind_nonexact_shapes_and_share_direct_admission() {
     for supplied in [0, 1, 2] {
-        let mut call = wasm_test_op("call_guarded", Some("result"), vec!["callee"]);
+        let mut call = wasm_test_op(molt_ir::OpKind::CallGuarded, Some("result"), vec!["callee"]);
         call.s_value = Some("target".to_string());
         call.args
             .as_mut()
@@ -26,17 +26,17 @@ fn guarded_python_calls_bind_nonexact_shapes_and_share_direct_admission() {
                     vec![],
                     None,
                     vec![
-                        wasm_test_op("const_none", Some("callee"), vec![]),
-                        wasm_test_op("const_none", Some("arg"), vec![]),
+                        wasm_test_op(molt_ir::OpKind::ConstNone, Some("callee"), vec![]),
+                        wasm_test_op(molt_ir::OpKind::ConstNone, Some("arg"), vec![]),
                         call,
-                        wasm_test_op("ret", None, vec!["result"]),
+                        wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"]),
                     ],
                 ),
                 wasm_test_function(
                     "target",
                     vec!["arg"],
                     None,
-                    vec![wasm_test_op("ret", None, vec!["arg"])],
+                    vec![wasm_test_op(molt_ir::OpKind::Ret, None, vec!["arg"])],
                 ),
             ],
             profile: None,
@@ -151,9 +151,9 @@ fn production_lir_wasm_fast_path_is_reserved_for_global_builtin_lane() {
 #[test]
 fn lir_fast_literal_const_materialization_emits_valid_wasm() {
     let literal_bytes = b"hello wasm literal";
-    let mut literal = wasm_test_op("const_str", Some("literal"), vec![]);
+    let mut literal = wasm_test_op(molt_ir::OpKind::ConstStr, Some("literal"), vec![]);
     literal.s_value = Some(String::from_utf8(literal_bytes.to_vec()).expect("ascii literal"));
-    let mut ret = wasm_test_op("ret", None, vec!["literal"]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["literal"]);
     ret.args = Some(vec!["literal".to_string()]);
     let func = wasm_test_function(
         "m____molt_globals_builtin__literal_const",
@@ -194,7 +194,10 @@ fn lir_fast_literal_const_materialization_emits_valid_wasm() {
 
 #[test]
 fn generic_attr_ic_preserves_boxed_receivers_and_transported_source_op_idx() {
-    for kind in ["get_attr_generic_ptr", "get_attr_generic_obj"] {
+    for kind in [
+        molt_ir::OpKind::GetAttrGenericPtr,
+        molt_ir::OpKind::GetAttrGenericObj,
+    ] {
         for integer_receiver in [false, true] {
             let source_op_idx = 17;
             let mut load_attr = wasm_test_op(kind, Some("value"), vec!["obj"]);
@@ -202,11 +205,14 @@ fn generic_attr_ic_preserves_boxed_receivers_and_transported_source_op_idx() {
             load_attr.source_op_idx = Some(source_op_idx);
             let mut ops = Vec::new();
             if integer_receiver {
-                let mut integer = wasm_test_op("const", Some("obj"), vec![]);
+                let mut integer = wasm_test_op(molt_ir::OpKind::Const, Some("obj"), vec![]);
                 integer.value = Some(20);
                 ops.push(integer);
             }
-            ops.extend([load_attr, wasm_test_op("ret", None, vec!["value"])]);
+            ops.extend([
+                load_attr,
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["value"]),
+            ]);
             let func = wasm_test_function(
                 "generic_attr_ic",
                 if integer_receiver {
@@ -236,7 +242,7 @@ fn generic_attr_ic_preserves_boxed_receivers_and_transported_source_op_idx() {
                 molt_codegen_abi::box_int_bits(molt_codegen_abi::stable_ic_site_id(
                     "generic_attr_ic",
                     source_op_idx as usize,
-                    kind,
+                    kind.as_str(),
                 ));
             let constants = wasm_i64_consts(&wasm);
             assert!(constants.contains(&expected_site_bits));
@@ -321,7 +327,7 @@ fn relocatable_native_callable_links_provider_object_and_executes_in_node() {
     let node = PathBuf::from("node");
     let mut execution_ir = wasm_native_callable_ir("molt.object_call_v1");
     execution_ir.functions[0].params.clear();
-    let mut payload = wasm_test_op("const", Some("arg"), vec![]);
+    let mut payload = wasm_test_op(molt_ir::OpKind::Const, Some("arg"), vec![]);
     payload.value = Some(1);
     execution_ir.functions[0].ops.insert(0, payload);
     let app_object = WasmBackend::with_options(WasmCompileOptions {
@@ -429,22 +435,22 @@ fn native_callable_direct_symbol_object_callargs_imports_and_directly_calls_symb
 
 #[test]
 fn native_callable_callargs_wrapper_releases_only_after_builder_allocation() {
-    let mut allocation_check = wasm_test_op("check_exception", None, vec![]);
+    let mut allocation_check = wasm_test_op(molt_ir::OpKind::CheckException, None, vec![]);
     allocation_check.value = Some(2);
-    let mut expansion_check = wasm_test_op("check_exception", None, vec![]);
+    let mut expansion_check = wasm_test_op(molt_ir::OpKind::CheckException, None, vec![]);
     expansion_check.value = Some(1);
-    let mut kw_expansion_check = wasm_test_op("check_exception", None, vec![]);
+    let mut kw_expansion_check = wasm_test_op(molt_ir::OpKind::CheckException, None, vec![]);
     kw_expansion_check.value = Some(1);
-    let mut dispatch_check = wasm_test_op("check_exception", None, vec![]);
+    let mut dispatch_check = wasm_test_op(molt_ir::OpKind::CheckException, None, vec![]);
     dispatch_check.value = Some(1);
-    let mut native_call = wasm_test_op("invoke_ffi", Some("result"), vec!["builder"]);
+    let mut native_call = wasm_test_op(molt_ir::OpKind::InvokeFfi, Some("result"), vec!["builder"]);
     native_call.native_callable_export = Some("nativepkg.run".to_string());
     native_call.native_callable_binding = Some("direct_symbol".to_string());
     native_call.native_callable_symbol = Some("molt_nativepkg_run".to_string());
     native_call.native_callable_abi = Some("molt.object_callargs_v1".to_string());
-    let mut failure_label = wasm_test_op("label", None, vec![]);
+    let mut failure_label = wasm_test_op(molt_ir::OpKind::Label, None, vec![]);
     failure_label.value = Some(1);
-    let mut allocation_failure_label = wasm_test_op("label", None, vec![]);
+    let mut allocation_failure_label = wasm_test_op(molt_ir::OpKind::Label, None, vec![]);
     allocation_failure_label.value = Some(2);
     let ir = SimpleIR {
         functions: vec![wasm_test_function(
@@ -452,31 +458,35 @@ fn native_callable_callargs_wrapper_releases_only_after_builder_allocation() {
             vec!["args", "kwargs"],
             None,
             vec![
-                wasm_test_op("callargs_new", Some("builder"), vec![]),
+                wasm_test_op(molt_ir::OpKind::CallargsNew, Some("builder"), vec![]),
                 allocation_check,
                 wasm_test_op(
-                    "callargs_expand_star",
+                    molt_ir::OpKind::CallargsExpandStar,
                     Some("expanded"),
                     vec!["builder", "args"],
                 ),
                 expansion_check,
                 wasm_test_op(
-                    "callargs_expand_kwstar",
+                    molt_ir::OpKind::CallargsExpandKwstar,
                     Some("kw_expanded"),
                     vec!["builder", "kwargs"],
                 ),
                 kw_expansion_check,
                 native_call,
                 dispatch_check,
-                wasm_test_op("release", None, vec!["builder"]),
-                wasm_test_op("ret", None, vec!["result"]),
+                wasm_test_op(molt_ir::OpKind::Release, None, vec!["builder"]),
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"]),
                 failure_label,
-                wasm_test_op("release", None, vec!["builder"]),
-                wasm_test_op("const_none", Some("failure"), vec![]),
-                wasm_test_op("ret", None, vec!["failure"]),
+                wasm_test_op(molt_ir::OpKind::Release, None, vec!["builder"]),
+                wasm_test_op(molt_ir::OpKind::ConstNone, Some("failure"), vec![]),
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["failure"]),
                 allocation_failure_label,
-                wasm_test_op("const_none", Some("allocation_failure"), vec![]),
-                wasm_test_op("ret", None, vec!["allocation_failure"]),
+                wasm_test_op(
+                    molt_ir::OpKind::ConstNone,
+                    Some("allocation_failure"),
+                    vec![],
+                ),
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["allocation_failure"]),
             ],
         )],
         profile: None,
@@ -735,7 +745,7 @@ fn relocatable_pyinit_links_provider_initializer_into_runtime_transaction_table_
     let node = PathBuf::from("node");
     let mut execution_ir = wasm_pyinit_ir();
     execution_ir.functions[0].params.clear();
-    let mut payload = wasm_test_op("const", Some("module_name"), vec![]);
+    let mut payload = wasm_test_op(molt_ir::OpKind::Const, Some("module_name"), vec![]);
     payload.value = Some(7);
     execution_ir.functions[0].ops.insert(0, payload);
     let module_name_bits = molt_codegen_abi::box_int_bits(7) as u64;

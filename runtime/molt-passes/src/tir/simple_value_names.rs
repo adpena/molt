@@ -67,12 +67,10 @@ impl SimpleValueNames {
                         names.source_names.insert(result, name.clone());
                     }
                 }
-                let kind = match op.attrs.get("_original_kind") {
-                    Some(AttrValue::Str(kind)) => kind.as_str(),
-                    _ => opcode_canonical_kind_table(op.opcode),
-                };
-                if simpleir_var_field_role_table(kind) == SimpleIrVarFieldRole::Definition
-                    && let Some(AttrValue::Str(slot)) = op.attrs.get("_var")
+                let kind = op.origin.or_else(|| opcode_canonical_kind_table(op.opcode));
+                if kind.is_some_and(|kind| {
+                    simpleir_var_field_role_table(kind) == SimpleIrVarFieldRole::Definition
+                }) && let Some(AttrValue::Str(slot)) = op.attrs.get("_var")
                 {
                     slots.insert(slot.clone());
                 }

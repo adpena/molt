@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
@@ -6,27 +7,23 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
         name: "caller".into(),
         ops: vec![
             OpIR {
-                kind: "call_indirect".into(),
                 s_value: Some("indirect_target".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::CallIndirect)
             },
             OpIR {
-                kind: "func_new_closure".into(),
                 s_value: Some("taken_target".into()),
                 value: Some(0),
                 task_kind: Some("generator".into()),
                 task_closure_size: Some(48),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::FuncNewClosure)
             },
             OpIR {
-                kind: "alloc_task".into(),
                 s_value: Some("task_target".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::AllocTask)
             },
             OpIR {
-                kind: "const_str".into(),
                 s_value: Some("unrelated".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstStr)
             },
         ],
         ..FunctionIR::default()
@@ -106,8 +103,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             name: "demo__molt_module_chunk_1".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             }],
             param_types: None,
             source_file: None,
@@ -122,18 +118,15 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             params: vec![],
             ops: vec![
                 OpIR {
-                    kind: "const_none".to_string(),
                     out: Some("ret".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["ret".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Ret)
                 },
                 OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::RetVoid)
                 },
             ],
             param_types: None,
@@ -157,14 +150,12 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
         params: vec!["name".to_string(), "package".to_string()],
         ops: vec![
             OpIR {
-                kind: "missing".to_string(),
                 out: Some("result".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Missing)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["result".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -197,8 +188,7 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
         name: "stdlib_void_helper".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         }],
         param_types: None,
         source_file: None,
@@ -231,14 +221,12 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "missing".to_string(),
                 out: Some("value".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Missing)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["value".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -255,16 +243,14 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         params: Vec::new(),
         ops: vec![
             OpIR {
-                kind: "call".to_string(),
                 s_value: Some("stdlib_value_helper".to_string()),
                 out: Some("result".to_string()),
                 args: Some(Vec::new()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["result".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -319,8 +305,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             name: "user_func".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             }],
             param_types: None,
             source_file: None,
@@ -334,10 +319,9 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             name: "demo__molt_module_chunk_1".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "func_new".to_string(),
                 s_value: Some("user_func".to_string()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::FuncNew)
             }],
             param_types: None,
             source_file: None,
@@ -360,12 +344,10 @@ fn compute_function_has_ret_treats_state_machines_as_value_returning() {
         params: vec!["self".to_string()],
         ops: vec![
             OpIR {
-                kind: "state_switch".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: Some(vec!["i64".to_string()]),
@@ -455,8 +437,7 @@ fn native_linkage_abi_freezes_entry_custody_for_consumer_declarations() {
         params: vec!["argument".to_string()],
         parameter_custody: vec![molt_ir::ParameterCustody::Transferred],
         ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         }],
         ..FunctionIR::default()
     };
@@ -491,22 +472,19 @@ fn value_function(constant: bool) -> FunctionIR {
     let ops = if constant {
         vec![
             OpIR {
-                kind: "const".into(),
                 value: Some(7),
                 out: Some("seven".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["seven".into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ]
     } else {
         vec![OpIR {
-            kind: "ret".into(),
             args: Some(vec!["value".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Ret)
         }]
     };
     FunctionIR {

@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn field_value_is_pointer(
@@ -73,11 +74,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_load_attr(&mut self, op: &TirOp) {
         let result_id = op.results[0];
-        let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        });
-        if matches!(original_kind, Some("get_attr_name")) && op.operands.len() >= 2 {
+        let original_kind = op.origin;
+        if matches!(original_kind, Some(OpKind::GetAttrName)) && op.operands.len() >= 2 {
             let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_name", 2);
             let val = self.borrowed_runtime_call_value(
                 get_fn,
@@ -93,7 +91,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.value_types.insert(result_id, TirType::DynBox);
             return;
         }
-        if matches!(original_kind, Some("load" | "guarded_load")) && !op.operands.is_empty() {
+        if matches!(original_kind, Some(OpKind::Load | OpKind::GuardedLoad))
+            && !op.operands.is_empty()
+        {
             let mut custody = self.begin_borrowed_operands(&op.operands[..1], "field_load");
             let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
             let offset = op
@@ -215,7 +215,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.value_types.insert(result_id, TirType::DynBox);
             return;
         }
-        if matches!(original_kind, Some("guarded_field_get")) {
+        if matches!(original_kind, Some(OpKind::GuardedFieldGet)) {
             // operands = [obj, expected_version]; the class statement is the
             // op's `class_definition` (HF-220).
             assert_eq!(op.operands.len(), 2, "admitted guarded_field_get operands");
@@ -279,7 +279,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mut custody = self.begin_borrowed_operands(&op.operands[..1], "get_attr");
         let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
         let site_kind = original_kind
-            .filter(|kind| matches!(*kind, "get_attr_generic_obj" | "get_attr_generic_ptr"));
+            .filter(|kind| matches!(*kind, OpKind::GetAttrGenericObj | OpKind::GetAttrGenericPtr));
         let val = if let Some(site_kind) = site_kind {
             let runtime_name = "molt_get_attr_object_ic";
             let i64_ty = self.backend.context.i64_type();
@@ -299,7 +299,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
             let get_fn = require_llvm_function_type(runtime_name, get_fn, fn_ty);
             let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
-            let site_bits = self.source_call_site_bits(op, site_kind);
+            let site_bits = self.source_call_site_bits(op, site_kind.as_str());
             let call_args_generic = [
                 obj_bits.into(),
                 attr_ptr.into(),
@@ -335,13 +335,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_store_attr(&mut self, op: &TirOp) {
-        let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        });
+        let original_kind = op.origin;
         // Attribute setters borrow the receiver and value and return the
         // immortal None, so a discarded result needs no release.
-        if matches!(original_kind, Some("set_attr_name")) && op.operands.len() >= 3 {
+        if matches!(original_kind, Some(OpKind::SetAttrName)) && op.operands.len() >= 3 {
             let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
             self.emit_borrowed_runtime_call(
                 op,
@@ -357,7 +354,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             );
             return;
         }
-        if matches!(original_kind, Some("store")) && op.operands.len() >= 2 {
+        if matches!(original_kind, Some(OpKind::Store)) && op.operands.len() >= 2 {
             let mut custody = self.begin_borrowed_operands(&op.operands[..2], "field_store");
             let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
             let val_bits = self.borrowed_operand(&mut custody, op.operands[1]);
@@ -470,7 +467,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             return;
         }
-        if matches!(original_kind, Some("guarded_field_set")) {
+        if matches!(original_kind, Some(OpKind::GuardedFieldSet)) {
             // operands = [obj, expected_version, value] (HF-220).
             assert_eq!(op.operands.len(), 3, "admitted guarded_field_set operands");
             let attr_name = op
@@ -533,7 +530,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let obj_i64 = self.borrowed_operand(&mut custody, op.operands[0]);
         let val_i64 = self.borrowed_operand(&mut custody, op.operands[1]);
         let site_kind = original_kind
-            .filter(|kind| matches!(*kind, "set_attr_generic_obj" | "set_attr_generic_ptr"));
+            .filter(|kind| matches!(*kind, OpKind::SetAttrGenericObj | OpKind::SetAttrGenericPtr));
         let result = if let Some(site_kind) = site_kind {
             // A generic write site carries its id, so a warm site writes the
             // inferred field without building the name string.
@@ -561,7 +558,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap_or_else(|| panic!("{runtime_name} must be a fixed LLVM runtime import"));
             let set_fn = require_llvm_function_type(runtime_name, set_fn, fn_ty);
             let (attr_ptr, attr_len_bits) = self.raw_string_const_ptr_and_len(attr_name);
-            let site_bits = self.source_call_site_bits(op, site_kind);
+            let site_bits = self.source_call_site_bits(op, site_kind.as_str());
             self.backend
                 .builder
                 .build_call(
@@ -603,12 +600,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_del_attr(&mut self, op: &TirOp) {
-        let original_kind = op.attrs.get("_original_kind").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        });
+        let original_kind = op.origin;
         // Attribute deletion borrows the receiver and returns the immortal None.
-        if matches!(original_kind, Some("del_attr_name")) && op.operands.len() >= 2 {
+        if matches!(original_kind, Some(OpKind::DelAttrName)) && op.operands.len() >= 2 {
             let del_fn = self.ensure_runtime_i64_fn("molt_del_attr_name", 2);
             self.emit_borrowed_runtime_call(
                 op,

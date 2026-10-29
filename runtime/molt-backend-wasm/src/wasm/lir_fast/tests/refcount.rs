@@ -11,6 +11,7 @@ fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
     let owned = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -19,6 +20,7 @@ fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DecRef,
         operands: vec![owned],
@@ -47,6 +49,7 @@ fn lir_fast_lane_del_boundary_emits_named_dec_ref_runtime_call() {
     let owned = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -55,6 +58,7 @@ fn lir_fast_lane_del_boundary_emits_named_dec_ref_runtime_call() {
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelBoundary,
         operands: vec![owned],

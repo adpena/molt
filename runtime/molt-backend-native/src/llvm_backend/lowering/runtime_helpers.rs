@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Lower a preserved operation through its admitted runtime boxed-call ABI.
@@ -7,7 +8,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// not symbol spelling or i64 carriers, authorize this route. Dedicated
     /// raw/mixed-ABI operations are handled before this dispatch; an unclassified
     /// runtime symbol fails closed instead of borrowing operand-zero semantics.
-    pub(super) fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: &str) -> bool {
+    pub(super) fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: OpKind) -> bool {
         if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {
             self.emit_boxed_runtime_call(op, abi);
             return true;

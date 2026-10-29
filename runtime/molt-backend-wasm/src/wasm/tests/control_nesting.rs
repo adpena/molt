@@ -22,7 +22,7 @@ const EMITTED_NESTING_BOUND: usize = 8192 + 16;
 /// The line that a statement's own cleanup pad records.
 const PAD_LINE: i64 = 1_000_000;
 
-fn marked(kind: &str, value: i64) -> OpIR {
+fn marked(kind: molt_ir::OpKind, value: i64) -> OpIR {
     OpIR {
         value: Some(value),
         ..wasm_test_op(kind, None, vec![])
@@ -163,11 +163,11 @@ fn uses_scope_tree(wasm: &[u8]) -> bool {
 /// every pad follows the whole body, so all pads are live forward targets.
 fn statements(first_line: i64, count: i64, body: &mut Vec<OpIR>, pads: &mut Vec<OpIR>) {
     for line in first_line..first_line + count {
-        body.push(marked("line", line));
-        body.push(marked("check_exception", PAD_LINE + line));
-        pads.push(marked("label", PAD_LINE + line));
-        pads.push(marked("line", PAD_LINE + line));
-        pads.push(wasm_test_op("ret_void", None, vec![]));
+        body.push(marked(molt_ir::OpKind::Line, line));
+        body.push(marked(molt_ir::OpKind::CheckException, PAD_LINE + line));
+        pads.push(marked(molt_ir::OpKind::Label, PAD_LINE + line));
+        pads.push(marked(molt_ir::OpKind::Line, PAD_LINE + line));
+        pads.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
     }
 }
 
@@ -175,9 +175,9 @@ fn statements(first_line: i64, count: i64, body: &mut Vec<OpIR>, pads: &mut Vec<
 /// each pad holds two (`label` is a block of its own): `3 * count + 2` blocks,
 /// and all `count` pads are far targets open after the last statement.
 fn forward_guest(count: i64) -> Vec<u8> {
-    let (mut ops, mut pads) = (vec![marked("label", 0)], Vec::new());
+    let (mut ops, mut pads) = (vec![marked(molt_ir::OpKind::Label, 0)], Vec::new());
     statements(1, count, &mut ops, &mut pads);
-    ops.push(wasm_test_op("ret_void", None, vec![]));
+    ops.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
     ops.extend(pads);
     emit(wasm_test_function("molt_main", vec![], None, ops))
 }
@@ -185,33 +185,33 @@ fn forward_guest(count: i64) -> Vec<u8> {
 /// Jumpful with a dispatch loop: a backward jump re-enters a block whose
 /// radix digits are nonzero at every level.
 fn dispatch_guest(head: i64, tail: i64) -> Vec<u8> {
-    let (mut ops, mut pads) = (vec![marked("label", 0)], Vec::new());
+    let (mut ops, mut pads) = (vec![marked(molt_ir::OpKind::Label, 0)], Vec::new());
     statements(1, head, &mut ops, &mut pads);
     ops.extend([
-        marked("jump", 30),
-        marked("label", 20),
-        marked("line", 20),
-        wasm_test_op("ret_void", None, vec![]),
-        marked("label", 30),
+        marked(molt_ir::OpKind::Jump, 30),
+        marked(molt_ir::OpKind::Label, 20),
+        marked(molt_ir::OpKind::Line, 20),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        marked(molt_ir::OpKind::Label, 30),
     ]);
     statements(head + 1, tail, &mut ops, &mut pads);
-    ops.push(marked("jump", 20));
+    ops.push(marked(molt_ir::OpKind::Jump, 20));
     ops.extend(pads);
     emit(wasm_test_function("molt_main", vec![], None, ops))
 }
 
 /// Many statements share one pad: few far targets, `count + 4` blocks.
 fn shared_pad_guest(count: i64) -> Vec<u8> {
-    let mut ops = vec![marked("label", 0)];
+    let mut ops = vec![marked(molt_ir::OpKind::Label, 0)];
     for line in 1..=count {
-        ops.push(marked("line", line));
-        ops.push(marked("check_exception", PAD_LINE));
+        ops.push(marked(molt_ir::OpKind::Line, line));
+        ops.push(marked(molt_ir::OpKind::CheckException, PAD_LINE));
     }
     ops.extend([
-        wasm_test_op("ret_void", None, vec![]),
-        marked("label", PAD_LINE),
-        marked("line", PAD_LINE),
-        wasm_test_op("ret_void", None, vec![]),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
+        marked(molt_ir::OpKind::Label, PAD_LINE),
+        marked(molt_ir::OpKind::Line, PAD_LINE),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
     ]);
     emit(wasm_test_function("molt_main", vec![], None, ops))
 }
@@ -220,16 +220,16 @@ fn shared_pad_guest(count: i64) -> Vec<u8> {
 fn stateful_guest(count: i64, state: i64) -> Vec<u8> {
     let mut ops = vec![OpIR {
         state_targets: Some(vec![(state, state)]),
-        ..wasm_test_op("state_switch", None, vec![])
+        ..wasm_test_op(molt_ir::OpKind::StateSwitch, None, vec![])
     }];
     let mut pads = Vec::new();
     statements(1, count, &mut ops, &mut pads);
-    ops.push(wasm_test_op("ret_void", None, vec![]));
+    ops.push(wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]));
     ops.extend(pads);
     ops.extend([
-        marked("state_label", state),
-        marked("line", 20),
-        wasm_test_op("ret_void", None, vec![]),
+        marked(molt_ir::OpKind::StateLabel, state),
+        marked(molt_ir::OpKind::Line, 20),
+        wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
     ]);
     emit(wasm_test_function("molt_main", vec!["task"], None, ops))
 }

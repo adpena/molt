@@ -2,8 +2,8 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_runtime_surface_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "module_slot" => {
+        match op.kind {
+            molt_ir::OpKind::ModuleSlot => {
                 let slot = self
                     .module_registry
                     .as_ref()
@@ -13,19 +13,19 @@ impl LuauBackend {
                 let out = sanitize_ident(op.out.as_deref().expect("admitted module_slot result"));
                 self.emit_line(&format!("local {out} = {slot}"));
             }
-            "context_enter" | "context_exit" => {
+            molt_ir::OpKind::ContextEnter | molt_ir::OpKind::ContextExit => {
                 self.emit_unsupported_op(op);
             }
-            "getframe" => {
+            molt_ir::OpKind::Getframe => {
                 self.emit_unsupported_op_with_reason(
                     op,
                     "Python-visible frame objects require exact whole-program locals activation",
                 );
             }
-            "function_closure_bits" => {
+            molt_ir::OpKind::FunctionClosureBits => {
                 self.emit_unsupported_op(op);
             }
-            "code_slot_set" => {
+            molt_ir::OpKind::CodeSlotSet => {
                 let args = op.args.as_deref().expect("admitted code_slot_set operands");
                 let slot = self
                     .code_slots
@@ -47,7 +47,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "code_slots_init" => {
+            molt_ir::OpKind::CodeSlotsInit => {
                 let count = op.value.expect("admitted code_slots_init count");
                 self.emit_line(&format!("molt_code_slots = table.create({count})"));
                 if let Some(ref out_name) = op.out
@@ -57,7 +57,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "trace_enter_slot" => {
+            molt_ir::OpKind::TraceEnterSlot => {
                 let code_id = self
                     .code_slots
                     .resolve(
@@ -70,7 +70,7 @@ impl LuauBackend {
                     "__molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
                 ));
             }
-            "trace_exit" => {
+            molt_ir::OpKind::TraceExit => {
                 self.emit_line(
                     "molt_frame_exit(__molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner)",
                 );
@@ -79,7 +79,9 @@ impl LuauBackend {
             // `n` at index `n + 1`, the missing sentinel while unbound. Luau
             // runs no drop insertion, so a home holds its binding without
             // reference custody.
-            "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+            molt_ir::OpKind::FrameHomeStore
+            | molt_ir::OpKind::FrameHomeCell
+            | molt_ir::OpKind::FrameHomePrivateCell => {
                 let (Some(slot), Some(src)) =
                     (op.value, op.args.as_ref().and_then(|args| args.first()))
                 else {
@@ -98,7 +100,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {value}"));
                 }
             }
-            "frame_home_load" => {
+            molt_ir::OpKind::FrameHomeLoad => {
                 let Some(slot) = op.value else {
                     self.emit_unsupported_op(op);
                     return true;
@@ -106,7 +108,7 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = __molt_homes[{}]", slot + 1));
             }
-            "frame_home_take" => {
+            molt_ir::OpKind::FrameHomeTake => {
                 let Some(slot) = op.value else {
                     self.emit_unsupported_op(op);
                     return true;
@@ -118,7 +120,7 @@ impl LuauBackend {
                     slot + 1
                 ));
             }
-            "frame_home_clear" => {
+            molt_ir::OpKind::FrameHomeClear => {
                 let Some(slot) = op.value else {
                     self.emit_unsupported_op(op);
                     return true;
@@ -131,7 +133,7 @@ impl LuauBackend {
             // `locals()` from the operand pairs; an unbound name is absent.
             // `value` 1 (before PEP 667): the activation's one dict, which
             // each call refreshes; otherwise a fresh snapshot.
-            "frame_locals" => {
+            molt_ir::OpKind::FrameLocals => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if op.value == Some(1) {
@@ -154,7 +156,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "frame_locals_set" => {
+            molt_ir::OpKind::FrameLocalsSet => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(locals) = args.first() {
                     let context = self.frame_context_expr();
@@ -166,7 +168,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "line" => {
+            molt_ir::OpKind::Line => {
                 let context = self.frame_context_expr();
                 let line = op.value.unwrap_or(0);
                 let col = op
@@ -181,7 +183,7 @@ impl LuauBackend {
                     "molt_frame_set_line({context}, {line}, {col}, {end_col})"
                 ));
             }
-            "invoke_ffi" => {
+            molt_ir::OpKind::InvokeFfi => {
                 let diagnostic =
                     "{__type=\"RuntimeError\", __msg=\"Luau target does not support FFI\"}";
                 if let Some(ref out_name) = op.out {
@@ -191,10 +193,10 @@ impl LuauBackend {
                     self.emit_line(&format!("error({diagnostic})"));
                 }
             }
-            "complex_from_obj" => {
+            molt_ir::OpKind::ComplexFromObj => {
                 self.emit_unsupported_op(op);
             }
-            "bytearray_fill_range" => {
+            molt_ir::OpKind::BytearrayFillRange => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 4 {
                     let bytearray = sanitize_ident(&args[0]);

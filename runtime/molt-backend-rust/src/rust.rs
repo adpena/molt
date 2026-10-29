@@ -268,10 +268,7 @@ impl RustBackend {
         let name = rust_ident(&func.name);
 
         let dispatch = func.ops.iter().any(|op| {
-            molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_reference(&op.kind)
-                || molt_ir::tir::op_kinds_generated::simpleir_kind_is_verifier_label_definition(
-                    &op.kind,
-                )
+            op.kind.is_verifier_label_reference() || op.kind.is_verifier_label_definition()
         });
         // The shared structured-PHI rewrite exposes stores before canonical SSA
         // owns predecessor arguments and loop-index recurrence. General labelled
@@ -320,7 +317,7 @@ impl RustBackend {
         // Collect loop index vars (need pre-declaration so they persist across iterations)
         let loop_idx_vars: Vec<String> = ops
             .iter()
-            .filter(|op| op.kind == "loop_index_start")
+            .filter(|op| op.kind == molt_ir::OpKind::LoopIndexStart)
             .filter_map(|op| op.out.as_deref())
             .map(rust_ident)
             .collect();
@@ -328,7 +325,7 @@ impl RustBackend {
         let named_storage_vars: Vec<String> = {
             let mut seen = Vec::new();
             for op in &ops {
-                if op.kind == "store_var"
+                if op.kind == molt_ir::OpKind::StoreVar
                     && let Some(binding) = molt_tir::tir::simple_def_use::simple_ir_binding(op)
                     && !binding.destination.is_empty()
                     && binding.destination != "none"
@@ -346,7 +343,8 @@ impl RustBackend {
         let closure_slots: Vec<String> = {
             let mut seen = Vec::new();
             for op in &ops {
-                if (op.kind == "closure_store" || op.kind == "closure_load")
+                if (op.kind == molt_ir::OpKind::ClosureStore
+                    || op.kind == molt_ir::OpKind::ClosureLoad)
                     && let Some(slot) = op.args.as_ref().and_then(|a| a.first())
                 {
                     let v = format!("__closure_{}", rust_ident(slot));
@@ -412,13 +410,13 @@ impl RustBackend {
             .iter()
             .filter(|op| {
                 matches!(
-                    op.kind.as_str(),
-                    "frame_home_store"
-                        | "frame_home_cell"
-                        | "frame_home_private_cell"
-                        | "frame_home_load"
-                        | "frame_home_take"
-                        | "frame_home_clear"
+                    op.kind,
+                    molt_ir::OpKind::FrameHomeStore
+                        | molt_ir::OpKind::FrameHomeCell
+                        | molt_ir::OpKind::FrameHomePrivateCell
+                        | molt_ir::OpKind::FrameHomeLoad
+                        | molt_ir::OpKind::FrameHomeTake
+                        | molt_ir::OpKind::FrameHomeClear
                 )
             })
             .filter_map(|op| op.value)
@@ -470,9 +468,9 @@ impl RustBackend {
                     }
                 }
 
-                if ops[i].kind == "loop_start"
+                if ops[i].kind == molt_ir::OpKind::LoopStart
                     && i + 1 < ops.len()
-                    && ops[i + 1].kind == "loop_index_start"
+                    && ops[i + 1].kind == molt_ir::OpKind::LoopIndexStart
                 {
                     let idx_op = &ops[i + 1];
                     if let Some(ref out_name) = idx_op.out {
@@ -500,19 +498,21 @@ impl RustBackend {
                 .find(|op| {
                     !op.is_async_work_poll()
                         && !matches!(
-                            op.kind.as_str(),
-                            "nop"
-                                | "comment"
-                                | "debug_label"
-                                | "line"
-                                | "check_exception"
-                                | "label"
+                            op.kind,
+                            molt_ir::OpKind::Nop
+                                | molt_ir::OpKind::Line
+                                | molt_ir::OpKind::CheckException
+                                | molt_ir::OpKind::Label
                         )
                 })
                 .is_none_or(|op| {
-                    !molt_ir::tir::op_kinds_generated::simpleir_kind_is_return_terminator(
-                        op.kind.as_str(),
-                    ) && !matches!(op.kind.as_str(), "jump" | "raise" | "reraise")
+                    !op.kind.is_return_terminator()
+                        && !matches!(
+                            op.kind,
+                            molt_ir::OpKind::Jump
+                                | molt_ir::OpKind::Raise
+                                | molt_ir::OpKind::Reraise
+                        )
                 });
 
         self.indent -= 1;

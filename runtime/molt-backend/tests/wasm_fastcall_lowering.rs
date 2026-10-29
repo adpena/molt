@@ -6,15 +6,12 @@ use molt_backend::WasmBackend;
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use wasmparser::{Operator, Parser, Payload, TypeRef};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 fn compile_single_function(ir_op: OpIR, params: &[&str]) -> Vec<u8> {
-    compile_ops(vec![ir_op, op("ret_void")], params)
+    compile_ops(vec![ir_op, op(molt_ir::OpKind::RetVoid)], params)
 }
 
 fn compile_ops(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
@@ -80,7 +77,7 @@ fn count(calls: &HashMap<String, usize>, import_name: &str) -> usize {
 
 #[test]
 fn wasm_lowers_small_arity_call_func_to_dispatch_lane() {
-    let mut call = op("call_func");
+    let mut call = op(molt_ir::OpKind::CallFunc);
     call.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     call.out = Some("v0".to_string());
 
@@ -92,7 +89,7 @@ fn wasm_lowers_small_arity_call_func_to_dispatch_lane() {
 
 #[test]
 fn wasm_lowers_medium_arity_call_func_to_dispatch_lane() {
-    let mut call = op("call_func");
+    let mut call = op(molt_ir::OpKind::CallFunc);
     call.args = Some(vec![
         "p0".to_string(),
         "p1".to_string(),
@@ -112,7 +109,7 @@ fn wasm_lowers_medium_arity_call_func_to_dispatch_lane() {
 
 #[test]
 fn wasm_lowers_small_arity_call_method_to_generic_ic() {
-    let mut call = op("call_method");
+    let mut call = op(molt_ir::OpKind::CallMethod);
     call.args = Some(vec![
         "p0".to_string(),
         "p1".to_string(),
@@ -130,7 +127,7 @@ fn wasm_lowers_small_arity_call_method_to_generic_ic() {
 
 #[test]
 fn wasm_lowers_small_arity_invoke_ffi_to_generic_ic() {
-    let mut invoke = op("invoke_ffi");
+    let mut invoke = op(molt_ir::OpKind::InvokeFfi);
     invoke.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     invoke.out = Some("v0".to_string());
     invoke.s_value = Some("bridge".to_string());
@@ -144,7 +141,7 @@ fn wasm_lowers_small_arity_invoke_ffi_to_generic_ic() {
 
 #[test]
 fn wasm_lowers_medium_arity_invoke_ffi_to_generic_ic() {
-    let mut invoke = op("invoke_ffi");
+    let mut invoke = op(molt_ir::OpKind::InvokeFfi);
     invoke.args = Some(vec![
         "p0".to_string(),
         "p1".to_string(),
@@ -171,7 +168,7 @@ fn wasm_lowers_medium_arity_invoke_ffi_to_generic_ic() {
 
 #[test]
 fn wasm_uses_dispatch_lane_for_large_arity_call_func() {
-    let mut call = op("call_func");
+    let mut call = op(molt_ir::OpKind::CallFunc);
     call.args = Some(vec![
         "p0".to_string(),
         "p1".to_string(),
@@ -197,7 +194,7 @@ fn wasm_uses_dispatch_lane_for_large_arity_call_func() {
 
 #[test]
 fn wasm_call_guarded_requires_known_target() {
-    let mut guarded = op("call_guarded");
+    let mut guarded = op(molt_ir::OpKind::CallGuarded);
     guarded.s_value = Some("molt_missing_target_for_guarded_test".to_string());
     guarded.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     guarded.out = Some("v0".to_string());
@@ -208,15 +205,15 @@ fn wasm_call_guarded_requires_known_target() {
 
 #[test]
 fn wasm_lowers_call_guarded_with_known_target() {
-    let mut target_ret = op("ret");
+    let mut target_ret = op(molt_ir::OpKind::Ret);
     target_ret.args = Some(vec!["t0".to_string()]);
 
-    let mut guarded = op("call_guarded");
+    let mut guarded = op(molt_ir::OpKind::CallGuarded);
     guarded.s_value = Some("molt_test_guarded_target".to_string());
     guarded.args = Some(vec!["p0".to_string(), "p1".to_string(), "p2".to_string()]);
     guarded.out = Some("v0".to_string());
 
-    let mut guarded_ret = op("ret");
+    let mut guarded_ret = op(molt_ir::OpKind::Ret);
     guarded_ret.args = Some(vec!["v0".to_string()]);
 
     let ir = SimpleIR {
@@ -254,17 +251,17 @@ fn wasm_lowers_call_guarded_with_known_target() {
 
 #[test]
 fn wasm_native_eh_elides_exception_pending_probe() {
-    let mut dict_new = op("dict_new");
+    let mut dict_new = op(molt_ir::OpKind::DictNew);
     dict_new.out = Some("v0".to_string());
     dict_new.args = Some(vec![]);
 
     let wasm = compile_ops(
         vec![
-            op("try_start"),
+            op(molt_ir::OpKind::TryStart),
             dict_new,
-            op("check_exception"),
-            op("try_end"),
-            op("ret_void"),
+            op(molt_ir::OpKind::CheckException),
+            op(molt_ir::OpKind::TryEnd),
+            op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );
@@ -275,23 +272,23 @@ fn wasm_native_eh_elides_exception_pending_probe() {
 
 #[test]
 fn wasm_native_eh_keeps_check_exception_as_noop_after_non_raising_op() {
-    let mut dict_new = op("dict_new");
+    let mut dict_new = op(molt_ir::OpKind::DictNew);
     dict_new.out = Some("v0".to_string());
     dict_new.args = Some(vec![]);
 
-    let mut const_one = op("const");
+    let mut const_one = op(molt_ir::OpKind::Const);
     const_one.value = Some(1);
     const_one.out = Some("v1".to_string());
 
     let wasm = compile_ops(
         vec![
-            op("try_start"),
+            op(molt_ir::OpKind::TryStart),
             dict_new,
-            op("check_exception"),
+            op(molt_ir::OpKind::CheckException),
             const_one,
-            op("check_exception"),
-            op("try_end"),
-            op("ret_void"),
+            op(molt_ir::OpKind::CheckException),
+            op(molt_ir::OpKind::TryEnd),
+            op(molt_ir::OpKind::RetVoid),
         ],
         &[],
     );

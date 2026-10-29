@@ -1,17 +1,18 @@
 use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
-/// Single-source kind authority for [`handle_exception_control_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_exception_control_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "raise",
-    "check_exception",
-    "async_work_poll",
-    "try_start",
-    "try_end",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Raise,
+    OpKind::CheckException,
+    OpKind::AsyncWorkPoll,
+    OpKind::TryStart,
+    OpKind::TryEnd,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for runtime exception control: `raise` and
@@ -77,14 +78,14 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
         )
     };
 
-    match op.kind.as_str() {
-        "try_start" | "try_end" => {
+    match op.kind {
+        OpKind::TryStart | OpKind::TryEnd => {
             // Native exception CFG and handler labels are constructed before
             // codegen from the SimpleIR label map. These ops remain in the
             // stream as region metadata, so route them explicitly instead of
             // letting no-result ops disappear through the catch-all.
         }
-        "raise" => {
+        OpKind::Raise => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let exc = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -111,7 +112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_control_op(
                 def_var_named(&mut *builder, vars, out, res);
             }
         }
-        kind if crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
+        kind if kind.is_exception_check() => {
             let target_id = op.value.unwrap_or_else(|| {
                 panic!(
                     "check_exception missing target label id in function `{}` op {}",

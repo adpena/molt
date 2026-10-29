@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 pub(super) fn token_test_ir() -> FunctionIR {
     FunctionIR {
@@ -7,15 +8,13 @@ pub(super) fn token_test_ir() -> FunctionIR {
         params: vec!["borrowed".into()],
         ops: vec![
             OpIR {
-                kind: "alloc".into(),
                 out: Some("owner".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Alloc)
             },
             OpIR {
-                kind: "copy".into(),
                 args: Some(vec!["owner".into()]),
                 out: Some("alias".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Copy)
             },
         ],
         param_types: None,

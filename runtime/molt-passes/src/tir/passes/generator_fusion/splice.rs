@@ -182,6 +182,7 @@ fn apply_fusion_staged(
             .unwrap_or(TirType::DynBox);
         caller.value_types.insert(slot, ty);
         preheader_init_ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![argument],

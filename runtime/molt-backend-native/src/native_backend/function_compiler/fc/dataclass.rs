@@ -1,15 +1,16 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_dataclass_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_dataclass_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "dataclass_new",
-    "dataclass_new_values",
-    "dataclass_get",
-    "dataclass_set",
-    "dataclass_set_class",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::DataclassNew,
+    OpKind::DataclassNewValues,
+    OpKind::DataclassGet,
+    OpKind::DataclassSet,
+    OpKind::DataclassSetClass,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for dataclass instance ops: `dataclass_new`/`dataclass_new_values`/`dataclass_get`/`dataclass_set`/`dataclass_set_class`.
@@ -58,8 +59,8 @@ pub(in crate::native_backend::function_compiler) fn handle_dataclass_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "dataclass_new" => {
+    match op.kind {
+        OpKind::DataclassNew => {
             emit_fixed_aggregate_constructor(
                 op,
                 FixedAggregateConstructor::DataclassTuple,
@@ -75,7 +76,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dataclass_op(
                 block_tracked_ptr,
             );
         }
-        "dataclass_new_values" => {
+        OpKind::DataclassNewValues => {
             emit_fixed_aggregate_constructor(
                 op,
                 FixedAggregateConstructor::Dataclass,
@@ -91,7 +92,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dataclass_op(
                 block_tracked_ptr,
             );
         }
-        "dataclass_get" => {
+        OpKind::DataclassGet => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -129,7 +130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dataclass_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "dataclass_set" => {
+        OpKind::DataclassSet => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -178,7 +179,7 @@ pub(in crate::native_backend::function_compiler) fn handle_dataclass_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "dataclass_set_class" => {
+        OpKind::DataclassSetClass => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,

@@ -1,16 +1,17 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_object_construct_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_object_construct_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "bound_method_new",
-    "object_new",
-    "object_new_bound",
-    "classmethod_new",
-    "staticmethod_new",
-    "property_new",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::BoundMethodNew,
+    OpKind::ObjectNew,
+    OpKind::ObjectNewBound,
+    OpKind::ClassmethodNew,
+    OpKind::StaticmethodNew,
+    OpKind::PropertyNew,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for object/descriptor construction: `object_new`/`object_new_bound`/`classmethod_new`/`staticmethod_new`/`property_new`/`bound_method_new`.
@@ -61,8 +62,8 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "bound_method_new" => {
+    match op.kind {
+        OpKind::BoundMethodNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let func_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -98,7 +99,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "object_new" => {
+        OpKind::ObjectNew => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
@@ -113,7 +114,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "object_new_bound" => {
+        OpKind::ObjectNewBound => {
             // Lower the frontend's class-instantiation fast path:
             // `Point(args)` where Point is a known non-dynamic class
             // becomes `OBJECT_NEW_BOUND(Point_class_ref)` + direct
@@ -147,7 +148,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "classmethod_new" => {
+        OpKind::ClassmethodNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let func_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -172,7 +173,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "staticmethod_new" => {
+        OpKind::StaticmethodNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let func_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -197,7 +198,7 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "property_new" => {
+        OpKind::PropertyNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let getter = var_get_boxed_overflow_safe(
                 &mut *module,

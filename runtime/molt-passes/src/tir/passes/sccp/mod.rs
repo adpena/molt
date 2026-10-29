@@ -201,20 +201,14 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 }
                 // Loop-carried values (loop_index_start, loop_index_next, iter_next)
                 // must not be folded — they change on each iteration.
-                let original_kind = op
-                    .attrs
-                    .get("_original_kind")
-                    .and_then(|v| {
-                        if let AttrValue::Str(s) = v {
-                            Some(s.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or("");
+                let original_kind = op.origin;
                 if matches!(
                     original_kind,
-                    "loop_index_start" | "loop_index_next" | "iter_next"
+                    Some(
+                        molt_ir::OpKind::LoopIndexStart
+                            | molt_ir::OpKind::LoopIndexNext
+                            | molt_ir::OpKind::IterNext
+                    )
                 ) {
                     lattice.insert(res, LatticeValue::Bottom);
                     continue;
@@ -309,6 +303,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         op.opcode = OpCode::ConstInt;
                         op.operands.clear();
                         op.attrs = attrs;
+                        op.origin = None;
                         stats.values_changed += 1;
                     }
                     ConstVal::Float(v) => {
@@ -317,6 +312,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         op.opcode = OpCode::ConstFloat;
                         op.operands.clear();
                         op.attrs = attrs;
+                        op.origin = None;
                         stats.values_changed += 1;
                     }
                     ConstVal::Bool(v) => {
@@ -325,6 +321,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         op.opcode = OpCode::ConstBool;
                         op.operands.clear();
                         op.attrs = attrs;
+                        op.origin = None;
                         stats.values_changed += 1;
                     }
                     ConstVal::Str(v) => {
@@ -333,12 +330,14 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         op.opcode = OpCode::ConstStr;
                         op.operands.clear();
                         op.attrs = attrs;
+                        op.origin = None;
                         stats.values_changed += 1;
                     }
                     ConstVal::None => {
                         op.opcode = OpCode::ConstNone;
                         op.operands.clear();
                         op.attrs = AttrDict::new();
+                        op.origin = None;
                         stats.values_changed += 1;
                     }
                     // Immutable compounds inform downstream value observations,

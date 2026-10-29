@@ -15,11 +15,11 @@ pub(super) fn emit_iterator_op(
     let locals = ctx.locals;
     let reloc_enabled = ctx.reloc_enabled;
 
-    match op.kind.as_str() {
+    match op.kind {
         // `molt_iter_next_unboxed(iterator, value_out)` returns the done flag
         // and writes the owned value (or None) to the out word as its last
         // action, so the shared scratch word is safe across generator code.
-        "iter_next_unboxed" => {
+        molt_ir::OpKind::IterNextUnboxed => {
             let args = op.args.as_ref().unwrap();
             let mut value_name = None;
             let mut done_name = None;

@@ -49,12 +49,12 @@ fn extern_declarations_keep_authored_return_contract_without_a_body() {
 fn lower_functions_to_tir_module_skips_externs_and_aligns_idx() {
     // [non-extern "a", extern "ext", non-extern "b"] → module has {a, b}
     // (extern skipped), idx_map aligns module position → original index.
-    let mut ext = make_func("ext", &[], vec![op("ret_void")]);
+    let mut ext = make_func("ext", &[], vec![op(molt_ir::OpKind::RetVoid)]);
     ext.is_extern = true;
     let funcs = vec![
-        make_func("a", &[], vec![op("ret_void")]),
+        make_func("a", &[], vec![op(molt_ir::OpKind::RetVoid)]),
         ext,
-        make_func("b", &[], vec![op("ret_void")]),
+        make_func("b", &[], vec![op(molt_ir::OpKind::RetVoid)]),
     ];
     let (module, idx_map) = lower_functions_to_tir_module(&funcs);
     assert_eq!(module.functions.len(), 2, "externs are skipped");
@@ -64,73 +64,73 @@ fn lower_functions_to_tir_module_skips_externs_and_aligns_idx() {
 }
 
 /// Helper to create an `OpIR` with just a `kind`.
-fn op(kind: &str) -> OpIR {
+fn op(kind: molt_ir::OpKind) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
+        kind,
+        ..OpIR::new(kind)
     }
 }
 
 /// Helper to create an `OpIR` with `kind`, `value`, and `out`.
-fn op_val_out(kind: &str, value: i64, out: &str) -> OpIR {
+fn op_val_out(kind: molt_ir::OpKind, value: i64, out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         value: Some(value),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 /// Helper to create an `OpIR` with `kind`, `args`, and `out`.
-fn op_args_out(kind: &str, args: &[&str], out: &str) -> OpIR {
+fn op_args_out(kind: molt_ir::OpKind, args: &[&str], out: &str) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 /// Helper to create an `OpIR` with `kind` and `args`.
-fn op_args(kind: &str, args: &[&str]) -> OpIR {
+fn op_args(kind: molt_ir::OpKind, args: &[&str]) -> OpIR {
     OpIR {
-        kind: kind.to_string(),
+        kind,
         args: Some(args.iter().map(|s| s.to_string()).collect()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
 #[test]
 fn cell_rewrite_skips_cells_escaped_into_closure_tuple() {
     let mut ops = vec![
-        op_args_out("missing", &[], "missing"),
-        op_args_out("list_new", &["missing"], "cell"),
-        op_val_out("const", 0, "zero"),
-        op_val_out("const", 7, "value"),
-        op_args("store_index", &["cell", "zero", "value"]),
-        op_args_out("tuple_new", &["cell"], "closure"),
-        op_args_out("index", &["cell", "zero"], "loaded"),
+        op_args_out(molt_ir::OpKind::Missing, &[], "missing"),
+        op_args_out(molt_ir::OpKind::ListNew, &["missing"], "cell"),
+        op_val_out(molt_ir::OpKind::Const, 0, "zero"),
+        op_val_out(molt_ir::OpKind::Const, 7, "value"),
+        op_args(molt_ir::OpKind::StoreIndex, &["cell", "zero", "value"]),
+        op_args_out(molt_ir::OpKind::TupleNew, &["cell"], "closure"),
+        op_args_out(molt_ir::OpKind::Index, &["cell", "zero"], "loaded"),
     ];
 
     assert!(!rewrite_cell_locals_to_store_load(&mut ops));
-    assert_eq!(ops[4].kind, "store_index");
-    assert_eq!(ops[6].kind, "index");
+    assert_eq!(ops[4].kind, molt_ir::OpKind::StoreIndex);
+    assert_eq!(ops[6].kind, molt_ir::OpKind::Index);
 }
 
 #[test]
 fn cell_rewrite_handles_multiple_unescaped_cells_independently() {
     let mut ops = vec![
-        op_args_out("missing", &[], "missing_a"),
-        op_args_out("list_new", &["missing_a"], "cell_a"),
-        op_args_out("missing", &[], "missing_b"),
-        op_args_out("list_new", &["missing_b"], "cell_b"),
-        op_val_out("const", 0, "zero"),
-        op_val_out("const", 1, "value_a"),
-        op_args("store_index", &["cell_a", "zero", "value_a"]),
-        op_args_out("index", &["cell_a", "zero"], "loaded_a"),
-        op_val_out("const", 2, "value_b"),
-        op_args("store_index", &["cell_b", "zero", "value_b"]),
-        op_args_out("index", &["cell_b", "zero"], "loaded_b"),
+        op_args_out(molt_ir::OpKind::Missing, &[], "missing_a"),
+        op_args_out(molt_ir::OpKind::ListNew, &["missing_a"], "cell_a"),
+        op_args_out(molt_ir::OpKind::Missing, &[], "missing_b"),
+        op_args_out(molt_ir::OpKind::ListNew, &["missing_b"], "cell_b"),
+        op_val_out(molt_ir::OpKind::Const, 0, "zero"),
+        op_val_out(molt_ir::OpKind::Const, 1, "value_a"),
+        op_args(molt_ir::OpKind::StoreIndex, &["cell_a", "zero", "value_a"]),
+        op_args_out(molt_ir::OpKind::Index, &["cell_a", "zero"], "loaded_a"),
+        op_val_out(molt_ir::OpKind::Const, 2, "value_b"),
+        op_args(molt_ir::OpKind::StoreIndex, &["cell_b", "zero", "value_b"]),
+        op_args_out(molt_ir::OpKind::Index, &["cell_b", "zero"], "loaded_b"),
     ];
 
     ops[6].source_op_idx = Some(41);
@@ -139,54 +139,54 @@ fn cell_rewrite_handles_multiple_unescaped_cells_independently() {
     ops[7].source_line = Some(13);
 
     assert!(rewrite_cell_locals_to_store_load(&mut ops));
-    assert_eq!(ops[6].kind, "store_var");
+    assert_eq!(ops[6].kind, molt_ir::OpKind::StoreVar);
     assert_eq!(ops[6].var.as_deref(), Some("_cell_cell_a_0"));
-    assert_eq!(ops[7].kind, "load_var");
+    assert_eq!(ops[7].kind, molt_ir::OpKind::LoadVar);
     assert_eq!(ops[7].var.as_deref(), Some("_cell_cell_a_0"));
     assert_eq!(ops[6].source_op_idx, Some(41));
     assert_eq!(ops[6].source_line, Some(12));
     assert_eq!(ops[7].source_op_idx, Some(42));
     assert_eq!(ops[7].source_line, Some(13));
-    assert_eq!(ops[9].kind, "store_var");
+    assert_eq!(ops[9].kind, molt_ir::OpKind::StoreVar);
     assert_eq!(ops[9].var.as_deref(), Some("_cell_cell_b_0"));
-    assert_eq!(ops[10].kind, "load_var");
+    assert_eq!(ops[10].kind, molt_ir::OpKind::LoadVar);
     assert_eq!(ops[10].var.as_deref(), Some("_cell_cell_b_0"));
 }
 
 #[test]
 fn loop_index_rewrite_preserves_source_identity_on_derived_ops() {
     let ops = vec![
-        op_val_out("const", 0, "initial"),
-        op("loop_start"),
+        op_val_out(molt_ir::OpKind::Const, 0, "initial"),
+        op(molt_ir::OpKind::LoopStart),
         OpIR {
-            kind: "loop_index_start".into(),
+            kind: molt_ir::OpKind::LoopIndexStart,
             args: Some(vec!["initial".into()]),
             out: Some("index".into()),
             source_op_idx: Some(73),
             source_line: Some(21),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::LoopIndexStart)
         },
         OpIR {
-            kind: "loop_index_next".into(),
+            kind: molt_ir::OpKind::LoopIndexNext,
             args: Some(vec!["index".into()]),
             out: Some("index".into()),
             source_op_idx: Some(74),
             source_line: Some(22),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::LoopIndexNext)
         },
-        op("loop_continue"),
-        op("loop_end"),
+        op(molt_ir::OpKind::LoopContinue),
+        op(molt_ir::OpKind::LoopEnd),
     ];
 
     let rewritten = normalize_loop_indices("source_identity", ops);
 
-    assert_eq!(rewritten[1].kind, "store_var");
+    assert_eq!(rewritten[1].kind, molt_ir::OpKind::StoreVar);
     assert_eq!(rewritten[1].source_op_idx, Some(73));
     assert_eq!(rewritten[1].source_line, Some(21));
-    assert_eq!(rewritten[3].kind, "load_var");
+    assert_eq!(rewritten[3].kind, molt_ir::OpKind::LoadVar);
     assert_eq!(rewritten[3].source_op_idx, Some(73));
     assert_eq!(rewritten[3].source_line, Some(21));
-    assert_eq!(rewritten[4].kind, "store_var");
+    assert_eq!(rewritten[4].kind, molt_ir::OpKind::StoreVar);
     assert_eq!(rewritten[4].source_op_idx, Some(74));
     assert_eq!(rewritten[4].source_line, Some(22));
 }
@@ -195,8 +195,8 @@ fn loop_index_rewrite_preserves_source_identity_on_derived_ops() {
 fn loop_normalization_reuses_unchanged_owned_allocation() {
     let mut ops = Vec::with_capacity(19);
     ops.extend([
-        op_val_out("const", 42, "answer"),
-        op_args("ret", &["answer"]),
+        op_val_out(molt_ir::OpKind::Const, 42, "answer"),
+        op_args(molt_ir::OpKind::Ret, &["answer"]),
     ]);
     let allocation = ops.as_ptr();
     let capacity = ops.capacity();
@@ -218,29 +218,49 @@ fn loop_normalization_reuses_unchanged_owned_allocation() {
 
 #[test]
 fn loop_normalization_keeps_nested_initializers_outside_their_own_latches() {
-    let marked = |kind: &str, args: &[&str], out: Option<&str>, origin| OpIR {
-        kind: kind.into(),
+    let marked = |kind: molt_ir::OpKind, args: &[&str], out: Option<&str>, origin| OpIR {
+        kind,
         args: Some(args.iter().map(|arg| (*arg).into()).collect()),
         out: out.map(str::to_string),
         source_op_idx: Some(origin),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     };
     let ops = normalize_loop_indices(
         "nested",
         vec![
-            marked("loop_start", &[], None, 11),
-            marked("loop_index_start", &["outer_seed"], Some("outer"), 12),
-            marked("loop_break_if_false", &["outer_ok"], None, 13),
-            marked("loop_start", &[], None, 21),
-            marked("loop_index_start", &["inner_seed"], Some("inner"), 22),
-            marked("loop_break_if_false", &["inner_ok"], None, 23),
-            marked("loop_index_next", &["inner_updated"], Some("inner"), 24),
-            marked("loop_continue", &[], None, 25),
-            marked("loop_end", &[], None, 26),
-            marked("loop_index_next", &["outer_updated"], Some("outer"), 31),
-            marked("loop_continue", &[], None, 32),
-            marked("loop_end", &[], None, 33),
-            marked("ret_void", &[], None, 40),
+            marked(molt_ir::OpKind::LoopStart, &[], None, 11),
+            marked(
+                molt_ir::OpKind::LoopIndexStart,
+                &["outer_seed"],
+                Some("outer"),
+                12,
+            ),
+            marked(molt_ir::OpKind::LoopBreakIfFalse, &["outer_ok"], None, 13),
+            marked(molt_ir::OpKind::LoopStart, &[], None, 21),
+            marked(
+                molt_ir::OpKind::LoopIndexStart,
+                &["inner_seed"],
+                Some("inner"),
+                22,
+            ),
+            marked(molt_ir::OpKind::LoopBreakIfFalse, &["inner_ok"], None, 23),
+            marked(
+                molt_ir::OpKind::LoopIndexNext,
+                &["inner_updated"],
+                Some("inner"),
+                24,
+            ),
+            marked(molt_ir::OpKind::LoopContinue, &[], None, 25),
+            marked(molt_ir::OpKind::LoopEnd, &[], None, 26),
+            marked(
+                molt_ir::OpKind::LoopIndexNext,
+                &["outer_updated"],
+                Some("outer"),
+                31,
+            ),
+            marked(molt_ir::OpKind::LoopContinue, &[], None, 32),
+            marked(molt_ir::OpKind::LoopEnd, &[], None, 33),
+            marked(molt_ir::OpKind::RetVoid, &[], None, 40),
         ],
     );
     // Independent graph authority establishes where recurrence executes. Do not
@@ -250,16 +270,16 @@ fn loop_normalization_keeps_nested_initializers_outside_their_own_latches() {
         ("outer", "outer_seed", "outer_updated", 11, 12, 31, 32),
         ("inner", "inner_seed", "inner_updated", 21, 22, 24, 25),
     ] {
-        let find = |kind: &str, origin| {
+        let find = |kind: molt_ir::OpKind, origin| {
             ops.iter()
                 .position(|op| op.kind == kind && op.source_op_idx == Some(origin))
                 .unwrap()
         };
-        let initialization = find("store_var", init_origin);
-        let header = find("loop_start", header_origin);
-        let read = find("load_var", init_origin);
-        let update = find("store_var", update_origin);
-        let latch = find("loop_continue", latch_origin);
+        let initialization = find(molt_ir::OpKind::StoreVar, init_origin);
+        let header = find(molt_ir::OpKind::LoopStart, header_origin);
+        let read = find(molt_ir::OpKind::LoadVar, init_origin);
+        let update = find(molt_ir::OpKind::StoreVar, update_origin);
+        let latch = find(molt_ir::OpKind::LoopContinue, latch_origin);
         assert!(initialization < header && header < read && read < update && update < latch);
         assert_eq!(ops[initialization].var.as_deref(), Some(carrier));
         assert_eq!(
@@ -285,36 +305,40 @@ fn loop_normalization_keeps_nested_initializers_outside_their_own_latches() {
 fn loop_normalization_preserves_outer_update_and_explicit_outer_continue() {
     for inner_counted in [false, true] {
         let mut ops = vec![
-            op_val_out("const", 7, "seed"),
-            op_val_out("const", 1, "one"),
-            op_val_out("const", 10, "limit"),
-            op("loop_start"),
-            op_args_out("loop_index_start", &["seed"], "outer"),
-            op_args_out("lt", &["outer", "limit"], "condition"),
-            op_args("loop_break_if_false", &["condition"]),
-            op("loop_start"),
+            op_val_out(molt_ir::OpKind::Const, 7, "seed"),
+            op_val_out(molt_ir::OpKind::Const, 1, "one"),
+            op_val_out(molt_ir::OpKind::Const, 10, "limit"),
+            op(molt_ir::OpKind::LoopStart),
+            op_args_out(molt_ir::OpKind::LoopIndexStart, &["seed"], "outer"),
+            op_args_out(molt_ir::OpKind::Lt, &["outer", "limit"], "condition"),
+            op_args(molt_ir::OpKind::LoopBreakIfFalse, &["condition"]),
+            op(molt_ir::OpKind::LoopStart),
         ];
         if inner_counted {
-            ops.push(op_args_out("loop_index_start", &["seed"], "inner"));
+            ops.push(op_args_out(
+                molt_ir::OpKind::LoopIndexStart,
+                &["seed"],
+                "inner",
+            ));
         }
         ops.extend([
-            op_args_out("add", &["outer", "one"], "advanced"),
+            op_args_out(molt_ir::OpKind::Add, &["outer", "one"], "advanced"),
             OpIR {
                 source_op_idx: Some(73),
-                ..op_args_out("loop_index_next", &["advanced"], "outer")
+                ..op_args_out(molt_ir::OpKind::LoopIndexNext, &["advanced"], "outer")
             },
             OpIR {
                 value: Some(99),
-                ..op("jump")
+                ..op(molt_ir::OpKind::Jump)
             },
-            op("loop_end"),
+            op(molt_ir::OpKind::LoopEnd),
             OpIR {
                 value: Some(99),
-                ..op("label")
+                ..op(molt_ir::OpKind::Label)
             },
-            op("loop_continue"),
-            op("loop_end"),
-            op_args("ret", &["outer"]),
+            op(molt_ir::OpKind::LoopContinue),
+            op(molt_ir::OpKind::LoopEnd),
+            op_args(molt_ir::OpKind::Ret, &["outer"]),
         ]);
         let normalized = normalize_loop_indices("outer_transfer", ops);
         let flow = molt_ir::simple_verify::simple_ir_logical_flow(&normalized);
@@ -326,7 +350,7 @@ fn loop_normalization_preserves_outer_update_and_explicit_outer_continue() {
             .iter()
             .position(|op| op.source_op_idx == Some(73))
             .unwrap();
-        assert_eq!(normalized[update].kind, "store_var");
+        assert_eq!(normalized[update].kind, molt_ir::OpKind::StoreVar);
         assert_eq!(normalized[update].var.as_deref(), Some("outer"));
         assert_eq!(
             normalized[update].args.as_deref(),
@@ -336,22 +360,22 @@ fn loop_normalization_preserves_outer_update_and_explicit_outer_continue() {
             .iter()
             .find(|op| op.out.as_deref() == Some("advanced"))
             .unwrap();
-        assert_eq!(increment.kind, "add");
+        assert_eq!(increment.kind, molt_ir::OpKind::Add);
         assert_eq!(
             increment.args.as_deref(),
             Some(&["outer".to_string(), "one".to_string()][..])
         );
         let jump = flow.edges[update][0].target;
-        assert_eq!(normalized[jump].kind, "jump");
+        assert_eq!(normalized[jump].kind, molt_ir::OpKind::Jump);
         let target = flow.edges[jump][0].target;
-        assert_eq!(normalized[target].kind, "label");
+        assert_eq!(normalized[target].kind, molt_ir::OpKind::Label);
         assert_eq!(normalized[target].value, Some(99));
         let outer_latch = flow.edges[target][0].target;
-        assert_eq!(normalized[outer_latch].kind, "loop_continue");
+        assert_eq!(normalized[outer_latch].kind, molt_ir::OpKind::LoopContinue);
         let outer_header = flow.edges[outer_latch][0].target;
-        assert_eq!(normalized[outer_header].kind, "loop_start");
+        assert_eq!(normalized[outer_header].kind, molt_ir::OpKind::LoopStart);
         let reload = flow.edges[outer_header][0].target;
-        assert_eq!(normalized[reload].kind, "load_var");
+        assert_eq!(normalized[reload].kind, molt_ir::OpKind::LoadVar);
         assert_eq!(normalized[reload].var.as_deref(), Some("outer"));
         assert!(outer_header < update);
         assert_eq!(flow.edges[update].len(), 1);
@@ -364,7 +388,9 @@ fn loop_normalization_preserves_outer_update_and_explicit_outer_continue() {
             assert_eq!(
                 normalized
                     .iter()
-                    .filter(|op| { op.kind == "store_var" && op.var.as_deref() == Some("inner") })
+                    .filter(|op| {
+                        op.kind == molt_ir::OpKind::StoreVar && op.var.as_deref() == Some("inner")
+                    })
                     .count(),
                 1,
                 "the outer update must not mutate the inner seed"
@@ -375,57 +401,113 @@ fn loop_normalization_preserves_outer_update_and_explicit_outer_continue() {
 
 #[test]
 fn loop_normalization_rejects_orphan_and_malformed_carriers() {
-    let carrier = |kind: &str, args: Option<Vec<&str>>, out: Option<&str>| OpIR {
-        kind: kind.into(),
+    let carrier = |kind: molt_ir::OpKind, args: Option<Vec<&str>>, out: Option<&str>| OpIR {
+        kind,
         args: args.map(|args| args.into_iter().map(str::to_string).collect()),
         out: out.map(str::to_string),
         source_op_idx: Some(73),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     };
-    let start = || carrier("loop_index_start", Some(vec!["seed"]), Some("index"));
-    let next = || carrier("loop_index_next", Some(vec!["updated"]), Some("index"));
+    let start = || {
+        carrier(
+            molt_ir::OpKind::LoopIndexStart,
+            Some(vec!["seed"]),
+            Some("index"),
+        )
+    };
+    let next = || {
+        carrier(
+            molt_ir::OpKind::LoopIndexNext,
+            Some(vec!["updated"]),
+            Some("index"),
+        )
+    };
     let mut cases = vec![
         vec![start()],
         vec![next()],
-        vec![op("loop_start"), next(), op("loop_end")],
-        // A closed loop no longer owns a carrier, even if its spelling matches.
-        vec![op("loop_start"), start(), op("loop_end"), next()],
-        // An orphan with a previously valid spelling has no lexical owner.
-        vec![op("loop_start"), start(), op("loop_end"), start()],
-        vec![op("loop_start"), start(), start(), op("loop_end")],
         vec![
-            op("loop_start"),
+            op(molt_ir::OpKind::LoopStart),
+            next(),
+            op(molt_ir::OpKind::LoopEnd),
+        ],
+        // A closed loop no longer owns a carrier, even if its spelling matches.
+        vec![
+            op(molt_ir::OpKind::LoopStart),
             start(),
-            carrier("loop_index_next", Some(vec!["updated"]), Some("other")),
-            op("loop_end"),
+            op(molt_ir::OpKind::LoopEnd),
+            next(),
+        ],
+        // An orphan with a previously valid spelling has no lexical owner.
+        vec![
+            op(molt_ir::OpKind::LoopStart),
+            start(),
+            op(molt_ir::OpKind::LoopEnd),
+            start(),
+        ],
+        vec![
+            op(molt_ir::OpKind::LoopStart),
+            start(),
+            start(),
+            op(molt_ir::OpKind::LoopEnd),
+        ],
+        vec![
+            op(molt_ir::OpKind::LoopStart),
+            start(),
+            carrier(
+                molt_ir::OpKind::LoopIndexNext,
+                Some(vec!["updated"]),
+                Some("other"),
+            ),
+            op(molt_ir::OpKind::LoopEnd),
         ],
     ];
     for malformed in [
-        carrier("loop_index_start", None, Some("index")),
-        carrier("loop_index_start", Some(vec![]), Some("index")),
+        carrier(molt_ir::OpKind::LoopIndexStart, None, Some("index")),
+        carrier(molt_ir::OpKind::LoopIndexStart, Some(vec![]), Some("index")),
         carrier(
-            "loop_index_start",
+            molt_ir::OpKind::LoopIndexStart,
             Some(vec!["seed", "extra"]),
             Some("index"),
         ),
-        carrier("loop_index_start", Some(vec![""]), Some("index")),
-        carrier("loop_index_start", Some(vec!["seed"]), None),
-        carrier("loop_index_start", Some(vec!["seed"]), Some("none")),
+        carrier(
+            molt_ir::OpKind::LoopIndexStart,
+            Some(vec![""]),
+            Some("index"),
+        ),
+        carrier(molt_ir::OpKind::LoopIndexStart, Some(vec!["seed"]), None),
+        carrier(
+            molt_ir::OpKind::LoopIndexStart,
+            Some(vec!["seed"]),
+            Some("none"),
+        ),
     ] {
-        cases.push(vec![op("loop_start"), malformed, op("loop_end")]);
+        cases.push(vec![
+            op(molt_ir::OpKind::LoopStart),
+            malformed,
+            op(molt_ir::OpKind::LoopEnd),
+        ]);
     }
     for malformed in [
-        carrier("loop_index_next", None, Some("index")),
-        carrier("loop_index_next", Some(vec![]), Some("index")),
+        carrier(molt_ir::OpKind::LoopIndexNext, None, Some("index")),
+        carrier(molt_ir::OpKind::LoopIndexNext, Some(vec![]), Some("index")),
         carrier(
-            "loop_index_next",
+            molt_ir::OpKind::LoopIndexNext,
             Some(vec!["updated", "extra"]),
             Some("index"),
         ),
-        carrier("loop_index_next", Some(vec![""]), Some("index")),
-        carrier("loop_index_next", Some(vec!["updated"]), None),
+        carrier(
+            molt_ir::OpKind::LoopIndexNext,
+            Some(vec![""]),
+            Some("index"),
+        ),
+        carrier(molt_ir::OpKind::LoopIndexNext, Some(vec!["updated"]), None),
     ] {
-        cases.push(vec![op("loop_start"), start(), malformed, op("loop_end")]);
+        cases.push(vec![
+            op(molt_ir::OpKind::LoopStart),
+            start(),
+            malformed,
+            op(molt_ir::OpKind::LoopEnd),
+        ]);
     }
     for ops in cases {
         let error = std::panic::catch_unwind(|| normalize_loop_indices("malformed", ops))
@@ -453,9 +535,9 @@ fn trivial_function_lowering() {
         "test_add",
         &[],
         vec![
-            op_val_out("const", 1, "x"),
-            op_args_out("add", &["x"], "y"),
-            op_args("ret", &["y"]),
+            op_val_out(molt_ir::OpKind::Const, 1, "x"),
+            op_args_out(molt_ir::OpKind::Add, &["x"], "y"),
+            op_args(molt_ir::OpKind::Ret, &["y"]),
         ],
     );
 
@@ -494,13 +576,13 @@ fn if_else_control_flow() {
         "test_branch",
         &[],
         vec![
-            op_val_out("const", 0, "c"), // 0 entry
-            op_args("if", &["c"]),       // 1 ends entry
-            op_val_out("const", 1, "x"), // 2 then
-            op("else"),                  // 3 else
-            op_val_out("const", 2, "x"), // 4 else body
-            op("end_if"),                // 5 join
-            op_args("ret", &["x"]),      // 6 return
+            op_val_out(molt_ir::OpKind::Const, 0, "c"), // 0 entry
+            op_args(molt_ir::OpKind::If, &["c"]),       // 1 ends entry
+            op_val_out(molt_ir::OpKind::Const, 1, "x"), // 2 then
+            op(molt_ir::OpKind::Else),                  // 3 else
+            op_val_out(molt_ir::OpKind::Const, 2, "x"), // 4 else body
+            op(molt_ir::OpKind::EndIf),                 // 5 join
+            op_args(molt_ir::OpKind::Ret, &["x"]),      // 6 return
         ],
     );
 
@@ -545,39 +627,39 @@ fn module_import_preserves_operand_through_lower_to_tir() {
         &["__molt_module_obj__"],
         vec![
             OpIR {
-                kind: "line".to_string(),
+                kind: molt_ir::OpKind::Line,
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
             OpIR {
-                kind: "const_str".to_string(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("builtins".to_string()),
                 out: Some("v62".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
-            op_args_out("module_import", &["v62"], "v63"),
+            op_args_out(molt_ir::OpKind::ModuleImport, &["v62"], "v63"),
             OpIR {
-                kind: "check_exception".to_string(),
+                kind: molt_ir::OpKind::CheckException,
                 value: Some(3),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             },
             OpIR {
-                kind: "const_str".to_string(),
+                kind: molt_ir::OpKind::ConstStr,
                 s_value: Some("_builtins".to_string()),
                 out: Some("v64".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_set_attr".to_string(),
+                kind: molt_ir::OpKind::ModuleSetAttr,
                 args: Some(vec![
                     "__molt_module_obj__".to_string(),
                     "v64".to_string(),
                     "v63".to_string(),
                 ]),
                 out: Some("none".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleSetAttr)
             },
-            op("ret_void"),
+            op(molt_ir::OpKind::RetVoid),
         ],
     );
 
@@ -598,11 +680,11 @@ fn gpu_thread_id_lowers_to_runtime_backed_call_in_tir() {
         &[],
         vec![
             OpIR {
-                kind: "gpu_thread_id".to_string(),
+                kind: molt_ir::OpKind::GpuThreadId,
                 out: Some("tid".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::GpuThreadId)
             },
-            op_args("ret", &["tid"]),
+            op_args(molt_ir::OpKind::Ret, &["tid"]),
         ],
     );
 
@@ -619,23 +701,22 @@ fn gpu_thread_id_lowers_to_runtime_backed_call_in_tir() {
             "molt_gpu_thread_id".to_string()
         ))
     );
-    assert_eq!(
-        call_op.attrs.get("_original_kind"),
-        Some(&crate::tir::ops::AttrValue::Str(
-            "gpu_thread_id".to_string()
-        ))
-    );
+    assert_eq!(call_op.origin, Some(molt_ir::OpKind::GpuThreadId));
 }
 
 #[test]
 fn source_origins_survive_removed_markers_without_mutating_the_input() {
     for explicit in [None, Some(91)] {
-        let mut constant = op_val_out("const", 7, "value");
+        let mut constant = op_val_out(molt_ir::OpKind::Const, 7, "value");
         constant.source_op_idx = explicit;
         let func = make_func(
             "source_origin_before_marker_removal",
             &[],
-            vec![op("drop_inserted"), constant, op_args("ret", &["value"])],
+            vec![
+                op(molt_ir::OpKind::DropInserted),
+                constant,
+                op_args(molt_ir::OpKind::Ret, &["value"]),
+            ],
         );
         let tir = lower_to_tir(&func);
         let constant = tir
@@ -655,14 +736,21 @@ fn source_origins_survive_removed_markers_without_mutating_the_input() {
 
 #[test]
 fn predicate_return_contracts_require_exact_not_annotated_operands() {
-    for kind in ["eq", "ne", "lt", "le", "gt", "ge"] {
+    for kind in [
+        molt_ir::OpKind::Eq,
+        molt_ir::OpKind::Ne,
+        molt_ir::OpKind::Lt,
+        molt_ir::OpKind::Le,
+        molt_ir::OpKind::Gt,
+        molt_ir::OpKind::Ge,
+    ] {
         let mut source = make_func(
             "annotated_predicate",
             &["left", "right"],
             vec![
                 op_args_out(kind, &["left", "right"], "predicate"),
-                op_args_out("copy", &["predicate"], "copied"),
-                op_args("ret", &["copied"]),
+                op_args_out(molt_ir::OpKind::Copy, &["predicate"], "copied"),
+                op_args(molt_ir::OpKind::Ret, &["copied"]),
             ],
         );
         source.param_types = Some(vec!["int".into(), "int".into()]);
@@ -685,11 +773,11 @@ fn predicate_return_contracts_require_exact_not_annotated_operands() {
             "exact_predicate",
             &[],
             vec![
-                op_val_out("const", 1, "left"),
-                op_val_out("const", 2, "right"),
+                op_val_out(molt_ir::OpKind::Const, 1, "left"),
+                op_val_out(molt_ir::OpKind::Const, 2, "right"),
                 op_args_out(kind, &["left", "right"], "predicate"),
-                op_args_out("copy", &["predicate"], "copied"),
-                op_args("ret", &["copied"]),
+                op_args_out(molt_ir::OpKind::Copy, &["predicate"], "copied"),
+                op_args(molt_ir::OpKind::Ret, &["copied"]),
             ],
         );
         assert_eq!(lower_to_tir(&exact).return_type, TirType::Bool);
@@ -699,10 +787,10 @@ fn predicate_return_contracts_require_exact_not_annotated_operands() {
 #[test]
 fn arithmetic_return_contracts_require_exact_not_annotated_operands() {
     for (kind, exact_result) in [
-        ("add", TirType::I64),
-        ("mul", TirType::I64),
-        ("div", TirType::F64),
-        ("pow", TirType::DynBox),
+        (molt_ir::OpKind::Add, TirType::I64),
+        (molt_ir::OpKind::Mul, TirType::I64),
+        (molt_ir::OpKind::Div, TirType::F64),
+        (molt_ir::OpKind::Pow, TirType::DynBox),
     ] {
         for annotation in ["int", "float"] {
             let mut source = make_func(
@@ -710,8 +798,8 @@ fn arithmetic_return_contracts_require_exact_not_annotated_operands() {
                 &["left", "right"],
                 vec![
                     op_args_out(kind, &["left", "right"], "result"),
-                    op_args_out("copy", &["result"], "copied"),
-                    op_args("ret", &["copied"]),
+                    op_args_out(molt_ir::OpKind::Copy, &["result"], "copied"),
+                    op_args(molt_ir::OpKind::Ret, &["copied"]),
                 ],
             );
             source.param_types = Some(vec![annotation.into(), annotation.into()]);
@@ -733,11 +821,11 @@ fn arithmetic_return_contracts_require_exact_not_annotated_operands() {
             "exact_arithmetic",
             &[],
             vec![
-                op_val_out("const", 1, "left"),
-                op_val_out("const", 2, "right"),
+                op_val_out(molt_ir::OpKind::Const, 1, "left"),
+                op_val_out(molt_ir::OpKind::Const, 2, "right"),
                 op_args_out(kind, &["left", "right"], "result"),
-                op_args_out("copy", &["result"], "copied"),
-                op_args("ret", &["copied"]),
+                op_args_out(molt_ir::OpKind::Copy, &["result"], "copied"),
+                op_args(molt_ir::OpKind::Ret, &["copied"]),
             ],
         );
         let mut tir = lower_to_tir(&source);
@@ -754,8 +842,8 @@ fn annotated_parameter_returns_do_not_promise_exact_scalar_abi() {
             "annotated_identity",
             &["value"],
             vec![
-                op_args_out("copy", &["value"], "copied"),
-                op_args("ret", &["copied"]),
+                op_args_out(molt_ir::OpKind::Copy, &["value"], "copied"),
+                op_args(molt_ir::OpKind::Ret, &["copied"]),
             ],
         );
         source.param_types = Some(vec![annotation.into()]);
@@ -795,20 +883,29 @@ fn phase_only_functions_preserve_markers_without_phantom_exact_facts() {
         DROP_INSERTED_ATTR, EXCEPTION_REGION_DROPS_INSERTED_ATTR,
     };
     for markers in [
-        vec![DROP_INSERTED_ATTR],
-        vec![EXCEPTION_REGION_DROPS_INSERTED_ATTR],
-        vec![DROP_INSERTED_ATTR, EXCEPTION_REGION_DROPS_INSERTED_ATTR],
+        vec![(molt_ir::OpKind::DropInserted, DROP_INSERTED_ATTR)],
+        vec![(
+            molt_ir::OpKind::ExceptionRegionDropsInserted,
+            EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+        )],
+        vec![
+            (molt_ir::OpKind::DropInserted, DROP_INSERTED_ATTR),
+            (
+                molt_ir::OpKind::ExceptionRegionDropsInserted,
+                EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+            ),
+        ],
     ] {
         let func_ir = make_func(
             "phase_only",
             &[],
-            markers.iter().map(|name| op(name)).collect(),
+            markers.iter().map(|(kind, _)| op(*kind)).collect(),
         );
         let tir = lower_to_tir(&func_ir);
         assert!(tir.blocks.is_empty());
         assert!(crate::tir::type_refine::extract_exact_scalar_map(&tir).is_empty());
         assert!(crate::tir::type_refine::extract_proven_map(&tir).is_empty());
-        for marker in markers {
+        for (_, marker) in markers {
             assert_eq!(
                 tir.attrs.get(marker),
                 Some(&crate::tir::ops::AttrValue::Bool(true))
@@ -826,7 +923,10 @@ fn param_types_from_annotation() {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "typed_add".to_string(),
         params: vec!["a".to_string(), "b".to_string()],
-        ops: vec![op_args_out("add", &["a", "b"], "c"), op_args("ret", &["c"])],
+        ops: vec![
+            op_args_out(molt_ir::OpKind::Add, &["a", "b"], "c"),
+            op_args(molt_ir::OpKind::Ret, &["c"]),
+        ],
         param_types: Some(vec!["int".to_string(), "float".to_string()]),
         source_file: None,
         is_extern: false,
@@ -872,7 +972,7 @@ fn compound_param_types_from_annotation() {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "typed_container".to_string(),
         params: vec!["items".to_string()],
-        ops: vec![op_args("ret", &["items"])],
+        ops: vec![op_args(molt_ir::OpKind::Ret, &["items"])],
         param_types: Some(vec!["list[int]".to_string()]),
         source_file: None,
         is_extern: false,
@@ -903,7 +1003,7 @@ fn abi_i64_param_type_is_not_a_semantic_int_fact() {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "boxed_carrier".to_string(),
         params: vec!["obj".to_string()],
-        ops: vec![op_args("ret", &["obj"])],
+        ops: vec![op_args(molt_ir::OpKind::Ret, &["obj"])],
         param_types: Some(vec!["i64".to_string()]),
         source_file: None,
         is_extern: false,
@@ -930,8 +1030,8 @@ fn exception_region_drop_marker_round_trips_without_full_drop_gate() {
         name: "exception_marker_transport".to_string(),
         params: vec![],
         ops: vec![
-            op(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
-            op("ret_void"),
+            op(molt_ir::OpKind::ExceptionRegionDropsInserted),
+            op(molt_ir::OpKind::RetVoid),
         ],
         param_types: None,
         source_file: None,
@@ -992,7 +1092,11 @@ fn string_type_conversion() {
 #[test]
 fn codegen_partition_survives_tir_artifact_roundtrip() {
     for partitioned in [false, true] {
-        let mut input = make_func("__molt_chunk_v1_user", &[], vec![op("ret_void")]);
+        let mut input = make_func(
+            "__molt_chunk_v1_user",
+            &[],
+            vec![op(molt_ir::OpKind::RetVoid)],
+        );
         input.codegen_partition = partitioned;
         let tir = lower_to_tir(&input);
         assert_eq!(tir.is_codegen_partition(), partitioned);
@@ -1016,7 +1120,11 @@ fn codegen_partition_survives_tir_artifact_roundtrip() {
 #[test]
 fn parameter_custody_survives_tir_artifact_roundtrip() {
     use crate::ir::ParameterCustody::{Borrowed, Transferred};
-    let mut body = make_func("owns_second", &["first", "second"], vec![op("ret_void")]);
+    let mut body = make_func(
+        "owns_second",
+        &["first", "second"],
+        vec![op(molt_ir::OpKind::RetVoid)],
+    );
     body.parameter_custody = vec![Borrowed, Transferred];
     let mut declaration = body.clone();
     declaration.ops.clear();
@@ -1056,7 +1164,7 @@ fn parameter_custody_survives_tir_artifact_roundtrip() {
             );
         }
     }
-    let mut borrowed_source = make_func("borrows", &["only"], vec![op("ret_void")]);
+    let mut borrowed_source = make_func("borrows", &["only"], vec![op(molt_ir::OpKind::RetVoid)]);
     let borrowed = lower_to_tir(&borrowed_source);
     borrowed_source.parameter_custody = vec![Borrowed];
     let explicit_borrowed = lower_to_tir(&borrowed_source);

@@ -12,11 +12,15 @@ pub(super) fn emit_container_query_op(
 ) -> bool {
     let call_context = ctx.op_loop_call_context();
 
-    match op.kind.as_str() {
-        "contains" => {
-            let import_key =
-                selected_container_runtime_import(ctx.scalar_plan, ctx.op_idx, "contains", op)
-                    .unwrap_or(WasmRuntimeImport::Contains);
+    match op.kind {
+        molt_ir::OpKind::Contains => {
+            let import_key = selected_container_runtime_import(
+                ctx.scalar_plan,
+                ctx.op_idx,
+                molt_ir::OpKind::Contains,
+                op,
+            )
+            .unwrap_or(WasmRuntimeImport::Contains);
             emit_op_loop_local_prefix_call(
                 &call_context,
                 func,
@@ -26,12 +30,16 @@ pub(super) fn emit_container_query_op(
                 &ctx.func_ir.name,
             );
         }
-        "len" => {
+        molt_ir::OpKind::Len => {
             // Dispatch to specialized fast-path len when container
             // type is known, skipping the 18-type dispatch.
-            let import_key =
-                selected_container_runtime_import(ctx.scalar_plan, ctx.op_idx, "len", op)
-                    .unwrap_or(WasmRuntimeImport::Len);
+            let import_key = selected_container_runtime_import(
+                ctx.scalar_plan,
+                ctx.op_idx,
+                molt_ir::OpKind::Len,
+                op,
+            )
+            .unwrap_or(WasmRuntimeImport::Len);
             emit_op_loop_local_prefix_call(
                 &call_context,
                 func,

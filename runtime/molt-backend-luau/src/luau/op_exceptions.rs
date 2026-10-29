@@ -2,23 +2,23 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_exception_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "try_start" | "try_end" => {}
-            "exception_push"
-            | "exception_pop"
-            | "exception_stack_clear"
-            | "exception_stack_enter"
-            | "exception_stack_exit"
-            | "exception_stack_depth"
-            | "exception_stack_set_depth"
-            | "exception_context_set"
-            | "exception_clear"
-            | "exception_set_last"
-            | "exception_last"
-            | "exception_last_pending"
-            | "exception_active"
-            | "exception_current"
-            | "exception_pending" => {
+        match op.kind {
+            molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd => {}
+            molt_ir::OpKind::ExceptionPush
+            | molt_ir::OpKind::ExceptionPop
+            | molt_ir::OpKind::ExceptionStackClear
+            | molt_ir::OpKind::ExceptionStackEnter
+            | molt_ir::OpKind::ExceptionStackExit
+            | molt_ir::OpKind::ExceptionStackDepth
+            | molt_ir::OpKind::ExceptionStackSetDepth
+            | molt_ir::OpKind::ExceptionContextSet
+            | molt_ir::OpKind::ExceptionClear
+            | molt_ir::OpKind::ExceptionSetLast
+            | molt_ir::OpKind::ExceptionLast
+            | molt_ir::OpKind::ExceptionLastPending
+            | molt_ir::OpKind::ExceptionActive
+            | molt_ir::OpKind::ExceptionCurrent
+            | molt_ir::OpKind::ExceptionPending => {
                 let args = op
                     .args
                     .as_deref()
@@ -34,14 +34,16 @@ impl LuauBackend {
                     self.emit_line(&call);
                 }
             }
-            "drop_inserted"
-            | "exception_region_drops_inserted"
-            | "inc_ref"
-            | "dec_ref"
-            | "release" => {
+            molt_ir::OpKind::DropInserted
+            | molt_ir::OpKind::ExceptionRegionDropsInserted
+            | molt_ir::OpKind::IncRef
+            | molt_ir::OpKind::DecRef
+            | molt_ir::OpKind::Release => {
                 // Luau is GC-managed, so shared RC/drop markers are consumed no-ops.
             }
-            "exception_new" | "exception_new_builtin" | "exception_new_from_class" => {
+            molt_ir::OpKind::ExceptionNew
+            | molt_ir::OpKind::ExceptionNewBuiltin
+            | molt_ir::OpKind::ExceptionNewFromClass => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let class_name = op.s_value.as_deref().unwrap_or("Exception");
@@ -53,14 +55,14 @@ impl LuauBackend {
                     "local {out} = {{__type = \"{class_name}\", __msg = {msg}}}"
                 ));
             }
-            "exception_new_builtin_empty" => {
+            molt_ir::OpKind::ExceptionNewBuiltinEmpty => {
                 let out = self.out_var(op);
                 let class_name = op.s_value.as_deref().unwrap_or("Exception");
                 self.emit_line(&format!(
                     "local {out} = {{__type = \"{class_name}\", __msg = \"\"}}"
                 ));
             }
-            "exception_new_builtin_one" => {
+            molt_ir::OpKind::ExceptionNewBuiltinOne => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let class_name = op.s_value.as_deref().unwrap_or("Exception");
@@ -72,7 +74,7 @@ impl LuauBackend {
                     "local {out} = {{__type = \"{class_name}\", __msg = {msg}}}"
                 ));
             }
-            "raise" => {
+            molt_ir::OpKind::Raise => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
                     self.emit_line(&format!("molt_exception_set_last({})", sanitize_ident(val)));
@@ -80,20 +82,20 @@ impl LuauBackend {
                     self.emit_line("molt_exception_reraise()");
                 }
             }
-            "check_exception" => {
+            molt_ir::OpKind::CheckException => {
                 self.emit_unsupported_op_with_reason(
                     op,
                     "exception observer must use the canonical logical-flow emitter",
                 );
             }
-            "loop_break_if_exception" => {
+            molt_ir::OpKind::LoopBreakIfException => {
                 self.emit_line("if molt_exception_pending() then break end");
             }
-            "exception_finally_pending_observer" => {
+            molt_ir::OpKind::ExceptionFinallyPendingObserver => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = molt_exception_last_pending()"));
             }
-            "exception_match_builtin" => {
+            molt_ir::OpKind::ExceptionMatchBuiltin => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(exc) = args.first() {
@@ -106,7 +108,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "exception_class" => {
+            molt_ir::OpKind::ExceptionClass => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(class_var) = args.first() {
@@ -116,7 +118,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "exceptiongroup_match" | "exceptiongroup_combine" => {
+            molt_ir::OpKind::ExceptiongroupMatch | molt_ir::OpKind::ExceptiongroupCombine => {
                 self.emit_unsupported_op(op);
             }
             _ => return false,

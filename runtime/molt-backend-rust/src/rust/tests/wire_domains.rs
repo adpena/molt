@@ -15,42 +15,33 @@ fn checked_program(ops: Vec<OpIR>) -> SimpleIR {
 #[test]
 fn checked_unary_transport_and_phase_markers_emit_real_source() {
     let mut ops = vec![OpIR {
-        kind: "const_float".into(),
         f_value: Some(-0.0),
         out: Some("input".into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
     }];
     for (kind, source, output) in [
-        ("pos", "input", "positive"),
-        ("unary_pos", "positive", "alias_positive"),
-        ("type_guard", "alias_positive", "guarded"),
+        (molt_ir::OpKind::Pos, "input", "positive"),
+        (molt_ir::OpKind::UnaryPos, "positive", "alias_positive"),
+        (molt_ir::OpKind::TypeGuard, "alias_positive", "guarded"),
     ] {
         ops.push(OpIR {
-            kind: kind.into(),
             args: Some(vec![source.into()]),
             out: Some(output.into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         });
     }
     for kind in [
-        "loop_index_end",
-        "drop_inserted",
-        "exception_region_drops_inserted",
+        molt_ir::OpKind::LoopIndexEnd,
+        molt_ir::OpKind::DropInserted,
+        molt_ir::OpKind::ExceptionRegionDropsInserted,
     ] {
-        ops.push(OpIR {
-            kind: kind.into(),
-            ..OpIR::default()
-        });
+        ops.push(OpIR::new(kind));
     }
     // A value function lets an independent emitted consumer inspect sign bits.
-    let mut ir = checked_program(vec![OpIR {
-        kind: "ret_void".into(),
-        ..OpIR::default()
-    }]);
+    let mut ir = checked_program(vec![OpIR::new(molt_ir::OpKind::RetVoid)]);
     ops.push(OpIR {
-        kind: "ret".into(),
         args: Some(vec!["guarded".into()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Ret)
     });
     ir.functions.push(FunctionIR {
         name: "transport".into(),
@@ -83,49 +74,38 @@ fn check_transport() {
 fn scalar_and_copy_shape_failures_are_rejected_by_shared_admission() {
     for op in [
         OpIR {
-            kind: "const_float".into(),
             out: Some("bad".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstFloat)
         },
         OpIR {
-            kind: "const_bool".into(),
             out: Some("bad".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstBool)
         },
         OpIR {
-            kind: "copy".into(),
             out: Some("bad".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Copy)
         },
         OpIR {
-            kind: "binding_alias".into(),
             out: Some("bad".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::BindingAlias)
         },
         OpIR {
-            kind: "store_var".into(),
             var: Some("none".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
         OpIR {
-            kind: "nop".into(),
             out: Some("unexpected".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Nop)
         },
         OpIR {
-            kind: "drop_inserted".into(),
             out: Some("unexpected".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DropInserted)
         },
         OpIR {
-            kind: "store_var".into(),
             var: Some("slot".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         },
-        OpIR {
-            kind: "warn_stderr".into(),
-            ..OpIR::default()
-        },
+        OpIR::new(molt_ir::OpKind::WarnStderr),
     ] {
         let error = RustBackend::new()
             .compile_checked(&checked_program(vec![op]))
@@ -137,10 +117,7 @@ fn scalar_and_copy_shape_failures_are_rejected_by_shared_admission() {
 
 #[test]
 fn shared_text_helpers_do_not_collide_with_user_function_names() {
-    let mut ir = checked_program(vec![OpIR {
-        kind: "ret_void".into(),
-        ..OpIR::default()
-    }]);
+    let mut ir = checked_program(vec![OpIR::new(molt_ir::OpKind::RetVoid)]);
     for name in [
         "PythonString",
         "PythonCodePoints",
@@ -151,15 +128,13 @@ fn shared_text_helpers_do_not_collide_with_user_function_names() {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             ops: vec![
                 OpIR {
-                    kind: "const_str".into(),
                     s_value: Some(name.into()),
                     out: Some("text".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["text".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()

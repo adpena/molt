@@ -13,8 +13,8 @@ pub(super) fn emit_dataclass_op(
     locals: &WasmFrameLocals,
     reloc_enabled: bool,
 ) -> bool {
-    match op.kind.as_str() {
-        "dataclass_new" => {
+    match op.kind {
+        molt_ir::OpKind::DataclassNew => {
             let args = op.args.as_ref().unwrap();
             let name = locals[&args[0]];
             let fields = locals[&args[1]];
@@ -38,7 +38,7 @@ pub(super) fn emit_dataclass_op(
                 crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew,
             );
         }
-        "dataclass_new_values" => {
+        molt_ir::OpKind::DataclassNewValues => {
             let args = op.args.as_ref().unwrap();
             let name = locals[&args[0]];
             let fields = locals[&args[1]];
@@ -61,7 +61,7 @@ pub(super) fn emit_dataclass_op(
             );
             finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
         }
-        "dataclass_get" => {
+        molt_ir::OpKind::DataclassGet => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             let idx = locals[&args[1]];
@@ -81,7 +81,7 @@ pub(super) fn emit_dataclass_op(
                 crate::wasm_abi_generated::WasmRuntimeImport::DataclassGet,
             );
         }
-        "dataclass_set" => {
+        molt_ir::OpKind::DataclassSet => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             let idx = locals[&args[1]];
@@ -103,7 +103,7 @@ pub(super) fn emit_dataclass_op(
                 crate::wasm_abi_generated::WasmRuntimeImport::DataclassSet,
             );
         }
-        "dataclass_set_class" => {
+        molt_ir::OpKind::DataclassSetClass => {
             let args = op.args.as_ref().unwrap();
             let obj = locals[&args[0]];
             let class_obj = locals[&args[1]];

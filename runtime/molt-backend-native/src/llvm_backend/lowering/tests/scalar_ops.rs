@@ -36,6 +36,7 @@ fn refcount_uses_lowered_carriers_without_boxing() {
             lowering.lower_op(
                 func.entry_block,
                 &TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![ValueId(0)],
@@ -85,6 +86,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
         .insert(ValueId(0), llvm_fn.get_first_param().unwrap());
     lowering.value_types.insert(ValueId(0), TirType::DynBox);
     let mut op = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BoxVal,
         operands: vec![ValueId(0)],
@@ -145,6 +147,7 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
         lowering.lower_op(
             func.entry_block,
             &TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0)],
@@ -195,6 +198,7 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     lowering.value_types.insert(ValueId(0), TirType::DynBox);
     lowering.value_types.insert(ValueId(1), TirType::I64);
     lowering.emit_unbox(&TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnboxVal,
         operands: vec![ValueId(0)],
@@ -270,6 +274,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
             lowering.lower_op(
                 func.entry_block,
                 &TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -283,6 +288,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
                 lowering.lower_op(
                     func.entry_block,
                     &TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::DecRef,
                         operands: vec![result],
@@ -410,6 +416,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             .ops
             .extend([const_none_def(first), const_none_def(second)]);
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: [first, second].into_iter().take(operands).collect(),
@@ -419,6 +426,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         });
         // The enclosing operation, not a private return, owns exception routing.
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -577,6 +585,7 @@ fn lower_unary_carrier_fixture(
     lowering.lower_op(
         func.entry_block,
         &TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![operand],
@@ -684,6 +693,7 @@ fn binary_runtime_fallbacks_share_one_box_for_a_repeated_raw_operand() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(const_int_def(raw, i64::MAX));
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![raw, raw],
@@ -728,6 +738,7 @@ fn boolean_selection_owns_exactly_the_selected_operand() {
     let object = entry.args[0].id;
     entry.ops.push(const_int_def(raw, i64::MAX));
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Or,
         operands: vec![raw, object],
@@ -801,6 +812,7 @@ fn not_in_releases_the_owned_membership_result() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     let operands = entry.args.iter().map(|arg| arg.id).collect();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::NotIn,
         operands,
@@ -882,6 +894,7 @@ fn lower_i64_comparison() {
     let v_result = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Lt,
         operands: vec![ValueId(0), ValueId(1)],
@@ -930,6 +943,7 @@ fn lower_box_i64() {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         if transfer == "box" {
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::BoxVal,
                 operands: vec![ValueId(0)],
@@ -1032,6 +1046,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
     let exit = func.fresh_block();
 
     let mk_int = |result: ValueId, v: i64| TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -1044,6 +1059,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
         source_span: None,
     };
     let mk_bin = |opcode: OpCode, a: ValueId, b: ValueId, r: ValueId| TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![a, b],

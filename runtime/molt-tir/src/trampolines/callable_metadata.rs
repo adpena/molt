@@ -44,8 +44,8 @@ impl CallableMetadata {
         let mut metadata = Self::default();
         for function in functions.iter().filter(|function| !function.is_extern) {
             for (op_index, op) in function.ops.iter().enumerate() {
-                match op.kind.as_str() {
-                    "func_new" | "func_new_closure" => {
+                match op.kind {
+                    molt_ir::OpKind::FuncNew | molt_ir::OpKind::FuncNewClosure => {
                         let name = op.s_value.as_ref().unwrap_or_else(|| {
                             panic!(
                                 "{} in {} at op {op_index} requires a callable target",
@@ -58,7 +58,7 @@ impl CallableMetadata {
                         insert_consistent(
                             &mut metadata.trampoline_specs,
                             name.clone(),
-                            (arity, op.kind == "func_new_closure"),
+                            (arity, op.kind == molt_ir::OpKind::FuncNewClosure),
                             "callable trampoline specification",
                         );
                         match (op.task_kind.as_deref(), op.task_closure_size) {
@@ -103,7 +103,7 @@ impl CallableMetadata {
                             ),
                         }
                     }
-                    "builtin_func" => {
+                    molt_ir::OpKind::BuiltinFunc => {
                         if let Some(name) = &op.s_value {
                             metadata.escaped_callable_targets.insert(name.clone());
                         }
@@ -143,13 +143,13 @@ mod tests {
 
     fn task_constructor(kind: &str, size: i64) -> OpIR {
         OpIR {
-            kind: "func_new_closure".into(),
+            kind: molt_ir::OpKind::FuncNewClosure,
             s_value: Some("worker_poll".into()),
             value: Some(0),
             out: Some("callable".into()),
             task_kind: Some(kind.into()),
             task_closure_size: Some(size),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::FuncNewClosure)
         }
     }
 
@@ -170,8 +170,8 @@ mod tests {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "physical_suffix".into(),
             ops: vec![OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             codegen_partition: true,
             parameter_custody: Vec::new(),
@@ -209,10 +209,10 @@ mod tests {
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             ops: vec![OpIR {
-                kind: "func_new".into(),
+                kind: molt_ir::OpKind::FuncNew,
                 s_value: Some("ordinary_callable".into()),
                 value: Some(2),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::FuncNew)
             }],
             ..FunctionIR::default()
         };

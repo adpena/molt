@@ -15,8 +15,8 @@ pub(super) fn emit_exception_runtime_op(
     let reloc_enabled = context.reloc_enabled;
     let native_eh_enabled = context.native_eh_enabled;
 
-    match op.kind.as_str() {
-        "exception_push" => {
+    match op.kind {
+        molt_ir::OpKind::ExceptionPush => {
             emit_call(
                 func,
                 reloc_enabled,
@@ -31,7 +31,7 @@ pub(super) fn emit_exception_runtime_op(
                 crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPush,
             );
         }
-        "exception_pop" => {
+        molt_ir::OpKind::ExceptionPop => {
             emit_call(
                 func,
                 reloc_enabled,
@@ -46,7 +46,7 @@ pub(super) fn emit_exception_runtime_op(
                 crate::wasm_abi_generated::WasmRuntimeImport::ExceptionPop,
             );
         }
-        "raise" => {
+        molt_ir::OpKind::Raise => {
             let args = op.args.as_ref().unwrap();
             let exc = locals[&args[0]];
             func.instruction(&Instruction::LocalGet(exc));

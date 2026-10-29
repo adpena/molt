@@ -172,13 +172,14 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
     {
         let entry = callee.entry_block;
         let mut store_attrs = AttrDict::new();
-        store_attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+
         store_attrs.insert("_var".into(), AttrValue::Str("i".into()));
         let mut load_attrs = AttrDict::new();
-        load_attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+
         load_attrs.insert("_var".into(), AttrValue::Str("i".into()));
         let block = callee.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::StoreVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![param],
@@ -187,6 +188,7 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
             source_span: None,
         });
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::LoadVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![stored],
@@ -212,9 +214,10 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
     {
         let entry = caller.entry_block;
         let mut attrs = AttrDict::new();
-        attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+
         attrs.insert("_var".into(), AttrValue::Str("i".into()));
         caller.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::StoreVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![arg],
@@ -283,19 +286,20 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
     let loaded = callee.fresh_value();
     {
         let entry = callee.entry_block;
-        let mut missing_attrs = AttrDict::new();
-        missing_attrs.insert("_original_kind".into(), AttrValue::Str("missing".into()));
+        let missing_attrs = AttrDict::new();
+
         let mut missing_store_attrs = AttrDict::new();
-        missing_store_attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+
         missing_store_attrs.insert("_var".into(), AttrValue::Str("ij".into()));
         let mut assigned_store_attrs = AttrDict::new();
-        assigned_store_attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+
         assigned_store_attrs.insert("_var".into(), AttrValue::Str("ij".into()));
         let mut load_attrs = AttrDict::new();
-        load_attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+
         load_attrs.insert("_var".into(), AttrValue::Str("ij".into()));
         let block = callee.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::Missing),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -304,6 +308,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
             source_span: None,
         });
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::StoreVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![missing],
@@ -312,6 +317,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
             source_span: None,
         });
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::StoreVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![param],
@@ -320,6 +326,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
             source_span: None,
         });
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::LoadVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![assigned],
@@ -362,8 +369,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
     assert_eq!(
         private_slot_ops
             .iter()
-            .filter(|op| op.attrs.get("_original_kind")
-                == Some(&AttrValue::Str("store_var".into())))
+            .filter(|op| op.origin == Some(molt_ir::OpKind::StoreVar))
             .count(),
         1,
         "only the real scalar store remains for the private callee local"
@@ -371,7 +377,7 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
     assert_eq!(
         private_slot_ops
             .iter()
-            .filter(|op| op.attrs.get("_original_kind") == Some(&AttrValue::Str("load_var".into())))
+            .filter(|op| op.origin == Some(molt_ir::OpKind::LoadVar))
             .count(),
         1,
         "the first read remains wired to the private callee local"
@@ -401,6 +407,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
         attrs.insert("_simple_out".into(), AttrValue::Str("collide".into()));
         let block = callee.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -430,6 +437,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
         call_attrs.insert("s_value".into(), AttrValue::Str("c".into()));
         let block = g.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -438,6 +446,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
             source_span: None,
         });
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],

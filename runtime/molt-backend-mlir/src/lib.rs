@@ -86,6 +86,7 @@ mod tests {
         let v2 = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -109,6 +110,7 @@ mod tests {
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(42));
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -148,6 +150,7 @@ mod tests {
                     id: block_id,
                     args: vec![],
                     ops: vec![TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -175,6 +178,7 @@ mod tests {
         func.value_types.insert(result, TirType::Bool);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Not,
             operands: vec![ValueId(0)],
@@ -198,13 +202,10 @@ mod tests {
         let result = func.fresh_value();
         func.value_types.insert(result, TirType::DynBox);
         let mut attrs = AttrDict::new();
-        attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("runtime_probe".into()),
-        );
         attrs.insert("semantic_id".into(), AttrValue::Int(7));
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: Some(molt_backend::OpKind::ModuleNew),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -232,6 +233,7 @@ mod tests {
         func.value_types.insert(target_arg, TirType::DynBox);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,
             operands: vec![],
@@ -270,6 +272,7 @@ mod tests {
         );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         let mut poll = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -322,7 +325,7 @@ mod tests {
         let ctx = create_mlir_context();
         let module = tir_to_mlir(&make_original_kind_func(), &ctx).unwrap();
         let text = module_to_string(&module);
-        assert!(text.contains("molt.runtime_probe"));
+        assert!(text.contains("molt.module_new"));
         assert!(text.contains("semantic_id = 7 : i64"));
         verify_module(&module).unwrap();
     }
@@ -354,6 +357,7 @@ mod tests {
         {
             let entry = f.blocks.get_mut(&f.entry_block).unwrap();
             entry.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Lt,
                 operands: vec![ValueId(0), ValueId(1)],
@@ -379,6 +383,7 @@ mod tests {
                 id: tb,
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -401,6 +406,7 @@ mod tests {
                 id: eb,
                 args: vec![],
                 ops: vec![TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -429,6 +435,7 @@ mod tests {
         let prod = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -437,6 +444,7 @@ mod tests {
             source_span: None,
         });
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Sub,
             operands: vec![ValueId(0), ValueId(1)],
@@ -445,6 +453,7 @@ mod tests {
             source_span: None,
         });
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Mul,
             operands: vec![sum, diff],
@@ -467,6 +476,7 @@ mod tests {
         func.value_types.insert(out, TirType::I64);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Pow,
             operands: vec![ValueId(0), ValueId(1)],
@@ -487,6 +497,7 @@ mod tests {
         );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Pow,
             operands: vec![ValueId(0), ValueId(1)],
@@ -511,6 +522,7 @@ mod tests {
         func.value_types.insert(out, TirType::F64);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::FloorDiv,
             operands: vec![ValueId(0), ValueId(1)],
@@ -549,6 +561,7 @@ mod tests {
         );
         let entry = function.blocks.get_mut(&function.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallargsPushMethodReceiver,
             operands: vec![entry.args[0].id, entry.args[1].id],

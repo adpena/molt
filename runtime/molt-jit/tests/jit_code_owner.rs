@@ -70,11 +70,8 @@ fn provider() -> BTreeMap<&'static str, usize> {
     ])
 }
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 /// `native_probe.execute(payload)` through a direct-symbol object call.
@@ -88,7 +85,7 @@ fn program() -> SimpleIR {
                 OpIR {
                     out: Some("payload".to_string()),
                     value: Some(1),
-                    ..op("const")
+                    ..op(molt_ir::OpKind::Const)
                 },
                 OpIR {
                     out: Some("result".to_string()),
@@ -97,11 +94,11 @@ fn program() -> SimpleIR {
                     native_callable_binding: Some("direct_symbol".to_string()),
                     native_callable_abi: Some("molt.object_call_v1".to_string()),
                     native_callable_symbol: Some(SYMBOL.to_string()),
-                    ..op("invoke_ffi")
+                    ..op(molt_ir::OpKind::InvokeFfi)
                 },
                 OpIR {
                     args: Some(vec!["result".to_string()]),
-                    ..op("ret")
+                    ..op(molt_ir::OpKind::Ret)
                 },
             ],
             param_types: None,

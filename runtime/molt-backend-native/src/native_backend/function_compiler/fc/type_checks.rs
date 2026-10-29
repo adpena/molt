@@ -1,15 +1,16 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_type_check_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_type_check_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "builtin_type",
-    "type_of",
-    "is_native_awaitable",
-    "isinstance",
-    "issubclass",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::BuiltinType,
+    OpKind::TypeOf,
+    OpKind::IsNativeAwaitable,
+    OpKind::Isinstance,
+    OpKind::Issubclass,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for type-introspection ops: `isinstance`/`issubclass`/`builtin_type`/`type_of`/`is_native_awaitable`.
@@ -60,8 +61,8 @@ pub(in crate::native_backend::function_compiler) fn handle_type_check_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "builtin_type" => {
+    match op.kind {
+        OpKind::BuiltinType => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let tag_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -88,7 +89,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_check_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "type_of" => {
+        OpKind::TypeOf => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -115,7 +116,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_check_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "is_native_awaitable" => {
+        OpKind::IsNativeAwaitable => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -142,7 +143,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_check_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "isinstance" => {
+        OpKind::Isinstance => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj_bits = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -180,7 +181,7 @@ pub(in crate::native_backend::function_compiler) fn handle_type_check_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "issubclass" => {
+        OpKind::Issubclass => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let sub_bits = var_get_boxed_overflow_safe(
                 &mut *module,
