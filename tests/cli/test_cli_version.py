@@ -86,6 +86,8 @@ def test_package_init_keeps_host_version_lookup_out_of_compiled_guests() -> None
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imports = _collect_imports(tree, "molt", True, import_scan_mode="module_init")
     assert set(imports) <= {"__future__", "__future__.annotations"}
-    version_tree = ast.parse((ROOT / "src/molt/_version.py").read_text())
+    version_tree = ast.parse(
+        (ROOT / "src/molt/_version.py").read_text(encoding="utf-8")
+    )
     assert not _collect_imports(version_tree, "molt._version", False)
     assert "__version__" in dir(molt)
