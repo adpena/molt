@@ -146,3 +146,12 @@ custody rather than following a new binding for regenerable cache.
 * [uv cache safety and pruning](https://docs.astral.sh/uv/concepts/cache/#clearing-the-cache)
   require provider-owned pruning. Molt invokes `uv cache prune` and reports a
   remaining over-budget cache instead of manipulating uv's internal objects.
+
+Failed guard scratch is evidence, even when its raw retention cache expires.
+The generation lifetime lock pins a lossless, independently verified archive of
+payload and terminal records; its durable external index is published before
+raw reclamation. New allocations capture their evidence placement at admission.
+Legacy failures lacking that receipt remain untouched for explicit reconciliation.
+An unavailable archive leaves raw bytes intact. Successful scratch remains
+regenerable. Sccache server leftovers have a separate durable evidence class:
+native per-probe cleanup does not grant Molt permission to delete crash signal.

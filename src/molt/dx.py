@@ -1519,6 +1519,12 @@ def _storage_path_selection(
     rule = custody_layout.storage_rule(kind)
     if kind == "toolchains":
         return canonical_toolchain_root(repo_root, view, require_exists=False)
+    if kind == "sccache-server-evidence" and view.get("SCCACHE_DIR", "").strip():
+        from molt.cargo_execution_policy import sccache_server_temp_dir
+
+        selected_temp = sccache_server_temp_dir(view)
+        if selected_temp is not None:
+            return selected_temp
     if kind == "backend-sockets":
         return backend_daemon_socket_dir(repo_root, view)
     cache_key = {
@@ -1547,6 +1553,7 @@ def _storage_path_selection(
         "landing-sandbox",
         "lane-evidence",
         "integration-receipts",
+        "scratch-evidence",
     ):
         if not selected.is_dir():
             raise DxConfigError(
@@ -1595,7 +1602,7 @@ def sccache_server_temp_path(
         raise ValueError(f"sccache cache must name an absolute directory: {cache}")
     beside = cache.with_name(f"{cache.name}-tmp")
     if maximum_path_bytes is None or len(os.fsencode(beside)) <= maximum_path_bytes:
-        return _storage_projection("sccache", beside)
+        return _storage_projection("sccache-server-evidence", beside)
     from molt.exact_json import read_exact, write_exact
     from molt.file_publication import resolve_owned_path
 
@@ -1606,7 +1613,17 @@ def sccache_server_temp_path(
     def selection() -> tuple[Path, Path, bool]:
         if not os.path.lexists(binding):
             root = artifact_root(repo, environment)
-            temporary, bound = root / "sct" / digest, False
+            if not root.is_dir():
+                raise DxConfigError(
+                    f"sccache's selected artifact root is unavailable: {root}"
+                )
+            temporary, bound = (
+                root.joinpath(
+                    *custody_layout.storage_rule("sccache-server-evidence").relative,
+                    digest,
+                ),
+                False,
+            )
         else:
             record = read_exact(
                 binding, max_bytes=65536, label="sccache temp placement"
@@ -1624,7 +1641,13 @@ def sccache_server_temp_path(
             if not recorded_root.is_absolute():
                 raise DxConfigError(f"invalid sccache temp placement: {binding}")
             root = resolve_owned_path(recorded_root)
-            temporary, bound = root / "sct" / digest, True
+            temporary, bound = (
+                root.joinpath(
+                    *custody_layout.storage_rule("sccache-server-evidence").relative,
+                    digest,
+                ),
+                True,
+            )
             if not root.is_absolute() or record["temporary"] != str(temporary):
                 raise DxConfigError(f"invalid sccache temp placement: {binding}")
             if not root.is_dir():
@@ -1636,7 +1659,7 @@ def sccache_server_temp_path(
                 f"sccache startup under {temporary} exceeds its socket path limit; "
                 "select a shorter DX artifact root or SCCACHE_DIR before starting the server"
             )
-        return root, _storage_projection("sccache", temporary), bound
+        return root, _storage_projection("sccache-server-evidence", temporary), bound
 
     if not create:
         return selection()[1]
@@ -1801,7 +1824,19 @@ def _storage_write_audit(event: str, args: tuple[object, ...]) -> None:
                         f"storage write check cannot resolve directory fd on {sys.platform}"
                     )
                 path = Path(base) / path
-            path = path.absolute().resolve(strict=False)
+            path = path.absolute()
+            if event in {
+                "os.remove",
+                "os.rmdir",
+                "os.rename",
+                "os.symlink",
+                "os.link",
+                "os.mkdir",
+            }:
+                # Namespace mutations act on the entry, not a symlink target.
+                path = path.parent.resolve(strict=False) / path.name
+            else:
+                path = path.resolve(strict=False)
             if path == Path(os.devnull):
                 continue  # OS sink, not persistent Molt state.
             if not any(
@@ -1871,7 +1906,7 @@ def storage_write_check(
     from molt.cargo_execution_policy import sccache_server_temp_dir
 
     if server_temp := sccache_server_temp_dir(environment):
-        claims.append(StorageWriteClaim("sccache", server_temp))
+        claims.append(StorageWriteClaim("sccache-server-evidence", server_temp))
     check = _StorageWriteCheck(
         [
             StorageWriteClaim(claim.kind, claim.path.resolve(strict=False), claim.exact)

@@ -48,7 +48,12 @@ CheckoutStateKind = Literal[
     "scratch",
 ]
 EvidenceClass = Literal[
-    "lane-evidence", "integration-receipts", "diagnostics", "benchmark-evidence"
+    "lane-evidence",
+    "integration-receipts",
+    "diagnostics",
+    "benchmark-evidence",
+    "scratch-evidence",
+    "sccache-server-evidence",
 ]
 ToolchainStateKind = Literal["toolchains"]
 ProviderCacheKind = Literal["pip-cache", "ruff-cache"]
@@ -238,6 +243,14 @@ def storage_rule(kind: StorageClass) -> StorageRule:
                 "landing-queue",
                 ("worktrees",),
                 Regenerable(86400.0, None, 1),
+            )
+        case "scratch-evidence":
+            return StorageRule(
+                "artifact", "process guards", ("evidence", "scratch"), DurableEvidence()
+            )
+        case "sccache-server-evidence":
+            return StorageRule(
+                "artifact", "sccache server", ("sct",), DurableEvidence()
             )
         case "lane-evidence":
             return StorageRule(
