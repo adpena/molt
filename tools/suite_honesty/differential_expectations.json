@@ -1382,9 +1382,9 @@
       "dimensions": {
         "native@3.12": {
           "status": "fail",
-          "finding": "HF-557",
-          "root_cause": "The binary runs but test.support has no compiler-emitted body. test_importlib/__init__.py imports test.support at module level; the shim exposes CPython's test package through MOLT_MODULE_ROOTS, an external root, and only the entry's direct imports from external roots are admitted. Not a function-level import: needs its own owner before HF-557 closes.",
-          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources, run 20261029_105241): unchanged by HF-557's fix. Run 20261029_110027 with MOLT_EXTERNAL_STATIC_PACKAGES=test compiles test.support and fails at the sysconfig stub, as test_pkgutil does (HF-273)."
+          "finding": "HF-273",
+          "root_cause": "The binary runs: test.support calls check_sanitizer() at import, which reads sysconfig.get_config_var (Lib/test/support/__init__.py:405), and Molt's sysconfig is a generated stub that raises RuntimeError.",
+          "evidence": "2026-10-29 lane/hf557-function-imports (macOS arm64, CPython 3.12.15 sources): the regrtest shim now admits CPython's test package (MOLT_EXTERNAL_STATIC_PACKAGES=test), because an external root admits only the entry's direct imports; test.support then compiles and the binary fails at the sysconfig stub (run 20261029_112940, through the shim)."
         }
       }
     },

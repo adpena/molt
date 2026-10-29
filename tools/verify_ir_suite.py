@@ -125,7 +125,7 @@ def _compile_diagnostic(exc: BaseException) -> dict[str, object]:
             "kind": "compatibility",
             "code": issue.diagnostic_code,
             "feature": issue.feature,
-            "feature_category": issue.feature_category,
+            "feature_category": issue.feature,
             "tier": issue.tier,
             "impact": issue.impact,
             "location": issue.location,
