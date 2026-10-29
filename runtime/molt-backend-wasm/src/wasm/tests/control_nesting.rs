@@ -392,3 +392,23 @@ for (const test of config.cases) {
         "bounded scope tree routes every transfer to its authored target",
     );
 }
+
+/// HF-549: a 20,004-block guest compiles on a default 2 MiB thread. Its
+/// 20,000-deep dominator chain overflowed a recursive CFG walk, and its shared
+/// pad, a join with 20,000 predecessors, made dominance work quadratic.
+#[test]
+fn twenty_thousand_block_guest_compiles_on_a_default_thread() {
+    const DEFAULT_THREAD_STACK: usize = 2 << 20;
+    let wasm = std::thread::Builder::new()
+        .stack_size(DEFAULT_THREAD_STACK)
+        .spawn(|| shared_pad_guest(20_000))
+        .expect("spawn a default-stack thread")
+        .join()
+        .expect("the compile completes within a default thread stack");
+    wasmparser::Validator::new().validate_all(&wasm).unwrap();
+    let depth = max_control_depth(&wasm);
+    assert!(
+        depth <= EMITTED_NESTING_BOUND,
+        "control nests {depth} deep, above {EMITTED_NESTING_BOUND}"
+    );
+}

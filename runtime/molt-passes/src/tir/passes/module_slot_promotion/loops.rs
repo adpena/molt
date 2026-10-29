@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
-    CfgEdgePolicy, collect_loop_blocks, dominates, reachable_blocks_with, terminator_successors,
+    CfgEdgePolicy, DominatorTree, collect_loop_blocks, reachable_blocks_with, terminator_successors,
 };
 use crate::tir::function::TirFunction;
 
@@ -29,7 +29,7 @@ pub(super) struct LoopInfo {
 pub(super) fn discover_loops(
     func: &TirFunction,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
+    tree: &DominatorTree,
     dbg: &mut DebugLog,
 ) -> Vec<LoopInfo> {
     // Dead blocks (e.g. a vestigial loop-else that still carries a branch to
@@ -47,7 +47,7 @@ pub(super) fn discover_loops(
         .filter(|&h| {
             pred_map.get(&h).is_some_and(|ps| {
                 ps.iter()
-                    .any(|&p| reachable.contains(&p) && dominates(h, p, idoms))
+                    .any(|&p| reachable.contains(&p) && tree.dominates(h, p))
             })
         })
         .collect();
@@ -55,7 +55,7 @@ pub(super) fn discover_loops(
 
     let mut loops = Vec::new();
     'next_header: for &header in &headers {
-        let blocks = collect_loop_blocks(func, pred_map, idoms, header);
+        let blocks = collect_loop_blocks(func, pred_map, tree, header);
         // Innermost only: no other header inside this loop's body.
         if headers
             .iter()

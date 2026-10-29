@@ -37,7 +37,7 @@ struct GuardInfo {
 pub(super) fn propagate_guard_types(
     func: &TirFunction,
     env: &mut HashMap<ValueId, TirType>,
-    idoms: &HashMap<BlockId, Option<BlockId>>,
+    tree: &dominators::DominatorTree,
     exact_scalar_types: &HashMap<ValueId, TirType>,
 ) -> (usize, HashMap<ValueId, TirType>) {
     let mut proven_types: HashMap<ValueId, TirType> = HashMap::new();
@@ -81,7 +81,7 @@ pub(super) fn propagate_guard_types(
         return (refinements, proven_types);
     }
 
-    // The dominator tree (`idoms`) is supplied by the caller, which already
+    // The dominator tree (`tree`) is supplied by the caller, which already
     // computed it for the same unmodified CFG — no redundant recompute here.
 
     // For each TypeGuard, find the success branch of the CondBranch that
@@ -121,7 +121,7 @@ pub(super) fn propagate_guard_types(
                     // blocks it dominates.
                     let mut dominated = Vec::new();
                     for &bid in func.blocks.keys() {
-                        if dominators::dominates(*then_block, bid, idoms) {
+                        if tree.dominates(*then_block, bid) {
                             dominated.push(bid);
                         }
                     }
@@ -133,9 +133,7 @@ pub(super) fn propagate_guard_types(
                     // guard block itself, since the guard is within it).
                     let mut dominated = Vec::new();
                     for &bid in func.blocks.keys() {
-                        if bid != guard.guard_block
-                            && dominators::dominates(guard.guard_block, bid, idoms)
-                        {
+                        if bid != guard.guard_block && tree.dominates(guard.guard_block, bid) {
                             dominated.push(bid);
                         }
                     }
@@ -147,9 +145,7 @@ pub(super) fn propagate_guard_types(
             _ => {
                 let mut dominated = Vec::new();
                 for &bid in func.blocks.keys() {
-                    if bid != guard.guard_block
-                        && dominators::dominates(guard.guard_block, bid, idoms)
-                    {
+                    if bid != guard.guard_block && tree.dominates(guard.guard_block, bid) {
                         dominated.push(bid);
                     }
                 }

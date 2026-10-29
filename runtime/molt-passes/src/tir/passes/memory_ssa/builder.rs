@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
-    self, CfgEdgePolicy, compute_dominance_frontiers, dom_tree_preorder,
-    iterated_dominance_frontier,
+    self, compute_dominance_frontiers, dom_tree_preorder, iterated_dominance_frontier,
 };
 use crate::tir::function::TirFunction;
 
@@ -35,9 +34,10 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     let slot_access = crate::tir::passes::typed_slot_access::for_alias(func, alias);
     // --- Shared CFG facts (full-CFG view, matching the S1 dominator analyses).
     let pred_map = dominators::build_pred_map(func);
-    let idoms = dominators::compute_idoms(func, &pred_map);
-    let dom_children = dominators::build_dom_children(&idoms);
-    let reachable = dominators::reachable_blocks_with(func, CfgEdgePolicy::Full);
+    let tree = dominators::compute_dominator_tree(func, &pred_map);
+    let dom_children = dominators::build_dom_children(&tree);
+    // The tree's blocks are exactly the full-CFG reachable set.
+    let reachable: HashSet<BlockId> = tree.blocks().iter().copied().collect();
 
     // Deterministic reverse-postorder over reachable blocks (entry first).
     let rpo = reverse_postorder(func, &reachable);
@@ -64,7 +64,7 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     }
 
     // --- Phase B: iterated dominance frontier phi placement. ----------------
-    let df = compute_dominance_frontiers(&idoms, &pred_map, &reachable);
+    let df = compute_dominance_frontiers(&tree, &pred_map);
     let phi_blocks = iterated_dominance_frontier(&def_blocks, &df);
     for &bid in &rpo {
         if phi_blocks.contains(&bid) {
@@ -94,12 +94,10 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
 
     for &bid in &preorder {
         // Inherited version on entry to this block.
-        let inherited = match idoms.get(&bid).and_then(|d| *d) {
-            Some(idom) if idom != bid => {
-                result.exit_def.get(&idom).copied().unwrap_or(LIVE_ON_ENTRY)
-            }
-            // Entry block (or self-idom): the function's live-on-entry memory.
-            _ => LIVE_ON_ENTRY,
+        let inherited = match tree.idom(bid) {
+            Some(idom) => result.exit_def.get(&idom).copied().unwrap_or(LIVE_ON_ENTRY),
+            // Entry block: the function's live-on-entry memory.
+            None => LIVE_ON_ENTRY,
         };
         // A phi at this block shadows the inherited version on entry.
         let mut current = match result.block_phis.get(&bid) {

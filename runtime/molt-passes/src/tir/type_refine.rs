@@ -207,7 +207,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
     let pred_map = dominators::build_pred_map(func);
-    let idoms = dominators::compute_idoms(func, &pred_map);
+    let tree = dominators::compute_dominator_tree(func, &pred_map);
     let reachable_blocks = dominators::executable_reachable_blocks(func);
 
     // Pre-compute op snapshots once (ops don't change during refinement,
@@ -406,7 +406,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     }
                     // A back-edge is one where the target block
                     // dominates the source block (Muchnick §13.4).
-                    let is_back_edge = dominators::dominates(block_id, *source_bid, &idoms);
+                    let is_back_edge = tree.dominates(block_id, *source_bid);
                     if is_back_edge {
                         continue;
                     }
@@ -587,7 +587,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // existing fixpoint — it only strengthens types that were DynBox.
     // Reuse the dominator tree already computed above (the fixpoint loop only
     // refines types, never the CFG), instead of recomputing it.
-    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env, &idoms, &exact);
+    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env, &tree, &exact);
 
     // Write refined types back into the function-owned map and mirror block
     // argument entries into their in-place `TirValue` records.
