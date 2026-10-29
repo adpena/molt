@@ -1366,5 +1366,47 @@
         }
       }
     }
+  },
+  "regrtest": {
+    "test.test_import": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-556",
+          "root_cause": "Every Molt build in a libregrtest worker stops at 'Compiler cache identity: ... surrogates not allowed': libregrtest gives each worker an environment value that is not valid UTF-8.",
+          "evidence": "2026-10-29 finding-tests pilot (lane/finding-tests-pilot, macOS arm64): regrtest.import-system.native fails all four modules before any case runs, in 23 s."
+        }
+      }
+    },
+    "test.test_importlib": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-556",
+          "root_cause": "Every Molt build in a libregrtest worker stops at 'Compiler cache identity: ... surrogates not allowed': libregrtest gives each worker an environment value that is not valid UTF-8.",
+          "evidence": "2026-10-29 finding-tests pilot (lane/finding-tests-pilot, macOS arm64): regrtest.import-system.native fails all four modules before any case runs, in 23 s."
+        }
+      }
+    },
+    "test.test_pkgutil": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-556",
+          "root_cause": "Every Molt build in a libregrtest worker stops at 'Compiler cache identity: ... surrogates not allowed': libregrtest gives each worker an environment value that is not valid UTF-8.",
+          "evidence": "2026-10-29 finding-tests pilot (lane/finding-tests-pilot, macOS arm64): regrtest.import-system.native fails all four modules before any case runs, in 23 s."
+        }
+      }
+    },
+    "test.test_zipimport": {
+      "dimensions": {
+        "native@3.12": {
+          "status": "fail",
+          "finding": "HF-556",
+          "root_cause": "Every Molt build in a libregrtest worker stops at 'Compiler cache identity: ... surrogates not allowed': libregrtest gives each worker an environment value that is not valid UTF-8.",
+          "evidence": "2026-10-29 finding-tests pilot (lane/finding-tests-pilot, macOS arm64): regrtest.import-system.native fails all four modules before any case runs, in 23 s."
+        }
+      }
+    }
   }
 }

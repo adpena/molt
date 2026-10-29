@@ -23,9 +23,14 @@ The policy scope and debt manifest
 ----------------------------------
   * tools/suite_honesty/differential_expectations.json -- the SINGLE SOURCE OF
     TRUTH for every KNOWN-failing differential test, dimensioned by backend
-    (native/llvm/wasm/luau) x CPython version. Each expected-fail entry carries
-    `tracking` (task id / baton path), `root_cause` (one line), and `evidence`
-    (how it was verified). An entry without all three fails the manifest's own
+    (native/llvm/wasm/luau) x CPython version. Each expected-fail entry names
+    its owner, `root_cause` (one line), and `evidence` (how it was verified).
+    The owner is `finding`, an open row of the findings ledger as the typed
+    identity of tests/findings/finding_ids.py; entries of families that have not
+    migrated yet keep a legacy free-text `tracking` owner instead (exactly one
+    of the two). The `regrtest` block holds CPython regrtest cases keyed
+    `test.<module>[::<Class>::<method>]`; its entries must name a `finding`.
+    An entry without an owner, cause and evidence fails the manifest's own
     lint. A dimension not yet calibrated is marked `"uncalibrated"` -- LOUD,
     never silently absent.
   * tools/suite_honesty/honesty_baseline.json -- the committed one-way ratchet:
@@ -52,8 +57,9 @@ What this guard enforces (fail-closed everywhere)
 -------------------------------------------------
 Manifest lint (always fatal, mirrors the ecosystem feature-manifest lint):
   * an entry's per-dimension status is outside the allowed set, or
-  * a `fail` dimension is missing any of `tracking` / `root_cause` / `evidence`
-    (anti-parking-lot: every debt names its owner + cause + how it was verified),
+  * a `fail` dimension is missing its owner (`finding` or legacy `tracking`),
+    `root_cause` or `evidence` (anti-parking-lot: every debt names its owner +
+    cause + how it was verified), or names a `finding` that is not open,
   * a test path does not exist on disk (a stale entry that can never be matched),
   * a test listed here is ALSO in the dynamic-execution scope (parallel truth).
 
@@ -102,6 +108,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 ROOT = bind_repository_imports(__file__)
 
+from tests.findings import finding_problem  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.compat import diff_results, test_policy  # noqa: E402
 from molt.verified_subset import load_verified_subset_policy  # noqa: E402
@@ -147,8 +154,19 @@ FAILING_RAW_STATUSES = {"fail", "error", "oom"}
 PASSING_RAW_STATUS = "pass"
 SKIP_RAW_STATUS = "skip"
 
-# A `fail` entry MUST carry these provenance fields (anti-parking-lot doctrine).
-REQUIRED_FAIL_FIELDS = ("tracking", "root_cause", "evidence")
+# A `fail` entry MUST carry these provenance fields (anti-parking-lot doctrine)
+# and exactly one owner field.
+REQUIRED_FAIL_FIELDS = ("root_cause", "evidence")
+# The owner of a debt: an open findings-ledger row, typed by
+# tests/findings/finding_ids.py. LEGACY_OWNER_FIELD is the free-text owner of
+# entries whose family has not migrated; the regrtest block never accepts it.
+OWNER_FIELD = "finding"
+LEGACY_OWNER_FIELD = "tracking"
+# CPython regrtest case identities: the test module, then optionally its class
+# and method, as tools/cpython_regrtest.py reports them.
+REGRTEST_KEY_RE = re.compile(
+    r"test(?:\.[A-Za-z_][A-Za-z0-9_]*)+(?:::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*)?\Z"
+)
 
 
 def _rel(path: Path) -> str:
@@ -253,9 +271,20 @@ def validate_manifest(data: dict, policy_exclusions: frozenset[str]) -> list[str
     # The compliance block uses the same dimension shape but a pytest harness; it
     # is lint-validated (anti-parking-lot) but NOT differential-reality-checked.
     for raw_key in sorted(data.get("compliance", {})):
-        problems += _validate_dimensions(
-            raw_key, data["compliance"][raw_key], is_compliance=True
-        )
+        problems += _validate_dimensions(raw_key, data["compliance"][raw_key])
+    # The regrtest block: CPython's own test cases, reality-checked by
+    # tools/cpython_regrtest.py against each run's per-case results.
+    regrtest = data.get("regrtest", {})
+    if not isinstance(regrtest, dict):
+        problems.append("`regrtest` must be an object keyed by CPython test case")
+        regrtest = {}
+    for raw_key in sorted(regrtest):
+        if REGRTEST_KEY_RE.fullmatch(raw_key) is None:
+            problems.append(
+                f"[{raw_key}] is not a CPython regrtest case: use "
+                "test.<module> or test.<module>::<Class>::<method>"
+            )
+        problems += _validate_dimensions(raw_key, regrtest[raw_key], regrtest=True)
     problems += _validate_execution_reds(data.get("execution_reds", []))
     return problems
 
@@ -373,9 +402,13 @@ def execution_reality_check(data: dict, rows: list[dict]) -> list[str]:
 
 
 def _validate_dimensions(
-    path: str, entry: dict, *, is_compliance: bool = False
+    path: str, entry: dict, *, regrtest: bool = False
 ) -> list[str]:
-    """Validate one entry's `dimensions` object (shared by tests + compliance)."""
+    """Validate one entry's `dimensions` object (shared by every block).
+
+    A regrtest dimension names the pinned CPython source it ran,
+    `<backend>@<version>`, and its owner is always a finding.
+    """
     problems: list[str] = []
     dims = entry.get("dimensions")
     if not isinstance(dims, dict) or not dims:
@@ -396,7 +429,7 @@ def _validate_dimensions(
         if not isinstance(status, dict):
             problems.append(
                 f"[{path}] dimension {dim_key!r} must be an object "
-                "{status, tracking, root_cause, evidence}."
+                "{status, finding, root_cause, evidence}."
             )
             continue
         st = status.get("status")
@@ -407,17 +440,51 @@ def _validate_dimensions(
                 "dimension is the implicit default -- do not list it.)"
             )
             continue
+        if regrtest and "@" not in dim_key:
+            problems.append(
+                f"[{path}] dimension {dim_key!r} must name the pinned CPython "
+                "source it ran, as <backend>@<version>."
+            )
         if st == STATUS_FAIL:
             for field in REQUIRED_FAIL_FIELDS:
                 if not str(status.get(field, "")).strip():
                     problems.append(
                         f"[{path}] dimension {dim_key!r} is `fail` but has empty "
                         f"`{field}`. Anti-parking-lot doctrine: every debt names "
-                        "its tracking owner, a one-line root_cause, and the "
-                        "evidence it was verified by. A failure can never be "
-                        "silently parked."
+                        "its owner, a one-line root_cause, and the evidence it "
+                        "was verified by. A failure can never be silently parked."
                     )
+            problems += _validate_owner(path, dim_key, status, regrtest=regrtest)
     return problems
+
+
+def _validate_owner(
+    path: str, dim_key: str, status: dict, *, regrtest: bool
+) -> list[str]:
+    """A `fail` dimension names exactly one owner; a finding must be open."""
+    has_finding = OWNER_FIELD in status
+    has_legacy = LEGACY_OWNER_FIELD in status
+    if regrtest and has_legacy:
+        return [
+            f"[{path}] dimension {dim_key!r}: a regrtest expectation names its "
+            "open finding as `finding`, never free-text `tracking`."
+        ]
+    if has_finding == has_legacy:
+        return [
+            f"[{path}] dimension {dim_key!r} is `fail` and must name exactly one "
+            "owner: `finding` (an open findings-ledger row) or, until its family "
+            "migrates, legacy `tracking`."
+        ]
+    if has_legacy:
+        if not str(status[LEGACY_OWNER_FIELD]).strip():
+            return [
+                f"[{path}] dimension {dim_key!r} is `fail` but has empty "
+                "`tracking`; name its open finding as `finding`."
+            ]
+        return []
+    if problem := finding_problem(status[OWNER_FIELD]):
+        return [f"[{path}] dimension {dim_key!r}: {problem}"]
+    return []
 
 
 # --------------------------------------------------------------------------
@@ -857,7 +924,8 @@ def cmd_show(test: str) -> int:
             continue
         print(f"#   {dim_key}: {st.get('status')}")
         if st.get("status") == STATUS_FAIL:
-            print(f"#       tracking:   {st.get('tracking')}")
+            owner_field = OWNER_FIELD if OWNER_FIELD in st else LEGACY_OWNER_FIELD
+            print(f"#       {owner_field + ':':<11} {st.get(owner_field)}")
             print(f"#       root_cause: {st.get('root_cause')}")
             print(f"#       evidence:   {st.get('evidence')}")
     return 0
@@ -994,9 +1062,9 @@ def cmd_reconcile(results_path: Path) -> int:
         if "native" not in dims:
             dims["native"] = {
                 "status": STATUS_FAIL,
-                "tracking": "",
+                OWNER_FIELD: "",
                 "root_cause": f"raw status {results[path]['raw_status']!r} -- FILL IN",
-                "evidence": f"calibration {results_path.name} -- FILL IN tracking",
+                "evidence": f"calibration {results_path.name} -- FILL IN finding",
             }
             added.append(path)
 
@@ -1009,7 +1077,7 @@ def cmd_reconcile(results_path: Path) -> int:
         file=sys.stderr,
     )
     if added:
-        print("  NEW entries (fill in tracking/root_cause/evidence):", file=sys.stderr)
+        print("  NEW entries (fill in finding/root_cause/evidence):", file=sys.stderr)
         for p in added:
             print(f"    {p}", file=sys.stderr)
     return 0

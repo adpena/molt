@@ -151,15 +151,22 @@ _SESSION_ENVIRONMENT: dict[str, str] = {}
 
 
 def _run_context_env_keys() -> tuple[str, ...]:
-    """The ambient run context: hosted custody, request knobs, roots, session."""
+    """The ambient run context: hosted custody, request knobs, roots, session.
+
+    An operator's explicit external artifact roots are run context too: with
+    them, `prefer_external_artifacts` in pyproject.toml moves default roots off
+    the checkout family's custody root.
+    """
     from molt.dx import (
         DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        EXTERNAL_ARTIFACT_ROOTS_ENV,
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
         MOLT_ROOT_ENV_KEYS,
     )
 
     return (
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        EXTERNAL_ARTIFACT_ROOTS_ENV,
         *MOLT_ROOT_ENV_KEYS,
         *DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
         "MOLT_SESSION_ID",
@@ -696,6 +703,35 @@ def pytest_configure(config: pytest.Config) -> None:
     _keep_hypothesis_storage_in_scratch()
     _SESSION_ENVIRONMENT.clear()
     _SESSION_ENVIRONMENT.update(os.environ)
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Turn each `@finding` mark into its strict expected failure.
+
+    A finding test lives under tests/findings/ so the coverage projection
+    (tools/finding_coverage.py) sees every one, names exactly one open finding,
+    and takes its expected failure only from that finding.
+    """
+    from tests import findings
+
+    problems: list[str] = []
+    for item in items:
+        marks = tuple(item.iter_markers(name=findings.MARK_NAME))
+        if not marks:
+            continue
+        problem = findings.finding_test_problem(
+            item.path,
+            marks,
+            explicit_xfail=any(True for _ in item.iter_markers(name="xfail")),
+        )
+        if problem is not None:
+            problems.append(f"{item.nodeid}: {problem}")
+            continue
+        item.add_marker(findings.strict_expectation(marks[0].args[0]))
+    if problems:
+        raise pytest.UsageError("invalid finding tests:\n  " + "\n  ".join(problems))
 
 
 def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]

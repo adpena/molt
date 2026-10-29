@@ -133,7 +133,9 @@ def test_existing_cpython_checkout_fails_closed_on_revision_drift(
         )
 
 
-def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
+def test_run_command_uses_memory_guard_and_preserves_log(
+    monkeypatch, developer_host_context, unbound_checkout_family
+) -> None:
     module = cpython_regrtest
     contexts: list[dict[str, object]] = []
     calls: list[dict[str, object]] = []

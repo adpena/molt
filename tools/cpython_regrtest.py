@@ -37,12 +37,20 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
-from tools.compat import regrtest_results  # noqa: E402
+from tools.compat import regrtest_expectations, regrtest_results  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 
 
 REGRTEST_MEMORY_PREFIX = "MOLT_REGRTEST"
 CPYTHON_SOURCES = REPO_ROOT / "config" / "cpython_regrtest_sources.toml"
+# The one expectation authority: its `regrtest` block names the open finding
+# that owns each known-failing CPython test (tools/check_suite_honesty.py).
+EXPECTATIONS_PATH = (
+    REPO_ROOT / "tools" / "suite_honesty" / "differential_expectations.json"
+)
+# libregrtest's exit status when tests failed; any other non-zero status is an
+# infrastructure failure that no expectation can own.
+REGRTEST_TESTS_FAILED = 2
 COMMANDS = CommandExecutor.for_file(__file__)
 
 
@@ -125,6 +133,8 @@ class RegrtestConfig:
     rust_coverage_dir: Path
     dry_run: bool
     allow_clone: bool
+    # The backend half of the `<backend>@<version>` expectation dimension.
+    expectations_backend: str = "native"
 
 
 @dataclass
@@ -496,6 +506,14 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         help="Print commands without executing.",
     )
     parser.add_argument(
+        "--expectations-backend",
+        default="native",
+        help=(
+            "backend of the regrtest expectation dimension "
+            "(<backend>@<version>) that this run is classified against"
+        ),
+    )
+    parser.add_argument(
         "--tests-from",
         type=Path,
         default=None,
@@ -646,6 +664,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         rust_coverage_dir=output_root / "rust_coverage",
         dry_run=args.dry_run,
         allow_clone=args.clone,
+        expectations_backend=args.expectations_backend,
     )
 
 
@@ -871,6 +890,15 @@ def load_skip_list(path: Path | None) -> list[str]:
     return sorted(set(modules))
 
 
+def load_core_list(path: Path) -> list[str]:
+    """The test modules a --fromfile list selects, one per line."""
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
 def build_regrtest_cmd(
     config: RegrtestConfig,
     regrtest_path: Path,
@@ -917,8 +945,12 @@ def build_regrtest_cmd(
         cmd.extend(["--timeout", str(config.timeout)])
     if config.core_only:
         cmd.extend(["--fromfile", str(config.core_file)])
-    for mod in skip_modules:
-        cmd.extend(["-x", mod])
+    # libregrtest's -x turns every positional test into an exclusion and then
+    # runs the whole suite, and --fromfile ignores exclusions, so the skip list
+    # applies only to a whole-suite run; an explicit selection is exact.
+    if not config.tests and not config.core_only:
+        for mod in skip_modules:
+            cmd.extend(["-x", mod])
     cmd.extend(config.regrtest_args)
     if config.tests:
         cmd.extend(config.tests)
@@ -1861,6 +1893,9 @@ def run_regrtest(
             if run_config.junit_xml.exists():
                 summary = parse_junit(run_config.junit_xml)
                 summary.returncode = regrtest_rc
+            expectation_rc = classify_expectations(
+                run_config, regrtest_rc, log_handle=log_handle
+            )
             coverage = None
             if run_config.enable_coverage:
                 coverage = finalize_coverage(run_config, host_cmd, log_handle)
@@ -1887,7 +1922,7 @@ def run_regrtest(
             )
             diff_rc = diff_summary.returncode if diff_summary else 0
             rust_rc = rust_summary.returncode if rust_summary else 0
-            final_rc = max(regrtest_rc, prop_rc, diff_rc, rust_rc)
+            final_rc = max(expectation_rc, prop_rc, diff_rc, rust_rc)
             if summary:
                 summary.returncode = final_rc
             write_summary(
@@ -1904,6 +1939,62 @@ def run_regrtest(
             )
         summary_path = run_config.output_dir / "summary.json"
         return final_rc, summary_path
+
+
+def classify_expectations(
+    config: RegrtestConfig, regrtest_rc: int, *, log_handle
+) -> int:
+    """Classify the run's per-test outcomes against the finding expectations.
+
+    Returns the run's test status: libregrtest's own status when it reports an
+    infrastructure failure, else the expectation classification, so a failure
+    owned by an open finding is expected and any other outcome is not.
+    """
+    if config.dry_run:
+        return regrtest_rc
+    outcomes = (
+        regrtest_results.outcomes(config.results_jsonl)
+        if config.results_jsonl is not None and config.results_jsonl.exists()
+        else {}
+    )
+    if config.tests:
+        selected = list(config.tests)
+    elif config.core_only:
+        selected = load_core_list(config.core_file)
+    else:
+        selected = list(outcomes)
+    manifest = json.loads(EXPECTATIONS_PATH.read_text(encoding="utf-8"))
+    report = regrtest_expectations.classify(
+        outcomes,
+        manifest,
+        dimension=f"{config.expectations_backend}@{config.cpython_source.python}",
+        selected=selected,
+    )
+    (config.output_dir / "expectations.json").write_text(
+        json.dumps(
+            {
+                "dimension": report.dimension,
+                "selected": sorted(selected),
+                "expected": report.expected,
+                "unexpected_failures": report.unexpected_failures,
+                "unexpected_passes": report.unexpected_passes,
+                "unconfirmed": report.unconfirmed,
+                "errors": report.errors,
+                "problems": list(report.problems),
+                "returncode": report.returncode,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for line in report.lines():
+        log_line(log_handle, line)
+        print(line)
+    if regrtest_rc not in (0, REGRTEST_TESTS_FAILED):
+        return regrtest_rc
+    return report.returncode
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -152,6 +152,7 @@ norecursedirs = ["third_party", ".git", ".venv", ".molt-venv", ".hypothesis", "d
 markers = [
     "molt_compile: tests that require a working Molt compiler (use --run-molt)",
     "slow: tests that exercise longer end-to-end toolchain paths",
+    "finding(id): the test states the behavior an open findings-ledger row violates; a strict expected failure (tests/findings)",
 ]
 
 [tool.molt.deps]
