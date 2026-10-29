@@ -124,7 +124,7 @@ not choose guest semantics.
   link-following fallback.
   A cold refresh adds one open, descriptor identity check and close; the existing
   five-minute throttle keeps hot hits free of those operations.
-- **Ignored artifact cleanup**: use `molt clean`, `python3 tools/artifact_cleanup.py`, or `python3 tools/dev.py clean-artifacts` for a dry-run of canonical ignored build/cache/tmp/log/result cleanup, including friend-suite checkout caches under `bench/friends/repos/`. Add `--apply` to delete and `--kill-processes` to run the process sentinel before deletion; that sentinel pass may drain only live-proved Molt-owned workers and is never Codex, Claude, app-server, renderer, node-repl, shell, Git, MCP/plugin, or host-control-plane cleanup. In JSON mode, cleanup runs the sentinel with `--json` and embeds parsed `sentinel_events` in the cleanup report; raw sentinel stdout/stderr are included only with `--verbose`. All three entrypoints route through `tools/artifact_cleanup.py`, and both the optional sentinel pass and the `git clean -X` pass run through the default-on `MOLT_DEV_CLEANUP` memory guard. The cleanup pathspec is allowlisted, so tracked files, dirty partner work, `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are not default cleanup targets, and `--extra-path` refuses those paths and their ancestors. Checkout cache roots (`.molt_cache/`, `.molt_cache-*/`, `runtime/molt-backend/.molt_cache/`) hold live locks and, in a plain clone, the default Molt home, so `git clean` never touches them: after `git clean`, cleanup runs `tools/molt_cache_prune.py` on each root with a zero budget, which evicts cache entries and keeps held locks, the Molt home and its bin directory; Cargo incremental quarantine receipts under `target/.molt_state/quarantine/cargo_incremental/` are target artifacts and are intentionally removed by explicit apply-mode cleanup.
+- **Ignored artifact cleanup**: use `molt clean`, `python3 tools/artifact_cleanup.py`, or `python3 tools/dev.py clean-artifacts` for a dry-run of canonical ignored build-output cleanup and cache pruning, including friend-suite checkout caches under `bench/friends/repos/`. Add `--apply` to delete and `--kill-processes` to run the process sentinel before deletion; that sentinel pass may drain only live-proved Molt-owned workers and is never Codex, Claude, app-server, renderer, node-repl, shell, Git, MCP/plugin, or host-control-plane cleanup. In JSON mode, cleanup runs the sentinel with `--json` and embeds parsed `sentinel_events` in the cleanup report; raw sentinel stdout/stderr are included only with `--verbose`. All three entrypoints route through `tools/artifact_cleanup.py`, and both the optional sentinel pass and the `git clean -X` pass run through the default-on `MOLT_DEV_CLEANUP` memory guard. Evidence and unknown checkout caches are preserved: `logs/`, `tmp/`, benchmark results, harness reports, and old provider caches cannot be removed by generic cleanup or an extra path. The cleanup pathspec is allowlisted, so tracked files, dirty partner work, `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are not default cleanup targets, and `--extra-path` refuses those paths and their ancestors. Checkout cache roots (`.molt_cache/`, `.molt_cache-*/`, `runtime/molt-backend/.molt_cache/`) hold live locks and, in a plain clone, the default Molt home, so `git clean` never touches them: after `git clean`, cleanup runs `tools/molt_cache_prune.py` on each root with a zero budget, which evicts cache entries and keeps held locks, the Molt home and its bin directory; Cargo incremental quarantine receipts under `target/.molt_state/quarantine/cargo_incremental/` are target artifacts and are intentionally removed by explicit apply-mode cleanup.
 - **Wrapper policy**: diff runs disable `RUSTC_WRAPPER`/`sccache` by default for portability. Opt in with `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1` on hosts where wrapper caches are known-good.
 - **Pass-log pruning**: when `--log-dir` is enabled, per-test logs for passing tests are pruned by default to reduce clutter. Set `MOLT_DIFF_LOG_PASSES=1` to keep pass logs.
 - **Backend daemon policy**: diff runs use `MOLT_DIFF_BACKEND_DAEMON` when set; otherwise they use the compiler's `MOLT_BACKEND_DAEMON` policy: enabled by default on POSIX, including macOS, and unavailable on Windows.
@@ -583,6 +583,46 @@ report retained snapshot blocks separately from new file growth. Discarding a
 restore point requires the applicable user authorization.
 Keep private operation evidence outside tracked source. `AGENTS.md` owns this
 standing policy; `CLAUDE.md` imports it.
+
+## Storage authority and auxiliary retention (HF-582)
+
+The closed `molt.custody_layout.StorageClass` and exhaustive `storage_rule`
+assign state to its DX-selected volume, producer and lifetime. Use
+`molt.dx.storage_path`; a private root is not a new storage class. The
+[storage design](design/storage_authority.md) records placement, the measured
+toolchain exception and upstream retention protocols.
+
+`python tools/molt_dev.py storage inventory --repo /checkout` shows the
+selected paths and policies. `storage trim --repo /checkout --dry-run` reports
+last-use retirement; `--apply` runs it. The existing daily checkout collector
+also runs auxiliary retention under its single admission lock. Current/recent
+controllers and pinned toolchains stay; browser/Edgebox input trees use their
+lock-file producer and command lifetime locks; an exclusive lifetime lock is required
+to retire any older proven generation. Provider caches retain their own
+protocols: uv uses `uv cache prune`, and an unsatisfied byte budget is reported.
+Compile-cache selection honors the family artifact binding even when
+`MOLT_EXT_ROOT` is unset. Toolchain providers publish last use only after exact
+receipt/hash validation, with external locks covering publication and readers.
+
+Controller source/environments, the landing sandbox, lane payloads and gate
+receipts now project onto the artifact root. Gate subprocesses receive the
+canonical run context, including provider caches and scratch temp roots.
+Coordination records and recovery indices stay in the checkout. Evidence never
+expires into deletion: compaction verifies an archive, publishes its external
+manifest and source index, then removes only represented raw payloads.
+
+Existing state moves only through a separately reviewed operation:
+
+```sh
+python tools/molt_dev.py storage migrate --repo /primary/checkout --dry-run \
+  --legacy-temp-root /original/host/temp
+```
+
+Review every `keep`/`live-lock` row before approving `--apply`. Unknown preimages,
+active/referenced lanes, locked landings and unproven old temp/cache custody
+remain. No migration is an implicit test, startup or daily-GC side effect.
+Tests exercise temporary roots and check actual Python writes against typed
+claims; exhaustive typing rejects classes without placement/retention policy.
 
 ## Build Throughput (Multi-Agent)
 - **Concurrent backend daemon**: one daemon serves every build that shares its configuration digest. The digest and the socket path bind only process-scoped facts (project, build-state root, Cargo profile, compiler binary and fingerprint, frontend tooling fingerprint, features, target, suite lease, session), so every program and codegen setting of a build shares one warm daemon. Each connection gets its own thread, at most one compile per core runs, and the rest wait for a slot. Concurrent requests for one artifact compile it once (single flight); in-memory cache and single-flight keys bind the request's configuration namespace, complete typed native/WASM target and admitted semantic settings ([identity and transitions](design/backend_compile_daemon.md#cache-identity-and-job-transitions)). A request's backend settings (the catalog in `src/molt/backend_environment.json`) live in a per-request scope on the compiling thread (`molt_ir::backend_environment`, the `Session` model of rustc and Bazel's multiplex workers); the daemon never writes them into its process environment, worker threads and native batch workers receive the scope explicitly, and a read outside a request scope panics. Compiler crates read the catalog only through that typed accessor; each crate's `clippy.toml` disallows `std::env::var` so a new direct read fails lint. A daemon retires on a `retire` request, or by itself after `MOLT_BACKEND_DAEMON_IDLE_TIMEOUT` seconds (default 1800, the sccache and Gradle model) with no connection: it unlinks its socket, so the next build starts a fresh daemon, then finishes the accepted connections and exits. It unlinks only the socket it bound, so a successor on the same path keeps its own. The daemon alone decides when it retires; the launcher never stops a daemon whose socket is gone, and starts its successor. `tests/molt_diff.py` retires an idle daemon whose RSS exceeds `MOLT_DIFF_DAEMON_MAX_RSS_KB` and never stops a busy or draining one.

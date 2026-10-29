@@ -464,11 +464,18 @@ def _is_sha256(value: object) -> TypeGuard[str]:
 def load_binaryen_install_receipt(root: Path) -> dict[str, Any]:
     """Decode and validate the exact provision receipt schema."""
 
-    path = root / INSTALL_RECEIPT_FILENAME
-    try:
-        payload = loads_exact(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise BinaryenIdentityError(
-            f"Binaryen provision receipt is invalid: {path}: {exc}"
-        ) from exc
-    return validate_binaryen_install_receipt(payload)
+    from molt.checkout_state import toolchain_state_use
+
+    with toolchain_state_use((root,)):
+        path = root / INSTALL_RECEIPT_FILENAME
+        try:
+            payload = loads_exact(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise BinaryenIdentityError(
+                f"Binaryen provision receipt is invalid: {path}: {exc}"
+            ) from exc
+        receipt = validate_binaryen_install_receipt(payload)
+        from molt.checkout_state import record_toolchain_use
+
+        record_toolchain_use(root)
+        return receipt

@@ -205,6 +205,7 @@ def command_artifact_scope(
         "MOLT_GUARD_SCRATCH_ROOT",
         "MOLT_MEMORY_GUARD_STATE_ROOT",
         "CARGO_BUILD_BUILD_DIR",
+        "MOLT_TARGET_ROOT",
     ):
         if raw := environment.get(key, "").strip():
             paths.append(cwd / Path(raw).expanduser())

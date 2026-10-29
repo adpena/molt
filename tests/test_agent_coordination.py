@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tarfile
 import os
 from pathlib import Path
 import sys
@@ -20,6 +21,12 @@ def _identity_fixture_git(repo: Path, *arguments: str) -> str:
     )
     assert result.ok, result.error_payload()
     return result.stdout.strip()
+
+
+def _archive_payload(path, member):
+    with tarfile.open(path) as archive:
+        with archive.extractfile(member) as stream:
+            return stream.read()
 
 
 def test_release_work_binds_each_ledger_and_recipe_catalog_to_its_commit(
@@ -1912,7 +1919,7 @@ def test_daily_harvest_keeps_unique_evidence_and_batches_repository_blob_checks(
     )
     result = disk_guard.gc(root=tmp_path, env={}, now_fn=lambda: now, log=False)
     assert not result.errors
-    assert max(reads.values()) == 1
+    assert max(reads.values()) == 2  # text selection plus lossless archive copy
     assert len(commands) == 1 and commands[0][-2:] == ["cat-file", "--batch-check"]
     selected = {
         Path(item["path"]): item
@@ -1930,8 +1937,8 @@ def test_daily_harvest_keeps_unique_evidence_and_batches_repository_blob_checks(
         assert not (base / "artifacts/payload.bin").exists()
         retired = Path(selected[base]["retired_path"])
         assert (
-            retired / "artifacts/payload.bin"
-        ).read_bytes() == b"\0raw payload" * 100
+            _archive_payload(retired, "artifacts/payload.bin") == b"\0raw payload" * 100
+        )
         assert selected[base]["est_bytes"] == len(b"\0raw payload" * 100) + len(
             b"this report is already a repository blob\n"
         )
@@ -2069,6 +2076,8 @@ def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path):
 
     scope, main, linked = _registered_worktree_scope(tmp_path)
     now, tasks = _evidence_harvest_fixture(linked)
+    payload = b"preserve cross-lane evidence" * 65536
+    (tasks["idle"] / "artifacts/payload.bin").write_bytes(payload)
     active = main / "logs/agents/integrator"
     active.mkdir(parents=True)
     (active / "coordination.json").write_text(
@@ -2088,6 +2097,32 @@ def test_active_reference_in_another_checkout_protects_task_evidence(tmp_path):
         item["path"] == str(tasks["idle"]) and item["reason"] == "active-or-referenced"
         for item in result.skipped
     )
+    from tools import molt_dev_storage
+    from molt.checkout_state import checkout_state_use
+
+    artifact = tmp_path / "data"
+    artifact.mkdir()
+    environment = {
+        "MOLT_EXT_ROOT": str(artifact),
+        "MOLT_TARGET_ROOT": str(tmp_path / "target-root"),
+        "HOME": str(tmp_path / "home"),
+    }
+    rows = molt_dev_storage.migrate(main, environment, apply=False)
+    row = next(row for row in rows if row["source"] == str(tasks["idle"]))
+    assert row["action"] == "keep"
+    (active / "coordination.json").write_text(
+        json.dumps({"task": "integrator", "status": "done"})
+    )
+    with checkout_state_use(((active.parent, None),), publish=False):
+        rows = molt_dev_storage.migrate(main, environment, apply=True)
+        row = next(row for row in rows if row["source"] == str(tasks["idle"]))
+        assert row["status"] == "registry-in-use"
+        assert (tasks["idle"] / "artifacts/payload.bin").read_bytes() == payload
+    rows = molt_dev_storage.migrate(main, environment, apply=True)
+    row = next(row for row in rows if row["source"] == str(tasks["idle"]))
+    assert row["status"] == "compacted"
+    assert _archive_payload(Path(row["archive"]), "artifacts/payload.bin") == payload
+    assert (tasks["idle"] / "coordination.json").is_file()
 
 
 def test_harvest_text_limit_is_inclusive_and_opaque_files_retire(tmp_path):
@@ -2112,7 +2147,7 @@ def test_harvest_text_limit_is_inclusive_and_opaque_files_retire(tmp_path):
     ]
     for name in ("report-too-large.md", "report-opaque.log"):
         assert not (base / "artifacts" / name).exists()
-        assert (retired / "artifacts" / name).read_bytes() == samples[name]
+        assert _archive_payload(retired, "artifacts/" + name) == samples[name]
 
 
 def test_every_terminal_task_is_harvested_within_the_rotation_bound(
@@ -2173,8 +2208,9 @@ def test_every_terminal_task_is_harvested_within_the_rotation_bound(
         if harvested(name):
             moved = Path(retirements[str(base)])
             assert (
-                moved / "artifacts/payload/part-2/file-11.bin"
-            ).read_bytes() == b"\0raw payload 11"
+                _archive_payload(moved, "artifacts/payload/part-2/file-11.bin")
+                == b"\0raw payload 11"
+            )
         else:
             assert (
                 base / "artifacts/payload/part-2/file-11.bin"

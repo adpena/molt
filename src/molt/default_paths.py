@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from .process_environment import ProcessEnvironment
+from .custody_layout import Regenerable, storage_rule
 
 
 def executable_environment_value(
@@ -123,8 +124,7 @@ def _default_molt_cache_cached(
     platform_name: str,
     home: str | None,
 ) -> Path:
-    # Keep both precedence and the external-root existence check inside this
-    # existing cache. Lower-priority selectors are expanded only if selected.
+    # Keep precedence and the family selection inside this existing cache. Lower-priority selectors are expanded only if selected.
     env = dict(values)
     operation_cwd = Path(cwd_str)
     selected = _path_override(env, "MOLT_CACHE")
@@ -135,10 +135,22 @@ def _default_molt_cache_cached(
             if external_text
             else None
         )
+        if external is None:
+            # The family binding is DX's authority, including its identity and
+            # missing-volume checks. Keep the bootstrap leaf independent of DX
+            # until selection is actually needed at runtime.
+            from .custody_layout import enclosing_checkouts
+
+            checkouts = enclosing_checkouts(operation_cwd)
+            if checkouts:
+                from .dx import configured_artifact_root
+
+                bound = configured_artifact_root(env, relative_to=checkouts[0])
+                external = os.fspath(bound) if bound is not None else None
         external_path = Path(external) if external else operation_cwd
         if not external_path.is_absolute():
             external_path = operation_cwd / external_path
-        if external and external_path.is_dir():
+        if external:
             selected = os.fspath(external_path / ".molt_cache")
         else:
             windows = platform_name == "win32"
@@ -182,8 +194,11 @@ def _default_molt_cache(
     )
 
 
-DEFAULT_MOLT_CACHE_MAX_GB = "30"
-DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
+_CACHE_RETENTION = storage_rule("compile-cache").retention
+assert isinstance(_CACHE_RETENTION, Regenerable)
+assert _CACHE_RETENTION.max_bytes is not None
+DEFAULT_MOLT_CACHE_MAX_GB = str(int(_CACHE_RETENTION.max_bytes / 1024**3))
+DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = str(int(_CACHE_RETENTION.max_idle_s / 86400))
 
 
 def resolve_budget(

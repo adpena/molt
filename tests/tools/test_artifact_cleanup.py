@@ -38,13 +38,7 @@ def test_default_pathspecs_cover_canonical_local_artifact_roots() -> None:
     assert {
         "target/",
         "target-*",
-        "tmp/",
-        ".uv-cache/",
-        ".uv-cache-*/",
         "bin/",
-        "logs/",
-        "bench/results/",
-        "bench/scoreboard/host_calibration/",
         "wasm/molt_runtime.wasm",
         "wasm/molt_runtime_reloc.wasm",
     }.issubset(set(module.default_pathspecs()))
@@ -71,7 +65,15 @@ def test_default_cleanup_intentionally_covers_cargo_quarantine_receipts() -> Non
 def test_extra_pathspecs_reject_stateful_roots() -> None:
     module = artifact_cleanup
 
-    for pathspec in [".venv/", ".omx/cache", "third_party/tool"]:
+    for pathspec in [
+        ".venv/",
+        ".omx/cache",
+        "third_party/tool",
+        "logs/storage",
+        "bench/results",
+        "tests/harness/reports",
+        "tmp/old-proof",
+    ]:
         try:
             module.validate_extra_pathspecs([pathspec])
         except ValueError as exc:
@@ -114,9 +116,24 @@ def test_extra_pathspecs_reject_ancestors_of_protected_data() -> None:
             assert "stateful data" in str(exc)
         else:
             raise AssertionError(f"{pathspec} should have been rejected")
-    module.validate_extra_pathspecs(
-        ["runtime/molt-backend/tmp", "tests/harness/reports"]
+    module.validate_extra_pathspecs(["runtime/molt-backend/tmp", "tests/__pycache__"])
+
+
+def test_unknown_extra_and_checkout_root_cannot_bypass_evidence_preservation():
+    import pytest
+
+    for path in (".", "./", "unknown-proof", ".uv-cache"):
+        with pytest.raises(ValueError):
+            artifact_cleanup.validate_extra_pathspecs([path])
+
+
+def test_selected_installation_is_kept_even_inside_a_build_output(tmp_path):
+    selected = artifact_cleanup.cleanup_pathspecs(
+        tmp_path,
+        [],
+        {"MOLT_HOME": str(tmp_path / "build/home"), "MOLT_BIN": str(tmp_path / "bin")},
     )
+    assert "build/" not in selected and "bin/" not in selected
 
 
 def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:

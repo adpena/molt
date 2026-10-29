@@ -119,11 +119,15 @@ from molt.custody_layout import (  # noqa: E402
     custody_root,
     disk_scratch_roots_of,
     git_directories,
+    StorageClass,
+    storage_rule,
+    Regenerable,
 )
 from molt.dx import (  # noqa: E402
     # noqa: E402,
     checkout_component,
     configured_artifact_root,
+    storage_path,
     session_artifact_component,
 )
 from molt.checkout_state import (  # noqa: E402
@@ -489,7 +493,7 @@ def _path_within(path: Path, parent: Path) -> bool:
         return False
 
 
-def _registered_worktrees_from_common(common: Path) -> set[Path]:
+def _registered_worktrees_from_common(common: Path, *, scope: Path) -> set[Path]:
     roots: set[Path] = set()
     # A separate Git directory does not identify its main source checkout.
     if common.name == ".git":
@@ -512,6 +516,8 @@ def _registered_worktrees_from_common(common: Path) -> set[Path]:
             if gitfile.name != ".git":
                 continue
             checkout = gitfile.parent
+            if not _path_within(checkout, scope) or ".codex" in checkout.parts:
+                continue
             directories = git_directories(checkout)
         except (OSError, ValueError, RuntimeError):
             continue
@@ -537,7 +543,7 @@ def registered_worktree_roots(root: Path) -> tuple[Path, ...]:
     }
     registered: set[Path] = set()
     for common in common_dirs:
-        registered.update(_registered_worktrees_from_common(common))
+        registered.update(_registered_worktrees_from_common(common, scope=scope))
     return tuple(
         sorted(
             (path for path in registered if _path_within(path, scope)),
@@ -665,6 +671,7 @@ def _retire_candidate(
             custody_root(owner_root),
             reason=result.operation,
             owner=str(owner.path if owner is not None else owner_root),
+            kind=owner.kind if owner is not None else "cargo-target",
             now=now_fn(),
             result=result,
         )
@@ -1165,12 +1172,15 @@ def _timed_retire(
     *,
     reason: str,
     owner: str,
+    kind: StorageClass,
     now: float,
     result: ReclaimResult,
 ) -> tuple[bool, str | None]:
     started = time.monotonic()
     try:
-        retired = soft_retire(path, owning_root, reason=reason, owner=owner, now=now)
+        retired = soft_retire(
+            path, owning_root, reason=reason, owner=owner, kind=kind, now=now
+        )
         result.retirements[str(path)] = str(retired.path)
         return True, None
     except (OSError, ValueError) as exc:
@@ -1719,6 +1729,7 @@ def _collect_scratch(
                                 path,
                                 custody_root(root),
                                 reason="scratch",
+                                kind="scratch",
                                 owner=str(owner.path if owner else root),
                                 now=now_fn(),
                                 result=result,
@@ -1773,6 +1784,14 @@ def _collect_retired_roots(
         owning_root, record = records[key]
         retirement = read_soft_retirement(record, owning_root)
         if retirement is None or now - retirement.retired_at < RETIREMENT_WINDOW_S:
+            continue
+        # Historical soft retirement mixed evidence with scratch. Evidence has
+        # no expiry: retain it until the explicit storage migration compacts it
+        # with an index. Only proven regenerable scratch reaches deletion.
+        if not isinstance(storage_rule(retirement.kind).retention, Regenerable):
+            result.skipped.append(
+                {"path": str(retirement.path), "reason": "durable-evidence"}
+            )
             continue
 
         def kept(
@@ -1988,18 +2007,28 @@ def _collect_evidence(
         directories = git_directories(root)
         assert directories is not None
         common = directories[1]
-        container = common / "molt-integrate" / "receipts"
-        if container in seen_receipts:
+        if _region_locked(common / "molt-integrate.lock"):
             continue
-        seen_receipts.add(container)
-        if not container.is_dir() or _region_locked(common / "molt-integrate.lock"):
-            continue
-        receipts.update(
-            (str(receipt), (root, common, receipt))
-            for receipt in _iter_dir(container)
-            if not receipt.is_symlink()
-            and (receipt.suffix == ".json" or receipt.suffix == ".d")
-        )
+        for container in (
+            common / "molt-integrate" / "receipts",
+            storage_path(root, "integration-receipts", env),
+        ):
+            if container in seen_receipts or not container.is_dir():
+                continue
+            seen_receipts.add(container)
+            receipts.update(
+                (str(receipt), (root, common, receipt))
+                for receipt in _iter_dir(container)
+                if not receipt.is_symlink()
+                and (receipt.suffix == ".json" or receipt.suffix == ".d")
+                and not receipt.name.endswith(".storage-index.json")
+                and not (
+                    receipt.suffix == ".d" and receipt.with_suffix(".json").exists()
+                )
+                and not (
+                    receipt.is_dir() and (receipt / "storage-index.json").is_file()
+                )
+            )
     for key in walks.order("integration-receipts", receipts):
         root, common, receipt = receipts[key]
         try:
@@ -2040,17 +2069,18 @@ def _collect_evidence(
                         {"path": str(receipt), "reason": "receipt-use-changed"}
                     )
                     continue
-                ok, error = _timed_retire(
+                from molt.checkout_state import compact_evidence
+
+                companion = receipt.with_suffix(".d")
+                archive = compact_evidence(
                     receipt,
-                    custody_root(root),
-                    reason="integration-receipt",
-                    owner=str(common),
-                    now=now,
-                    result=result,
+                    storage_path(root, "integration-receipts", env) / "archive",
+                    kind="integration-receipts",
+                    companions=(companion,) if receipt.suffix == ".json" else (),
                 )
-                if not ok:
-                    result.errors.append(f"{receipt}: {error}")
-                    continue
+                result.retirements[str(receipt)] = str(archive)
+                if receipt.suffix == ".json":
+                    result.retirements[str(companion)] = str(archive)
             except WalkIncomplete as incomplete:
                 result.skipped.append(
                     {
@@ -2103,15 +2133,17 @@ def _collect_evidence(
                         )
                         continue
                     if apply:
-                        ok, error = _timed_retire(
-                            record,
-                            custody_root(root),
-                            reason="guard-incident",
-                            owner=str(incidents),
-                            now=now,
-                            result=result,
-                        )
-                        if not ok:
+                        from molt.checkout_state import compact_evidence
+
+                        try:
+                            archive = compact_evidence(
+                                record,
+                                storage_path(root, "integration-receipts", env)
+                                / "incidents",
+                                kind="diagnostics",
+                            )
+                            result.retirements[str(record)] = str(archive)
+                        except (OSError, ValueError) as error:
                             result.errors.append(f"{record}: {error}")
                             continue
                     result.reclaimed.append(
@@ -2259,6 +2291,7 @@ def _retire_superseded_layouts(
                     path,
                     custody_root(owner_root),
                     reason="superseded-layout",
+                    kind="cargo-target",
                     owner=str(root),
                     now=now,
                     result=result,
@@ -2290,6 +2323,7 @@ def collect_due(
     *,
     root: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
+    auxiliary: Callable[[], None] | None = None,
 ) -> list[ReclaimResult]:
     """Collect one due daily attempt, retaining admission through completion.
 
@@ -2304,7 +2338,10 @@ def collect_due(
     with checkout_state_gc(resolved_root) as admitted:
         if not admitted:
             return []
-        return collect(root=resolved_root, env=environment)
+        results = collect(root=resolved_root, env=environment)
+        if auxiliary is not None:
+            auxiliary()
+        return results
 
 
 def _retention_candidates(
@@ -3052,7 +3089,11 @@ def retire_cargo_incremental(
             if [metadata.st_mode, metadata.st_dev, metadata.st_ino] != root_entry[1:4]:
                 raise ValueError("incremental root identity changed before retirement")
             retirement = soft_retire(
-                path, root, reason="cargo-incremental:" + digest, owner=str(owner)
+                path,
+                root,
+                reason="cargo-incremental:" + digest,
+                owner=str(owner),
+                kind="cargo-target",
             )
         return {
             "operation": "retire-cargo-incremental",
