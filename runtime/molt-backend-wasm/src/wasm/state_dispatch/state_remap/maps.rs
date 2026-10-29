@@ -17,9 +17,12 @@ pub(in crate::wasm::state_dispatch) fn build_state_resume_maps(
         .iter()
         .enumerate()
         .filter_map(|(index, op)| {
-            matches!(op.kind.as_str(), "label" | "state_label")
-                .then(|| op.value.map(|label| (label, index)))
-                .flatten()
+            matches!(
+                op.kind,
+                molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel
+            )
+            .then(|| op.value.map(|label| (label, index)))
+            .flatten()
         })
         .collect();
     let mut state_map = BTreeMap::from([(0, initial_dispatch_index)]);
@@ -33,7 +36,7 @@ pub(in crate::wasm::state_dispatch) fn stateful_entry_prologue_end(ops: &[OpIR])
     let mut switches = ops
         .iter()
         .enumerate()
-        .filter(|(_, op)| op.kind == "state_switch")
+        .filter(|(_, op)| op.kind == molt_ir::OpKind::StateSwitch)
         .map(|(index, _)| index);
     let index = switches
         .next()
@@ -107,27 +110,26 @@ mod tests {
     use super::{build_state_resume_maps, stateful_entry_prologue_end};
     use crate::OpIR;
 
-    fn op(kind: &str, value: Option<i64>) -> OpIR {
+    fn op(kind: molt_ir::OpKind, value: Option<i64>) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
             value,
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
     #[test]
     fn stateful_entry_prologue_runs_before_initial_and_resumed_dispatch() {
         let ops = vec![
-            op("exception_stack_enter", None),
-            op("store_var", None),
+            op(molt_ir::OpKind::ExceptionStackEnter, None),
+            op(molt_ir::OpKind::StoreVar, None),
             OpIR {
                 state_targets: Some(vec![(5, 15)]),
-                ..op("state_switch", None)
+                ..op(molt_ir::OpKind::StateSwitch, None)
             },
-            op("jump", Some(9)),
-            op("state_set", Some(5)),
-            op("state_label", Some(15)),
-            op("ret", None),
+            op(molt_ir::OpKind::Jump, Some(9)),
+            op(molt_ir::OpKind::StateSet, Some(5)),
+            op(molt_ir::OpKind::StateLabel, Some(15)),
+            op(molt_ir::OpKind::Ret, None),
         ];
         let prologue_end = stateful_entry_prologue_end(&ops);
         let state_map = build_state_resume_maps(&ops, prologue_end + 1);

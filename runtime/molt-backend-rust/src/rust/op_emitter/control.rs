@@ -261,14 +261,6 @@ impl RustBackend {
         }
     }
 
-    pub(super) fn emit_op_break(&mut self, _op: &OpIR) {
-        self.emit_line("break;");
-    }
-
-    pub(super) fn emit_op_continue(&mut self, _op: &OpIR) {
-        self.emit_line("continue;");
-    }
-
     pub(super) fn emit_op_return(&mut self, op: &OpIR) {
         if self.current_is_main {
             self.emit_param_writeback();

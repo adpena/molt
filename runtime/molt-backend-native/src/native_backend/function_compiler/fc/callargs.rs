@@ -1,16 +1,17 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_callargs_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_callargs_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "callargs_new",
-    "callargs_push_pos",
-    "callargs_push_method_receiver",
-    "callargs_push_kw",
-    "callargs_expand_star",
-    "callargs_expand_kwstar",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::CallargsNew,
+    OpKind::CallargsPushPos,
+    OpKind::CallargsPushMethodReceiver,
+    OpKind::CallargsPushKw,
+    OpKind::CallargsExpandStar,
+    OpKind::CallargsExpandKwstar,
+);
 use super::OpFlow;
 
 /// CallArgs construction and borrowed push/expand consumers share the native
@@ -51,8 +52,8 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
         );
     }
     operands.enter_consumer(builder, block_tracked_obj, block_tracked_ptr);
-    match op.kind.as_str() {
-        "callargs_new" => {
+    match op.kind {
+        OpKind::CallargsNew => {
             // The source call form picks the builder: a CALL_FUNCTION_EX call
             // site's arguments are its own tuple and mapping.
             let constructor = op
@@ -73,7 +74,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "callargs_push_method_receiver" => {
+        OpKind::CallargsPushMethodReceiver => {
             let [callargs, receiver] = names else {
                 panic!("validated method receiver prefix takes builder and receiver");
             };
@@ -118,7 +119,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
             switch_to_block_materialized(builder, join);
             seal_block_once(builder, sealed_blocks, join);
         }
-        "callargs_push_pos" => {
+        OpKind::CallargsPushPos => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let builder_ptr = operands.word(&args[0]).expect("Callargs builder not found");
             let val = operands.word(&args[1]).expect("Callargs value not found");
@@ -137,7 +138,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "callargs_push_kw" => {
+        OpKind::CallargsPushKw => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let builder_ptr = operands.word(&args[0]).expect("Callargs builder not found");
             let name = operands.word(&args[1]).expect("Callargs name not found");
@@ -158,7 +159,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "callargs_expand_star" => {
+        OpKind::CallargsExpandStar => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let builder_ptr = operands.word(&args[0]).expect("Callargs builder not found");
             let iterable = operands
@@ -178,7 +179,7 @@ pub(in crate::native_backend::function_compiler) fn handle_callargs_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "callargs_expand_kwstar" => {
+        OpKind::CallargsExpandKwstar => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let builder_ptr = operands.word(&args[0]).expect("Callargs builder not found");
             let mapping = operands.word(&args[1]).expect("Callargs mapping not found");

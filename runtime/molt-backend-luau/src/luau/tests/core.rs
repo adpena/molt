@@ -4,18 +4,17 @@ use super::*;
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn method_receiver_prefix_preserves_absence_and_python_none_positions() {
-    let op = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
-        kind: kind.into(),
+    let op = |kind: molt_ir::OpKind, args: &[&str], out: Option<&str>| OpIR {
         args: Some(args.iter().map(|v| (*v).into()).collect()),
         out: out.map(str::to_string),
-        ..Default::default()
+        ..OpIR::new(kind)
     };
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
                 name: "molt_main".into(),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
-                ops: vec![op("ret_void", &[], None)],
+                ops: vec![op(molt_ir::OpKind::RetVoid, &[], None)],
                 ..Default::default()
             },
             FunctionIR {
@@ -23,16 +22,24 @@ fn method_receiver_prefix_preserves_absence_and_python_none_positions() {
                 params: vec!["receiver".into(), "callee".into()],
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 ops: vec![
-                    op("callargs_new", &[], Some("builder")),
+                    op(molt_ir::OpKind::CallargsNew, &[], Some("builder")),
                     op(
-                        "callargs_push_method_receiver",
+                        molt_ir::OpKind::CallargsPushMethodReceiver,
                         &["builder", "receiver"],
                         None,
                     ),
-                    op("const_none", &[], Some("python_none")),
-                    op("callargs_push_pos", &["builder", "python_none"], None),
-                    op("call_bind", &["callee", "builder"], Some("result")),
-                    op("ret", &["result"], None),
+                    op(molt_ir::OpKind::ConstNone, &[], Some("python_none")),
+                    op(
+                        molt_ir::OpKind::CallargsPushPos,
+                        &["builder", "python_none"],
+                        None,
+                    ),
+                    op(
+                        molt_ir::OpKind::CallBind,
+                        &["callee", "builder"],
+                        Some("result"),
+                    ),
+                    op(molt_ir::OpKind::Ret, &["result"], None),
                 ],
                 ..Default::default()
             },
@@ -70,15 +77,13 @@ fn symbolic_module_slots_resolve_from_the_program_registry() {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             ops: vec![
                 OpIR {
-                    kind: "module_slot".into(),
                     s_value: Some("sys".into()),
                     out: Some("module_id".into()),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::ModuleSlot)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["module_id".into()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..Default::default()
@@ -118,20 +123,17 @@ fn cold_module_chunk_identity_uses_semantic_provenance() {
         params: vec!["unknown".into()],
         ops: vec![
             OpIR {
-                kind: "const_none".into(),
                 out: Some("nothing".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstNone)
             },
             OpIR {
-                kind: "is".into(),
                 args: Some(vec!["unknown".into(), "nothing".into()]),
                 out: Some("result".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Is)
             },
             OpIR {
-                kind: "ret".into(),
                 args: Some(vec!["result".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         ..FunctionIR::default()
@@ -147,7 +149,7 @@ fn cold_module_chunk_identity_uses_semantic_provenance() {
         "{source}"
     );
 
-    function.ops[0].kind = "const".into();
+    function.ops[0].kind = molt_ir::OpKind::Const;
     function.ops[0].value = Some(1);
     let mut backend = LuauBackend::new();
     let error = backend
@@ -247,12 +249,10 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
         "_m_user_612d62",
     ];
     let mut framed_ops = vec![OpIR {
-        kind: "trace_enter_slot".to_string(),
         s_value: Some("a-b".into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
     }];
     framed_ops.push(OpIR {
-        kind: "tuple_new".to_string(),
         args: Some(
             adversarial_params
                 .iter()
@@ -260,17 +260,13 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
                 .collect(),
         ),
         out: Some("result".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::TupleNew)
     });
     framed_ops.extend([
+        OpIR::new(molt_ir::OpKind::TraceExit),
         OpIR {
-            kind: "trace_exit".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "ret".to_string(),
             args: Some(vec!["result".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         },
     ]);
     let ir = SimpleIR {
@@ -278,10 +274,7 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 ..FunctionIR::default()
             },
             FunctionIR {
@@ -298,10 +291,7 @@ fn definitions_and_references_share_injective_user_and_helper_namespaces() {
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "a_b".to_string(),
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 ..FunctionIR::default()
             },
         ],
@@ -340,28 +330,22 @@ fn direct_caller_observes_returned_tuple_as_one_object() {
                 name: "molt_main".to_string(),
                 ops: vec![
                     OpIR {
-                        kind: "const".to_string(),
                         value: Some(1),
                         out: Some("left".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Const)
                     },
                     OpIR {
-                        kind: "const".to_string(),
                         value: Some(2),
                         out: Some("right".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Const)
                     },
                     OpIR {
-                        kind: "call_internal".to_string(),
                         s_value: Some("make_pair".to_string()),
                         args: Some(vec!["left".to_string(), "right".to_string()]),
                         out: Some("pair".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -371,15 +355,13 @@ fn direct_caller_observes_returned_tuple_as_one_object() {
                 params: vec!["left".to_string(), "right".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "tuple_new".to_string(),
                         args: Some(vec!["left".to_string(), "right".to_string()]),
                         out: Some("pair".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::TupleNew)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["pair".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..FunctionIR::default()
@@ -419,10 +401,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
             codegen_partition: false,
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
         }],
         profile: None,
     };
@@ -441,10 +420,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -456,10 +432,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             },
         ],
         profile: None,
@@ -481,19 +454,14 @@ fn noncanonical_string_labels_cannot_bypass_logical_label_validation() {
                 name: "string_label".into(),
                 ops: vec![
                     OpIR {
-                        kind: "jump".into(),
                         s_value: Some(label.into()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Jump)
                     },
                     OpIR {
-                        kind: "label".into(),
                         s_value: Some(label.into()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Label)
                     },
-                    OpIR {
-                        kind: "ret_void".into(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             }],
@@ -548,15 +516,13 @@ fn deferred_annotation_functions_are_emitted_with_their_real_body() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
                     s_value: Some("annotation-result".to_string()),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -584,19 +550,17 @@ fn unpack_sequence_uses_exact_arity_runtime_authority() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "unpack_sequence".to_string(),
                     value: Some(2),
                     args: Some(vec![
                         "seq".to_string(),
                         "left".to_string(),
                         "right".to_string(),
                     ]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::UnpackSequence)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["left".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -634,36 +598,29 @@ fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_none".to_string(),
                     out: Some("none_value".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "const_bool".to_string(),
                     value: Some(1),
                     out: Some("seven".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "build_list".to_string(),
                     args: Some(vec!["none_value".to_string(), "seven".to_string()]),
                     out: Some("seq".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuildList)
                 },
                 OpIR {
-                    kind: "unpack_sequence".to_string(),
                     value: Some(2),
                     args: Some(vec![
                         "seq".to_string(),
                         "left".to_string(),
                         "right".to_string(),
                     ]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::UnpackSequence)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -691,33 +648,26 @@ fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
                     s_value: Some("n".to_string()),
                     out: Some("key".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(1),
                     out: Some("value".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "build_dict".to_string(),
                     args: Some(vec!["key".to_string(), "value".to_string()]),
                     out: Some("mapping".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuildDict)
                 },
                 OpIR {
-                    kind: "unpack_sequence".to_string(),
                     value: Some(1),
                     args: Some(vec!["mapping".to_string(), "only".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::UnpackSequence)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -739,90 +689,75 @@ fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
 fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
     let ops = vec![
         OpIR {
-            kind: "dict_new".to_string(),
             out: Some("d".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictNew)
         },
         OpIR {
-            kind: "dict_set".to_string(),
             args: Some(vec![
                 "d".to_string(),
                 "key".to_string(),
                 "value".to_string(),
             ]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictSet)
         },
         OpIR {
-            kind: "dict_setdefault".to_string(),
             args: Some(vec![
                 "d".to_string(),
                 "other".to_string(),
                 "value".to_string(),
             ]),
             out: Some("defaulted".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictSetdefault)
         },
         OpIR {
-            kind: "dict_pop".to_string(),
             args: Some(vec![
                 "d".to_string(),
                 "other".to_string(),
                 "none".to_string(),
             ]),
             out: Some("popped".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictPop)
         },
         OpIR {
-            kind: "dict_copy".to_string(),
             args: Some(vec!["d".to_string()]),
             out: Some("copy".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictCopy)
         },
         OpIR {
-            kind: "dict_update".to_string(),
             args: Some(vec!["copy".to_string(), "d".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictUpdate)
         },
         OpIR {
-            kind: "eq".to_string(),
             args: Some(vec!["copy".to_string(), "d".to_string()]),
             out: Some("equal".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Eq)
         },
         OpIR {
-            kind: "repr_from_obj".to_string(),
             args: Some(vec!["d".to_string()]),
             out: Some("rendered".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ReprFromObj)
         },
         OpIR {
-            kind: "dict_keys".to_string(),
             args: Some(vec!["d".to_string()]),
             out: Some("keys".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictKeys)
         },
         OpIR {
-            kind: "dict_values".to_string(),
             args: Some(vec!["d".to_string()]),
             out: Some("values".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictValues)
         },
         OpIR {
-            kind: "dict_items".to_string(),
             args: Some(vec!["d".to_string()]),
             out: Some("items".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictItems)
         },
         OpIR {
-            kind: "dict_popitem".to_string(),
             args: Some(vec!["d".to_string()]),
             out: Some("last".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictPopitem)
         },
-        OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        },
+        OpIR::new(molt_ir::OpKind::RetVoid),
     ];
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -1097,10 +1032,7 @@ fn compile_checked_rejects_guest_declarations_over_the_chunk_local_budget() {
             .map(|index| FunctionIR {
                 name: format!("local_budget_probe_{index}"),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 ..FunctionIR::default()
             })
             .collect(),
@@ -1129,68 +1061,57 @@ fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
             ],
             ops: vec![
                 OpIR {
-                    kind: "callargs_new".to_string(),
                     out: Some("bind_builder".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsNew)
                 },
                 OpIR {
-                    kind: "callargs_push_pos".to_string(),
                     args: Some(vec!["bind_builder".to_string(), "value".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsPushPos)
                 },
                 OpIR {
-                    kind: "call_bind".to_string(),
                     args: Some(vec!["func".to_string(), "bind_builder".to_string()]),
                     out: Some("bound_result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallBind)
                 },
                 OpIR {
-                    kind: "callargs_new".to_string(),
                     out: Some("indirect_builder".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsNew)
                 },
                 OpIR {
-                    kind: "callargs_push_pos".to_string(),
                     args: Some(vec![
                         "indirect_builder".to_string(),
                         "bound_result".to_string(),
                     ]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsPushPos)
                 },
                 OpIR {
-                    kind: "callargs_expand_star".to_string(),
                     args: Some(vec!["indirect_builder".to_string(), "star".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsExpandStar)
                 },
                 OpIR {
-                    kind: "callargs_push_kw".to_string(),
                     args: Some(vec![
                         "indirect_builder".to_string(),
                         "key".to_string(),
                         "kwvalue".to_string(),
                     ]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsPushKw)
                 },
                 OpIR {
-                    kind: "dict_new".to_string(),
                     out: Some("kwstar".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictNew)
                 },
                 OpIR {
-                    kind: "callargs_expand_kwstar".to_string(),
                     args: Some(vec!["indirect_builder".to_string(), "kwstar".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsExpandKwstar)
                 },
                 OpIR {
-                    kind: "call_indirect".to_string(),
                     args: Some(vec!["func".to_string(), "indirect_builder".to_string()]),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallIndirect)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -1228,22 +1149,19 @@ fn function_value_runtime_helper_selects_its_complete_helper_group() {
             name: "molt_main".to_string(),
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
                     s_value: Some("A".to_string()),
                     out: Some("value".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "call".to_string(),
                     s_value: Some("molt_ord".to_string()),
                     args: Some(vec!["value".to_string()]),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -1276,7 +1194,10 @@ fn callable_and_frame_runtime_fragments_pass_shared_source_validation() {
 
 #[test]
 fn compile_checked_rejects_unpack_without_canonical_ordered_mapping_provenance() {
-    for kind in ["callargs_expand_kwstar", "dict_unpack"] {
+    for kind in [
+        molt_ir::OpKind::CallargsExpandKwstar,
+        molt_ir::OpKind::DictUnpack,
+    ] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -1284,25 +1205,21 @@ fn compile_checked_rejects_unpack_without_canonical_ordered_mapping_provenance()
                 params: vec!["func".to_string(), "mapping".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "callargs_new".to_string(),
                         out: Some("builder".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsNew)
                     },
                     OpIR {
-                        kind: kind.to_string(),
                         args: Some(vec!["builder".to_string(), "mapping".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     OpIR {
-                        kind: "call_indirect".to_string(),
                         args: Some(vec!["func".to_string(), "builder".to_string()]),
                         out: Some("result".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallIndirect)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["result".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..FunctionIR::default()
@@ -1324,30 +1241,24 @@ fn compile_checked_rejects_unpack_without_canonical_ordered_mapping_provenance()
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
     let callargs_new = |out: &str| OpIR {
-        kind: "callargs_new".to_string(),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::CallargsNew)
     };
-    let call = |kind: &str, func: &str, builder: &str, out: &str| OpIR {
-        kind: kind.to_string(),
+    let call = |kind: molt_ir::OpKind, func: &str, builder: &str, out: &str| OpIR {
         args: Some(vec![func.to_string(), builder.to_string()]),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     };
     let ret = |value: &str| OpIR {
-        kind: "ret".to_string(),
         args: Some(vec![value.to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::Ret)
     };
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 ..FunctionIR::default()
             },
             FunctionIR {
@@ -1364,50 +1275,43 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 ops: vec![
                     callargs_new("builder"),
                     OpIR {
-                        kind: "callargs_push_pos".to_string(),
                         args: Some(vec!["builder".to_string(), "first".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsPushPos)
                     },
                     OpIR {
-                        kind: "callargs_expand_star".to_string(),
                         args: Some(vec!["builder".to_string(), "star".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsExpandStar)
                     },
                     OpIR {
-                        kind: "callargs_push_kw".to_string(),
                         args: Some(vec![
                             "builder".to_string(),
                             "key".to_string(),
                             "kwvalue".to_string(),
                         ]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsPushKw)
                     },
                     OpIR {
-                        kind: "const_str".to_string(),
                         s_value: Some("e".to_string()),
                         out: Some("kwstar_key".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ConstStr)
                     },
                     OpIR {
-                        kind: "dict_new".to_string(),
                         out: Some("kwstar".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::DictNew)
                     },
                     OpIR {
-                        kind: "dict_set".to_string(),
                         args: Some(vec![
                             "kwstar".to_string(),
                             "kwstar_key".to_string(),
                             "kwstar_value".to_string(),
                         ]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::DictSet)
                     },
                     OpIR {
-                        kind: "callargs_expand_kwstar".to_string(),
                         args: Some(vec!["builder".to_string(), "kwstar".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsExpandKwstar)
                     },
-                    call("call_indirect", "func", "builder", "result"),
+                    call(molt_ir::OpKind::CallIndirect, "func", "builder", "result"),
                     ret("result"),
                 ],
                 ..FunctionIR::default()
@@ -1424,34 +1328,30 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 ops: vec![
                     callargs_new("builder"),
                     OpIR {
-                        kind: "callargs_push_kw".to_string(),
                         args: Some(vec![
                             "builder".to_string(),
                             "key".to_string(),
                             "value".to_string(),
                         ]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsPushKw)
                     },
                     OpIR {
-                        kind: "dict_new".to_string(),
                         out: Some("kwstar".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::DictNew)
                     },
                     OpIR {
-                        kind: "dict_set".to_string(),
                         args: Some(vec![
                             "kwstar".to_string(),
                             "key".to_string(),
                             "kwstar_value".to_string(),
                         ]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::DictSet)
                     },
                     OpIR {
-                        kind: "callargs_expand_kwstar".to_string(),
                         args: Some(vec!["builder".to_string(), "kwstar".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsExpandKwstar)
                     },
-                    call("call_indirect", "func", "builder", "result"),
+                    call(molt_ir::OpKind::CallIndirect, "func", "builder", "result"),
                     ret("result"),
                 ],
                 ..FunctionIR::default()
@@ -1462,20 +1362,18 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 params: vec!["left".to_string(), "right".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "builtin_func".to_string(),
                         s_value: Some("molt_max_builtin".to_string()),
                         out: Some("builtin".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                     },
                     OpIR {
-                        kind: "call_func".to_string(),
                         args: Some(vec![
                             "builtin".to_string(),
                             "left".to_string(),
                             "right".to_string(),
                         ]),
                         out: Some("result".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallFunc)
                     },
                     ret("result"),
                 ],
@@ -1487,23 +1385,25 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 params: vec!["left".to_string(), "right".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "builtin_func".to_string(),
                         s_value: Some("molt_max_builtin".to_string()),
                         out: Some("builtin".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                     },
                     callargs_new("builder"),
                     OpIR {
-                        kind: "callargs_push_pos".to_string(),
                         args: Some(vec!["builder".to_string(), "left".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsPushPos)
                     },
                     OpIR {
-                        kind: "callargs_push_pos".to_string(),
                         args: Some(vec!["builder".to_string(), "right".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsPushPos)
                     },
-                    call("call_indirect", "builtin", "builder", "result"),
+                    call(
+                        molt_ir::OpKind::CallIndirect,
+                        "builtin",
+                        "builder",
+                        "result",
+                    ),
                     ret("result"),
                 ],
                 ..FunctionIR::default()
@@ -1514,22 +1414,25 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 params: vec!["key".to_string(), "value".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "builtin_func".to_string(),
                         s_value: Some("molt_max_builtin".to_string()),
                         out: Some("builtin".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                     },
                     callargs_new("builder"),
                     OpIR {
-                        kind: "callargs_push_kw".to_string(),
                         args: Some(vec![
                             "builder".to_string(),
                             "key".to_string(),
                             "value".to_string(),
                         ]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallargsPushKw)
                     },
-                    call("call_indirect", "builtin", "builder", "result"),
+                    call(
+                        molt_ir::OpKind::CallIndirect,
+                        "builtin",
+                        "builder",
+                        "result",
+                    ),
                     ret("result"),
                 ],
                 ..FunctionIR::default()
@@ -1540,10 +1443,9 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 params: vec!["func".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "call_func".to_string(),
                         args: Some(vec!["func".to_string()]),
                         out: Some("result".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallFunc)
                     },
                     ret("result"),
                 ],
@@ -1555,7 +1457,7 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 params: vec!["func".to_string()],
                 ops: vec![
                     callargs_new("builder"),
-                    call("call_bind", "func", "builder", "result"),
+                    call(molt_ir::OpKind::CallBind, "func", "builder", "result"),
                     ret("result"),
                 ],
                 ..FunctionIR::default()
@@ -1566,15 +1468,11 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 params: vec!["func".to_string(), "defaults".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "set_attr".to_string(),
                         args: Some(vec!["func".to_string(), "defaults".to_string()]),
                         s_value: Some("__defaults__".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::SetAttr)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -1584,15 +1482,11 @@ fn lune_oracle_checked_callargs_execute_mixed_arguments_live_defaults_and_bound_
                 params: vec!["func".to_string(), "kwdefaults".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "set_attr".to_string(),
                         args: Some(vec!["func".to_string(), "kwdefaults".to_string()]),
                         s_value: Some("__kwdefaults__".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::SetAttr)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -1687,23 +1581,20 @@ print("luau-callargs-checked-execution-ok")
 #[test]
 fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
     let const_str = |out: &str, value: &str| OpIR {
-        kind: "const_str".to_string(),
         out: Some(out.to_string()),
         s_value: Some(value.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstStr)
     };
     let none = |out: &str| OpIR {
-        kind: "const_none".to_string(),
         out: Some(out.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstNone)
     };
     let ops = vec![
         OpIR {
-            kind: "func_new".to_string(),
             s_value: Some("target".to_string()),
             value: Some(2),
             out: Some("function_value".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::FuncNew)
         },
         const_str("name", "target"),
         const_str("qualname", "target"),
@@ -1711,22 +1602,19 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         const_str("arg_a", "a"),
         const_str("arg_b", "b"),
         OpIR {
-            kind: "tuple_new".to_string(),
             args: Some(vec!["arg_a".to_string(), "arg_b".to_string()]),
             out: Some("arg_names".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TupleNew)
         },
         OpIR {
-            kind: "const_float".to_string(),
             f_value: Some(0.0),
             out: Some("posonly".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstFloat)
         },
         OpIR {
-            kind: "tuple_new".to_string(),
             args: Some(vec![]),
             out: Some("kwonly".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TupleNew)
         },
         none("vararg"),
         none("varkw"),
@@ -1736,20 +1624,17 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
         none("bind_kind"),
         const_str("filename", "sample.py"),
         OpIR {
-            kind: "const_float".to_string(),
             f_value: Some(1.0),
             out: Some("first_line".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstFloat)
         },
         none("linetable"),
         OpIR {
-            kind: "tuple_new".to_string(),
             args: Some(vec![]),
             out: Some("names".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TupleNew)
         },
         OpIR {
-            kind: "code_new".to_string(),
             args: Some(vec![
                 "filename".to_string(),
                 "name".to_string(),
@@ -1762,22 +1647,19 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
                 "posonly".to_string(),
             ]),
             out: Some("code".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CodeNew)
         },
         OpIR {
-            kind: "dict_new".to_string(),
             args: Some(vec![]),
             out: Some("globals".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::DictNew)
         },
         OpIR {
-            kind: "code_slot_set".to_string(),
             s_value: Some("target".into()),
             args: Some(vec!["code".to_string(), "globals".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CodeSlotSet)
         },
         OpIR {
-            kind: "tuple_new".to_string(),
             args: Some(vec![
                 "name".to_string(),
                 "qualname".to_string(),
@@ -1795,10 +1677,9 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
                 "kwonly".to_string(),
             ]),
             out: Some("metadata".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TupleNew)
         },
         OpIR {
-            kind: "call".to_string(),
             s_value: Some("molt_function_init_metadata_packed".to_string()),
             args: Some(vec![
                 "function_value".to_string(),
@@ -1807,10 +1688,9 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
                 "bind_kind".to_string(),
             ]),
             out: Some("initialized".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         },
         OpIR {
-            kind: "call".to_string(),
             s_value: Some("molt_function_set_defaults".to_string()),
             args: Some(vec![
                 "function_value".to_string(),
@@ -1818,12 +1698,9 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
                 "kwdefaults".to_string(),
             ]),
             out: Some("defaults_set".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         },
-        OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        },
+        OpIR::new(molt_ir::OpKind::RetVoid),
     ];
     let ir = SimpleIR {
         functions: vec![
@@ -1838,9 +1715,8 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
                 name: "target".to_string(),
                 params: vec!["a".to_string(), "b".to_string()],
                 ops: vec![OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["a".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 }],
                 ..FunctionIR::default()
             },
@@ -1887,39 +1763,31 @@ fn canonical_set_codegen_has_one_deterministic_side_metadata_authority() {
             params: vec!["left".to_string(), "right".to_string()],
             ops: vec![
                 OpIR {
-                    kind: "set_new".to_string(),
                     args: Some(vec!["left".to_string(), "right".to_string()]),
                     out: Some("set_value".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::SetNew)
                 },
                 OpIR {
-                    kind: "frozenset_new".to_string(),
                     args: Some(vec!["right".to_string(), "left".to_string()]),
                     out: Some("frozen".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::FrozensetNew)
                 },
                 OpIR {
-                    kind: "contains".to_string(),
                     args: Some(vec!["set_value".to_string(), "left".to_string()]),
                     out: Some("present".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Contains)
                 },
                 OpIR {
-                    kind: "eq".to_string(),
                     args: Some(vec!["set_value".to_string(), "frozen".to_string()]),
                     out: Some("equal".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Eq)
                 },
                 OpIR {
-                    kind: "repr_from_obj".to_string(),
                     args: Some(vec!["set_value".to_string()]),
                     out: Some("rendered".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ReprFromObj)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
             ..FunctionIR::default()
         }],
@@ -1953,19 +1821,16 @@ fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
             name: "molt_main".to_string(),
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
                     s_value: Some("a".to_string()),
                     out: Some("text_key".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "const_bytes".to_string(),
                     bytes: Some(vec![b'a']),
                     out: Some("bytes_key".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBytes)
                 },
                 OpIR {
-                    kind: "dict_new".to_string(),
                     args: Some(vec![
                         "text_key".to_string(),
                         "text_key".to_string(),
@@ -1973,12 +1838,9 @@ fn checked_dict_codegen_preserves_distinct_str_and_bytes_key_representations() {
                         "text_key".to_string(),
                     ]),
                     out: Some("mapping".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictNew)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
             ..FunctionIR::default()
         }],
@@ -2423,17 +2285,15 @@ fn public_builtin_lookup_ir() -> SimpleIR {
             params: vec!["name".to_string()],
             ops: vec![
                 OpIR {
-                    kind: "builtin_func".to_string(),
                     s_value: Some("molt_len".to_string()),
                     builtin_name: Some("len".to_string()),
                     args: Some(vec!["name".to_string()]),
                     out: Some("selected".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["selected".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -2490,21 +2350,18 @@ fn lune_oracle_public_builtin_lookup_preserves_capture_identity_none_and_mapping
         .collect(),
         ops: vec![
             OpIR {
-                kind: "call_internal".into(),
                 s_value: Some("molt_frame_bind_code".into()),
                 args: Some(vec!["id".into(), "code".into(), "globals".into()]),
                 out: Some("bound".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
             OpIR {
-                kind: "call_internal".into(),
                 s_value: Some("molt_frame_enter_slot".into()),
                 args: Some(vec!["slot".into()]),
                 out: Some("entered".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
             OpIR {
-                kind: "call_internal".into(),
                 s_value: Some("molt_frame_exit".into()),
                 args: Some(vec![
                     "context".into(),
@@ -2512,12 +2369,9 @@ fn lune_oracle_public_builtin_lookup_preserves_capture_identity_none_and_mapping
                     "identity".into(),
                     "owner".into(),
                 ]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
-            OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
-            },
+            OpIR::new(molt_ir::OpKind::RetVoid),
         ],
         ..FunctionIR::default()
     });
@@ -2528,15 +2382,13 @@ fn lune_oracle_public_builtin_lookup_preserves_capture_identity_none_and_mapping
         params: vec!["module".to_string(), "name".to_string()],
         ops: vec![
             OpIR {
-                kind: "module_get_global".to_string(),
                 args: Some(vec!["module".to_string(), "name".to_string()]),
                 out: Some("selected".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleGetGlobal)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["selected".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         ..FunctionIR::default()
@@ -2551,7 +2403,6 @@ fn lune_oracle_public_builtin_lookup_preserves_capture_identity_none_and_mapping
             params: vec!["module".to_string(), "name".to_string()],
             ops: vec![
                 OpIR {
-                    kind: "module_get_attr".to_string(),
                     s_value: literal.map(str::to_string),
                     args: Some(if literal.is_some() {
                         vec!["module".to_string()]
@@ -2559,12 +2410,11 @@ fn lune_oracle_public_builtin_lookup_preserves_capture_identity_none_and_mapping
                         vec!["module".to_string(), "name".to_string()]
                     }),
                     out: Some("selected".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["selected".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -2686,29 +2536,34 @@ fn isolated_builtin_module_ir() -> SimpleIR {
         ("cached_builtins", None, None),
         (
             "cached_builtin_static",
-            Some("module_get_attr"),
+            Some(molt_ir::OpKind::ModuleGetAttr),
             Some("len"),
         ),
-        ("cached_builtin_dynamic", Some("module_get_attr"), None),
-        ("cached_builtin_name", Some("module_get_name"), None),
+        (
+            "cached_builtin_dynamic",
+            Some(molt_ir::OpKind::ModuleGetAttr),
+            None,
+        ),
+        (
+            "cached_builtin_name",
+            Some(molt_ir::OpKind::ModuleGetName),
+            None,
+        ),
     ] {
         let mut ops = vec![
             OpIR {
-                kind: "const_str".to_string(),
                 s_value: Some("builtins".to_string()),
                 out: Some("module_name".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
             OpIR {
-                kind: "module_cache_get".to_string(),
                 args: Some(vec!["module_name".to_string()]),
                 out: Some("namespace".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleCacheGet)
             },
         ];
         if let Some(kind) = kind {
             ops.push(OpIR {
-                kind: kind.to_string(),
                 s_value: literal.map(str::to_string),
                 args: Some(if literal.is_some() {
                     vec!["namespace".to_string()]
@@ -2716,11 +2571,10 @@ fn isolated_builtin_module_ir() -> SimpleIR {
                     vec!["namespace".to_string(), "name".to_string()]
                 }),
                 out: Some("selected".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
         }
         ops.push(OpIR {
-            kind: "ret".to_string(),
             args: Some(vec![
                 if kind.is_some() {
                     "selected"
@@ -2729,7 +2583,7 @@ fn isolated_builtin_module_ir() -> SimpleIR {
                 }
                 .to_string(),
             ]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Ret)
         });
         functions.push(FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -2752,7 +2606,10 @@ fn isolated_module_cache_and_attribute_consumers_select_namespace_bootstrap() {
         ir.functions
             .iter()
             .flat_map(|function| &function.ops)
-            .all(|op| !matches!(op.kind.as_str(), "builtin_func" | "module_get_global"))
+            .all(|op| !matches!(
+                op.kind,
+                molt_ir::OpKind::BuiltinFunc | molt_ir::OpKind::ModuleGetGlobal
+            ))
     );
     let source = LuauBackend::new().compile_checked(&ir).unwrap();
     assert_eq!(
@@ -2842,7 +2699,7 @@ fn runtime_adapters_require_real_providers_but_public_names_remain_lookup() {
     }
 }
 
-fn direct_provider_reference_ir(kind: &str, symbol: &str, arity: usize) -> SimpleIR {
+fn direct_provider_reference_ir(kind: molt_ir::OpKind, symbol: &str, arity: usize) -> SimpleIR {
     let params: Vec<_> = (0..arity).map(|index| format!("arg{index}")).collect();
     SimpleIR {
         functions: vec![FunctionIR {
@@ -2851,17 +2708,15 @@ fn direct_provider_reference_ir(kind: &str, symbol: &str, arity: usize) -> Simpl
             return_abi: molt_ir::FunctionReturnAbi::Value,
             ops: vec![
                 OpIR {
-                    kind: kind.into(),
                     s_value: Some(symbol.into()),
-                    args: (kind != "func_new").then_some(params),
-                    value: (kind == "func_new").then_some(arity as i64),
+                    args: (kind != molt_ir::OpKind::FuncNew).then_some(params),
+                    value: (kind == molt_ir::OpKind::FuncNew).then_some(arity as i64),
                     out: Some("result".into()),
-                    ..Default::default()
+                    ..OpIR::new(kind)
                 },
                 OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["result".into()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..Default::default()
@@ -2882,7 +2737,11 @@ fn direct_runtime_references_require_executable_providers_before_emission() {
         ("molt_missing_provider_probe", 0),
         ("missing_provider_probe", 0),
     ] {
-        for kind in ["call", "call_internal", "func_new"] {
+        for kind in [
+            molt_ir::OpKind::Call,
+            molt_ir::OpKind::CallInternal,
+            molt_ir::OpKind::FuncNew,
+        ] {
             let ir = direct_provider_reference_ir(kind, symbol, arity);
             // Exercise the provider boundary even when a broader target policy
             // (e.g. import/coroutine protocol) independently refuses this IR.
@@ -2909,7 +2768,7 @@ fn direct_runtime_references_require_executable_providers_before_emission() {
         ("molt_missing_provider_probe", 0),
         ("missing_provider_probe", 0),
     ] {
-        let ir = direct_provider_reference_ir("call", symbol, arity);
+        let ir = direct_provider_reference_ir(molt_ir::OpKind::Call, symbol, arity);
         let mut backend = LuauBackend::new();
         let error = backend.compile_checked(&ir).unwrap_err();
         assert!(
@@ -2937,7 +2796,7 @@ fn direct_builtin_mapping_uses_real_provider_dependencies_and_native_targets() {
         ),
         ("abs", "local result = math.abs(arg0)", &[][..]),
     ] {
-        let ir = direct_provider_reference_ir("call", symbol, 1);
+        let ir = direct_provider_reference_ir(molt_ir::OpKind::Call, symbol, 1);
         let source = LuauBackend::new().compile_checked(&ir).unwrap();
         assert!(source.contains(call), "{source}");
         for definition in definitions {
@@ -2949,22 +2808,21 @@ fn direct_builtin_mapping_uses_real_provider_dependencies_and_native_targets() {
 #[test]
 fn compiled_direct_targets_take_precedence_over_builtin_and_runtime_spellings() {
     for symbol in ["len", "abs", "molt_missing_provider_probe"] {
-        for kind in ["call", "call_internal"] {
+        for kind in [molt_ir::OpKind::Call, molt_ir::OpKind::CallInternal] {
             let mut ir = direct_provider_reference_ir(kind, symbol, 1);
             ir.functions.push(FunctionIR {
                 name: symbol.into(),
                 params: vec!["value".into()],
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 ops: vec![OpIR {
-                    kind: "ret".into(),
                     args: Some(vec!["value".into()]),
-                    ..Default::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 }],
                 ..Default::default()
             });
             let source = LuauBackend::new().compile_checked(&ir).unwrap();
             let target = emit_function_ident(symbol);
-            let call = if kind == "call" {
+            let call = if kind == molt_ir::OpKind::Call {
                 format!("local result = molt_call_checked({target}, arg0)")
             } else {
                 format!("local result = {target}(arg0)")
@@ -3146,10 +3004,7 @@ fn compile_checked_rejects_alloc_task_without_scheduler_authority() {
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "sample__genexpr_1".to_string(),
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 ..FunctionIR::default()
             },
             FunctionIR {
@@ -3157,15 +3012,11 @@ fn compile_checked_rejects_alloc_task_without_scheduler_authority() {
                 name: "molt_main".to_string(),
                 ops: vec![
                     OpIR {
-                        kind: "alloc_task".to_string(),
                         s_value: Some("sample__genexpr_1".to_string()),
                         out: Some("items".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::AllocTask)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -3190,14 +3041,10 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
                 execution_context: ExecutionContextPolicy::Inherited,
                 ops: vec![
                     OpIR {
-                        kind: "line".to_string(),
                         value: Some(7),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Line)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -3206,26 +3053,18 @@ fn module_chunks_receive_one_strong_caller_frame_context() {
                 name: "molt_main".to_string(),
                 ops: vec![
                     OpIR {
-                        kind: "trace_enter_slot".to_string(),
                         s_value: Some("molt_main".into()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
                     },
                     OpIR {
-                        kind: "call_internal".to_string(),
                         s_value: Some("sample__molt_module_chunk_1".to_string()),
                         args: Some(vec!["module".to_string()]),
                         out: Some("result".to_string()),
                         passes_execution_context: true,
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
                     },
-                    OpIR {
-                        kind: "trace_exit".to_string(),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::TraceExit),
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -3695,27 +3534,23 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(1),
                     out: Some("left".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(1),
                     out: Some("right".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "eq".to_string(),
                     args: Some(vec!["left".to_string(), "right".to_string()]),
                     out: Some("equal".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Eq)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["equal".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -3750,37 +3585,32 @@ fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["integer".to_string(), "float".to_string()]),
                     out: Some("same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "is_not".to_string(),
                     args: Some(vec!["integer".to_string(), "float".to_string()]),
                     out: Some("different".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IsNot)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["integer".to_string(), "boolean".to_string()]),
                     out: Some("int_is_bool".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "tuple_new".to_string(),
                     args: Some(vec![
                         "same".to_string(),
                         "different".to_string(),
                         "int_is_bool".to_string(),
                     ]),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::TupleNew)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -3815,15 +3645,13 @@ fn dynamic_numeric_identity_fails_closed_before_luau_erases_provenance() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["left".to_string(), "right".to_string()]),
                     out: Some("same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["same".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -3839,25 +3667,26 @@ fn dynamic_numeric_identity_fails_closed_before_luau_erases_provenance() {
 
 #[test]
 fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
-    for scalar_kind in ["const", "const_float", "const_str"] {
+    for scalar_kind in [
+        molt_ir::OpKind::Const,
+        molt_ir::OpKind::ConstFloat,
+        molt_ir::OpKind::ConstStr,
+    ] {
         let make_const = |out: &str| match scalar_kind {
-            "const" => OpIR {
-                kind: scalar_kind.to_string(),
+            molt_ir::OpKind::Const => OpIR {
                 value: Some(1),
                 out: Some(out.to_string()),
-                ..OpIR::default()
+                ..OpIR::new(scalar_kind)
             },
-            "const_float" => OpIR {
-                kind: scalar_kind.to_string(),
+            molt_ir::OpKind::ConstFloat => OpIR {
                 f_value: Some(1.0),
                 out: Some(out.to_string()),
-                ..OpIR::default()
+                ..OpIR::new(scalar_kind)
             },
-            "const_str" => OpIR {
-                kind: scalar_kind.to_string(),
+            molt_ir::OpKind::ConstStr => OpIR {
                 s_value: Some("equal".to_string()),
                 out: Some(out.to_string()),
-                ..OpIR::default()
+                ..OpIR::new(scalar_kind)
             },
             _ => unreachable!(),
         };
@@ -3876,15 +3705,13 @@ fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
                     make_const("left"),
                     make_const("right"),
                     OpIR {
-                        kind: "is".to_string(),
                         args: Some(vec!["left".to_string(), "right".to_string()]),
                         out: Some("same".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Is)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["same".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
             }],
@@ -3919,71 +3746,59 @@ fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_bool".to_string(),
                     value: Some(1),
                     out: Some("truth_a".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "const_bool".to_string(),
                     value: Some(1),
                     out: Some("truth_b".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "const_none".to_string(),
                     out: Some("none_a".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "const_none".to_string(),
                     out: Some("none_b".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "list_new".to_string(),
                     args: Some(vec![]),
                     out: Some("left_ref".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListNew)
                 },
                 OpIR {
-                    kind: "list_new".to_string(),
                     args: Some(vec![]),
                     out: Some("right_ref".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListNew)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["truth_a".to_string(), "truth_b".to_string()]),
                     out: Some("bool_same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["none_a".to_string(), "none_b".to_string()]),
                     out: Some("none_same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["left_ref".to_string(), "right_ref".to_string()]),
                     out: Some("refs_same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "is_not".to_string(),
                     args: Some(vec!["left_ref".to_string(), "left_ref".to_string()]),
                     out: Some("alias_different".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IsNot)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["unknown".to_string(), "left_ref".to_string()]),
                     out: Some("unknown_is_ref".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "tuple_new".to_string(),
                     args: Some(vec![
                         "bool_same".to_string(),
                         "none_same".to_string(),
@@ -3992,12 +3807,11 @@ fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
                         "unknown_is_ref".to_string(),
                     ]),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::TupleNew)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -4058,21 +3872,18 @@ fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "list_new".to_string(),
                     args: Some(vec![]),
                     out: Some("left".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListNew)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["left".to_string(), "left".to_string()]),
                     out: Some("same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["same".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -4129,42 +3940,35 @@ fn compiler_temporary_namespace_cannot_be_shadowed_by_user_symbols() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_bool".to_string(),
                     value: Some(1),
                     out: Some("value".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
                 },
                 OpIR {
-                    kind: "closure_store".to_string(),
                     args: Some(vec!["slot".to_string(), "value".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ClosureStore)
                 },
                 OpIR {
-                    kind: "closure_load".to_string(),
                     args: Some(vec!["slot".to_string()]),
                     out: Some("loaded".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ClosureLoad)
                 },
                 OpIR {
-                    kind: "pcall_wrap_begin".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::PcallWrapBegin)
                 },
                 OpIR {
-                    kind: "get_item".to_string(),
                     args: Some(vec!["xs".to_string(), "idx".to_string()]),
                     out: Some("item".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetItem)
                 },
                 OpIR {
-                    kind: "pcall_wrap_end".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::PcallWrapEnd)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["loaded".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -4285,21 +4089,18 @@ fn value_scalar_plus_unknown_identity_is_rejected() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_float".to_string(),
                     f_value: Some(1.0),
                     out: Some("float".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstFloat)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["float".to_string(), "unknown".to_string()]),
                     out: Some("same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["same".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -4325,21 +4126,18 @@ fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_float".to_string(),
                     f_value: Some(1.0),
                     out: Some("value".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstFloat)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["value".to_string(), "value".to_string()]),
                     out: Some("same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["same".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -4352,7 +4150,7 @@ fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
 
 #[test]
 fn representation_conversions_preserve_only_declared_results() {
-    for kind in ["box", "unbox"] {
+    for kind in [molt_ir::OpKind::Box, molt_ir::OpKind::Unbox] {
         for input in ["source_value", "none"] {
             for output in [None, Some("none"), Some("converted")] {
                 let ir = SimpleIR {
@@ -4361,21 +4159,16 @@ fn representation_conversions_preserve_only_declared_results() {
                         name: "representation_conversion".to_string(),
                         ops: vec![
                             OpIR {
-                                kind: "const_bool".to_string(),
                                 value: Some(1),
                                 out: Some("source_value".to_string()),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::ConstBool)
                             },
                             OpIR {
-                                kind: kind.to_string(),
                                 args: Some(vec![input.to_string()]),
                                 out: output.map(str::to_string),
-                                ..OpIR::default()
+                                ..OpIR::new(kind)
                             },
-                            OpIR {
-                                kind: "ret_void".to_string(),
-                                ..OpIR::default()
-                            },
+                            OpIR::new(molt_ir::OpKind::RetVoid),
                         ],
                         ..FunctionIR::default()
                     }],
@@ -4408,15 +4201,17 @@ fn representation_conversions_preserve_only_declared_results() {
 
 #[test]
 fn raw_integer_representation_handlers_preserve_declared_results_before_admission() {
-    for kind in ["box_from_raw_int", "unbox_to_raw_int"] {
+    for kind in [
+        molt_ir::OpKind::BoxFromRawInt,
+        molt_ir::OpKind::UnboxToRawInt,
+    ] {
         for input in ["source_value", "none"] {
             for output in [None, Some("none"), Some("converted")] {
                 let mut backend = LuauBackend::new();
                 backend.emit_op(&OpIR {
-                    kind: kind.to_string(),
                     args: Some(vec![input.to_string()]),
                     out: output.map(str::to_string),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 });
                 assert!(backend.unsupported_ops.is_empty(), "{kind} {input}");
                 if output == Some("converted") {
@@ -4442,7 +4237,10 @@ fn raw_integer_representation_handlers_preserve_declared_results_before_admissio
 
 #[test]
 fn raw_integer_representation_conversions_require_arbitrary_precision_authority() {
-    for kind in ["box_from_raw_int", "unbox_to_raw_int"] {
+    for kind in [
+        molt_ir::OpKind::BoxFromRawInt,
+        molt_ir::OpKind::UnboxToRawInt,
+    ] {
         for output in [None, Some("none"), Some("converted")] {
             let mut backend = LuauBackend::new();
             let error = backend
@@ -4452,28 +4250,23 @@ fn raw_integer_representation_conversions_require_arbitrary_precision_authority(
                         name: "representation_conversion".to_string(),
                         ops: vec![
                             OpIR {
-                                kind: "const_bool".to_string(),
                                 value: Some(1),
                                 out: Some("source_value".to_string()),
-                                ..OpIR::default()
+                                ..OpIR::new(molt_ir::OpKind::ConstBool)
                             },
                             OpIR {
-                                kind: kind.to_string(),
                                 args: Some(vec!["source_value".to_string()]),
                                 out: output.map(str::to_string),
-                                ..OpIR::default()
+                                ..OpIR::new(kind)
                             },
-                            OpIR {
-                                kind: "ret_void".to_string(),
-                                ..OpIR::default()
-                            },
+                            OpIR::new(molt_ir::OpKind::RetVoid),
                         ],
                         ..FunctionIR::default()
                     }],
                     profile: None,
                 })
                 .expect_err("raw integer bridges must not bypass source-target admission");
-            assert!(error.contains(kind), "{kind}: {error}");
+            assert!(error.contains(kind.as_str()), "{kind}: {error}");
             assert!(
                 error.contains("canonical arbitrary-precision value authority"),
                 "{kind}: {error}"
@@ -4485,7 +4278,12 @@ fn raw_integer_representation_conversions_require_arbitrary_precision_authority(
 
 #[test]
 fn representation_conversions_reject_malformed_operands_even_without_results() {
-    for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
+    for kind in [
+        molt_ir::OpKind::Box,
+        molt_ir::OpKind::BoxFromRawInt,
+        molt_ir::OpKind::Unbox,
+        molt_ir::OpKind::UnboxToRawInt,
+    ] {
         for args in [
             None,
             Some(vec![]),
@@ -4494,10 +4292,9 @@ fn representation_conversions_reject_malformed_operands_even_without_results() {
             for output in [None, Some("none"), Some("converted")] {
                 let mut backend = LuauBackend::new();
                 backend.emit_op(&OpIR {
-                    kind: kind.to_string(),
                     args: args.clone(),
                     out: output.map(str::to_string),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 });
                 assert!(backend.output.is_empty(), "{kind} {args:?} {output:?}");
                 assert_eq!(
@@ -4513,15 +4310,14 @@ fn representation_conversions_reject_malformed_operands_even_without_results() {
 
 #[test]
 fn local_copy_sources_follow_canonical_field_roles() {
-    for kind in ["load_var", "copy_var"] {
+    for kind in [molt_ir::OpKind::LoadVar, molt_ir::OpKind::CopyVar] {
         for args in [None, Some(vec![])] {
             let mut backend = LuauBackend::new();
             backend.emit_op(&OpIR {
-                kind: kind.to_string(),
                 args,
                 var: Some("source".to_string()),
                 out: Some("result".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
             assert!(backend.unsupported_ops.is_empty(), "{kind}");
             assert!(
@@ -4534,11 +4330,10 @@ fn local_copy_sources_follow_canonical_field_roles() {
         for metadata in [None, Some("unread_metadata".to_string())] {
             let mut backend = LuauBackend::new();
             backend.emit_op(&OpIR {
-                kind: kind.to_string(),
                 args: Some(vec!["source".to_string()]),
                 var: metadata,
                 out: Some("result".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
             assert!(backend.unsupported_ops.is_empty(), "{kind}");
             assert!(
@@ -4560,11 +4355,10 @@ fn local_copy_sources_follow_canonical_field_roles() {
         ] {
             let mut backend = LuauBackend::new();
             backend.emit_op(&OpIR {
-                kind: kind.to_string(),
                 args,
                 var: metadata,
                 out: Some("result".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
             assert!(backend.output.is_empty(), "{kind}: {}", backend.output);
             assert_eq!(backend.unsupported_ops.len(), 1, "{kind}");
@@ -4581,12 +4375,12 @@ fn local_copy_sources_follow_canonical_field_roles() {
 fn module_cache_effects_ignore_out_metadata() {
     for (kind, args, emitted_effect) in [
         (
-            "module_cache_set",
+            molt_ir::OpKind::ModuleCacheSet,
             vec!["cache_key".to_string(), "module".to_string()],
             "molt_module_cache[cache_key] = module",
         ),
         (
-            "module_cache_del",
+            molt_ir::OpKind::ModuleCacheDel,
             vec!["cache_key".to_string()],
             "molt_module_cache[cache_key] = nil",
         ),
@@ -4594,10 +4388,9 @@ fn module_cache_effects_ignore_out_metadata() {
         for metadata in [None, Some("none".to_string()), Some("metadata".to_string())] {
             let mut backend = LuauBackend::new();
             backend.emit_op(&OpIR {
-                kind: kind.to_string(),
                 args: Some(args.clone()),
                 out: metadata,
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
             assert!(backend.unsupported_ops.is_empty(), "{kind}");
             assert!(
@@ -4621,7 +4414,7 @@ fn module_cache_effects_ignore_out_metadata() {
 
 #[test]
 fn structured_hoisting_ignores_local_copy_metadata() {
-    for kind in ["load_var", "copy_var"] {
+    for kind in [molt_ir::OpKind::LoadVar, molt_ir::OpKind::CopyVar] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -4629,31 +4422,24 @@ fn structured_hoisting_ignores_local_copy_metadata() {
                 params: vec!["condition".to_string(), "actual".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "if".to_string(),
                         args: Some(vec!["condition".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::If)
                     },
                     OpIR {
-                        kind: "const_int".to_string(),
                         value: Some(7),
                         out: Some("metadata_collision".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ConstInt)
                     },
+                    OpIR::new(molt_ir::OpKind::EndIf),
                     OpIR {
-                        kind: "end_if".to_string(),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: kind.to_string(),
                         args: Some(vec!["actual".to_string()]),
                         var: Some("metadata_collision".to_string()),
                         out: Some("result".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["result".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..FunctionIR::default()
@@ -4691,43 +4477,32 @@ fn structured_hoisting_tracks_canonical_secondary_results() {
             ],
             ops: vec![
                 OpIR {
-                    kind: "if".to_string(),
                     args: Some(vec!["condition".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::If)
                 },
                 OpIR {
-                    kind: "iter_next_unboxed".to_string(),
                     args: Some(vec!["iterator".to_string()]),
                     var: Some("var_result".to_string()),
                     out: Some("out_result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IterNextUnboxed)
                 },
                 OpIR {
-                    kind: "unpack_sequence".to_string(),
                     args: Some(vec!["sequence".to_string(), "trailing_result".to_string()]),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::UnpackSequence)
                 },
+                OpIR::new(molt_ir::OpKind::EndIf),
                 OpIR {
-                    kind: "end_if".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "copy_var".to_string(),
                     args: Some(vec!["var_result".to_string()]),
                     out: Some("copied_var_result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "copy_var".to_string(),
                     args: Some(vec!["trailing_result".to_string()]),
                     out: Some("copied_trailing_result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
             ..FunctionIR::default()
         }],
@@ -4760,36 +4535,28 @@ fn structured_hoisting_ignores_out_metadata_collisions() {
                 .to_vec(),
             ops: vec![
                 OpIR {
-                    kind: "if".to_string(),
                     args: Some(vec!["condition".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::If)
                 },
                 OpIR {
-                    kind: "store_index".to_string(),
                     args: Some(["container", "key", "value"].map(str::to_string).to_vec()),
                     out: Some("metadata_collision".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StoreIndex)
                 },
+                OpIR::new(molt_ir::OpKind::EndIf),
                 OpIR {
-                    kind: "end_if".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const_int".to_string(),
                     value: Some(7),
                     out: Some("metadata_collision".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "copy_var".to_string(),
                     var: Some("metadata_collision".to_string()),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CopyVar)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -4824,14 +4591,10 @@ fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "call_function".to_string(),
                     args: Some(vec!["print".to_string(), "arg".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallFunction)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -4858,9 +4621,8 @@ fn checked_guarded_call_uses_callable_identity_not_the_lexical_target_hint() {
                 name: "target".to_string(),
                 params: vec!["value".to_string()],
                 ops: vec![OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["value".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 }],
                 ..FunctionIR::default()
             },
@@ -4870,16 +4632,14 @@ fn checked_guarded_call_uses_callable_identity_not_the_lexical_target_hint() {
                 params: vec!["selected".to_string(), "value".to_string()],
                 ops: vec![
                     OpIR {
-                        kind: "call_guarded".to_string(),
                         s_value: Some("target".to_string()),
                         args: Some(vec!["selected".to_string(), "value".to_string()]),
                         out: Some("result".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallGuarded)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["result".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..FunctionIR::default()
@@ -4909,15 +4669,13 @@ fn test_simple_function() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(42),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "print".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Print)
                 },
             ],
         }],
@@ -4949,19 +4707,17 @@ fn test_int_from_str_of_obj_preserves_base_operand() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "int_from_str_of_obj".to_string(),
                     args: Some(vec![
                         "value".to_string(),
                         "base".to_string(),
                         "has_base".to_string(),
                     ]),
                     out: Some("out".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IntFromStrOfObj)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["out".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -4988,33 +4744,28 @@ fn test_real_ir_ops() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_float".to_string(),
                     f_value: Some(std::f64::consts::PI),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstFloat)
                 },
                 OpIR {
-                    kind: "const_str".to_string(),
                     s_value: Some("hello".to_string()),
                     out: Some("v1".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "add".to_string(),
                     args: Some(vec!["p0".to_string(), "v0".to_string()]),
                     out: Some("v2".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Add)
                 },
                 OpIR {
-                    kind: "lt".to_string(),
                     args: Some(vec!["v2".to_string(), "p0".to_string()]),
                     out: Some("v3".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Lt)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v3".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -5052,24 +4803,18 @@ fn test_control_flow() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "label".to_string(),
                     value: Some(0),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
                 OpIR {
-                    kind: "jump".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 },
                 OpIR {
-                    kind: "label".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -5092,56 +4837,40 @@ fn test_control_flow() {
 fn iterator_loop_preserves_explicit_pending_observer_and_handled_state() {
     let ops = vec![
         OpIR {
-            kind: "iter".to_string(),
             out: Some("v_it".to_string()),
             args: Some(vec!["v_src".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Iter)
         },
+        OpIR::new(molt_ir::OpKind::LoopStart),
         OpIR {
-            kind: "loop_start".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "exception_context_set".to_string(),
             args: Some(vec!["handled".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ExceptionContextSet)
         },
         OpIR {
-            kind: "iter_next".to_string(),
             out: Some("v_next".to_string()),
             args: Some(vec!["v_it".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::IterNext)
         },
         OpIR {
-            kind: "index".to_string(),
             out: Some("v_exhausted".to_string()),
             args: Some(vec!["v_next".to_string(), "v_idx1".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Index)
         },
         OpIR {
-            kind: "loop_break_if_true".to_string(),
             args: Some(vec!["v_exhausted".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::LoopBreakIfTrue)
         },
+        OpIR::new(molt_ir::OpKind::LoopBreakIfException),
         OpIR {
-            kind: "loop_break_if_exception".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "index".to_string(),
             out: Some("v_value".to_string()),
             args: Some(vec!["v_next".to_string(), "v_idx0".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Index)
         },
         OpIR {
-            kind: "store_local".to_string(),
             args: Some(vec!["v_sink".to_string(), "v_value".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreLocal)
         },
-        OpIR {
-            kind: "loop_end".to_string(),
-            ..OpIR::default()
-        },
+        OpIR::new(molt_ir::OpKind::LoopEnd),
     ];
 
     let ir = SimpleIR {
@@ -5191,37 +4920,31 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(3),
                     out: Some("major".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(14),
                     out: Some("minor".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(0),
                     out: Some("micro".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "const_str".to_string(),
                     s_value: Some("final".to_string()),
                     out: Some("releaselevel".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(0),
                     out: Some("serial".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "call_internal".to_string(),
                     s_value: Some("molt_sys_set_version_info".to_string()),
                     args: Some(vec![
                         "major".to_string(),
@@ -5230,7 +4953,7 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
                         "releaselevel".to_string(),
                         "serial".to_string(),
                     ]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallInternal)
                 },
             ],
         }],
@@ -5261,10 +4984,7 @@ fn lune_oracle_sys_target_commit_is_canonical_idempotent_and_failure_atomic() {
             FunctionIR {
                 name: "molt_main".into(),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
-                ops: vec![OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 ..FunctionIR::default()
             },
             FunctionIR {
@@ -5273,15 +4993,11 @@ fn lune_oracle_sys_target_commit_is_canonical_idempotent_and_failure_atomic() {
                 params: params.clone(),
                 ops: vec![
                     OpIR {
-                        kind: "call_internal".into(),
                         s_value: Some("molt_sys_set_version_info".into()),
                         args: Some(params),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
                     },
-                    OpIR {
-                        kind: "ret_void".into(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -5290,16 +5006,14 @@ fn lune_oracle_sys_target_commit_is_canonical_idempotent_and_failure_atomic() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 ops: vec![
                     OpIR {
-                        kind: "call_internal".into(),
                         s_value: Some("molt_sys_seed_module".into()),
                         args: Some(vec![]),
                         out: Some("sys_module".into()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
                     },
                     OpIR {
-                        kind: "ret".into(),
                         args: Some(vec!["sys_module".into()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..FunctionIR::default()
@@ -5385,11 +5099,23 @@ print("sys target commit preserved")
 #[test]
 fn compile_checked_rejects_module_import_before_source_emission() {
     for (kind, literal, args) in [
-        ("module_import", Some("sys"), vec![]),
-        ("module_import", None, vec!["module_name"]),
-        ("module_import_from", Some("path"), vec!["module"]),
-        ("module_import_from", None, vec!["module", "member"]),
-        ("module_import_star", None, vec!["module", "namespace"]),
+        (molt_ir::OpKind::ModuleImport, Some("sys"), vec![]),
+        (molt_ir::OpKind::ModuleImport, None, vec!["module_name"]),
+        (
+            molt_ir::OpKind::ModuleImportFrom,
+            Some("path"),
+            vec!["module"],
+        ),
+        (
+            molt_ir::OpKind::ModuleImportFrom,
+            None,
+            vec!["module", "member"],
+        ),
+        (
+            molt_ir::OpKind::ModuleImportStar,
+            None,
+            vec!["module", "namespace"],
+        ),
     ] {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -5400,16 +5126,14 @@ fn compile_checked_rejects_module_import_before_source_emission() {
                     .to_vec(),
                 ops: vec![
                     OpIR {
-                        kind: kind.to_string(),
                         s_value: literal.map(str::to_string),
                         args: Some(args.into_iter().map(str::to_string).collect()),
                         out: Some("import_result".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     OpIR {
-                        kind: "ret".to_string(),
                         args: Some(vec!["import_result".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..FunctionIR::default()
@@ -5449,24 +5173,21 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(42),
                     out: Some("plain".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "const_int".to_string(),
                     value: Some(-(1_i64 << 53)),
                     out: Some("typed".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "const_bigint".to_string(),
                     bytes: Some(molt_ir::literal_payload::integer_literal_bytes(
                         1_i128 << 53,
                     )),
                     out: Some("decimal".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBigint)
                 },
             ],
         }],
@@ -5492,10 +5213,9 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
-                    kind: "const_bigint".to_string(),
                     bytes: Some(molt_ir::literal_payload::integer_literal_bytes(payload)),
                     out: Some("overflow".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstBigint)
                 }],
             }],
             profile: None,
@@ -5522,14 +5242,12 @@ fn test_compile_checked_rejects_undefined_label_targets() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "label".to_string(),
                     value: Some(0),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
                 OpIR {
-                    kind: "jump".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Jump)
                 },
             ],
         }],
@@ -5564,27 +5282,23 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_int".to_string(),
                     out: Some("v0".to_string()),
                     value: Some(42),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "store_var".to_string(),
                     var: Some("slot".to_string()),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "load_var".to_string(),
                     out: Some("v1".to_string()),
                     var: Some("slot".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::LoadVar)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v1".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -5603,23 +5317,20 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn lune_oracle_store_var_result_snapshots_execute_in_structured_and_labelled_flow() {
     let float = |name: &str, value: f64| OpIR {
-        kind: "const_float".to_string(),
         out: Some(name.to_string()),
         f_value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ConstFloat)
     };
     let store = |destination: Option<&str>, result: Option<&str>, source: &str| OpIR {
-        kind: "store_var".to_string(),
         var: destination.map(str::to_string),
         out: result.map(str::to_string),
         args: Some(vec![source.to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::StoreVar)
     };
-    let op = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
-        kind: kind.to_string(),
+    let op = |kind: molt_ir::OpKind, args: &[&str], out: Option<&str>| OpIR {
         args: (!args.is_empty()).then(|| args.iter().map(|arg| (*arg).to_string()).collect()),
         out: out.map(str::to_string),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     };
     let body = |labelled: bool| {
         let mut ops = vec![
@@ -5632,29 +5343,34 @@ fn lune_oracle_store_var_result_snapshots_execute_in_structured_and_labelled_flo
         ];
         if labelled {
             ops.push(OpIR {
-                kind: "jump".to_string(),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             });
             ops.push(OpIR {
-                kind: "label".to_string(),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             });
         }
         ops.extend([
             float("rebound", 7.0),
             store(Some("slot"), Some("none"), "rebound"),
             OpIR {
-                kind: "load_var".to_string(),
                 var: Some("slot".to_string()),
                 out: Some("current".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::LoadVar)
             },
-            op("add", &["snapshot", "current"], Some("sum_one")),
-            op("add", &["sum_one", "same"], Some("sum_two")),
-            op("add", &["sum_two", "binding_only"], Some("total")),
-            op("ret", &["total"], None),
+            op(
+                molt_ir::OpKind::Add,
+                &["snapshot", "current"],
+                Some("sum_one"),
+            ),
+            op(molt_ir::OpKind::Add, &["sum_one", "same"], Some("sum_two")),
+            op(
+                molt_ir::OpKind::Add,
+                &["sum_two", "binding_only"],
+                Some("total"),
+            ),
+            op(molt_ir::OpKind::Ret, &["total"], None),
         ]);
         ops
     };
@@ -5663,7 +5379,7 @@ fn lune_oracle_store_var_result_snapshots_execute_in_structured_and_labelled_flo
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
-                ops: vec![op("ret_void", &[], None)],
+                ops: vec![op(molt_ir::OpKind::RetVoid, &[], None)],
                 ..FunctionIR::default()
             },
             FunctionIR {
@@ -5683,26 +5399,24 @@ fn lune_oracle_store_var_result_snapshots_execute_in_structured_and_labelled_flo
                 name: "tuple_snapshot_after_rebind".to_string(),
                 ops: vec![
                     OpIR {
-                        kind: "const_str".to_string(),
                         out: Some("text".to_string()),
                         s_value: Some("alpha".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ConstStr)
                     },
                     OpIR {
-                        kind: "const_str".to_string(),
                         out: Some("prefix".to_string()),
                         s_value: Some("al".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ConstStr)
                     },
-                    op("tuple_new", &["prefix"], Some("prefixes")),
+                    op(molt_ir::OpKind::TupleNew, &["prefix"], Some("prefixes")),
                     store(Some("tuple_slot"), Some("tuple_snapshot"), "prefixes"),
                     store(Some("tuple_slot"), Some("none"), "prefix"),
                     op(
-                        "string_startswith",
+                        molt_ir::OpKind::StringStartswith,
                         &["text", "tuple_snapshot"],
                         Some("matched"),
                     ),
-                    op("ret", &["matched"], None),
+                    op(molt_ir::OpKind::Ret, &["matched"], None),
                 ],
                 ..FunctionIR::default()
             },
@@ -5733,10 +5447,9 @@ fn store_var_rejects_reserved_destinations_without_admitting_store_fast() {
     for destination in ["", "none"] {
         let mut backend = LuauBackend::new();
         backend.emit_op(&OpIR {
-            kind: "store_var".to_string(),
             var: Some(destination.to_string()),
             args: Some(vec!["source".to_string()]),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::StoreVar)
         });
         assert!(
             backend
@@ -5750,10 +5463,9 @@ fn store_var_rejects_reserved_destinations_without_admitting_store_fast() {
 
     let mut backend = LuauBackend::new();
     backend.emit_op(&OpIR {
-        kind: "store_fast".to_string(),
         out: Some("binding_only".to_string()),
         args: Some(vec!["source".to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::StoreFast)
     });
     assert_eq!(backend.unsupported_ops, ["`store_fast` (luau backend)"]);
 }
@@ -5773,25 +5485,21 @@ fn test_compile_checked_lowers_missing_singleton() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "missing".to_string(),
                     out: Some("first".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Missing)
                 },
                 OpIR {
-                    kind: "missing".to_string(),
                     out: Some("second".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Missing)
                 },
                 OpIR {
-                    kind: "is".to_string(),
                     args: Some(vec!["first".to_string(), "second".to_string()]),
                     out: Some("same".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Is)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["same".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -5820,10 +5528,9 @@ fn test_compile_checked_rejects_python_frame_introspection_target_fact() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "getframe".to_string(),
                 out: Some("frame".to_string()),
                 args: Some(vec!["depth".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Getframe)
             }],
         }],
         profile: None,
@@ -5857,9 +5564,8 @@ fn compile_checked_rejects_every_python_frame_and_trace_intrinsic() {
                 parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
-                    kind: "call_internal".to_string(),
                     s_value: Some(symbol.to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallInternal)
                 }],
             }],
             profile: None,
@@ -5885,26 +5591,18 @@ fn execution_frame_siblings_have_real_luau_lowering() {
                 execution_context: ExecutionContextPolicy::Local,
                 ops: vec![
                     OpIR {
-                        kind: "trace_enter_slot".to_string(),
                         s_value: Some("local_frame".into()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
                     },
                     OpIR {
-                        kind: "call_internal".to_string(),
                         s_value: Some("inherited_frame".to_string()),
                         args: Some(vec!["locals".to_string()]),
                         out: Some("none".to_string()),
                         passes_execution_context: true,
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::CallInternal)
                     },
-                    OpIR {
-                        kind: "trace_exit".to_string(),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::TraceExit),
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -5915,19 +5613,14 @@ fn execution_frame_siblings_have_real_luau_lowering() {
                 execution_context: ExecutionContextPolicy::Inherited,
                 ops: vec![
                     OpIR {
-                        kind: "line".to_string(),
                         value: Some(8),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Line)
                     },
                     OpIR {
-                        kind: "frame_locals_set".to_string(),
                         args: Some(vec!["locals".to_string()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::FrameLocalsSet)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
                 ..FunctionIR::default()
             },
@@ -5959,65 +5652,50 @@ fn lune_oracle_execution_frame_cookie_survives_operation_capture_and_dispatch() 
     for (guarded, expected_slot) in [(false, 0), (true, 1)] {
         let mut ops = vec![
             OpIR {
-                kind: "code_slots_init".into(),
                 value: Some(expected_slot + 1),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CodeSlotsInit)
             },
             OpIR {
-                kind: "dict_new".into(),
                 out: Some("globals".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::DictNew)
             },
             OpIR {
-                kind: "code_slot_set".into(),
                 args: Some(vec!["code".into(), "globals".into()]),
                 s_value: Some("frame_scope".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CodeSlotSet)
             },
             OpIR {
-                kind: "trace_enter_slot".into(),
                 s_value: Some("frame_scope".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
             },
         ];
         if guarded {
             ops.push(OpIR {
-                kind: "check_exception".into(),
                 value: Some(9),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckException)
             });
         }
         ops.extend([
             OpIR {
-                kind: "line".into(),
                 value: Some(8),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Line)
             },
-            OpIR {
-                kind: "trace_exit".into(),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
-            },
+            OpIR::new(molt_ir::OpKind::TraceExit),
+            OpIR::new(molt_ir::OpKind::RetVoid),
         ]);
         if guarded {
             ops.extend([
                 OpIR {
-                    kind: "label".into(),
                     value: Some(9),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Label)
                 },
                 OpIR {
-                    kind: "exception_last_pending".into(),
                     out: Some("entry_error".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ExceptionLastPending)
                 },
                 OpIR {
-                    kind: "raise".into(),
                     args: Some(vec!["entry_error".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Raise)
                 },
             ]);
         }
@@ -6066,50 +5744,33 @@ print("frame cookie scope OK")
 fn luau_compiles_megafunction_chunks_with_one_local_frame_owner() {
     let mut ops = vec![
         OpIR {
-            kind: "trace_enter_slot".to_string(),
             s_value: Some("luau_framed_large".into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
         },
         OpIR {
-            kind: "check_exception".to_string(),
             value: Some(0),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CheckException)
         },
     ];
     for line in 1..=6 {
         ops.push(OpIR {
-            kind: "line".to_string(),
             value: Some(line),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Line)
         });
         ops.push(OpIR {
-            kind: "const_none".to_string(),
             out: Some(format!("v{line}")),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstNone)
         });
     }
     ops.extend([
+        OpIR::new(molt_ir::OpKind::TraceExit),
+        OpIR::new(molt_ir::OpKind::RetVoid),
         OpIR {
-            kind: "trace_exit".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "label".to_string(),
             value: Some(0),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Label)
         },
-        OpIR {
-            kind: "trace_exit".to_string(),
-            ..OpIR::default()
-        },
-        OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        },
+        OpIR::new(molt_ir::OpKind::TraceExit),
+        OpIR::new(molt_ir::OpKind::RetVoid),
     ]);
     let original = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -6170,32 +5831,18 @@ fn test_compile_checked_lowers_loop_exception_break_as_pending_observer() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
+                OpIR::new(molt_ir::OpKind::LoopStart),
+                OpIR::new(molt_ir::OpKind::LoopBreakIfException),
+                OpIR::new(molt_ir::OpKind::LoopBreak),
+                OpIR::new(molt_ir::OpKind::LoopEnd),
                 OpIR {
-                    kind: "loop_start".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "loop_break_if_exception".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "loop_break".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "loop_end".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
                     out: Some("ok".to_string()),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["ok".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -6236,47 +5883,39 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "code_slots_init".to_string(),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CodeSlotsInit)
                 },
                 OpIR {
-                    kind: "const_none".to_string(),
                     out: Some("code".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "dict_new".to_string(),
                     args: Some(vec![]),
                     out: Some("globals".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictNew)
                 },
                 OpIR {
-                    kind: "code_slot_set".to_string(),
                     s_value: Some("code_frame_metadata_test".into()),
                     args: Some(vec!["code".to_string(), "globals".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CodeSlotSet)
                 },
                 OpIR {
-                    kind: "const_none".to_string(),
                     out: Some("locals".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "frame_locals_set".to_string(),
                     args: Some(vec!["locals".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::FrameLocalsSet)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("ok".to_string()),
                     value: Some(1),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["ok".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -6328,14 +5967,8 @@ fn compile_checked_accepts_terminal_drop_phase_markers_as_nonsemantic_artifacts(
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
-                OpIR {
-                    kind: "drop_inserted".to_string(),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "exception_region_drops_inserted".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::DropInserted),
+                OpIR::new(molt_ir::OpKind::ExceptionRegionDropsInserted),
             ],
         }],
         profile: None,
@@ -6362,30 +5995,25 @@ fn checked_luau_rejects_real_rc_operations_but_dispatch_consumes_legacy_artifact
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_str".to_string(),
                     out: Some("v0".to_string()),
                     s_value: Some("owned".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "inc_ref".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IncRef)
                 },
                 OpIR {
-                    kind: "dec_ref".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DecRef)
                 },
                 OpIR {
-                    kind: "release".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Release)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -6418,27 +6046,23 @@ fn test_compile_checked_lowers_shared_guard_tag_fact() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(7),
                     out: Some("value".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "const".to_string(),
                     value: Some(1),
                     out: Some("int_tag".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "guard_tag".to_string(),
                     args: Some(vec!["value".to_string(), "int_tag".to_string()]),
                     out: Some("none".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GuardTag)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["value".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -6466,19 +6090,14 @@ fn test_compile_checked_lowers_exception_stack_depth_to_value() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "exception_stack_depth".to_string(),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ExceptionStackDepth)
                 },
                 OpIR {
-                    kind: "exception_stack_set_depth".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ExceptionStackSetDepth)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -6518,22 +6137,19 @@ fn test_compile_checked_lowers_iter_next_unboxed() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "iter".to_string(),
                     out: Some("it".to_string()),
                     args: Some(vec!["xs".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Iter)
                 },
                 OpIR {
-                    kind: "iter_next_unboxed".to_string(),
                     args: Some(vec!["it".to_string()]),
                     var: Some("value".to_string()),
                     out: Some("done".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IterNextUnboxed)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["value".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -6564,22 +6180,17 @@ fn test_iter_next_unboxed_preserves_discarded_result_positions() {
                     execution_context: ExecutionContextPolicy::None,
                     ops: vec![
                         OpIR {
-                            kind: "iter".to_string(),
                             out: Some("it".to_string()),
                             args: Some(vec!["xs".to_string()]),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::Iter)
                         },
                         OpIR {
-                            kind: "iter_next_unboxed".to_string(),
                             args: Some(vec!["it".to_string()]),
                             var: var.map(str::to_string),
                             out: out.map(str::to_string),
-                            ..OpIR::default()
+                            ..OpIR::new(molt_ir::OpKind::IterNextUnboxed)
                         },
-                        OpIR {
-                            kind: "ret_void".to_string(),
-                            ..OpIR::default()
-                        },
+                        OpIR::new(molt_ir::OpKind::RetVoid),
                     ],
                 }],
                 profile: None,

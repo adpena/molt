@@ -7,7 +7,7 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
-pub use molt_ir::{FunctionIR, OpIR, SimpleIR, ir};
+pub use molt_ir::{FunctionIR, OpIR, OpKind, SimpleIR, ir};
 pub use molt_tir::representation_plan;
 
 pub mod rust;

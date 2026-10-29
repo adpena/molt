@@ -18,14 +18,17 @@ from molt.rust_source_scan import (
     mask_rust_comments_and_strings,
     mask_rust_test_items,
     read_rust_module_cluster,
-    rust_source_tokens,
     rust_match_arms,
-    rust_literal_pattern_names,
 )
 from tools.op_kinds.runtime_requirements import (
     integer_semantics_by_kind,
     runtime_kind_requirement_masks,
     target_runtime_requirement_masks,
+)
+from tools.structural_audit_rust import (
+    generated_kind_table,
+    kind_pattern_names,
+    op_kind_wire_names,
 )
 
 
@@ -76,33 +79,6 @@ def _monotone_requirements(body: str | None, initial: str) -> bool:
     # Every subsequent assignment extends the existing lower bound by union.
     assignments = re.findall(r"(?<![\w.])requirements=(.*?);", rest)
     return all(value.startswith("requirements.union(") for value in assignments)
-
-
-def _generated_literal_table(
-    body: str | None, result_pattern: str, default: str
-) -> dict[str, str] | None:
-    if body is None:
-        return None
-    # Strip only lexical trivia. Whitespace inside a literal is data: turning
-    # "n op" into "nop" would forge generated operation membership.
-    code = "".join(token.text for token in rust_source_tokens(body))
-    if not code.startswith("matchkind{") or not code.endswith("}"):
-        return None
-    arms = code[len("matchkind{") : -1]
-    pattern = re.compile(
-        r'(?P<kinds>"[A-Za-z_][A-Za-z0-9_]*"(?:\|"[A-Za-z_][A-Za-z0-9_]*")*)=>\{?'
-        + result_pattern
-        + r"\}?,?"
-    )
-    result = {}
-    cursor = 0
-    while match := pattern.match(arms, cursor):
-        for kind in re.findall(r'"([^"]+)"', match["kinds"]):
-            if kind in result:
-                return None
-            result[kind] = match["value"]
-        cursor = match.end()
-    return result if arms[cursor:] == default else None
 
 
 @dataclass(frozen=True)
@@ -209,7 +185,7 @@ def proven_admitted_wire_domain(
         let supported_requirements = target_info.supported_runtime_semantics;
         for function in &ir.functions {
             for (index, op) in function.ops.iter().enumerate() {
-                if op.kind == "stack_alloc" {
+                if op.kind == molt_ir::OpKind::StackAlloc {
                     return Err(format!("", function.name, op.kind,
                         crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED,));
                 }
@@ -232,7 +208,7 @@ def proven_admitted_wire_domain(
         return None
     if not _monotone_requirements(
         _body(ir, "execution_runtime_requirements"),
-        "letmutrequirements=simpleir_runtime_requirements_table(self.kind.as_str())?;",
+        "letmutrequirements=simpleir_runtime_requirements_table(self.kind)?;",
     ) or not _monotone_requirements(
         _body(ir, "runtime_requirements"),
         "letmutrequirements=self.execution_runtime_requirements()?;",
@@ -294,10 +270,11 @@ def proven_admitted_wire_domain(
         return None
     if actual != expected:
         return None
-    rust_masks = _generated_literal_table(
+    rust_masks = generated_kind_table(
         _body(generated_rs, "simpleir_runtime_requirements_table"),
         r"Some\(SimpleIrRuntimeRequirements\((?P<value>\d+)\)\)",
-        "_=>None,",
+        "None",
+        op_kind_wire_names(generated_rs),
     )
     if (
         rust_masks is None
@@ -351,12 +328,13 @@ def proven_admitted_wire_domain(
         and "Role::IntegerOnly|Role::IntegerProducer=>(!capabilities.arbitrary_precision_integers).then_some(,),"
         in numeric_rule
         and numeric_loop.startswith(
-            "for(index,op)infunction.ops.iter().enumerate(){letrole=simpleir_integer_semantics_table(op.kind.as_str());ifletSome(reason)=numeric_admission_failure(plan,op,role,capabilities){returnErr(format!(,function.name,op.kind,));}}Ok(())"
+            "for(index,op)infunction.ops.iter().enumerate(){letrole=simpleir_integer_semantics_table(op.kind);ifletSome(reason)=numeric_admission_failure(plan,op,role,capabilities){returnErr(format!(,function.name,op.kind,));}}Ok(())"
         )
-        and _generated_literal_table(
+        and generated_kind_table(
             _body(generated_rs, "simpleir_integer_semantics_table"),
             r"SimpleIrIntegerSemantics::(?P<value>[A-Za-z]+)",
-            "_=>SimpleIrIntegerSemantics::None,",
+            "SimpleIrIntegerSemantics::None",
+            op_kind_wire_names(generated_rs),
         )
         == expected["SIMPLEIR_INTEGER_SEMANTICS"]
     )
@@ -417,17 +395,15 @@ def proven_rejected_kinds(root: Path, compile_body: str) -> frozenset[str] | Non
     return domain.denied if domain is not None else None
 
 
-def literal_dispatch_arm_ranges(text: str) -> list[tuple[int, int, frozenset[str]]]:
-    """Project unguarded literal arms through the shared lexical arm parser.
-
-    Wildcards, guards, raw or computed patterns grant no exclusion. The same
-    parser owns these offsets and the admitted residual-domain projection.
-    """
-    arms = rust_match_arms(text, "op.kind.as_str()")
+def literal_dispatch_arm_ranges(
+    text: str, kind_names: dict[str, str]
+) -> list[tuple[int, int, frozenset[str]]]:
+    """Project explicit unguarded OpKind arms; guards grant no exclusion."""
+    arms = rust_match_arms(text, "op.kind")
     if arms is None:
         return []
     return [
         (arm.start, arm.end, names)
         for arm in arms
-        if (names := rust_literal_pattern_names(arm.pattern)) is not None
+        if (names := kind_pattern_names(arm.pattern, kind_names)) is not None
     ]

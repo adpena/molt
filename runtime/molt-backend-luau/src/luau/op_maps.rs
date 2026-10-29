@@ -2,8 +2,8 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_map_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "build_dict" | "dict_new" => {
+        match op.kind {
+            molt_ir::OpKind::BuildDict | molt_ir::OpKind::DictNew => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 self.emit_line(&format!("local {out}: {{[any]: any}} = molt_dict_new()"));
@@ -15,14 +15,14 @@ impl LuauBackend {
                     }
                 }
             }
-            "dict_clear" => {
+            molt_ir::OpKind::DictClear => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(tbl) = args.first() {
                     let tbl = sanitize_ident(tbl);
                     self.emit_line(&format!("molt_dict_clear({tbl})"));
                 }
             }
-            "dict_copy" => {
+            molt_ir::OpKind::DictCopy => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(src) = args.first() {
@@ -30,7 +30,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_dict_copy({src})"));
                 }
             }
-            "dict_get" => {
+            molt_ir::OpKind::DictGet => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -46,7 +46,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "dict_set" => {
+            molt_ir::OpKind::DictSet => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let dict = sanitize_ident(&args[0]);
@@ -55,7 +55,7 @@ impl LuauBackend {
                     self.emit_line(&format!("molt_dict_set({dict}, {key}, {val})"));
                 }
             }
-            "dict_setdefault" => {
+            molt_ir::OpKind::DictSetdefault => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let dict = sanitize_ident(&args[0]);
@@ -71,7 +71,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "dict_setdefault_empty_list" => {
+            molt_ir::OpKind::DictSetdefaultEmptyList => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let dict = sanitize_ident(&args[0]);
@@ -86,7 +86,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "dict_pop" => {
+            molt_ir::OpKind::DictPop => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -104,7 +104,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "dict_unpack" => {
+            molt_ir::OpKind::DictUnpack => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() == 2 {
                     let dict = sanitize_ident(&args[0]);
@@ -114,7 +114,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "dict_update" => {
+            molt_ir::OpKind::DictUpdate => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let dict = sanitize_ident(&args[0]);
@@ -122,7 +122,7 @@ impl LuauBackend {
                     self.emit_line(&format!("molt_dict_update({dict}, {other})"));
                 }
             }
-            "dict_update_missing" => {
+            molt_ir::OpKind::DictUpdateMissing => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let dict = sanitize_ident(&args[0]);
@@ -135,7 +135,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "dict_update_kwstar" => {
+            molt_ir::OpKind::DictUpdateKwstar => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let dict = sanitize_ident(&args[0]);
@@ -145,7 +145,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "dict_popitem" => {
+            molt_ir::OpKind::DictPopitem => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(dict) = args.first() {
@@ -157,11 +157,11 @@ impl LuauBackend {
             // only when it runs no Python code; this target cannot check that,
             // so the op declines, `False`, and the statement lowered beside it
             // runs.
-            "dict_str_int_inc" => {
+            molt_ir::OpKind::DictStrIntInc => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = false"));
             }
-            "dict_from_obj" => {
+            molt_ir::OpKind::DictFromObj => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(src) = args.first() {
@@ -169,7 +169,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = molt_dict_from_obj({src})"));
                 }
             }
-            "dict_keys" => {
+            molt_ir::OpKind::DictKeys => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(d) = args.first() {
@@ -179,7 +179,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "dict_values" => {
+            molt_ir::OpKind::DictValues => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(d) = args.first() {
@@ -189,7 +189,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "dict_items" => {
+            molt_ir::OpKind::DictItems => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(d) = args.first() {

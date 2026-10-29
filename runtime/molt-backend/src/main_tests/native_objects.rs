@@ -7,7 +7,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "a".to_string(),
             params: vec![],
-            ops: vec![Default::default(); 90],
+            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 90],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -19,7 +19,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "b".to_string(),
             params: vec![],
-            ops: vec![Default::default(); 90],
+            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 90],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -31,7 +31,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "c".to_string(),
             params: vec![],
-            ops: vec![Default::default(); 10],
+            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 10],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -63,7 +63,7 @@ fn partition_functions_for_batches_respects_count_budget() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: format!("f{idx}"),
             params: vec![],
-            ops: vec![Default::default(); 1],
+            ops: vec![OpIR::new(molt_ir::OpKind::Nop); 1],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -179,15 +179,14 @@ fn native_application_refuses_unbound_program_slots_before_batching() {
     let _env = TestEnvGuard::clear(&["MOLT_BACKEND_BATCH_SIZE"]);
     unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1") };
     let directory = native_artifact_test_directory("unbound-program-slots");
-    for kind in ["module_slot", "trace_enter_slot"] {
+    for kind in [molt_ir::OpKind::ModuleSlot, molt_ir::OpKind::TraceEnterSlot] {
         let mut ir = native_artifact_test_ir();
         ir.functions[1].ops.insert(
             0,
             OpIR {
-                kind: kind.into(),
                 s_value: Some("helper".into()),
-                out: (kind == "module_slot").then(|| "slot".into()),
-                ..Default::default()
+                out: (kind == molt_ir::OpKind::ModuleSlot).then(|| "slot".into()),
+                ..OpIR::new(kind)
             },
         );
         let output = directory.join(format!("{kind}.a"));
@@ -198,7 +197,7 @@ fn native_application_refuses_unbound_program_slots_before_batching() {
         )
         .expect_err("a later batch must not bypass full-program admission");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains(kind), "{error}");
+        assert!(error.to_string().contains(kind.as_str()), "{error}");
         assert!(!output.exists());
     }
     std::fs::remove_dir_all(directory).unwrap();
@@ -251,23 +250,13 @@ fn native_artifact_test_ir() -> SimpleIR {
                 "molt_main",
                 vec![
                     OpIR {
-                        kind: "call".to_string(),
                         s_value: Some("helper".to_string()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Call)
                     },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
+                    OpIR::new(molt_ir::OpKind::RetVoid),
                 ],
             ),
-            function(
-                "helper",
-                vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
-            ),
+            function("helper", vec![OpIR::new(molt_ir::OpKind::RetVoid)]),
         ],
         profile: None,
     }
@@ -321,10 +310,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -336,10 +322,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "demo__module".to_string(),
             params: vec![],
-            ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -368,10 +351,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "demo__molt_module_chunk_1".to_string(),
         params: Vec::new(),
-        ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
-        }],
+        ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
         param_types: Some(Vec::new()),
         source_file: Some("demo.py".to_string()),
         is_extern: false,
@@ -385,24 +365,16 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "trace_enter_slot".to_string(),
                 s_value: Some("molt_init_demo".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TraceEnterSlot)
             },
             OpIR {
-                kind: "call_internal".to_string(),
                 s_value: Some(inherited.name.clone()),
                 passes_execution_context: true,
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
-            OpIR {
-                kind: "trace_exit".to_string(),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
-            },
+            OpIR::new(molt_ir::OpKind::TraceExit),
+            OpIR::new(molt_ir::OpKind::RetVoid),
         ],
         param_types: None,
         source_file: Some("demo.py".to_string()),
@@ -418,10 +390,9 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         name: "string_collision".to_string(),
         params: Vec::new(),
         ops: vec![OpIR {
-            kind: "const_str".to_string(),
             s_value: Some(inherited.name.clone()),
             out: Some("text".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstStr)
         }],
         param_types: None,
         source_file: Some("demo.py".to_string()),
@@ -441,9 +412,8 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "method_collision".to_string(),
         ops: vec![OpIR {
-            kind: "call_method".to_string(),
             s_value: Some(inherited.name.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CallMethod)
         }],
         ..FunctionIR::default()
     }];
@@ -459,9 +429,8 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         name: "warm_user".to_string(),
         params: Vec::new(),
         ops: vec![OpIR {
-            kind: "call_internal".to_string(),
             s_value: Some(local.name.clone()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CallInternal)
         }],
         param_types: None,
         source_file: Some("warm.py".to_string()),

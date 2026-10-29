@@ -196,7 +196,7 @@ pub(super) fn validate_luau_identity_contract(
     // producer is deliberately required until that shared protocol exists.
     let mut canonical_ordered_mappings = BTreeSet::new();
     for (index, op) in function.ops.iter().enumerate() {
-        if molt_ir::tir::op_kinds_generated::simpleir_kind_requires_luau_ordered_mapping(&op.kind) {
+        if op.kind.requires_luau_ordered_mapping() {
             let args = op.args.as_deref().unwrap_or(&[]);
             if let Some(mapping) = args.get(1)
                 && !canonical_ordered_mappings.contains(mapping)
@@ -209,11 +209,14 @@ pub(super) fn validate_luau_identity_contract(
         }
         if let Some(out) = op.out.as_ref() {
             canonical_ordered_mappings.remove(out);
-            if matches!(op.kind.as_str(), "dict_new" | "build_dict") {
+            if matches!(
+                op.kind,
+                molt_ir::OpKind::DictNew | molt_ir::OpKind::BuildDict
+            ) {
                 canonical_ordered_mappings.insert(out.clone());
             }
         }
-        if !matches!(op.kind.as_str(), "is" | "is_not") {
+        if !matches!(op.kind, molt_ir::OpKind::Is | molt_ir::OpKind::IsNot) {
             continue;
         }
         let args = op.args.as_deref().unwrap_or(&[]);

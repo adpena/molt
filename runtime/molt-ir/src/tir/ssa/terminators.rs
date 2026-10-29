@@ -18,10 +18,10 @@ impl<'a> SsaContext<'a> {
         let succs = &self.cfg.successors[bid];
 
         // Determine terminator kind from the last op.
-        let kind = last_op.map(|o| o.kind.as_str()).unwrap_or("");
+        let kind = last_op.map(|o| o.kind).unwrap_or(crate::OpKind::Nop);
 
         if let Some(op) = last_op
-            && crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(kind)
+            && kind.is_return_terminator()
         {
             let mut values = Vec::new();
             crate::tir::simple_def_use::visit_simple_ir_return_values(op, |a| {
@@ -36,7 +36,7 @@ impl<'a> SsaContext<'a> {
         }
 
         match kind {
-            "jump" | "goto" | "loop_break" => {
+            crate::OpKind::Jump | crate::OpKind::Goto | crate::OpKind::LoopBreak => {
                 if let Some(&target_bid) = succs.first() {
                     let args = self.collect_branch_args(target_bid, var_stacks);
                     Terminator::Branch {
@@ -48,7 +48,10 @@ impl<'a> SsaContext<'a> {
                 }
             }
 
-            "if" | "br_if" | "loop_break_if_true" | "loop_break_if_false" => {
+            crate::OpKind::If
+            | crate::OpKind::BrIf
+            | crate::OpKind::LoopBreakIfTrue
+            | crate::OpKind::LoopBreakIfFalse => {
                 // Resolve the condition.
                 let cond = last_op
                     .and_then(|op| {
@@ -71,13 +74,13 @@ impl<'a> SsaContext<'a> {
                     //   loop_break_if_false:  succs[0] = fall-through (TRUE), succs[1] = break target (FALSE)
                     //
                     // CondBranch convention: then_block = TRUE path, else_block = FALSE path.
-                    let last_kind = last_op.map(|op| op.kind.as_str()).unwrap_or("");
+                    let last_kind = last_op.map(|op| op.kind).unwrap_or(crate::OpKind::Nop);
                     // Successors are sorted numerically by sort_unstable(),
                     // so we identify then/else by semantic meaning, not position.
                     // Fall-through = bid+1.
                     let fall_through = bid + 1;
                     let (then_bid, else_bid) = match last_kind {
-                        "if" => {
+                        crate::OpKind::If => {
                             // For structured `if`, TRUE = fall-through ONLY when
                             // the THEN body is non-empty.  When the next block
                             // begins with `else`, the THEN body is empty and
@@ -96,7 +99,7 @@ impl<'a> SsaContext<'a> {
                                 .get(fall_through)
                                 .map(|b| {
                                     b.start_op < self.ops.len()
-                                        && self.ops[b.start_op].kind == "else"
+                                        && self.ops[b.start_op].kind == crate::OpKind::Else
                                 })
                                 .unwrap_or(false);
                             if next_starts_with_else {
@@ -115,7 +118,7 @@ impl<'a> SsaContext<'a> {
                                 }
                             }
                         }
-                        "loop_break_if_true" => {
+                        crate::OpKind::LoopBreakIfTrue => {
                             // TRUE = break target (non-fall-through)
                             if succs[0] == fall_through {
                                 (succs[1], succs[0])
@@ -123,7 +126,7 @@ impl<'a> SsaContext<'a> {
                                 (succs[0], succs[1])
                             }
                         }
-                        "loop_break_if_false" => {
+                        crate::OpKind::LoopBreakIfFalse => {
                             // TRUE = continue (fall-through)
                             if succs[0] == fall_through {
                                 (succs[0], succs[1])
@@ -161,7 +164,7 @@ impl<'a> SsaContext<'a> {
                 }
             }
 
-            "loop_break_if_exception" => {
+            crate::OpKind::LoopBreakIfException => {
                 // Conditional loop break gated on the runtime exception flag.
                 // Materialize a non-foldable `ExceptionPending` op into the
                 // block body to read the flag, then branch: TRUE (pending) →
@@ -173,6 +176,7 @@ impl<'a> SsaContext<'a> {
                 if succs.len() >= 2 {
                     let cond = self.fresh_value_typed();
                     block_ops.push(TirOp {
+                        origin: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ExceptionPending,
                         operands: vec![],
@@ -211,7 +215,7 @@ impl<'a> SsaContext<'a> {
                 }
             }
 
-            "state_switch" => {
+            crate::OpKind::StateSwitch => {
                 // The `_poll` state-machine dispatch.  State 0 (initial entry)
                 // falls through to the next block (the function's first-entry
                 // continuation = `default`); every saved resume state dispatches
@@ -310,23 +314,23 @@ mod tests {
     fn reserved_none_branch_operand_materializes_in_its_block() {
         let ops = vec![
             OpIR {
-                kind: "br_if".into(),
+                kind: crate::OpKind::BrIf,
                 args: Some(vec!["none".into()]),
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::BrIf)
             },
             OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: crate::OpKind::RetVoid,
+                ..crate::OpIR::new(crate::OpKind::RetVoid)
             },
             OpIR {
-                kind: "label".into(),
+                kind: crate::OpKind::Label,
                 value: Some(10),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::Label)
             },
             OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: crate::OpKind::RetVoid,
+                ..crate::OpIR::new(crate::OpKind::RetVoid)
             },
         ];
         let cfg = CFG::build(&ops);

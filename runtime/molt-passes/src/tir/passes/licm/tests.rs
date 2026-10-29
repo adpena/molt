@@ -37,6 +37,7 @@ impl TirPass for LicmOnlyPass {
 
 fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -52,6 +53,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
 
 fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -106,6 +108,7 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
                 ty: TirType::I64,
             }],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![cond_input],
@@ -406,6 +409,7 @@ fn function_parameter_operand_can_hoist() {
         .unwrap()
         .ops
         .push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![parameter],
@@ -440,6 +444,7 @@ fn loop_block_argument_operand_cannot_hoist() {
         .unwrap()
         .ops
         .push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![loop_shape.loop_arg],
@@ -477,6 +482,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![entry_cond_input],
@@ -506,6 +512,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
         .unwrap()
         .ops
         .push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![sibling_value],
@@ -566,31 +573,31 @@ fn luau_loop_pending_observer_stays_inside_executable_loop_through_pass_manager(
         name: "loop_pending_observer".into(),
         ops: vec![
             OpIR {
-                kind: "loop_start".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopStart,
+                ..OpIR::new(molt_ir::OpKind::LoopStart)
             },
             OpIR {
-                kind: "loop_break_if_exception".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopBreakIfException,
+                ..OpIR::new(molt_ir::OpKind::LoopBreakIfException)
             },
             OpIR {
-                kind: "loop_break".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopBreak,
+                ..OpIR::new(molt_ir::OpKind::LoopBreak)
             },
             OpIR {
-                kind: "loop_end".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopEnd,
+                ..OpIR::new(molt_ir::OpKind::LoopEnd)
             },
             OpIR {
-                kind: "const".into(),
+                kind: molt_ir::OpKind::Const,
                 value: Some(1),
                 out: Some("ok".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["ok".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         ..FunctionIR::default()
@@ -708,18 +715,12 @@ fn fallback_semantic_copy_is_not_hoisted() {
             id: loop_body,
             args: vec![],
             ops: vec![TirOp {
+                origin: Some(molt_ir::OpKind::ModuleGetAttr),
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![module, attr_name],
                 results: vec![lookup],
-                attrs: {
-                    let mut attrs = AttrDict::new();
-                    attrs.insert(
-                        "_original_kind".into(),
-                        AttrValue::Str("module_get_attr".into()),
-                    );
-                    attrs
-                },
+                attrs: { AttrDict::new() },
                 source_span: None,
             }],
             terminator: Terminator::Branch {
@@ -747,8 +748,8 @@ fn fallback_semantic_copy_is_not_hoisted() {
         func.blocks[&loop_body].ops.iter().any(|op| {
             op.opcode == OpCode::Copy
                 && matches!(
-                    op.attrs.get("_original_kind"),
-                    Some(AttrValue::Str(kind)) if kind == "module_get_attr"
+                    op.origin,
+                    Some(kind) if kind == molt_ir::OpKind::ModuleGetAttr
                 )
         }),
         "fallback semantic Copy ops must not be hoisted as pure copies"
@@ -757,7 +758,7 @@ fn fallback_semantic_copy_is_not_hoisted() {
         func.blocks[&preheader]
             .ops
             .iter()
-            .all(|op| { !(op.opcode == OpCode::Copy && op.attrs.contains_key("_original_kind")) }),
+            .all(|op| { !(op.opcode == OpCode::Copy && op.origin.is_some()) }),
         "semantic fallback Copy must not move into the preheader"
     );
 }

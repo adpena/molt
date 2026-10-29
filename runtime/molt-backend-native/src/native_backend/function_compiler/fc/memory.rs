@@ -3,27 +3,28 @@ use crate::runtime_import_abi::{
     MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
 };
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::OpKind;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
-/// Single-source kind authority for [`handle_memory_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_memory_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "alloc",
-    "stack_alloc",
-    "alloc_class",
-    "alloc_task",
-    "store",
-    "load",
-    "closure_load",
-    "closure_store",
-    "guarded_load",
-    "guarded_field_get",
-    "guarded_field_set",
-    "guard_type",
-    "guard_tag",
-    "guard_layout",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Alloc,
+    OpKind::StackAlloc,
+    OpKind::AllocClass,
+    OpKind::AllocTask,
+    OpKind::Store,
+    OpKind::Load,
+    OpKind::ClosureLoad,
+    OpKind::ClosureStore,
+    OpKind::GuardedLoad,
+    OpKind::GuardedFieldGet,
+    OpKind::GuardedFieldSet,
+    OpKind::GuardType,
+    OpKind::GuardTag,
+    OpKind::GuardLayout,
+);
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -100,12 +101,12 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
         )
     };
 
-    match op.kind.as_str() {
-        "stack_alloc" => panic!(
+    match op.kind {
+        OpKind::StackAlloc => panic!(
             "{}",
             crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED
         ),
-        "alloc" => {
+        OpKind::Alloc => {
             let size = op.value.unwrap_or(0);
             let iconst = builder.ins().iconst(types::I64, size);
 
@@ -134,7 +135,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             def_var_named(&mut *builder, vars, out_name, res);
         }
-        "alloc_class" => {
+        OpKind::AllocClass => {
             let size = op.value.unwrap_or(0);
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let class_bits = var_get_boxed_overflow_safe(
@@ -175,7 +176,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             def_var_named(&mut *builder, vars, out_name, res);
         }
-        "alloc_task" => {
+        OpKind::AllocTask => {
             let closure_size = op.value.unwrap_or(0);
             let layout = TaskConstructorLayout::for_alloc_kind(op.task_kind.as_deref());
             let kind_bits = crate::native_task_runtime_kind_bits(layout.runtime_kind());
@@ -268,7 +269,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             *output_is_ptr = false;
             def_var_named(&mut *builder, vars, out_name, obj);
         }
-        "store" => {
+        OpKind::Store => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let origin_block = builder
                 .current_block()
@@ -454,7 +455,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 def_var_named(&mut *builder, vars, out_name, none_val);
             }
         }
-        "load" => {
+        OpKind::Load => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -483,7 +484,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             def_var_named(&mut *builder, vars, out_name, res);
         }
-        "closure_load" => {
+        OpKind::ClosureLoad => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
             let obj_ptr = if stateful && args.first().map(String::as_str) == Some("self") {
@@ -517,7 +518,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             def_var_named(&mut *builder, vars, out_name, res);
         }
-        "closure_store" => {
+        OpKind::ClosureStore => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -561,7 +562,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 def_var_named(&mut *builder, vars, out_name, res);
             }
         }
-        "guarded_load" => {
+        OpKind::GuardedLoad => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -590,7 +591,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             def_var_named(&mut *builder, vars, out_name, res);
         }
-        "guarded_field_get" => {
+        OpKind::GuardedFieldGet => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -666,7 +667,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             def_var_named(&mut *builder, vars, out_name, res);
         }
-        "guarded_field_set" => {
+        OpKind::GuardedFieldSet => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -754,7 +755,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 def_var_named(&mut *builder, vars, out_name, res);
             }
         }
-        "guard_type" | "guard_tag" => {
+        OpKind::GuardType | OpKind::GuardTag => {
             let args = op
                 .args
                 .as_ref()
@@ -880,7 +881,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 seal_block_once(builder, sealed_blocks, join);
             }
         }
-        "guard_layout" => {
+        OpKind::GuardLayout => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,

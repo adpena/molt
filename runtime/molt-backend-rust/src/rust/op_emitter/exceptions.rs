@@ -14,8 +14,9 @@ impl RustBackend {
         let o = out();
         if o != "_" && o != "none" && !o.is_empty() {
             let helper = if matches!(
-                op.kind.as_str(),
-                "exception_last_pending" | "exception_finally_pending_observer"
+                op.kind,
+                molt_ir::OpKind::ExceptionLastPending
+                    | molt_ir::OpKind::ExceptionFinallyPendingObserver
             ) {
                 "molt_exception_last_pending()"
             } else {
@@ -37,7 +38,7 @@ impl RustBackend {
 
         let o = out();
         if o != "_" && o != "none" && !o.is_empty() {
-            let helper = if op.kind == "exception_stack_enter" {
+            let helper = if op.kind == molt_ir::OpKind::ExceptionStackEnter {
                 "molt_exception_stack_enter()"
             } else {
                 "molt_exception_stack_depth()"

@@ -1164,15 +1164,15 @@ mod tests {
             execution_context: crate::ExecutionContextPolicy::Inherited,
             ops: vec![
                 OpIR {
-                    kind: "const".into(),
+                    kind: molt_ir::OpKind::Const,
                     value: Some(value),
                     out: Some("authored".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "ret".into(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["authored".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -1313,8 +1313,8 @@ mod tests {
                     name: "authored_void".into(),
                     return_abi: molt_ir::FunctionReturnAbi::Void,
                     ops: vec![OpIR {
-                        kind: "ret_void".into(),
-                        ..OpIR::default()
+                        kind: molt_ir::OpKind::RetVoid,
+                        ..OpIR::new(molt_ir::OpKind::RetVoid)
                     }],
                     ..FunctionIR::default()
                 }];
@@ -1479,15 +1479,15 @@ mod tests {
             execution_context: crate::ExecutionContextPolicy::Inherited,
             ops: vec![
                 OpIR {
-                    kind: "const".into(),
+                    kind: molt_ir::OpKind::Const,
                     value: Some(value),
                     out: Some("result".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "ret".into(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["result".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -1535,11 +1535,16 @@ mod tests {
             let constants: Vec<_> = functions[index]
                 .ops
                 .iter()
-                .filter(|op| op.kind == "const")
+                .filter(|op| op.kind == molt_ir::OpKind::Const)
                 .map(|op| op.value)
                 .collect();
             assert_eq!(constants, vec![Some(value)]);
-            assert!(functions[index].ops.iter().any(|op| op.kind == "ret"));
+            assert!(
+                functions[index]
+                    .ops
+                    .iter()
+                    .any(|op| op.kind == molt_ir::OpKind::Ret)
+            );
             let mut old_metadata = before[index].clone();
             let mut new_metadata = after[index].clone();
             old_metadata.as_object_mut().unwrap().remove("ops");
@@ -1554,8 +1559,8 @@ mod tests {
             name: "authored_void".into(),
             return_abi: molt_ir::FunctionReturnAbi::Void,
             ops: vec![OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             ..FunctionIR::default()
         }];
@@ -1588,8 +1593,8 @@ mod tests {
                 name: "mapped".into(),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 ops: vec![OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 }],
                 ..FunctionIR::default()
             }];
@@ -1627,31 +1632,31 @@ mod tests {
                 params: vec!["input".into()],
                 ops: vec![
                     OpIR {
-                        kind: "line".into(),
+                        kind: molt_ir::OpKind::Line,
                         value: Some(1),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Line)
                     },
                     OpIR {
-                        kind: "list_new".into(),
+                        kind: molt_ir::OpKind::ListNew,
                         args: Some(vec!["input".into()]),
                         out: Some("kept".into()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ListNew)
                     },
                     OpIR {
-                        kind: "line".into(),
+                        kind: molt_ir::OpKind::Line,
                         value: Some(2),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Line)
                     },
                     OpIR {
-                        kind: "list_new".into(),
+                        kind: molt_ir::OpKind::ListNew,
                         args: Some(vec!["kept".into()]),
                         out: Some("outer".into()),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::ListNew)
                     },
                     OpIR {
-                        kind: "ret".into(),
+                        kind: molt_ir::OpKind::Ret,
                         args: Some(vec!["outer".into()]),
-                        ..OpIR::default()
+                        ..OpIR::new(molt_ir::OpKind::Ret)
                     },
                 ],
                 ..FunctionIR::default()
@@ -1661,9 +1666,9 @@ mod tests {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 params: vec!["arg".into()],
                 ops: vec![OpIR {
-                    kind: "ret".into(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["arg".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 }],
                 ..FunctionIR::default()
             };
@@ -1690,9 +1695,10 @@ mod tests {
                         crate::passes::split_large_function(original, 3, &mut names)
                             .expect("fixture must exercise actual cross-chunk transport");
                     assert!(
-                        chunks
+                        chunks.iter().any(|chunk| chunk
+                            .ops
                             .iter()
-                            .any(|chunk| chunk.ops.iter().any(|op| op.kind == "index"))
+                            .any(|op| op.kind == molt_ir::OpKind::Index))
                     );
                     let sources = chunks
                         .iter()
@@ -1728,8 +1734,7 @@ mod tests {
                     function
                         .ops
                         .iter()
-                        .any(|op| op.kind
-                            == super::super::passes::drop_insertion::DROP_INSERTED_ATTR),
+                        .any(|op| op.kind == molt_ir::OpKind::DropInserted),
                     "{} must receive its own terminal drop plan",
                     function.name
                 );
@@ -1858,10 +1863,10 @@ mod tests {
             name: "f".to_string(),
             params: vec!["x".to_string()],
             ops: vec![OpIR {
-                kind: "const_int".to_string(),
+                kind: molt_ir::OpKind::ConstInt,
                 out: Some("x".to_string()),
                 value: Some(1),
-                ..Default::default()
+                ..OpIR::new(molt_ir::OpKind::ConstInt)
             }],
             param_types: Some(vec!["int".to_string()]),
             source_file: None,
@@ -1962,8 +1967,8 @@ mod tests {
         contract_mutations.push(changed);
         let mut changed = baseline.clone();
         changed.ops.push(OpIR {
-            kind: "ret_void".to_string(),
-            ..Default::default()
+            kind: molt_ir::OpKind::RetVoid,
+            ..OpIR::new(molt_ir::OpKind::RetVoid)
         });
         contract_mutations.push(changed);
         let mut changed = baseline.clone();
@@ -2027,8 +2032,8 @@ mod tests {
             name: "prepared_cache_identity".to_string(),
             params: Vec::new(),
             ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..Default::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             param_types: None,
             source_file: None,
@@ -2140,8 +2145,8 @@ mod tests {
             name: "policy_separation".to_string(),
             params: Vec::new(),
             ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..Default::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             param_types: None,
             source_file: Some("policy.py".to_string()),
@@ -2220,8 +2225,8 @@ mod tests {
             name: "molt_main".to_string(),
             params: Vec::new(),
             ops: vec![OpIR {
-                kind: "ret_void".to_string(),
-                ..Default::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             param_types: None,
             source_file: Some("app.py".to_string()),

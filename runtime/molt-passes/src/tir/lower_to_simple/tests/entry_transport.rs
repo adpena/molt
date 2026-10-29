@@ -41,6 +41,7 @@ fn entry_reentry_seeds_once_and_reloads_parallel_arguments_in_both_lowering_form
             },
         );
         body_block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,
             operands: vec![],
@@ -72,13 +73,15 @@ fn entry_reentry_seeds_once_and_reloads_parallel_arguments_in_both_lowering_form
         assert!(validate_labels(&ops), "{ops:?}");
         let label = ops
             .iter()
-            .position(|op| op.kind == "label" && op.value == Some(7))
+            .position(|op| op.kind == molt_ir::OpKind::Label && op.value == Some(7))
             .unwrap();
         for (index, slot) in slots.iter().enumerate() {
             let stores: Vec<_> = ops
                 .iter()
                 .enumerate()
-                .filter(|(_, op)| op.kind == "store_var" && op.var.as_ref() == Some(slot))
+                .filter(|(_, op)| {
+                    op.kind == molt_ir::OpKind::StoreVar && op.var.as_ref() == Some(slot)
+                })
                 .collect();
             assert_eq!(
                 stores.len(),
@@ -97,14 +100,17 @@ fn entry_reentry_seeds_once_and_reloads_parallel_arguments_in_both_lowering_form
             let load = ops
                 .iter()
                 .position(|op| {
-                    op.kind == "load_var"
+                    op.kind == molt_ir::OpKind::LoadVar
                         && op.var.as_ref() == Some(slot)
                         && op.out.as_ref() == Some(&func.param_names[index])
                 })
                 .unwrap();
             assert!(load > label && load < stores[1].0);
             if structured {
-                let loop_start = ops.iter().position(|op| op.kind == "loop_start").unwrap();
+                let loop_start = ops
+                    .iter()
+                    .position(|op| op.kind == molt_ir::OpKind::LoopStart)
+                    .unwrap();
                 assert!(load > loop_start, "every iteration must reload arguments");
             }
         }
@@ -174,11 +180,11 @@ fn implicit_invocation_prevents_consuming_entry_as_an_if_arm_or_loop_body() {
         assert!(validate_labels(&ops), "{ops:?}");
         assert!(
             ops.iter()
-                .any(|op| op.kind == "label" && op.value == Some(7))
+                .any(|op| op.kind == molt_ir::OpKind::Label && op.value == Some(7))
         );
         assert!(
             !ops.iter()
-                .any(|op| matches!(op.kind.as_str(), "if" | "loop_start")),
+                .any(|op| matches!(op.kind, molt_ir::OpKind::If | molt_ir::OpKind::LoopStart)),
             "entry cannot be inlined: {ops:?}"
         );
     }
@@ -253,14 +259,17 @@ fn entry_join_and_structured_loop_exit_keep_explicit_backedges() {
         let ops = lower_to_simple_ir(&func);
         assert!(validate_labels(&ops), "{ops:?}");
         if structured_loop {
-            let end = ops.iter().position(|op| op.kind == "loop_end").unwrap();
-            assert_eq!(ops[end + 1].kind, "jump");
+            let end = ops
+                .iter()
+                .position(|op| op.kind == molt_ir::OpKind::LoopEnd)
+                .unwrap();
+            assert_eq!(ops[end + 1].kind, molt_ir::OpKind::Jump);
             assert_eq!(ops[end + 1].value, Some(7));
         } else {
-            assert!(!ops.iter().any(|op| op.kind == "if"));
+            assert!(!ops.iter().any(|op| op.kind == molt_ir::OpKind::If));
             assert_eq!(
                 ops.iter()
-                    .filter(|op| op.kind == "jump" && op.value == Some(7))
+                    .filter(|op| op.kind == molt_ir::OpKind::Jump && op.value == Some(7))
                     .count(),
                 2,
                 "both arms must transfer to entry: {ops:?}"
@@ -319,9 +328,18 @@ fn inlined_if_arms_preserve_incoming_and_join_argument_transport() {
     func.blocks.insert(join, join_block);
     let names = SimpleValueNames::for_function(&func);
     let ops = lower_to_simple_ir(&func);
-    let if_index = ops.iter().position(|op| op.kind == "if").unwrap();
-    let else_index = ops.iter().position(|op| op.kind == "else").unwrap();
-    let end_index = ops.iter().position(|op| op.kind == "end_if").unwrap();
+    let if_index = ops
+        .iter()
+        .position(|op| op.kind == molt_ir::OpKind::If)
+        .unwrap();
+    let else_index = ops
+        .iter()
+        .position(|op| op.kind == molt_ir::OpKind::Else)
+        .unwrap();
+    let end_index = ops
+        .iter()
+        .position(|op| op.kind == molt_ir::OpKind::EndIf)
+        .unwrap();
     for (arm, incoming, value, start, end) in [
         (left, args[1], left_value, if_index, else_index),
         (right, args[2], right_value, else_index, end_index),
@@ -330,7 +348,7 @@ fn inlined_if_arms_preserve_incoming_and_join_argument_transport() {
         assert_eq!(emitted.len(), 3, "store, load, join store: {ops:?}");
         assert_eq!(emitted[0].var, Some(names.block_arg_slot(arm, 0)));
         assert_eq!(emitted[0].args, Some(vec![names.value_name(incoming)]));
-        assert_eq!(emitted[1].kind, "load_var");
+        assert_eq!(emitted[1].kind, molt_ir::OpKind::LoadVar);
         assert_eq!(emitted[1].out, Some(names.value_name(value)));
         assert_eq!(emitted[2].var, Some(names.block_arg_slot(join, 0)));
         assert_eq!(emitted[2].args, Some(vec![names.value_name(value)]));
@@ -391,6 +409,7 @@ fn missing_label_after_lowering_is_never_an_optional_warning() {
         .unwrap()
         .ops
         .push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],

@@ -1,13 +1,14 @@
 use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_attr_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_attr_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     // Canonical attribute-op kinds: the spelling `tir::lower_to_simple::lower_op`
     // emits for a LoadAttr/StoreAttr/DelAttr that carries no specialized
-    // `_original_kind` — its documented default, the same no-`_original_kind`
+    // `origin` — its documented default, the same no-`origin`
     // fallback every other op family already claims (`index`/`store_index`/
     // `del_index`/`call`/`call_builtin`). A TIR pass that yields a generic
     // by-name attribute op produces exactly these (e.g. the cold fallback the
@@ -17,28 +18,28 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     // hits the dispatch's loud no-codegen catch-all at user `molt build` time.
     // All three get spellings share the bits-validating, tagged-safe boxed
     // setup below; only stable site identity selects the IC ABI.
-    "get_attr",
-    "get_attr_generic_ptr",
-    "get_attr_generic_obj",
-    "get_attr_special_obj",
-    "load_method",
-    "load_super_method",
-    "get_attr_name",
-    "get_attr_name_default",
-    "has_attr_name",
-    "set_attr",
-    "set_attr_name",
-    "set_attr_generic_ptr",
-    "set_attr_generic_obj",
-    "del_attr",
-    "del_attr_generic_ptr",
-    "del_attr_generic_obj",
-    "del_attr_name",
-];
+    OpKind::GetAttr,
+    OpKind::GetAttrGenericPtr,
+    OpKind::GetAttrGenericObj,
+    OpKind::GetAttrSpecialObj,
+    OpKind::LoadMethod,
+    OpKind::LoadSuperMethod,
+    OpKind::GetAttrName,
+    OpKind::GetAttrNameDefault,
+    OpKind::HasAttrName,
+    OpKind::SetAttr,
+    OpKind::SetAttrName,
+    OpKind::SetAttrGenericPtr,
+    OpKind::SetAttrGenericObj,
+    OpKind::DelAttr,
+    OpKind::DelAttrGenericPtr,
+    OpKind::DelAttrGenericObj,
+    OpKind::DelAttrName,
+);
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for object attribute ops: get (`get_attr` (canonical)/`get_attr_generic_ptr`/`_obj`/`_special_obj`/`_name`/`_name_default`), has (`has_attr_name`), set (`set_attr` (canonical)/`set_attr_name`/`_generic_ptr`/`_generic_obj`), and del (`del_attr` (canonical)/`del_attr_generic_ptr`/`_obj`/`_name`). The canonical `get_attr`/`set_attr`/`del_attr` — `tir::lower_to_simple`'s no-`_original_kind` default — share their matching generic boxed lowering.
+/// Cranelift codegen handlers for object attribute ops: get (`get_attr` (canonical)/`get_attr_generic_ptr`/`_obj`/`_special_obj`/`_name`/`_name_default`), has (`has_attr_name`), set (`set_attr` (canonical)/`set_attr_name`/`_generic_ptr`/`_generic_obj`), and del (`del_attr` (canonical)/`del_attr_generic_ptr`/`_obj`/`_name`). The canonical `get_attr`/`set_attr`/`del_attr` — `tir::lower_to_simple`'s no-`origin` default — share their matching generic boxed lowering.
 ///
 /// Extracted from `compile_func_inner`'s per-op dispatch (M1). Shared setup and
 /// authority-equivalent lanes are intentionally consolidated here so new
@@ -87,8 +88,8 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" => {
+    match op.kind {
+        OpKind::GetAttr | OpKind::GetAttrGenericPtr | OpKind::GetAttrGenericObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -119,7 +120,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let attr_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let attr_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let call = if op.kind == "get_attr" {
+            let call = if op.kind == OpKind::GetAttr {
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -132,7 +133,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     .ins()
                     .call(local_callee, &[*obj, attr_ptr, attr_len])
             } else {
-                let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+                let source_op_idx = op.required_source_op_index(op_idx, op.kind);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -160,7 +161,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "load_method" | "load_super_method" => {
+        OpKind::LoadMethod | OpKind::LoadSuperMethod => {
             // CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form. The runtime
             // returns the callable and writes `self_or_null` (the receiver or
             // the null sentinel) to a frame slot after every callback it ran.
@@ -183,7 +184,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     }),
                 );
             }
-            let (symbol, operand_count) = if op.kind == "load_method" {
+            let (symbol, operand_count) = if op.kind == OpKind::LoadMethod {
                 ("molt_load_method", 1)
             } else {
                 ("molt_load_super_method", 2)
@@ -207,7 +208,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let global_ptr = module.declare_data_in_func(data_id, builder.func);
             let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
             let name_len = builder.ins().iconst(types::I64, attr_name.len() as i64);
-            let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+            let source_op_idx = op.required_source_op_index(op_idx, op.kind);
             let site_bits = builder.ins().iconst(
                 types::I64,
                 box_int(stable_ic_site_id(
@@ -277,7 +278,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 }
             }
         }
-        "get_attr_special_obj" => {
+        OpKind::GetAttrSpecialObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -325,7 +326,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "get_attr_name" => {
+        OpKind::GetAttrName => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -364,7 +365,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "get_attr_name_default" => {
+        OpKind::GetAttrNameDefault => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -414,7 +415,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "has_attr_name" => {
+        OpKind::HasAttrName => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -452,7 +453,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "set_attr_name" => {
+        OpKind::SetAttrName => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -501,7 +502,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "set_attr" | "set_attr_generic_ptr" | "set_attr_generic_obj" => {
+        OpKind::SetAttr | OpKind::SetAttrGenericPtr | OpKind::SetAttrGenericObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -547,7 +548,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             // tagged non-pointer (`typing.final(42)` then `f.__final__ = True`),
             // and both entries resolve it with `maybe_ptr_from_bits`, raising a
             // catchable AttributeError instead of reading a header at a tag.
-            let call = if op.kind == "set_attr" {
+            let call = if op.kind == OpKind::SetAttr {
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -560,7 +561,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     .ins()
                     .call(local_callee, &[*obj, attr_ptr, attr_len, *val])
             } else {
-                let source_op_idx = op.required_source_op_index(op_idx, op.kind.as_str());
+                let source_op_idx = op.required_source_op_index(op_idx, op.kind);
                 let callee = SimpleBackend::import_func_id_split(
                     &mut *module,
                     &mut *import_ids,
@@ -586,7 +587,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out_name, res);
             }
         }
-        "del_attr_generic_ptr" => {
+        OpKind::DelAttrGenericPtr => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -641,7 +642,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "del_attr" | "del_attr_generic_obj" => {
+        OpKind::DelAttr | OpKind::DelAttrGenericObj => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -688,7 +689,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "del_attr_name" => {
+        OpKind::DelAttrName => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,

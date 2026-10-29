@@ -385,8 +385,8 @@ fn canonicalize_direct_raise_edges(func: &mut TirFunction) -> bool {
                 unreachable!()
             };
             if producer.opcode != OpCode::Copy
-                || !matches!(producer.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
-                if matches!(kind.as_str(), "exception_new_builtin" | "exception_new_builtin_empty" | "exception_new_builtin_one"))
+                || !matches!(producer.origin, Some(kind)
+                if matches!(kind, molt_ir::OpKind::ExceptionNewBuiltin | molt_ir::OpKind::ExceptionNewBuiltinEmpty | molt_ir::OpKind::ExceptionNewBuiltinOne))
                 || producer.results.len() != 1
                 || producer.is_async_work_poll()
                 || producer.attrs.contains_key("runtime_symbol")
@@ -749,24 +749,25 @@ mod tests {
             ("conditional", 2),
             ("state_dispatch", 2),
         ] {
-            let operation = |kind: &str, args: &[&str], out: Option<&str>| OpIR {
-                kind: kind.into(),
+            let operation = |kind: molt_ir::OpKind, args: &[&str], out: Option<&str>| OpIR {
+                kind,
                 args: Some(args.iter().map(|name| (*name).into()).collect()),
                 out: out.map(str::to_string),
-                ..Default::default()
+                ..OpIR::new(kind)
             };
-            let mut constructor = operation("exception_new_builtin_empty", &[], Some("exc"));
+            let mut constructor =
+                operation(molt_ir::OpKind::ExceptionNewBuiltinEmpty, &[], Some("exc"));
             constructor.value = Some(5);
             constructor.source_line = Some(31);
             constructor.source_op_idx = Some(700);
-            let mut check = operation("check_exception", &[], None);
+            let mut check = operation(molt_ir::OpKind::CheckException, &[], None);
             check.value = Some(9);
-            let mut raise = operation("raise", &["exc"], None);
+            let mut raise = operation(molt_ir::OpKind::Raise, &["exc"], None);
             raise.source_line = Some(32);
             raise.source_op_idx = Some(702);
-            let mut jump = operation("jump", &[], None);
+            let mut jump = operation(molt_ir::OpKind::Jump, &[], None);
             jump.value = Some(9);
-            let mut handler = operation("label", &[], None);
+            let mut handler = operation(molt_ir::OpKind::Label, &[], None);
             handler.value = Some(9);
             let source = FunctionIR {
                 name: format!("split_raise_{case}"),
@@ -780,7 +781,7 @@ mod tests {
                     check,
                     jump,
                     handler,
-                    operation("ret", &["payload"], None),
+                    operation(molt_ir::OpKind::Ret, &["payload"], None),
                 ],
                 ..Default::default()
             };
@@ -861,6 +862,7 @@ mod tests {
             };
             assert!(typed.blocks[&forwarding_block].ops.is_empty());
             let effect = |opcode| TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![other],
@@ -987,13 +989,16 @@ mod tests {
             assert_eq!(
                 projected
                     .iter()
-                    .filter(|op| matches!(op.kind.as_str(), "check_exception" | "async_work_poll"))
+                    .filter(|op| matches!(
+                        op.kind,
+                        molt_ir::OpKind::CheckException | molt_ir::OpKind::AsyncWorkPoll
+                    ))
                     .count(),
                 expected_checks,
                 "{case}: final projection must preserve the typed decision"
             );
             assert!(
-                projected.iter().any(|op| op.kind == "raise"
+                projected.iter().any(|op| op.kind == molt_ir::OpKind::Raise
                     && op.source_line == Some(32)
                     && op.source_op_idx == Some(702)),
                 "{case}: raise provenance"
@@ -1001,7 +1006,7 @@ mod tests {
             assert!(
                 projected
                     .iter()
-                    .any(|op| op.kind == "exception_new_builtin_empty"
+                    .any(|op| op.kind == molt_ir::OpKind::ExceptionNewBuiltinEmpty
                         && op.source_line == Some(31)
                         && op.source_op_idx == Some(700)),
                 "{case}: constructor provenance"
@@ -1038,6 +1043,7 @@ mod tests {
             function.has_exception_handling = true;
             function.blocks.get_mut(&entry).unwrap().ops = vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![exception],
@@ -1046,6 +1052,7 @@ mod tests {
                     source_span: None,
                 },
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -1138,7 +1145,7 @@ mod tests {
             assert_eq!(
                 projected
                     .iter()
-                    .filter(|op| op.kind == "check_exception")
+                    .filter(|op| op.kind == molt_ir::OpKind::CheckException)
                     .count(),
                 usize::from(boundary != "ordinary"),
                 "{boundary}: the final projection must retain a protected entry check"
@@ -1316,6 +1323,7 @@ mod tests {
                 );
             }
             let operation = |opcode, operands, results, attrs| TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -1376,15 +1384,9 @@ mod tests {
                                 OpCode::Copy,
                                 vec![],
                                 vec![constructed],
-                                [
-                                    (
-                                        "_original_kind".into(),
-                                        AttrValue::Str("exception_new_builtin_empty".into()),
-                                    ),
-                                    ("value".into(), AttrValue::Int(5)),
-                                ]
-                                .into(),
-                            ),
+                                [("value".into(), AttrValue::Int(5))].into(),
+                            )
+                            .with_origin(molt_ir::OpKind::ExceptionNewBuiltinEmpty),
                             check(9, vec![]),
                         ],
                         terminator: Terminator::Branch {
@@ -1456,8 +1458,8 @@ mod tests {
             name: "trivial".into(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             param_types: None,
             source_file: None,
@@ -1498,14 +1500,14 @@ mod tests {
             params: vec![],
             ops: vec![
                 OpIR {
-                    kind: "const_str".into(),
+                    kind: molt_ir::OpKind::ConstStr,
                     s_value: Some("owned".into()),
                     out: Some("temporary".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 },
             ],
             param_types: None,
@@ -1565,8 +1567,8 @@ mod tests {
             name: "custody".into(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             param_types: None,
             source_file: None,
@@ -1586,6 +1588,7 @@ mod tests {
         tir.value_types
             .insert(value, crate::tir::types::TirType::I64);
         tir.blocks.get_mut(&tir.entry_block).unwrap().ops = vec![crate::tir::ops::TirOp {
+            origin: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: crate::tir::ops::OpCode::ConstInt,
             operands: vec![],
@@ -1625,7 +1628,7 @@ mod tests {
             funcs[0]
                 .ops
                 .iter()
-                .any(|op| op.kind == "const" && op.value == Some(7)),
+                .any(|op| op.kind == molt_ir::OpKind::Const && op.value == Some(7)),
             "finalizer must lower the TIR custody body, not the stale SimpleIR body"
         );
     }
@@ -1638,14 +1641,14 @@ mod tests {
             params: vec!["self".into()],
             ops: vec![
                 OpIR {
-                    kind: "store_var".into(),
+                    kind: molt_ir::OpKind::StoreVar,
                     var: Some("self".into()),
                     args: Some(vec!["self".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 },
             ],
             param_types: Some(vec!["Any".into()]),
@@ -1658,12 +1661,12 @@ mod tests {
 
         finalize_simple_ir_drops(&mut funcs, &TargetInfo::native_release_fast());
 
-        assert_eq!(funcs[0].ops[0].kind, DROP_INSERTED_ATTR);
+        assert_eq!(funcs[0].ops[0].kind, molt_ir::OpKind::DropInserted);
         assert!(
             funcs[0]
                 .ops
                 .iter()
-                .all(|op| op.kind != "dec_ref" && op.kind != "inc_ref"),
+                .all(|op| op.kind != molt_ir::OpKind::DecRef && op.kind != molt_ir::OpKind::IncRef),
             "borrowed-param-only SimpleIR must only gain the authority marker"
         );
     }
@@ -1676,43 +1679,43 @@ mod tests {
             params: vec![],
             ops: vec![
                 OpIR {
-                    kind: "const_none".into(),
+                    kind: molt_ir::OpKind::ConstNone,
                     out: Some("cls".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "callargs_new".into(),
+                    kind: molt_ir::OpKind::CallargsNew,
                     out: Some("callargs".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallargsNew)
                 },
                 OpIR {
-                    kind: "call_bind".into(),
+                    kind: molt_ir::OpKind::CallBind,
                     args: Some(vec!["cls".into(), "callargs".into()]),
                     out: Some("item".into()),
                     defines_del: Some(true),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallBind)
                 },
                 OpIR {
-                    kind: "list_new".into(),
+                    kind: molt_ir::OpKind::ListNew,
                     args: Some(vec!["item".into()]),
                     out: Some("bag".into()),
                     bound_local: Some(true),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListNew)
                 },
                 OpIR {
-                    kind: "const_str".into(),
+                    kind: molt_ir::OpKind::ConstStr,
                     s_value: Some("inside".into()),
                     out: Some("msg".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstStr)
                 },
                 OpIR {
-                    kind: "warn_stderr".into(),
+                    kind: molt_ir::OpKind::WarnStderr,
                     args: Some(vec!["msg".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::WarnStderr)
                 },
                 OpIR {
-                    kind: "ret_void".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::RetVoid,
+                    ..OpIR::new(molt_ir::OpKind::RetVoid)
                 },
             ],
             param_types: None,
@@ -1733,7 +1736,7 @@ mod tests {
 
         let roundtripped_call = optimized_ops
             .iter()
-            .find(|op| op.kind == "call_bind")
+            .find(|op| op.kind == molt_ir::OpKind::CallBind)
             .expect("native per-function roundtrip must preserve call_bind");
         let item_name = roundtripped_call
             .out
@@ -1741,12 +1744,12 @@ mod tests {
             .expect("call_bind finalizer result must keep an output name");
         let bag_name = optimized_ops
             .iter()
-            .find(|op| op.kind == "list_new")
+            .find(|op| op.kind == molt_ir::OpKind::ListNew)
             .and_then(|op| op.out.clone())
             .expect("absorbing list_new result must keep an output name");
         let roundtripped_list = optimized_ops
             .iter()
-            .find(|op| op.kind == "list_new")
+            .find(|op| op.kind == molt_ir::OpKind::ListNew)
             .expect("absorbing list_new must survive native per-function roundtrip");
         assert_eq!(
             roundtripped_call.defines_del,
@@ -1796,22 +1799,22 @@ mod tests {
         let ops = normal_ops;
         let warn_idx = ops
             .iter()
-            .position(|op| op.kind == "warn_stderr")
+            .position(|op| op.kind == molt_ir::OpKind::WarnStderr)
             .expect("side effect must remain in the lowered body");
         let ret_idx = ops
             .len()
             .checked_sub(1)
             .expect("function must still return");
-        assert_eq!(ops[ret_idx].kind, "ret_void");
+        assert_eq!(ops[ret_idx].kind, molt_ir::OpKind::RetVoid);
         let list_idx = ops
             .iter()
-            .position(|op| op.kind == "list_new")
+            .position(|op| op.kind == molt_ir::OpKind::ListNew)
             .expect("absorbing list constructor must remain in the lowered body");
 
         assert!(
             ops[list_idx + 1..warn_idx]
                 .iter()
-                .any(|op| op.kind == "dec_ref"
+                .any(|op| op.kind == molt_ir::OpKind::DecRef
                     && op
                         .args
                         .as_ref()
@@ -1821,7 +1824,7 @@ mod tests {
         );
         assert!(
             ops[..warn_idx].iter().all(|op| {
-                op.kind != "dec_ref"
+                op.kind != molt_ir::OpKind::DecRef
                     || !op
                         .args
                         .as_ref()
@@ -1833,7 +1836,7 @@ mod tests {
         let post_warn_dec_refs: Vec<_> = ops[warn_idx + 1..ret_idx]
             .iter()
             .filter(|op| {
-                op.kind == "dec_ref"
+                op.kind == molt_ir::OpKind::DecRef
                     && op.args.as_ref().is_some_and(|args| {
                         args.iter().any(|arg| arg == &item_name || arg == &bag_name)
                     })

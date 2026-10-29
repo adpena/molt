@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_tir::ir_rewrites::{elide_useless_try_blocks_for_function, rewrite_phi_to_store_load};
 use std::fmt::Write as _;
@@ -190,8 +191,12 @@ fn detect_gpu_kernels(functions: &[FunctionIR]) {
     for func_ir in functions {
         let is_gpu = func_ir.ops.iter().any(|op| {
             matches!(
-                op.kind.as_str(),
-                "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier"
+                op.kind,
+                OpKind::GpuThreadId
+                    | OpKind::GpuBlockId
+                    | OpKind::GpuBlockDim
+                    | OpKind::GpuGridDim
+                    | OpKind::GpuBarrier
             )
         });
         if is_gpu {
@@ -286,7 +291,7 @@ pub(crate) fn preprocess_backend_tir_input(
     tmp_func: &mut FunctionIR,
     target_info: &crate::tir::target_info::TargetInfo,
 ) {
-    if tmp_func.ops.iter().any(|op| op.kind == "phi") {
+    if tmp_func.ops.iter().any(|op| op.kind == OpKind::Phi) {
         rewrite_phi_to_store_load(&mut tmp_func.ops);
         crate::tir::pipeline_cache::trace_tir_function_stage(
             &tmp_func.name,
@@ -294,7 +299,11 @@ pub(crate) fn preprocess_backend_tir_input(
             tmp_func.ops.len(),
         );
     }
-    if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
+    if tmp_func
+        .ops
+        .iter()
+        .any(|op| op.kind == OpKind::ExceptionPush)
+    {
         elide_useless_try_blocks_for_function(tmp_func, target_info);
         crate::tir::pipeline_cache::trace_tir_function_stage(
             &tmp_func.name,

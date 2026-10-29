@@ -2,11 +2,11 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_scalar_expr_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
+        match op.kind {
             // ================================================================
             // Arithmetic ops (real IR op kinds)
             // ================================================================
-            "add" | "inplace_add" => {
+            molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => {
                 // Python + is overloaded: numeric add for numbers, concat for strings.
                 // Only producer-derived operand facts may skip the type check:
                 // the current op's result-side type_hint is passive metadata.
@@ -28,45 +28,43 @@ impl LuauBackend {
                     }
                 }
             }
-            "sub" | "inplace_sub" => self.emit_scalar_binary_op(op, "-"),
-            "mul" | "inplace_mul" => self.emit_scalar_binary_op(op, "*"),
-            "div" | "inplace_div" => {
+            molt_ir::OpKind::Sub | molt_ir::OpKind::InplaceSub => {
+                self.emit_scalar_binary_op(op, "-")
+            }
+            molt_ir::OpKind::Mul | molt_ir::OpKind::InplaceMul => {
+                self.emit_scalar_binary_op(op, "*")
+            }
+            molt_ir::OpKind::Div | molt_ir::OpKind::InplaceDiv => {
                 // Luau 1/0 = inf (IEEE 754), Python raises ZeroDivisionError.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
-                    let kind = if args.iter().take(2).any(|arg| {
+                    let float_operands = args.iter().take(2).any(|arg| {
                         self.scalar_plan.name_scalar_kind(arg) == Some(ScalarKind::Float)
-                    }) {
-                        "float"
-                    } else {
-                        "int"
-                    };
+                    });
+                    let kind = if float_operands { "float" } else { "int" };
                     self.emit_line(&format!(
                         "if {rhs_num} == 0 then molt_numeric_error(\"truediv:{kind}\") end"
                     ));
                     self.emit_line(&format!("local {out}: number = {lhs} / {rhs_num}"));
                 }
             }
-            "mod" | "inplace_mod" => {
+            molt_ir::OpKind::Mod | molt_ir::OpKind::InplaceMod => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
-                    let kind = if args.iter().take(2).any(|arg| {
+                    let float_operands = args.iter().take(2).any(|arg| {
                         self.scalar_plan.name_scalar_kind(arg) == Some(ScalarKind::Float)
-                    }) {
-                        "float"
-                    } else {
-                        "int"
-                    };
+                    });
+                    let kind = if float_operands { "float" } else { "int" };
                     self.emit_line(&format!(
                         "if {rhs_num} == 0 then molt_numeric_error(\"mod:{kind}\") end"
                     ));
-                    if kind == "float" {
+                    if float_operands {
                         self.emit_line(&format!(
                             "local {out}: number = molt_float_mod({lhs}, {rhs_num})"
                         ));
@@ -75,23 +73,20 @@ impl LuauBackend {
                     }
                 }
             }
-            "floordiv" | "inplace_floordiv" => {
+            molt_ir::OpKind::Floordiv | molt_ir::OpKind::InplaceFloordiv => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = self.numeric_operand_expr(&args[0]);
                     let rhs_num = self.numeric_operand_expr(&args[1]);
-                    let kind = if args.iter().take(2).any(|arg| {
+                    let float_operands = args.iter().take(2).any(|arg| {
                         self.scalar_plan.name_scalar_kind(arg) == Some(ScalarKind::Float)
-                    }) {
-                        "float"
-                    } else {
-                        "int"
-                    };
+                    });
+                    let kind = if float_operands { "float" } else { "int" };
                     self.emit_line(&format!(
                         "if {rhs_num} == 0 then molt_numeric_error(\"floordiv:{kind}\") end"
                     ));
-                    if kind == "float" {
+                    if float_operands {
                         self.emit_line(&format!(
                             "local {out}: number = molt_float_floor_div({lhs}, {rhs_num})"
                         ));
@@ -100,7 +95,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "pow" | "inplace_pow" => {
+            molt_ir::OpKind::Pow | molt_ir::OpKind::InplacePow => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -112,7 +107,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out}: number = {lhs} ^ {rhs}"));
                 }
             }
-            "pow_mod" => {
+            molt_ir::OpKind::PowMod => {
                 // Python pow(base, exp, mod) uses modular exponentiation;
                 // computing base^exp directly overflows for large exponents.
                 let out = self.out_var(op);
@@ -133,13 +128,13 @@ impl LuauBackend {
                     ));
                 }
             }
-            "matmul" | "inplace_matmul" => {
+            molt_ir::OpKind::Matmul | molt_ir::OpKind::InplaceMatmul => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    let helper = if op.kind == "inplace_matmul" {
+                    let helper = if op.kind == molt_ir::OpKind::InplaceMatmul {
                         "molt_inplace_matmul"
                     } else {
                         "molt_matmul"
@@ -147,7 +142,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {helper}({lhs}, {rhs})"));
                 }
             }
-            "round" => {
+            molt_ir::OpKind::Round => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -157,7 +152,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "trunc" => {
+            molt_ir::OpKind::Trunc => {
                 // Python math.trunc truncates toward zero.
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -172,16 +167,26 @@ impl LuauBackend {
             // ================================================================
             // Bitwise ops (real IR op kinds)
             // ================================================================
-            "bit_and" | "inplace_bit_and" => self.emit_scalar_bit_op(op, "band"),
-            "bit_or" | "inplace_bit_or" => self.emit_scalar_bit_op(op, "bor"),
-            "bit_xor" | "inplace_bit_xor" => self.emit_scalar_bit_op(op, "bxor"),
-            "lshift" | "shl" => self.emit_scalar_bit_op(op, "lshift"),
-            "rshift" | "shr" => self.emit_scalar_bit_op(op, "rshift"),
+            molt_ir::OpKind::BitAnd | molt_ir::OpKind::InplaceBitAnd => {
+                self.emit_scalar_bit_op(op, molt_ir::OpKind::Band)
+            }
+            molt_ir::OpKind::BitOr | molt_ir::OpKind::InplaceBitOr => {
+                self.emit_scalar_bit_op(op, molt_ir::OpKind::Bor)
+            }
+            molt_ir::OpKind::BitXor | molt_ir::OpKind::InplaceBitXor => {
+                self.emit_scalar_bit_op(op, molt_ir::OpKind::Bxor)
+            }
+            molt_ir::OpKind::Lshift | molt_ir::OpKind::Shl => {
+                self.emit_scalar_bit_op(op, molt_ir::OpKind::Lshift)
+            }
+            molt_ir::OpKind::Rshift | molt_ir::OpKind::Shr => {
+                self.emit_scalar_bit_op(op, molt_ir::OpKind::Rshift)
+            }
 
             // ================================================================
             // Unary ops (real IR op kinds)
             // ================================================================
-            "not" => {
+            molt_ir::OpKind::Not => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -194,7 +199,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "invert" => {
+            molt_ir::OpKind::Invert => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -204,7 +209,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "abs" => {
+            molt_ir::OpKind::Abs => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(val) = args.first() {
@@ -215,19 +220,23 @@ impl LuauBackend {
             // ================================================================
             // Comparison ops (real IR op kinds)
             // ================================================================
-            "lt" | "le" | "gt" | "ge" | "string_eq" => {
-                let operator = match op.kind.as_str() {
-                    "lt" => "<",
-                    "le" => "<=",
-                    "gt" => ">",
-                    "ge" => ">=",
-                    "eq" | "string_eq" => "==",
-                    "ne" => "~=",
+            molt_ir::OpKind::Lt
+            | molt_ir::OpKind::Le
+            | molt_ir::OpKind::Gt
+            | molt_ir::OpKind::Ge
+            | molt_ir::OpKind::StringEq => {
+                let operator = match op.kind {
+                    molt_ir::OpKind::Lt => "<",
+                    molt_ir::OpKind::Le => "<=",
+                    molt_ir::OpKind::Gt => ">",
+                    molt_ir::OpKind::Ge => ">=",
+                    molt_ir::OpKind::Eq | molt_ir::OpKind::StringEq => "==",
+                    molt_ir::OpKind::Ne => "~=",
                     _ => unreachable!(),
                 };
                 self.emit_scalar_binary_op(op, operator);
             }
-            "eq" | "ne" => {
+            molt_ir::OpKind::Eq | molt_ir::OpKind::Ne => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -246,22 +255,33 @@ impl LuauBackend {
                         )
                     );
                     if lhs_kind.is_some() && rhs_kind.is_some() && !bool_number_cross {
-                        let operator = if op.kind == "ne" { "~=" } else { "==" };
+                        let operator = if op.kind == molt_ir::OpKind::Ne {
+                            "~="
+                        } else {
+                            "=="
+                        };
                         self.emit_line(&format!("local {out}: boolean = ({lhs} {operator} {rhs})"));
                     } else {
-                        let negation = if op.kind == "ne" { "not " } else { "" };
+                        let negation = if op.kind == molt_ir::OpKind::Ne {
+                            "not "
+                        } else {
+                            ""
+                        };
                         self.emit_line(&format!(
                             "local {out}: boolean = {negation}molt_equal({lhs}, {rhs})"
                         ));
                     }
                 }
             }
-            "is" | "is_not" => {
+            molt_ir::OpKind::Is | molt_ir::OpKind::IsNot => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
-                    let identity =
-                        self.identity_comparison_expr(&args[0], &args[1], op.kind == "is_not");
+                    let identity = self.identity_comparison_expr(
+                        &args[0],
+                        &args[1],
+                        op.kind == molt_ir::OpKind::IsNot,
+                    );
                     self.emit_line(&format!("local {out}: boolean = {identity}"));
                 }
             }
@@ -269,7 +289,7 @@ impl LuauBackend {
             // ================================================================
             // Logical ops - Python truthiness differs from Luau.
             // ================================================================
-            "and" => {
+            molt_ir::OpKind::And => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -283,7 +303,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "or" => {
+            molt_ir::OpKind::Or => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -301,7 +321,7 @@ impl LuauBackend {
             // ================================================================
             // Pedagogical composite ops (binop/compare/unary_op with s_value)
             // ================================================================
-            "binop" => {
+            molt_ir::OpKind::Binop => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -322,7 +342,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {expr}"));
                 }
             }
-            "compare" => {
+            molt_ir::OpKind::Compare => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -339,7 +359,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "unary_op" => {
+            molt_ir::OpKind::UnaryOp => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(operand) = args.first() {
@@ -394,7 +414,8 @@ impl LuauBackend {
         }
     }
 
-    fn emit_scalar_bit_op(&mut self, op: &OpIR, func: &str) {
+    fn emit_scalar_bit_op(&mut self, op: &OpIR, func: molt_ir::OpKind) {
+        let func = func.as_str();
         let out = self.out_var(op);
         let args = op.args.as_deref().unwrap_or(&[]);
         if args.len() >= 2 {

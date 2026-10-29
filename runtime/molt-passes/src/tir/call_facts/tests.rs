@@ -26,6 +26,7 @@ fn func_calling(
         let mut attrs = AttrDict::new();
         attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -36,6 +37,7 @@ fn func_calling(
     }
     for v in filler {
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -56,6 +58,7 @@ fn leaf_callee(name: &str, ret: TirType) -> TirFunction {
     let v = f.fresh_value();
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -79,6 +82,7 @@ fn callee_with_handlers(name: &str) -> TirFunction {
     let block = f.blocks.get_mut(&entry).unwrap();
     for oc in [OpCode::TryStart, OpCode::TryEnd] {
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: oc,
             operands: vec![],
@@ -143,18 +147,16 @@ fn opaque_target_for_extern_callee() {
 #[test]
 fn opaque_spellings_do_not_gain_module_facts_from_incidental_symbols() {
     for kind in [
-        "call_func",
-        "call_function",
-        "call_indirect",
-        "call_bind",
-        "call_guarded",
-        "invoke_ffi",
+        molt_ir::OpKind::CallFunc,
+        molt_ir::OpKind::CallFunction,
+        molt_ir::OpKind::CallIndirect,
+        molt_ir::OpKind::CallBind,
+        molt_ir::OpKind::CallGuarded,
+        molt_ir::OpKind::InvokeFfi,
     ] {
         for symbol in ["molt_gpu_thread_id", "module_function"] {
             let (mut caller, result) = func_calling("caller", TirType::None, &[symbol], 0);
-            caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
-                .attrs
-                .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+            caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
             let m = module(vec![caller, leaf_callee(symbol, TirType::None)]);
             let table = module_table_for(&m, "caller");
             let facts = table.get(result.unwrap()).unwrap();
@@ -178,12 +180,14 @@ fn gpu_named_module_calls_keep_direct_call_facts_without_gpu_provenance() {
         "molt_gpu_grid_dim",
         "molt_gpu_barrier",
     ] {
-        for original in [None, Some("call"), Some("call_internal")] {
+        for original in [
+            None,
+            Some(molt_ir::OpKind::Call),
+            Some(molt_ir::OpKind::CallInternal),
+        ] {
             let (mut caller, result) = func_calling("caller", TirType::None, &[symbol], 0);
             if let Some(kind) = original {
-                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
-                    .attrs
-                    .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
             }
             let m = module(vec![caller, leaf_callee(symbol, TirType::DynBox)]);
             let table = module_table_for(&m, "caller");
@@ -203,16 +207,14 @@ fn gpu_named_module_calls_keep_direct_call_facts_without_gpu_provenance() {
 #[test]
 fn genuine_gpu_calls_remain_opaque_runtime_facts() {
     for (kind, symbol) in [
-        ("gpu_thread_id", "molt_gpu_thread_id"),
-        ("gpu_block_id", "molt_gpu_block_id"),
-        ("gpu_block_dim", "molt_gpu_block_dim"),
-        ("gpu_grid_dim", "molt_gpu_grid_dim"),
-        ("gpu_barrier", "molt_gpu_barrier"),
+        (molt_ir::OpKind::GpuThreadId, "molt_gpu_thread_id"),
+        (molt_ir::OpKind::GpuBlockId, "molt_gpu_block_id"),
+        (molt_ir::OpKind::GpuBlockDim, "molt_gpu_block_dim"),
+        (molt_ir::OpKind::GpuGridDim, "molt_gpu_grid_dim"),
+        (molt_ir::OpKind::GpuBarrier, "molt_gpu_barrier"),
     ] {
         let (mut caller, result) = func_calling("caller", TirType::None, &[symbol], 0);
-        caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0]
-            .attrs
-            .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        caller.blocks.get_mut(&caller.entry_block).unwrap().ops[0].origin = Some(kind);
         let m = module(vec![caller]);
         let table = module_table_for(&m, "caller");
         let facts = table.get(result.unwrap()).unwrap();
@@ -333,6 +335,7 @@ fn handlerless_raising_and_transitive_calls_never_mint_nothrow_facts() {
         .unwrap()
         .ops
         .push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Raise,
             operands: vec![value],
@@ -367,6 +370,7 @@ fn builtin_names_do_not_prove_argument_admission_or_effects() {
             let block = caller.blocks.get_mut(&caller.entry_block).unwrap();
             for &operand in &operands {
                 block.ops.push(TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],
@@ -378,6 +382,7 @@ fn builtin_names_do_not_prove_argument_admission_or_effects() {
             let mut attrs = AttrDict::new();
             attrs.insert("name".into(), AttrValue::Str(name.into()));
             block.ops.push(TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CallBuiltin,
                 operands,
@@ -601,6 +606,7 @@ fn namespace_acquisition_callbacks_remain_opaque_and_prevent_leaf_proofs() {
         let result = caller.fresh_value();
         let block = caller.blocks.get_mut(&caller.entry_block).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

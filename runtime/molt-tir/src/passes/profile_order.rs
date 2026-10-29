@@ -94,9 +94,9 @@ mod tests {
         for hot in [vec!["dead_hot"], vec!["live_callee", "dead_hot"], vec![]] {
             let mut ir = program(&["application_entry", "dead_hot", "live_callee"], &hot);
             ir.functions[0].ops.push(OpIR {
-                kind: "call_internal".into(),
+                kind: molt_ir::OpKind::CallInternal,
                 s_value: Some("live_callee".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             });
             apply_profile_order(&mut ir);
             super::super::dead_functions::eliminate_dead_functions(&mut ir);

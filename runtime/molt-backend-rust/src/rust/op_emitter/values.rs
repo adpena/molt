@@ -12,7 +12,7 @@ impl RustBackend {
     }
 
     pub(super) fn emit_op_runtime_value_call(&mut self, op: &OpIR) {
-        let Some(call) = runtime_value_call_for_kind(op.kind.as_str()) else {
+        let Some(call) = runtime_value_call_for_kind(op.kind) else {
             self.emit_op_other(op);
             return;
         };

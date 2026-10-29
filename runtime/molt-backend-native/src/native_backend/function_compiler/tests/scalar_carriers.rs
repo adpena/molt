@@ -3,42 +3,38 @@ use crate::native_backend::function_compiler::scalar_carriers::{
     CapturedScalarTransport, merge_rebind_storage_clif_type,
 };
 use crate::native_backend::simple_backend::MergeRebindStorageKind;
+use molt_ir::OpKind;
 
 #[test]
 fn native_representation_results_keep_discarded_box_effects_and_independent_owners() {
     let raw_plan = representation_plan_for_ops(&[
         OpIR {
-            kind: "const_int".into(),
             out: Some("lhs".into()),
             value: Some(1_i64 << 31),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstInt)
         },
         OpIR {
-            kind: "const_int".into(),
             out: Some("rhs".into()),
             value: Some(1_i64 << 31),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstInt)
         },
         OpIR {
-            kind: "checked_mul".into(),
             var: Some("source".into()),
             out: Some("overflow".into()),
             args: Some(vec!["lhs".into(), "rhs".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckedMul)
         },
         OpIR {
-            kind: "box".into(),
             args: Some(vec!["source".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Box)
         },
     ]);
     assert!(raw_plan.is_full_deopt_int_name("source"));
     assert!(!raw_plan.is_inline_safe_int_name("source"));
     let inline_plan = representation_plan_for_ops(&[OpIR {
-        kind: "module_slot".into(),
         s_value: Some("sys".into()),
         out: Some("source".into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ModuleSlot)
     }]);
     assert!(inline_plan.is_inline_safe_int_name("source"));
     let boxed_plan = ScalarRepresentationPlan::default();
@@ -47,10 +43,10 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
         NativeRcAuthority::TirDropInsertion,
     ] {
         for (kind, plan, raw, heap_box) in [
-            ("box", &raw_plan, true, true),
-            ("box", &inline_plan, true, false),
-            ("box", &boxed_plan, false, false),
-            ("unbox", &boxed_plan, false, false),
+            (OpKind::Box, &raw_plan, true, true),
+            (OpKind::Box, &inline_plan, true, false),
+            (OpKind::Box, &boxed_plan, false, false),
+            (OpKind::Unbox, &boxed_plan, false, false),
         ] {
             for out in [None, Some("none"), Some("kept")] {
                 let mut backend = SimpleBackend::new();
@@ -102,10 +98,9 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                     let mut sealed = BTreeSet::from([entry]);
                     super::super::fc::value_transfer::handle_value_transfer_op(
                         &OpIR {
-                            kind: kind.into(),
                             args: Some(vec!["source".into()]),
                             out: out.map(str::to_string),
-                            ..OpIR::default()
+                            ..OpIR::new(kind)
                         },
                         0,
                         &mut backend.module,
@@ -168,38 +163,33 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
         let inline = capture.starts_with("inline");
         let mut ops = vec![
             OpIR {
-                kind: "module_slot".into(),
                 s_value: Some("sys".into()),
                 out: Some("slot".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ModuleSlot)
             },
             OpIR {
-                kind: "store_var".into(),
                 var: Some("source".into()),
                 args: Some(vec!["slot".into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
         ];
         if capture.starts_with("joined") {
             ops.extend([
                 OpIR {
-                    kind: "const_int".into(),
                     out: Some("seed".into()),
                     value: Some(1_i64 << 31),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "checked_mul".into(),
                     var: Some("wide".into()),
                     out: Some("overflow".into()),
                     args: Some(vec!["seed".into(), "seed".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedMul)
                 },
                 OpIR {
-                    kind: "store_var".into(),
                     var: Some("source".into()),
                     args: Some(vec!["wide".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
             ]);
         }
@@ -361,7 +351,7 @@ fn captured_scalar_transport_preserves_raw_outputs_and_shares_one_box() {
 }
 
 fn lower_unary_numeric_carrier_fixture(
-    kind: &str,
+    kind: OpKind,
     source: &str,
     out: &str,
 ) -> (String, BTreeSet<String>) {
@@ -376,7 +366,7 @@ fn lower_unary_numeric_carrier_fixture(
 }
 
 fn lower_unary_numeric_carrier_with_plan(
-    kind: &str,
+    kind: OpKind,
     source: &str,
     out: &str,
     plan: &ScalarRepresentationPlan,
@@ -422,10 +412,9 @@ fn lower_unary_numeric_carrier_with_plan(
             &[],
         );
         let op = OpIR {
-            kind: kind.to_string(),
             args: Some(vec![source.to_string()]),
             out: Some(out.to_string()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         };
         let mut sealed = BTreeSet::from([entry]);
         super::super::fc::unary_logic::handle_unary_logic_op(
@@ -441,7 +430,7 @@ fn lower_unary_numeric_carrier_with_plan(
             true,
             &crate::NanBoxConsts::new(),
         );
-        if plan.is_full_deopt_int_name(source) && matches!(kind, "neg" | "abs") {
+        if plan.is_full_deopt_int_name(source) && matches!(kind, OpKind::Neg | OpKind::Abs) {
             let box_fn = refs
                 .get("molt_int_from_i64")
                 .expect("full-width unary input must use overflow-safe boxing");
@@ -499,23 +488,20 @@ fn unary_neg_and_abs_preserve_full_width_checked_arithmetic_inputs() {
         let value = lhs.checked_mul(rhs).unwrap();
         let plan = representation_plan_for_ops(&[
             OpIR {
-                kind: "const_int".into(),
                 out: Some("lhs".into()),
                 value: Some(lhs),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstInt)
             },
             OpIR {
-                kind: "const_int".into(),
                 out: Some("rhs".into()),
                 value: Some(rhs),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstInt)
             },
             OpIR {
-                kind: "checked_mul".into(),
                 args: Some(vec!["lhs".into(), "rhs".into()]),
                 var: Some("full_home".into()),
                 out: Some("overflow".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::CheckedMul)
             },
         ]);
         assert!(
@@ -523,7 +509,7 @@ fn unary_neg_and_abs_preserve_full_width_checked_arithmetic_inputs() {
             "checked product {value} must expose the full-width carrier"
         );
         assert!(!plan.is_inline_safe_int_name("full_home"));
-        for (kind, runtime) in [("neg", "molt_neg"), ("abs", "molt_abs_builtin")] {
+        for (kind, runtime) in [(OpKind::Neg, "molt_neg"), (OpKind::Abs, "molt_abs_builtin")] {
             let (clif, imports) = lower_unary_numeric_carrier_with_plan(
                 kind,
                 "full_home",
@@ -546,7 +532,7 @@ fn unary_neg_and_abs_preserve_full_width_checked_arithmetic_inputs() {
 #[test]
 fn unary_numeric_float_results_preserve_physical_f64_homes_and_zero_sign() {
     let plan = scalar_transport_plan_for_float_home();
-    for kind in ["neg", "pos"] {
+    for kind in [OpKind::Neg, OpKind::Pos] {
         for value in [1.25_f64, 0.0_f64, -0.0_f64] {
             let (clif, imports) = lower_unary_numeric_carrier_with_plan(
                 kind,
@@ -564,7 +550,7 @@ fn unary_numeric_float_results_preserve_physical_f64_homes_and_zero_sign() {
             );
             assert_eq!(
                 clif.matches("fneg").count(),
-                usize::from(kind == "neg"),
+                usize::from(kind == OpKind::Neg),
                 "unary float sign behavior: {clif}"
             );
             assert!(
@@ -578,10 +564,10 @@ fn unary_numeric_float_results_preserve_physical_f64_homes_and_zero_sign() {
 #[test]
 fn unary_numeric_raw_operands_cannot_define_boxed_results_directly() {
     for (kind, runtime) in [
-        ("neg", "molt_neg"),
-        ("pos", "molt_pos"),
-        ("abs", "molt_abs_builtin"),
-        ("invert", "molt_invert"),
+        (OpKind::Neg, "molt_neg"),
+        (OpKind::Pos, "molt_pos"),
+        (OpKind::Abs, "molt_abs_builtin"),
+        (OpKind::Invert, "molt_invert"),
     ] {
         let (clif, imports) = lower_unary_numeric_carrier_fixture(kind, "int_home", "boxed_result");
         assert!(
@@ -598,10 +584,10 @@ fn unary_numeric_raw_operands_cannot_define_boxed_results_directly() {
 #[test]
 fn unary_numeric_bool_operands_unbox_runtime_results_for_integer_homes() {
     for (kind, runtime) in [
-        ("neg", "molt_neg"),
-        ("pos", "molt_pos"),
-        ("abs", "molt_abs_builtin"),
-        ("invert", "molt_invert"),
+        (OpKind::Neg, "molt_neg"),
+        (OpKind::Pos, "molt_pos"),
+        (OpKind::Abs, "molt_abs_builtin"),
+        (OpKind::Invert, "molt_invert"),
     ] {
         let (clif, imports) = lower_unary_numeric_carrier_fixture(kind, "bool_home", "int_home");
         assert!(
@@ -617,7 +603,7 @@ fn unary_numeric_bool_operands_unbox_runtime_results_for_integer_homes() {
 
 #[test]
 fn unary_numeric_proven_raw_integer_results_avoid_runtime_calls() {
-    for kind in ["neg", "pos", "abs", "invert"] {
+    for kind in [OpKind::Neg, OpKind::Pos, OpKind::Abs, OpKind::Invert] {
         let (clif, imports) = lower_unary_numeric_carrier_fixture(kind, "int_home", "int_home");
         assert!(
             !imports.iter().any(|name| matches!(
@@ -632,10 +618,9 @@ fn unary_numeric_proven_raw_integer_results_avoid_runtime_calls() {
 #[test]
 fn native_container_dispatch_uses_tir_container_facts() {
     let dict_index = OpIR {
-        kind: "index".to_string(),
         args: Some(vec!["mapping".to_string(), "key".to_string()]),
         out: Some("item".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Index)
     };
     let dict_plan = representation_plan_for_typed_ops(
         &["mapping", "key"],
@@ -648,10 +633,9 @@ fn native_container_dispatch_uses_tir_container_facts() {
     );
 
     let tuple_index = OpIR {
-        kind: "index".to_string(),
         args: Some(vec!["items".to_string(), "idx".to_string()]),
         out: Some("item".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Index)
     };
     let tuple_plan = representation_plan_for_typed_ops(
         &["items", "idx"],
@@ -664,13 +648,12 @@ fn native_container_dispatch_uses_tir_container_facts() {
     );
 
     let dict_store = OpIR {
-        kind: "store_index".to_string(),
         args: Some(vec![
             "mapping".to_string(),
             "key".to_string(),
             "value".to_string(),
         ]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::StoreIndex)
     };
     let dict_store_plan = representation_plan_for_typed_ops(
         &["mapping", "key", "value"],
@@ -686,10 +669,9 @@ fn native_container_dispatch_uses_tir_container_facts() {
 #[test]
 fn native_container_dispatch_ignores_transport_only_container_type() {
     let mut transport_index = OpIR {
-        kind: "index".to_string(),
         args: Some(vec!["items".to_string(), "idx".to_string()]),
         out: Some("item".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Index)
     };
     transport_index.container_type = Some("tuple".to_string());
     let plan = representation_plan_for_typed_ops(
@@ -708,13 +690,12 @@ fn native_container_dispatch_ignores_transport_only_container_type() {
     );
 
     let mut transport_store = OpIR {
-        kind: "store_index".to_string(),
         args: Some(vec![
             "mapping".to_string(),
             "key".to_string(),
             "value".to_string(),
         ]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::StoreIndex)
     };
     transport_store.container_type = Some("dict".to_string());
     let store_plan = representation_plan_for_typed_ops(
@@ -732,10 +713,9 @@ fn native_container_dispatch_ignores_transport_only_container_type() {
 #[test]
 fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
     let list_index = OpIR {
-        kind: "index".to_string(),
         args: Some(vec!["items".to_string(), "idx".to_string()]),
         out: Some("item".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Index)
     };
     let plan = representation_plan_for_typed_ops(
         &["items", "idx"],
@@ -752,13 +732,12 @@ fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
     );
 
     let list_store = OpIR {
-        kind: "store_index".to_string(),
         args: Some(vec![
             "items".to_string(),
             "idx".to_string(),
             "value".to_string(),
         ]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::StoreIndex)
     };
     let store_plan = representation_plan_for_typed_ops(
         &["items", "idx", "value"],
@@ -771,19 +750,17 @@ fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
     );
 
     let mut list_int_new = OpIR {
-        kind: "list_int_new".to_string(),
         out: Some("flat_items".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ListIntNew)
     };
     let flat_store = OpIR {
-        kind: "store_index".to_string(),
         args: Some(vec![
             "flat_items".to_string(),
             "idx".to_string(),
             "value".to_string(),
         ]),
         out: Some("flat_result".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::StoreIndex)
     };
     // An opcode with no allocator inputs, plus Python int annotations, cannot
     // establish inline fill/value custody or a physical representation.
@@ -806,10 +783,9 @@ fn native_list_annotations_keep_reads_and_stores_in_runtime_authority() {
     let mut flat_ops: Vec<OpIR> = [("count", 4), ("fill", 0), ("idx", 0), ("value", 7)]
         .into_iter()
         .map(|(name, value)| OpIR {
-            kind: "const".to_string(),
             out: Some(name.to_string()),
             value: Some(value),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::Const)
         })
         .collect();
     flat_ops.extend([list_int_new, flat_store.clone()]);
@@ -1123,11 +1099,10 @@ fn raw_int_div_intmin_debug_guard_precedes_raw_sdiv() {
 #[test]
 fn semantic_type_hint_does_not_create_native_scalar_lane_for_generic_ops() {
     let hinted_generic_op = OpIR {
-        kind: "call_indirect".to_string(),
         args: Some(vec!["callable".to_string(), "args".to_string()]),
         out: Some("result".to_string()),
         type_hint: Some("int".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::CallIndirect)
     };
 
     let func = FunctionIR {

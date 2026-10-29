@@ -45,7 +45,7 @@ use super::{OwnershipRootFacts, original_kind};
 
 /// The owned-alias `Copy` kind: its lowering retains the operand, so the result
 /// holds a reference of its own.
-const OWNED_ALIAS_KIND: &str = "binding_alias";
+const OWNED_ALIAS_KIND: molt_ir::OpKind = molt_ir::OpKind::BindingAlias;
 
 /// The producer attr of a value bound to a Python local (#58).
 const BOUND_LOCAL: &str = "bound_local";
@@ -58,6 +58,7 @@ pub(crate) fn owned_alias(
     source_span: Option<(u32, u32)>,
 ) -> TirOp {
     let mut alias = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![source],
@@ -72,10 +73,7 @@ pub(crate) fn owned_alias(
 /// Gives a copy's result a reference of its own.
 fn mint_owner(copy: &mut TirOp) {
     debug_assert!(copy_kind_mints_owned_alias_ref_table(OWNED_ALIAS_KIND));
-    copy.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str(OWNED_ALIAS_KIND.into()),
-    );
+    copy.origin = Some(OWNED_ALIAS_KIND);
 }
 
 /// The results one pass rewrites into copies of equal values.

@@ -12,6 +12,7 @@ fn dynbox_index_store_and_delete_stay_lir_fast_runtime_calls() {
     index_func.value_types.insert(index_result, TirType::DynBox);
     let entry = index_func.blocks.get_mut(&index_func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![ValueId(0), ValueId(1)],
@@ -42,6 +43,7 @@ fn dynbox_index_store_and_delete_stay_lir_fast_runtime_calls() {
     );
     let entry = store_func.blocks.get_mut(&store_func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::StoreIndex,
         operands: vec![ValueId(0), ValueId(1), ValueId(2)],
@@ -72,6 +74,7 @@ fn dynbox_index_store_and_delete_stay_lir_fast_runtime_calls() {
     );
     let entry = del_func.blocks.get_mut(&del_func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelIndex,
         operands: vec![ValueId(0), ValueId(1)],

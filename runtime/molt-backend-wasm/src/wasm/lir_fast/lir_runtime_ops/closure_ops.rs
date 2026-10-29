@@ -9,7 +9,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_closure_load(ctx: &mut LirLowerCtx, op
     let Some(&closure) = op.tir_op.operands.first() else {
         panic!("ClosureLoad requires closure operand");
     };
-    let offset = required_i64_attr(op, "value", "ClosureLoad");
+    let offset = required_i64_attr(op, "value", molt_ir::OpKind::ClosureLoad);
     emit_lir_runtime_call_with_args_and_result(
         ctx,
         op,
@@ -25,7 +25,7 @@ pub(in crate::wasm::lir_fast) fn emit_lir_closure_store(ctx: &mut LirLowerCtx, o
     if op.tir_op.operands.len() < 2 {
         panic!("ClosureStore requires closure and value operands");
     }
-    let offset = required_i64_attr(op, "value", "ClosureStore");
+    let offset = required_i64_attr(op, "value", molt_ir::OpKind::ClosureStore);
     emit_lir_runtime_call_with_args_and_result(
         ctx,
         op,

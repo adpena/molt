@@ -18,7 +18,7 @@ impl WasmConstOpPolicy {
         op: &TirOp,
     ) -> Arc<[u8]> {
         assert_eq!(
-            self.0.kind,
+            Some(self.0.kind),
             molt_ir::tir::op_kinds_generated::opcode_canonical_kind_table(op.opcode),
             "literal policy must match its operation",
         );

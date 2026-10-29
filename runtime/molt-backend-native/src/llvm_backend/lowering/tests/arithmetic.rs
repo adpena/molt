@@ -71,6 +71,7 @@ fn lower_f64_add() {
     let v_sum = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -107,6 +108,7 @@ fn lower_dynbox_add_calls_runtime() {
     let v_sum = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -162,6 +164,7 @@ fn lower_conditional_branch() {
             id: then_id,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -186,6 +189,7 @@ fn lower_conditional_branch() {
             id: else_id,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

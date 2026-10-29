@@ -209,15 +209,16 @@ mod tests {
         for spec in super::POLL_TABLE_IMPORTS {
             assert_eq!(spec.import.return_contract(), WasmRuntimeReturn::PollResult);
         }
-        assert!(op_loop_runtime_call("chan_drop", false).is_none());
-        assert!(op_loop_runtime_call("alloc_class", false).is_none());
-        let owned = op_loop_runtime_call("asyncgen_new", false).expect("owned async generator");
+        assert!("chan_drop".parse::<molt_ir::OpKind>().is_err());
+        assert!(op_loop_runtime_call(molt_ir::OpKind::AllocClass, false).is_none());
+        let owned = op_loop_runtime_call(molt_ir::OpKind::AsyncgenNew, false)
+            .expect("owned async generator");
         assert!(
             !owned
                 .required_imports
                 .contains(&WasmRuntimeImport::DecRefObj)
         );
-        for kind in ["guard_tag", "guard_type"] {
+        for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
             let borrowed = op_loop_runtime_call(kind, false).expect("borrowed guard result");
             assert_eq!(borrowed.import, WasmRuntimeImport::GuardType);
             assert!(
@@ -241,8 +242,8 @@ mod tests {
             "module_cache_del must use the unary i64 -> i64 host import ABI"
         );
 
-        let op_call =
-            op_loop_runtime_call("module_cache_del", false).expect("module_cache_del op-loop call");
+        let op_call = op_loop_runtime_call(molt_ir::OpKind::ModuleCacheDel, false)
+            .expect("module_cache_del op-loop call");
         assert_eq!(op_call.import, WasmRuntimeImport::ModuleCacheDel);
         assert_eq!(
             op_call.required_imports,
@@ -253,7 +254,7 @@ mod tests {
 
     #[test]
     fn finally_pending_observer_selects_exactly_one_import_from_the_shared_marker() {
-        let plain = op_loop_runtime_call("exception_finally_pending_observer", false)
+        let plain = op_loop_runtime_call(molt_ir::OpKind::ExceptionFinallyPendingObserver, false)
             .expect("plain finally observer runtime call");
         assert_eq!(plain.import, WasmRuntimeImport::ExceptionLastPending);
         assert_eq!(
@@ -261,7 +262,7 @@ mod tests {
             [WasmRuntimeImport::ExceptionLastPending]
         );
 
-        let marked = op_loop_runtime_call("exception_finally_pending_observer", true)
+        let marked = op_loop_runtime_call(molt_ir::OpKind::ExceptionFinallyPendingObserver, true)
             .expect("marked finally observer runtime call");
         assert_eq!(
             marked.import,
@@ -334,32 +335,103 @@ mod tests {
     fn shared_boxed_text_calls_project_canonical_abi_without_marked_variants() {
         use crate::wasm_abi_generated::{OpLoopRuntimeArgSpec, WasmRuntimeReturn};
         use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_op_abi};
-        for receiver in ["string", "bytes", "bytearray"] {
-            for method in ["find", "startswith", "endswith", "count"] {
-                for suffix in ["", "_slice"] {
-                    let kind = format!("{receiver}_{method}{suffix}");
-                    let arity = if suffix.is_empty() { 2 } else { 6 };
-                    let abi = runtime_boxed_op_abi(&kind).unwrap();
-                    assert_eq!(abi.symbol, format!("molt_{kind}"));
-                    assert_eq!(abi.arity, arity);
-                    assert_eq!(abi.result, RuntimeBoxedReturn::OwnedValue);
-                    let plain = op_loop_runtime_call(&kind, false).unwrap();
-                    assert_eq!(plain, op_loop_runtime_call(&kind, true).unwrap());
-                    assert_eq!(plain.import.runtime_export_name(), abi.symbol);
-                    assert_eq!(
-                        plain.import.return_contract(),
-                        WasmRuntimeReturn::OwnedObject
-                    );
-                    super::assert_runtime_i64_call(plain.import, arity);
-                    assert_eq!(
-                        plain.args,
-                        (0..arity)
-                            .map(OpLoopRuntimeArgSpec::Local)
-                            .collect::<Vec<_>>()
-                    );
-                    assert_eq!(plain.required_imports, &[plain.import]);
-                    assert!(!plain.discard_result);
-                }
+        for (plain_kind, slice_kind, plain_symbol, slice_symbol) in [
+            (
+                molt_ir::OpKind::StringFind,
+                molt_ir::OpKind::StringFindSlice,
+                "molt_string_find",
+                "molt_string_find_slice",
+            ),
+            (
+                molt_ir::OpKind::StringStartswith,
+                molt_ir::OpKind::StringStartswithSlice,
+                "molt_string_startswith",
+                "molt_string_startswith_slice",
+            ),
+            (
+                molt_ir::OpKind::StringEndswith,
+                molt_ir::OpKind::StringEndswithSlice,
+                "molt_string_endswith",
+                "molt_string_endswith_slice",
+            ),
+            (
+                molt_ir::OpKind::StringCount,
+                molt_ir::OpKind::StringCountSlice,
+                "molt_string_count",
+                "molt_string_count_slice",
+            ),
+            (
+                molt_ir::OpKind::BytesFind,
+                molt_ir::OpKind::BytesFindSlice,
+                "molt_bytes_find",
+                "molt_bytes_find_slice",
+            ),
+            (
+                molt_ir::OpKind::BytesStartswith,
+                molt_ir::OpKind::BytesStartswithSlice,
+                "molt_bytes_startswith",
+                "molt_bytes_startswith_slice",
+            ),
+            (
+                molt_ir::OpKind::BytesEndswith,
+                molt_ir::OpKind::BytesEndswithSlice,
+                "molt_bytes_endswith",
+                "molt_bytes_endswith_slice",
+            ),
+            (
+                molt_ir::OpKind::BytesCount,
+                molt_ir::OpKind::BytesCountSlice,
+                "molt_bytes_count",
+                "molt_bytes_count_slice",
+            ),
+            (
+                molt_ir::OpKind::BytearrayFind,
+                molt_ir::OpKind::BytearrayFindSlice,
+                "molt_bytearray_find",
+                "molt_bytearray_find_slice",
+            ),
+            (
+                molt_ir::OpKind::BytearrayStartswith,
+                molt_ir::OpKind::BytearrayStartswithSlice,
+                "molt_bytearray_startswith",
+                "molt_bytearray_startswith_slice",
+            ),
+            (
+                molt_ir::OpKind::BytearrayEndswith,
+                molt_ir::OpKind::BytearrayEndswithSlice,
+                "molt_bytearray_endswith",
+                "molt_bytearray_endswith_slice",
+            ),
+            (
+                molt_ir::OpKind::BytearrayCount,
+                molt_ir::OpKind::BytearrayCountSlice,
+                "molt_bytearray_count",
+                "molt_bytearray_count_slice",
+            ),
+        ] {
+            for (kind, arity, expected_symbol) in
+                [(plain_kind, 2, plain_symbol), (slice_kind, 6, slice_symbol)]
+            {
+                let abi = runtime_boxed_op_abi(kind).unwrap();
+                assert_eq!(abi.symbol, expected_symbol);
+                assert_eq!(abi.arity, arity);
+                assert_eq!(abi.result, RuntimeBoxedReturn::OwnedValue);
+                let plain = op_loop_runtime_call(kind, false).unwrap();
+                assert_eq!(plain, op_loop_runtime_call(kind, true).unwrap());
+                assert_eq!(plain.import.runtime_export_name(), abi.symbol);
+                assert_eq!(
+                    plain.import.return_contract(),
+                    WasmRuntimeReturn::OwnedObject
+                );
+                super::assert_runtime_i64_call(plain.import, arity);
+                assert_eq!(
+                    plain.args,
+                    (0..arity)
+                        .map(OpLoopRuntimeArgSpec::Local)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(plain.required_imports, &[plain.import]);
+                assert!(!plain.discard_result);
             }
         }
     }

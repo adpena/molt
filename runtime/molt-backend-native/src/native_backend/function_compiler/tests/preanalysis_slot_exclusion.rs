@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 fn slot_exclusion_marks_call_arg_as_unsafe() {
@@ -8,21 +9,18 @@ fn slot_exclusion_marks_call_arg_as_unsafe() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("x".to_string()),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "call".to_string(),
                 args: Some(vec!["x".to_string()]),
                 out: Some("result".to_string()),
                 s_value: Some("some_fn".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Call)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -48,15 +46,13 @@ fn slot_exclusion_marks_returned_var_as_unsafe() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("x".to_string()),
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["x".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -82,19 +78,16 @@ fn slot_exclusion_marks_store_attr_value_as_unsafe() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("val".to_string()),
                 value: Some(99),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "store_attr".to_string(),
                 args: Some(vec!["obj".to_string(), "val".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreAttr)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -120,19 +113,16 @@ fn slot_exclusion_marks_refcount_ops_as_unsafe() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("x".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "inc_ref".to_string(),
                 args: Some(vec!["x".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::IncRef)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -161,20 +151,17 @@ fn slot_exclusion_marks_refcount_var_field_as_unsafe() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("x".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "dec_ref".to_string(),
                 var: Some("x".to_string()),
                 args: Some(vec!["x".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::DecRef)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -201,19 +188,16 @@ fn slot_exclusion_marks_release_var_field_as_unsafe() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("y".to_string()),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "release".to_string(),
                 var: Some("y".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Release)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -240,56 +224,46 @@ fn slot_exclusion_safe_for_pure_arithmetic_loop() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("x".to_string()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("_bb1_arg0".to_string()),
                 args: Some(vec!["x".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "loop_start".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopStart)
             },
             OpIR {
-                kind: "load_var".to_string(),
                 var: Some("_bb1_arg0".to_string()),
                 out: Some("cur".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoadVar)
             },
             OpIR {
-                kind: "const".to_string(),
                 out: Some("one".to_string()),
                 value: Some(1),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "inplace_add".to_string(),
                 args: Some(vec!["cur".to_string(), "one".to_string()]),
                 out: Some("next".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::InplaceAdd)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("_bb1_arg0".to_string()),
                 args: Some(vec!["next".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "loop_continue".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopContinue)
             },
             OpIR {
-                kind: "loop_end".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoopEnd)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -324,30 +298,26 @@ fn slot_exclusion_marks_store_index_on_generic_list() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 out: Some("idx".to_string()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "const".to_string(),
                 out: Some("val".to_string()),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "store_index".to_string(),
                 args: Some(vec![
                     "lst".to_string(),
                     "idx".to_string(),
                     "val".to_string(),
                 ]),
                 container_type: Some("list".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreIndex)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,
@@ -377,29 +347,25 @@ fn slot_exclusion_allows_store_index_on_list_int() {
             storage_const("storage_fill", 0),
             list_int_new("lst", "storage_count", "storage_fill"),
             OpIR {
-                kind: "const".to_string(),
                 out: Some("idx".to_string()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "const".to_string(),
                 out: Some("val".to_string()),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "store_index".to_string(),
                 args: Some(vec![
                     "lst".to_string(),
                     "idx".to_string(),
                     "val".to_string(),
                 ]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreIndex)
             },
             OpIR {
-                kind: "ret_void".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::RetVoid)
             },
         ],
         param_types: None,

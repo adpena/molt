@@ -15,16 +15,14 @@ fn test_compile_checked_lowers_checked_add_helper() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "checked_add".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     var: Some("sum".to_string()),
                     out: Some("overflow".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CheckedAdd)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["sum".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -54,16 +52,14 @@ fn test_compile_checked_lowers_checked_mul_helper() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "checked_mul".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     var: Some("product".to_string()),
                     out: Some("overflow".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CheckedMul)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["product".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -83,8 +79,8 @@ fn test_compile_checked_lowers_checked_mul_helper() {
 #[test]
 fn test_checked_numeric_results_preserve_discarded_field_positions() {
     for (kind, helper) in [
-        ("checked_add", "molt_checked_i64_add"),
-        ("checked_mul", "molt_checked_i64_mul"),
+        (molt_ir::OpKind::CheckedAdd, "molt_checked_i64_add"),
+        (molt_ir::OpKind::CheckedMul, "molt_checked_i64_mul"),
     ] {
         for discarded in [None, Some("none")] {
             let compile = |var: Option<&str>, out: Option<&str>| {
@@ -101,16 +97,12 @@ fn test_checked_numeric_results_preserve_discarded_field_positions() {
                         execution_context: ExecutionContextPolicy::None,
                         ops: vec![
                             OpIR {
-                                kind: kind.to_string(),
                                 args: Some(vec!["a".to_string(), "b".to_string()]),
                                 var: var.map(str::to_string),
                                 out: out.map(str::to_string),
-                                ..OpIR::default()
+                                ..OpIR::new(kind)
                             },
-                            OpIR {
-                                kind: "ret_void".to_string(),
-                                ..OpIR::default()
-                            },
+                            OpIR::new(molt_ir::OpKind::RetVoid),
                         ],
                     }],
                     profile: None,
@@ -144,27 +136,23 @@ fn test_compile_checked_lowers_zero_division_guards() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "div".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("quotient".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Div)
                 },
                 OpIR {
-                    kind: "mod".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("remainder".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Mod)
                 },
                 OpIR {
-                    kind: "floordiv".to_string(),
                     args: Some(vec!["a".to_string(), "b".to_string()]),
                     out: Some("floor_quotient".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Floordiv)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["floor_quotient".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -193,8 +181,19 @@ fn test_compile_checked_lowers_zero_division_guards() {
     assert!(float_source.contains("if b == 0 then molt_numeric_error(\"mod:float\") end"));
     typed_ir.functions[0].param_types = Some(vec!["int".to_string(), "bool".to_string()]);
     for operation in &mut typed_ir.functions[0].ops {
-        if ["div", "mod", "floordiv"].contains(&operation.kind.as_str()) {
-            operation.kind = format!("inplace_{}", operation.kind);
+        if [
+            molt_ir::OpKind::Div,
+            molt_ir::OpKind::Mod,
+            molt_ir::OpKind::Floordiv,
+        ]
+        .contains(&operation.kind)
+        {
+            operation.kind = match operation.kind {
+                molt_ir::OpKind::Div => molt_ir::OpKind::InplaceDiv,
+                molt_ir::OpKind::Mod => molt_ir::OpKind::InplaceMod,
+                molt_ir::OpKind::Floordiv => molt_ir::OpKind::InplaceFloordiv,
+                _ => unreachable!("filtered arithmetic kind"),
+            };
         }
     }
     let bool_source = LuauBackend::new().compile(&typed_ir);
@@ -231,19 +230,17 @@ fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "pow_mod".to_string(),
                     args: Some(vec![
                         "base".to_string(),
                         "exp".to_string(),
                         "modulus".to_string(),
                     ]),
                     out: Some("result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::PowMod)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["result".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -259,7 +256,7 @@ fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
     assert!(!source.contains("[unsupported op: pow_mod]"));
 }
 
-fn fused_kernel_function(name: &str, kind: &str, args: &[&str]) -> FunctionIR {
+fn fused_kernel_function(name: &str, kind: molt_ir::OpKind, args: &[&str]) -> FunctionIR {
     FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
@@ -272,15 +269,13 @@ fn fused_kernel_function(name: &str, kind: &str, args: &[&str]) -> FunctionIR {
         execution_context: ExecutionContextPolicy::None,
         ops: vec![
             OpIR {
-                kind: kind.to_string(),
                 args: Some(args.iter().map(|arg| arg.to_string()).collect()),
                 out: Some(format!("{name}_result")),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec![format!("{name}_result")]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
     }
@@ -290,15 +285,25 @@ fn fused_kernel_function(name: &str, kind: &str, args: &[&str]) -> FunctionIR {
 fn test_compile_checked_fused_reductions_decline_to_the_ordinary_loop() {
     let args = ["it", "acc", "target"];
     let ir = SimpleIR {
-        functions: ["vec_sum", "vec_prod", "vec_min", "vec_max"]
-            .iter()
-            .map(|kind| fused_kernel_function(kind, kind, &args))
-            .collect(),
+        functions: [
+            molt_ir::OpKind::VecSum,
+            molt_ir::OpKind::VecProd,
+            molt_ir::OpKind::VecMin,
+            molt_ir::OpKind::VecMax,
+        ]
+        .iter()
+        .map(|kind| fused_kernel_function(kind.as_str(), *kind, &args))
+        .collect(),
         profile: None,
     };
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
-    for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+    for kind in [
+        molt_ir::OpKind::VecSum,
+        molt_ir::OpKind::VecProd,
+        molt_ir::OpKind::VecMin,
+        molt_ir::OpKind::VecMax,
+    ] {
         assert!(
             source.contains(&format!("local {kind}_result = {{nil, nil, 0, false}}")),
             "{kind} must decline, got:\n{source}"
@@ -313,12 +318,12 @@ fn test_compile_checked_fused_split_count_declines_to_the_ordinary_loop() {
         functions: vec![
             fused_kernel_function(
                 "ws",
-                "string_split_ws_dict_inc",
+                molt_ir::OpKind::StringSplitWsDictInc,
                 &["line", "dict", "delta", "target"],
             ),
             fused_kernel_function(
                 "sep",
-                "string_split_sep_dict_inc",
+                molt_ir::OpKind::StringSplitSepDictInc,
                 &["line", "sep", "dict", "delta", "target"],
             ),
         ],
@@ -336,63 +341,57 @@ fn test_compile_checked_fused_split_count_declines_to_the_ordinary_loop() {
 
 #[test]
 fn test_compile_checked_lowers_labeled_branch_ops() {
-    let branch_function = |name: &str, kind: &str, label: i64, flag_value: i64| FunctionIR {
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: name.to_string(),
-        params: Vec::new(),
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        parameter_custody: Vec::new(),
-        execution_context: ExecutionContextPolicy::None,
-        ops: vec![
-            OpIR {
-                kind: "const_bool".to_string(),
-                value: Some(flag_value),
-                out: Some("flag".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: kind.to_string(),
-                value: Some(label),
-                args: Some(vec!["flag".to_string()]),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "const".to_string(),
-                value: Some(0),
-                out: Some("zero".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec!["zero".to_string()]),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "label".to_string(),
-                value: Some(label),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "const".to_string(),
-                value: Some(1),
-                out: Some("one".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".to_string(),
-                args: Some(vec!["one".to_string()]),
-                ..OpIR::default()
-            },
-        ],
-    };
+    let branch_function =
+        |name: &str, kind: molt_ir::OpKind, label: i64, flag_value: i64| FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: name.to_string(),
+            params: Vec::new(),
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            parameter_custody: Vec::new(),
+            execution_context: ExecutionContextPolicy::None,
+            ops: vec![
+                OpIR {
+                    value: Some(flag_value),
+                    out: Some("flag".to_string()),
+                    ..OpIR::new(molt_ir::OpKind::ConstBool)
+                },
+                OpIR {
+                    value: Some(label),
+                    args: Some(vec!["flag".to_string()]),
+                    ..OpIR::new(kind)
+                },
+                OpIR {
+                    value: Some(0),
+                    out: Some("zero".to_string()),
+                    ..OpIR::new(molt_ir::OpKind::Const)
+                },
+                OpIR {
+                    args: Some(vec!["zero".to_string()]),
+                    ..OpIR::new(molt_ir::OpKind::Ret)
+                },
+                OpIR {
+                    value: Some(label),
+                    ..OpIR::new(molt_ir::OpKind::Label)
+                },
+                OpIR {
+                    value: Some(1),
+                    out: Some("one".to_string()),
+                    ..OpIR::new(molt_ir::OpKind::Const)
+                },
+                OpIR {
+                    args: Some(vec!["one".to_string()]),
+                    ..OpIR::new(molt_ir::OpKind::Ret)
+                },
+            ],
+        };
     let ir = SimpleIR {
         functions: vec![
-            branch_function("br_if_test", "br_if", 7, 1),
-            branch_function("branch_test", "branch", 8, 1),
-            branch_function("branch_false_test", "branch_false", 9, 0),
+            branch_function("br_if_test", molt_ir::OpKind::BrIf, 7, 1),
+            branch_function("branch_test", molt_ir::OpKind::Branch, 8, 1),
+            branch_function("branch_false_test", molt_ir::OpKind::BranchFalse, 9, 0),
         ],
         profile: None,
     };
@@ -421,9 +420,8 @@ fn test_compile_checked_rejects_unsupported_output() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "unknown_luau_op".to_string(),
                 out: Some("v0".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::GpuBarrier)
             }],
         }],
         profile: None,
@@ -433,10 +431,8 @@ fn test_compile_checked_rejects_unsupported_output() {
         .compile_checked(&ir)
         .expect_err("compile_checked must reject unsupported output");
     assert!(
-        err.contains("unregistered op kind")
-            && err.contains("`unknown_luau_op`")
-            && err.contains("function `unsupported_test` op#0"),
-        "diagnostic must name the unregistered op at SimpleIR admission, got: {err}"
+        err.contains("gpu_barrier"),
+        "diagnostic must name the unsupported typed operation, got: {err}"
     );
 }
 
@@ -455,11 +451,7 @@ fn test_compile_checked_fails_closed_without_emitted_value_line() {
             codegen_partition: false,
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
-            ops: vec![OpIR {
-                // No `out`: admission still rejects the unsupported operation.
-                kind: "molt_synthetic_unsupported_sink_probe".to_string(),
-                ..OpIR::default()
-            }],
+            ops: vec![OpIR::new(molt_ir::OpKind::GpuBarrier)],
         }],
         profile: None,
     };
@@ -467,14 +459,8 @@ fn test_compile_checked_fails_closed_without_emitted_value_line() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
-    assert!(
-        err.contains("unregistered op kind") && err.contains("function `molt_main` op#0"),
-        "got: {err}"
-    );
-    assert!(
-        err.contains("`molt_synthetic_unsupported_sink_probe`"),
-        "got: {err}"
-    );
+    assert!(err.contains("gpu_barrier"), "got: {err}");
+    assert!(err.contains("`gpu_barrier`"), "got: {err}");
 }
 
 #[test]
@@ -492,25 +478,21 @@ fn test_compile_checked_rejects_malformed_callable_family_without_nil_values() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "call".to_string(),
                     out: Some("call_result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Call)
                 },
                 OpIR {
-                    kind: "func_new".to_string(),
                     out: Some("function".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::FuncNew)
                 },
                 OpIR {
-                    kind: "builtin_func".to_string(),
                     s_value: Some("molt_open_builtin".to_string()),
                     out: Some("builtin".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                 },
                 OpIR {
-                    kind: "call_bind".to_string(),
                     out: Some("bound_result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallBind)
                 },
             ],
         }],
@@ -545,10 +527,9 @@ fn test_compile_checked_lowers_matmul_dunder_dispatch() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "matmul".to_string(),
                 out: Some("v0".to_string()),
                 args: Some(vec!["v1".to_string(), "v2".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Matmul)
             }],
         }],
         profile: None,
@@ -583,15 +564,13 @@ fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const_not_implemented".to_string(),
                     out: Some("not_impl".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ConstNotImplemented)
                 },
                 OpIR {
-                    kind: "matmul".to_string(),
                     out: Some("v0".to_string()),
                     args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Matmul)
                 },
             ],
         }],
@@ -625,10 +604,9 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "inplace_matmul".to_string(),
                 out: Some("v0".to_string()),
                 args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::InplaceMatmul)
             }],
         }],
         profile: None,
@@ -663,22 +641,19 @@ fn test_compile_checked_rejects_call_async_scheduler_semantics() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "const".to_string(),
                     out: Some("payload".to_string()),
                     value: Some(5),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Const)
                 },
                 OpIR {
-                    kind: "call_async".to_string(),
                     s_value: Some("poll_target".to_string()),
                     args: Some(vec!["payload".to_string()]),
                     out: Some("awaited".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallAsync)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["awaited".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -705,15 +680,13 @@ fn test_compile_checked_rejects_native_awaitable_without_async_runtime() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "object_new".to_string(),
                     out: Some("awaitable".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ObjectNew)
                 },
                 OpIR {
-                    kind: "is_native_awaitable".to_string(),
                     out: Some("is_native".to_string()),
                     args: Some(vec!["awaitable".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::IsNativeAwaitable)
                 },
             ],
         }],
@@ -739,9 +712,8 @@ fn test_compile_checked_rejects_context_marker() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                kind: "context_enter".to_string(),
                 out: Some("v0".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ContextEnter)
             }],
         }],
         profile: None,

@@ -188,7 +188,7 @@ fn mixed_exit_releases_local_only_where_its_entry_defines_it() {
         block.ops = vec![
             check(2),
             finalizer_object(local),
-            original_copy_with_operands("store_var", vec![local], vec![]),
+            original_copy_with_operands(molt_ir::OpKind::StoreVar, vec![local], vec![]),
             check(2),
             op(OpCode::Copy, vec![flag_input], vec![flag]),
         ];
@@ -270,7 +270,7 @@ fn mixed_handler_releases_explicit_local_only_where_its_entry_defines_it() {
         block.ops = vec![
             check(90),
             finalizer_object(local),
-            original_copy_with_operands("store_var", vec![local], vec![]),
+            original_copy_with_operands(molt_ir::OpKind::StoreVar, vec![local], vec![]),
             check(90),
             op(OpCode::Copy, vec![flag_input], vec![flag]),
         ];
@@ -377,7 +377,7 @@ fn loop_with_body(
         },
     );
     let mut ops = vec![original_copy_with_operands(
-        "store_var",
+        molt_ir::OpKind::StoreVar,
         vec![value],
         vec![binding],
     )];

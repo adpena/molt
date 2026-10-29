@@ -10,6 +10,7 @@ use crate::tir::types::TirType;
 
 pub(super) fn infer_result_facts_with_attrs(
     opcode: OpCode,
+    origin: Option<molt_ir::OpKind>,
     operand_facts: &[TirType],
     attrs: Option<&AttrDict>,
     result_count: usize,
@@ -30,7 +31,7 @@ pub(super) fn infer_result_facts_with_attrs(
 
     let operands_ready = operand_facts.iter().all(|ty| !is_bottom_type(ty));
     let operand_types: Vec<TirType> = operand_facts.to_vec();
-    infer_result_types_with_attrs(opcode, &operand_types, attrs, result_count)
+    infer_result_types_with_attrs(opcode, origin, &operand_types, attrs, result_count)
         .into_iter()
         .map(|inferred| match inferred {
             Some(ty) if contains_bottom_type(&ty) => TirType::Never,
@@ -53,6 +54,7 @@ fn dict_index_key_matches(dict_key_ty: &TirType, index_ty: &TirType) -> bool {
 
 pub(super) fn attr_result_type_override<T>(
     opcode: OpCode,
+    origin: Option<molt_ir::OpKind>,
     attrs: &AttrDict,
     operands: &[T],
 ) -> Option<TirType> {
@@ -73,23 +75,20 @@ pub(super) fn attr_result_type_override<T>(
         }
         TypeRefineAttrResultTypeRule::TypeGuard => parse_guard_type(attrs),
         TypeRefineAttrResultTypeRule::CopyOriginalKind => {
-            let original_kind = match attrs.get("_original_kind") {
-                Some(AttrValue::Str(k)) => Some(k.as_str()),
-                _ => None,
-            };
+            let original_kind = origin;
             if let Some(ty) =
                 original_kind.and_then(crate::tir::op_semantics::container_constructor_result_type)
             {
                 return Some(ty);
             }
-            if original_kind == Some("len") && operands.len() == 1 {
+            if original_kind == Some(molt_ir::OpKind::Len) && operands.len() == 1 {
                 return Some(TirType::I64);
             }
             crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(original_kind).or_else(
                 || {
                     original_kind
                         .filter(|k| {
-                            crate::tir::passes::alias_analysis::copy_kind_mints_owned_value(k)
+                            crate::tir::passes::alias_analysis::copy_kind_mints_owned_value(*k)
                         })
                         .map(owned_value_kind_result_type)
                 },
@@ -100,6 +99,7 @@ pub(super) fn attr_result_type_override<T>(
 
 pub(super) fn infer_result_types_with_attrs(
     opcode: OpCode,
+    origin: Option<molt_ir::OpKind>,
     operand_types: &[TirType],
     attrs: Option<&AttrDict>,
     result_count: usize,
@@ -119,7 +119,7 @@ pub(super) fn infer_result_types_with_attrs(
                         _ => None,
                     }
                 } else if result_count == 1 {
-                    infer_single_result_type_with_attrs(opcode, operand_types, attrs)
+                    infer_single_result_type_with_attrs(opcode, origin, operand_types, attrs)
                 } else {
                     None
                 }
@@ -130,6 +130,7 @@ pub(super) fn infer_result_types_with_attrs(
 
 fn infer_single_result_type_with_attrs(
     opcode: OpCode,
+    origin: Option<molt_ir::OpKind>,
     operand_types: &[TirType],
     attrs: Option<&AttrDict>,
 ) -> Option<TirType> {
@@ -139,7 +140,7 @@ fn infer_single_result_type_with_attrs(
         return Some(result_type);
     }
     if let Some(attrs) = attrs
-        && let Some(ty) = attr_result_type_override(opcode, attrs, operand_types)
+        && let Some(ty) = attr_result_type_override(opcode, origin, attrs, operand_types)
     {
         return Some(ty);
     }
@@ -215,12 +216,14 @@ fn infer_single_result_type_with_attrs(
 /// Ownership does not prove allocation freshness or native-callable identity:
 /// `builtin_func` can acquire any public replacement and therefore is DynBox.
 /// Scalar conversion primitives retain their explicitly declared result types.
-fn owned_value_kind_result_type(kind: &str) -> TirType {
+fn owned_value_kind_result_type(kind: molt_ir::OpKind) -> TirType {
     match kind {
-        "float_from_obj" => TirType::F64,
-        "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "string_format" | "string_join" => {
-            TirType::Str
-        }
+        molt_ir::OpKind::FloatFromObj => TirType::F64,
+        molt_ir::OpKind::StrFromObj
+        | molt_ir::OpKind::ReprFromObj
+        | molt_ir::OpKind::AsciiFromObj
+        | molt_ir::OpKind::StringFormat
+        | molt_ir::OpKind::StringJoin => TirType::Str,
         _ => TirType::DynBox,
     }
 }

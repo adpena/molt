@@ -29,28 +29,34 @@ use crate::tir::values::ValueId;
 /// runtime/context metadata and asynchronous observations stay intact.
 fn removable_copy_source(op: &TirOp) -> Option<ValueId> {
     let source = super::value_identity::copy_value_source(op)?;
-    if op.operands.len() != 1 || op.operand_custody(0) != crate::ir::ParameterCustody::Borrowed {
+    if op.operands.len() != 1
+        || op.operand_custody(0) != crate::ir::ParameterCustody::Borrowed
+        || !op.origin.is_none_or(|kind| {
+            matches!(
+                kind,
+                molt_ir::OpKind::Copy
+                    | molt_ir::OpKind::CopyVar
+                    | molt_ir::OpKind::LoadVar
+                    | molt_ir::OpKind::IdentityAlias
+            )
+        })
+    {
         return None;
     }
     for (key, value) in &op.attrs {
-        let provenance = match (key.as_str(), value) {
-            ("_original_kind", AttrValue::Str(kind)) => matches!(
-                kind.as_str(),
-                "copy" | "copy_var" | "load_var" | "identity_alias"
-            ),
+        let provenance = matches!(
+            (key.as_str(), value),
             (
                 "_simple_out" | "_simple_result_0" | crate::tir::ops::SOURCE_FILE_ATTR,
                 AttrValue::Str(_),
-            ) => true,
-            (
+            ) | (
                 crate::tir::ops::SOURCE_LINE_ATTR
-                | crate::tir::ops::SOURCE_COL_ATTR
-                | crate::tir::ops::SOURCE_END_COL_ATTR
-                | crate::tir::ops::SOURCE_OP_INDEX_ATTR,
+                    | crate::tir::ops::SOURCE_COL_ATTR
+                    | crate::tir::ops::SOURCE_END_COL_ATTR
+                    | crate::tir::ops::SOURCE_OP_INDEX_ATTR,
                 AttrValue::Int(_),
-            ) => true,
-            _ => false,
-        };
+            )
+        );
         if !provenance {
             return None;
         }
@@ -265,6 +271,7 @@ mod tests {
 
     fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -309,7 +316,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 2: copy with attrs (fused, _original_kind) is NOT propagated
+    // Test 2: copy with attrs (fused, origin) is NOT propagated
     // -----------------------------------------------------------------------
     #[test]
     fn attributed_copy_not_propagated() {
@@ -329,6 +336,7 @@ mod tests {
         });
         // Copy with a fused attribute — must NOT be propagated.
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![a],
@@ -424,7 +432,7 @@ mod final_projection_tests {
     use crate::tir::ops::{AttrDict, Dialect, OpCode};
     use crate::tir::types::TirType;
 
-    fn function_with_copy(attrs: AttrDict) -> TirFunction {
+    fn function_with_copy(origin: Option<molt_ir::OpKind>, attrs: AttrDict) -> TirFunction {
         let mut function = TirFunction::new(
             "copy_projection".into(),
             vec![TirType::DynBox],
@@ -434,6 +442,7 @@ mod final_projection_tests {
         let result = function.fresh_value();
         let entry = function.blocks.get_mut(&function.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![ValueId(0)],
@@ -449,13 +458,20 @@ mod final_projection_tests {
 
     #[test]
     fn provenance_copy_folds_to_exact_ssa_source() {
-        for kind in ["copy", "copy_var", "load_var", "identity_alias"] {
-            let mut function = function_with_copy(AttrDict::from([
-                ("_original_kind".into(), AttrValue::Str(kind.into())),
-                ("_simple_out".into(), AttrValue::Str("authored".into())),
-                ("_source_line".into(), AttrValue::Int(7)),
-                ("_source_op_idx".into(), AttrValue::Int(41)),
-            ]));
+        for kind in [
+            molt_ir::OpKind::Copy,
+            molt_ir::OpKind::CopyVar,
+            molt_ir::OpKind::LoadVar,
+            molt_ir::OpKind::IdentityAlias,
+        ] {
+            let mut function = function_with_copy(
+                Some(kind),
+                AttrDict::from([
+                    ("_simple_out".into(), AttrValue::Str("authored".into())),
+                    ("_source_line".into(), AttrValue::Int(7)),
+                    ("_source_op_idx".into(), AttrValue::Int(41)),
+                ]),
+            );
             run(&mut function);
             let entry = &function.blocks[&function.entry_block];
             assert!(entry.ops.is_empty(), "{kind}");
@@ -467,22 +483,30 @@ mod final_projection_tests {
 
     #[test]
     fn mutable_owned_observable_and_unknown_copies_are_not_erased() {
-        for (key, value) in [
-            ("_var", AttrValue::Str("mutable_slot".into())),
-            ("_original_kind", AttrValue::Str("store_var".into())),
-            ("_original_kind", AttrValue::Str("binding_alias".into())),
-            ("async_work_poll", AttrValue::Bool(true)),
-            ("bound_local", AttrValue::Bool(true)),
-            ("runtime_symbol", AttrValue::Str("must_run".into())),
-            ("passes_execution_context", AttrValue::Bool(true)),
-            ("fused", AttrValue::Str("observable".into())),
+        for (origin, key, value) in [
+            (None, "_var", AttrValue::Str("mutable_slot".into())),
+            (
+                Some(molt_ir::OpKind::StoreVar),
+                "_simple_out",
+                AttrValue::Str("slot".into()),
+            ),
+            (
+                Some(molt_ir::OpKind::BindingAlias),
+                "_simple_out",
+                AttrValue::Str("alias".into()),
+            ),
+            (None, "async_work_poll", AttrValue::Bool(true)),
+            (None, "bound_local", AttrValue::Bool(true)),
+            (None, "runtime_symbol", AttrValue::Str("must_run".into())),
+            (None, "passes_execution_context", AttrValue::Bool(true)),
+            (None, "fused", AttrValue::Str("observable".into())),
         ] {
-            let mut function = function_with_copy(AttrDict::from([(key.into(), value)]));
+            let mut function = function_with_copy(origin, AttrDict::from([(key.into(), value)]));
             let before = serde_json::to_vec(&function).unwrap();
             assert_eq!(run(&mut function).total_changes(), 0, "{key}");
             assert_eq!(serde_json::to_vec(&function).unwrap(), before, "{key}");
         }
-        let mut function = function_with_copy(AttrDict::new());
+        let mut function = function_with_copy(None, AttrDict::new());
         function.blocks.get_mut(&function.entry_block).unwrap().ops[0]
             .set_argument_custody(&[crate::ir::ParameterCustody::Transferred]);
         let before = serde_json::to_vec(&function).unwrap();

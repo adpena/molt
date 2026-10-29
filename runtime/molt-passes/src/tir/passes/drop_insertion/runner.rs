@@ -1759,13 +1759,13 @@ fn run_planned(
                         )
                     })
                     .collect();
-                // The `_original_kind` carried by a `Copy` is load-bearing for the
+                // The `origin` carried by a `Copy` is load-bearing for the
                 // alias/ownership model (it decides whether the Copy is a no-incref
                 // bit-passthrough alias of operand 0 or a fresh owned value). Surface
                 // it in the dump so a re-reviewer can audit the alias-set membership
                 // against the lowering truth at a glance.
-                let kind = match op.attrs.get("_original_kind") {
-                    Some(AttrValue::Str(s)) => format!(" kind={s}"),
+                let kind = match op.origin {
+                    Some(s) => format!(" kind={s}"),
                     _ => String::new(),
                 };
                 out.push_str(&format!(

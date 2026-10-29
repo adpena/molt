@@ -36,7 +36,7 @@ pub use self::fact_graph::{
 pub use self::function::{TirFunction, TirModule};
 pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 pub use self::numeric_facts::{IntRange, ScevExpr, TripCount};
-pub use self::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+pub use self::ops::{AttrDict, Dialect, OpCode, TirOp};
 pub use self::target_info::{
     BuildProfile, NumericTargetCapabilities, ProfileData, SimdCaps, TargetInfo, TargetKind,
 };

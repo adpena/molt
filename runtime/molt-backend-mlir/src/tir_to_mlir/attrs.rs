@@ -15,10 +15,7 @@ pub(super) fn mlir_attributes<'c>(
     let i64_type: Type<'c> = IntegerType::new(ctx, 64).into();
     let i1_type: Type<'c> = IntegerType::new(ctx, 1).into();
     let f64_type = Type::float64(ctx);
-    let mut ordered: Vec<_> = attrs
-        .iter()
-        .filter(|(name, _)| name.as_str() != "_original_kind")
-        .collect();
+    let mut ordered: Vec<_> = attrs.iter().collect();
     ordered.sort_by_key(|(name, _)| *name);
     ordered
         .into_iter()

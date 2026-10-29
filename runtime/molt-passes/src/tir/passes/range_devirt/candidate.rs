@@ -54,7 +54,7 @@ pub(super) fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
             match opcode_range_devirt_role_table(op.opcode) {
                 RangeDevirtRole::RangeCallCandidate => {
                     if let Some(call) = op.builtin_call()
-                        && call.wire_kind == "range_new"
+                        && call.wire_kind == molt_ir::OpKind::RangeNew
                         && op.results.len() == 1
                     {
                         call_builtin_defs

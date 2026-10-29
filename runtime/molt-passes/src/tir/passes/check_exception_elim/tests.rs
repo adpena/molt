@@ -15,6 +15,7 @@ fn make_check_exception() -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(100));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -28,6 +29,7 @@ fn make_const_int(value: i64, out: ValueId) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -41,6 +43,7 @@ fn make_call(callee: &str, out: ValueId) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("s_value".into(), AttrValue::Str(callee.to_string()));
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -52,6 +55,7 @@ fn make_call(callee: &str, out: ValueId) -> TirOp {
 
 fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ModuleGetAttr,
         operands: vec![module, attr_name],
@@ -63,6 +67,7 @@ fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> Ti
 
 fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -72,10 +77,11 @@ fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirO
     }
 }
 
-fn make_original_kind(kind: &str) -> TirOp {
-    let mut attrs = AttrDict::new();
-    attrs.insert("_original_kind".into(), AttrValue::Str(kind.to_string()));
+fn make_original_kind(kind: molt_ir::OpKind) -> TirOp {
+    let attrs = AttrDict::new();
+
     TirOp {
+        origin: Some(kind),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -126,6 +132,7 @@ fn aggregate_allocation_and_callback_failures_keep_their_exception_checks() {
         let mut function = make_func_with_block(vec![
             make_check_exception(),
             TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![],
@@ -220,6 +227,7 @@ fn full_width_boxing_preserves_local_and_successor_exception_edges() {
     );
     for split_block in [false, true] {
         let boxed = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::BoxVal,
             operands: vec![ValueId(0)],
@@ -269,6 +277,7 @@ fn untargeted_observers_preserve_literal_and_poll_failures_locally_and_across_cf
             let mut ops = vec![make_check_exception()];
             if let Some(opcode) = literal {
                 ops.push(TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -351,8 +360,8 @@ fn targeted_poll_proves_clean_fallthrough_but_must_execute() {
 
 #[test]
 fn preserved_copy_fallbacks_fail_closed_with_or_without_poll_marker() {
-    let unmarked = make_original_kind("exception_finally_pending_observer");
-    let mut observer = make_original_kind("exception_finally_pending_observer");
+    let unmarked = make_original_kind(molt_ir::OpKind::ExceptionFinallyPendingObserver);
+    let mut observer = make_original_kind(molt_ir::OpKind::ExceptionFinallyPendingObserver);
     observer.mark_async_work_poll();
     let value_types = HashMap::new();
     let probe = make_func_with_block(vec![unmarked.clone(), observer.clone()]);
@@ -369,8 +378,8 @@ fn preserved_copy_fallbacks_fail_closed_with_or_without_poll_marker() {
 fn preserved_copy_transport_does_not_bypass_shared_effects() {
     let mut func = make_func_with_block(vec![
         make_check_exception(),
-        make_original_kind("store_var"),
-        make_original_kind("load_var"),
+        make_original_kind(molt_ir::OpKind::StoreVar),
+        make_original_kind(molt_ir::OpKind::LoadVar),
         make_check_exception(),
     ]);
     let stats = run(&mut func);
@@ -464,7 +473,7 @@ fn explicit_exception_clear_feeds_successor_elision() {
     let mut func = make_two_block_func(
         vec![
             make_check_exception(),
-            make_original_kind("exception_clear"),
+            make_original_kind(molt_ir::OpKind::ExceptionClear),
         ],
         vec![make_check_exception()],
     );
@@ -602,6 +611,7 @@ fn class_allocation_preserves_pending_exception_checks_across_blocks() {
         let mut attrs = AttrDict::new();
         attrs.insert("value".into(), AttrValue::Int(16));
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0)],
@@ -610,7 +620,7 @@ fn class_allocation_preserves_pending_exception_checks_across_blocks() {
             source_span: None,
         }
     };
-    let mut generic = make_original_kind("alloc_class");
+    let mut generic = make_original_kind(molt_ir::OpKind::AllocClass);
     generic.operands = vec![ValueId(0)];
     generic.results = vec![ValueId(1)];
     generic.attrs.insert("value".into(), AttrValue::Int(16));

@@ -1,8 +1,5 @@
 use crate::OpIR;
 use crate::wasm::frame_locals::WasmDispatchFrameLocals;
-use molt_tir::tir::op_kinds_generated::{
-    simpleir_kind_is_wasm_dispatch_block_leader, simpleir_kind_is_wasm_dispatch_block_terminator,
-};
 use wasm_encoder::{BlockType, Function, Instruction};
 
 pub(super) fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
@@ -14,10 +11,10 @@ pub(super) fn build_dispatch_blocks(ops: &[OpIR]) -> (Vec<usize>, Vec<usize>) {
     let mut is_start = vec![false; op_count];
     is_start[0] = true;
     for (idx, op) in ops.iter().enumerate() {
-        if simpleir_kind_is_wasm_dispatch_block_leader(op.kind.as_str()) {
+        if op.kind.is_wasm_dispatch_block_leader() {
             is_start[idx] = true;
         }
-        if simpleir_kind_is_wasm_dispatch_block_terminator(op.kind.as_str()) && idx + 1 < op_count {
+        if op.kind.is_wasm_dispatch_block_terminator() && idx + 1 < op_count {
             is_start[idx + 1] = true;
         }
     }

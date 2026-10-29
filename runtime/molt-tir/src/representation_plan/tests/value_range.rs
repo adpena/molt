@@ -28,6 +28,7 @@ use crate::tir::values::TirValue;
 
 fn tir_op(opcode: TirOpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -50,10 +51,7 @@ fn tir_cint(result: ValueId, value: i64) -> TirOp {
 
 fn binding_store(source: ValueId, view: ValueId, slot: i64) -> TirOp {
     let mut op = tir_op(TirOpCode::Copy, vec![source], vec![view]);
-    op.attrs.insert(
-        "_original_kind".into(),
-        TirAttrValue::Str("frame_home_store".into()),
-    );
+    op.origin = Some(molt_ir::OpKind::FrameHomeStore);
     op.attrs.insert("value".into(), TirAttrValue::Int(slot));
     op
 }
@@ -118,10 +116,7 @@ fn boxed_binding_observations_preserve_math_but_constrain_physical_carriers() {
             "box" => tir_op(TirOpCode::BoxVal, vec![alias], vec![result]),
             "binding_alias" => {
                 let mut capture = tir_op(TirOpCode::Copy, vec![alias], vec![result]);
-                capture.attrs.insert(
-                    "_original_kind".into(),
-                    TirAttrValue::Str("binding_alias".into()),
-                );
+                capture.origin = Some(molt_ir::OpKind::BindingAlias);
                 capture
             }
             "identity" => tir_op(TirOpCode::Is, vec![view, alias], vec![result]),
@@ -1080,10 +1075,7 @@ fn gpu_index_intrinsics_are_pre_seeded_raw_i64_safe() {
     );
     // Only the lowered intrinsic carries exact source provenance; a callee
     // spelling alone must not seed an ordinary call's scalar representation.
-    call.attrs.insert(
-        "_original_kind".into(),
-        TirAttrValue::Str("gpu_thread_id".into()),
-    );
+    call.origin = Some(molt_ir::OpKind::GpuThreadId);
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = vec![call];

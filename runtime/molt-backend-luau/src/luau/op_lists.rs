@@ -2,7 +2,7 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_typed_list_method_call(&mut self, op: &OpIR) -> bool {
-        if op.kind != "call_method" {
+        if op.kind != molt_ir::OpKind::CallMethod {
             return false;
         }
         let args = op.args.as_deref().unwrap_or(&[]);
@@ -96,8 +96,8 @@ impl LuauBackend {
     }
 
     pub(super) fn emit_list_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
-            "build_list" | "list_new" => {
+        match op.kind {
+            molt_ir::OpKind::BuildList | molt_ir::OpKind::ListNew => {
                 let out = self.out_var(op);
                 let items = op
                     .args
@@ -109,7 +109,7 @@ impl LuauBackend {
                     .join(", ");
                 self.emit_line(&format!("local {out}: {{any}} = molt_pack_list({items})"));
             }
-            "list_fill_new" => {
+            molt_ir::OpKind::ListFillNew => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let count = args
@@ -130,7 +130,7 @@ impl LuauBackend {
                     "rawset({out}, molt_sequence_length_key, math.max(0, {count}))"
                 ));
             }
-            "range_new" | "list_from_range" => {
+            molt_ir::OpKind::RangeNew | molt_ir::OpKind::ListFromRange => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 match args.len() {
@@ -153,7 +153,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "list_append" => {
+            molt_ir::OpKind::ListAppend => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
@@ -161,7 +161,7 @@ impl LuauBackend {
                     self.emit_list_append_raw(&list, &val);
                 }
             }
-            "list_pop" => {
+            molt_ir::OpKind::ListPop => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(list) = args.first() {
                     let list = sanitize_ident(list);
@@ -174,7 +174,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "list_extend" => {
+            molt_ir::OpKind::ListExtend => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
@@ -182,7 +182,7 @@ impl LuauBackend {
                     self.emit_list_extend_raw(&list, &other);
                 }
             }
-            "list_insert" => {
+            molt_ir::OpKind::ListInsert => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
                     let list = sanitize_ident(&args[0]);
@@ -191,7 +191,7 @@ impl LuauBackend {
                     self.emit_list_insert(&list, &idx, &val);
                 }
             }
-            "list_remove" => {
+            molt_ir::OpKind::ListRemove => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let list = sanitize_ident(&args[0]);
@@ -199,27 +199,27 @@ impl LuauBackend {
                     self.emit_list_remove_value(&list, &val);
                 }
             }
-            "list_clear" => {
+            molt_ir::OpKind::ListClear => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(list) = args.first() {
                     self.emit_list_clear(&sanitize_ident(list));
                 }
             }
-            "list_copy" => {
+            molt_ir::OpKind::ListCopy => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(src) = args.first() {
                     self.emit_list_copy_into(&out, &sanitize_ident(src));
                 }
             }
-            "list_reverse" => {
+            molt_ir::OpKind::ListReverse => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(list) = args.first() {
                     let list = sanitize_ident(list);
                     self.emit_list_reverse_in_place(&list);
                 }
             }
-            "list_count" => {
+            molt_ir::OpKind::ListCount => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -228,7 +228,7 @@ impl LuauBackend {
                     self.emit_list_count_into(&out, &list, &val);
                 }
             }
-            "list_index" | "list_index_range" => {
+            molt_ir::OpKind::ListIndex | molt_ir::OpKind::ListIndexRange => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {

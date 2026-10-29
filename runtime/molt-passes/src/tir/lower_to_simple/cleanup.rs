@@ -2,10 +2,6 @@ use std::collections::HashSet;
 
 use crate::ir::OpIR;
 use crate::tir::dominators::is_simple_exception_transfer_kind;
-use crate::tir::op_kinds_generated::{
-    simpleir_kind_is_suspend, simpleir_kind_is_terminator,
-    simpleir_kind_is_verifier_label_definition, simpleir_kind_is_verifier_label_reference,
-};
 
 /// Remove dead `label` ops from the linearised op stream.
 ///
@@ -38,11 +34,11 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
             if let Some(targets) = &op.state_targets {
                 branch_targets.extend(targets.iter().map(|&(_, label)| label));
             }
-            let kind = op.kind.as_str();
-            if (simpleir_kind_is_verifier_label_reference(kind)
+            let kind = op.kind;
+            if (kind.is_verifier_label_reference()
                 || is_simple_exception_transfer_kind(kind)
-                || matches!(kind, "br_if" | "loop_continue")
-                || simpleir_kind_is_suspend(kind))
+                || matches!(kind, molt_ir::OpKind::BrIf | molt_ir::OpKind::LoopContinue)
+                || kind.is_suspend())
                 && let Some(id) = op.value
             {
                 branch_targets.insert(id);
@@ -63,23 +59,23 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         let mut keep = vec![true; ops.len()];
 
         for i in 0..ops.len() {
-            let kind = ops[i].kind.as_str();
+            let kind = ops[i].kind;
             match kind {
-                kind if simpleir_kind_is_terminator(kind) && kind != "loop_continue" => {
+                kind if kind.is_terminator() && kind != molt_ir::OpKind::LoopContinue => {
                     if filled_state != FilledState::Open {
                         keep[i] = false;
                     } else {
                         filled_state = FilledState::Closed;
                     }
                 }
-                "loop_continue" => {
+                molt_ir::OpKind::LoopContinue => {
                     if filled_state != FilledState::Open {
                         keep[i] = false;
                     } else {
                         filled_state = FilledState::LoopContinue;
                     }
                 }
-                "label" | "state_label" => {
+                molt_ir::OpKind::Label | molt_ir::OpKind::StateLabel => {
                     let label_id = ops[i].value.unwrap_or(-1);
                     if filled_state != FilledState::Open && !branch_targets.contains(&label_id) {
                         // Dead label: preceded by a terminator and not a
@@ -96,7 +92,7 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                 // A retained loop opener owns its lexical closer even when
                 // the final body path returned or jumped away. The loop's
                 // conditional break can still reach the code after it.
-                "loop_end" => {
+                molt_ir::OpKind::LoopEnd => {
                     let paired = open_loops != 0;
                     open_loops = open_loops.saturating_sub(1);
                     if !paired
@@ -109,7 +105,7 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                         current_block_started_at_live_label = false;
                     }
                 }
-                "if" | "else" | "end_if" => {
+                molt_ir::OpKind::If | molt_ir::OpKind::Else | molt_ir::OpKind::EndIf => {
                     // Structured if markers remain live even when the
                     // immediately preceding textual branch returned or raised.
                     // If a dead labeled path falls into a structured `if`,
@@ -118,7 +114,7 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                     filled_state = FilledState::Open;
                     current_block_started_at_live_label = false;
                 }
-                "try_start" | "try_end" => {
+                molt_ir::OpKind::TryStart | molt_ir::OpKind::TryEnd => {
                     // Try markers are codegen-region boundaries, not executable
                     // straight-line work.  A protected body may end in a raise
                     // followed by the explicit handler jump, but the following
@@ -132,18 +128,18 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                 // loop_start, loop_break_if_false/true/exception do not fill:
                 // each has a fall-through path (the non-break edge continues the
                 // loop body), so they are control-flow markers, not block-fillers.
-                "loop_start"
-                | "loop_break_if_false"
-                | "loop_break_if_true"
-                | "loop_break_if_exception"
-                | "loop_index_start" => {
+                molt_ir::OpKind::LoopStart
+                | molt_ir::OpKind::LoopBreakIfFalse
+                | molt_ir::OpKind::LoopBreakIfTrue
+                | molt_ir::OpKind::LoopBreakIfException
+                | molt_ir::OpKind::LoopIndexStart => {
                     // These are control-flow markers that don't terminate blocks.
-                    if kind == "loop_start" {
+                    if kind == molt_ir::OpKind::LoopStart {
                         open_loops += 1;
                         current_block_started_at_live_label = false;
                     }
                 }
-                "br_if" => {
+                molt_ir::OpKind::BrIf => {
                     if filled_state != FilledState::Open {
                         keep[i] = false;
                     } else {
@@ -193,14 +189,14 @@ pub(super) fn missing_label_references(ops: &[crate::ir::OpIR]) -> Vec<i64> {
         if let Some(targets) = &op.state_targets {
             referenced_labels.extend(targets.iter().map(|&(_, label)| label));
         }
-        let kind = op.kind.as_str();
-        if simpleir_kind_is_verifier_label_definition(kind) {
+        let kind = op.kind;
+        if kind.is_verifier_label_definition() {
             if let Some(id) = op.value {
                 defined_labels.insert(id);
             }
-        } else if (simpleir_kind_is_verifier_label_reference(kind)
+        } else if (kind.is_verifier_label_reference()
             || is_simple_exception_transfer_kind(kind)
-            || kind == "br_if")
+            || kind == molt_ir::OpKind::BrIf)
             && let Some(id) = op.value
         {
             referenced_labels.insert(id);

@@ -77,8 +77,8 @@ pub(crate) fn op_clears_pending_exception(op: &TirOp) -> bool {
         return false;
     }
     matches!(
-        op.attrs.get("_original_kind"),
-        Some(AttrValue::Str(orig)) if orig == "exception_clear"
+        op.origin,
+        Some(orig) if orig == molt_ir::OpKind::ExceptionClear
     )
 }
 

@@ -17,12 +17,7 @@ use crate::tir::dominators::{
 };
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, kind_to_opcode_table,
-    simpleir_call_target_role, simpleir_kind_clears_pending_exception,
-    simpleir_kind_is_exception_check, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
-    simpleir_kind_is_terminator, simpleir_kind_is_verifier_label_definition,
-    simpleir_kind_is_verifier_label_reference, simpleir_kind_is_verifier_loop_scoped,
-    simpleir_kind_is_verifier_phi, simpleir_kind_raises_pending_exception,
-    simpleir_verifier_region_role,
+    simpleir_call_target_role, simpleir_verifier_region_role,
 };
 use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
@@ -304,7 +299,7 @@ pub fn validate_simple_ir_control_flow(ir: &SimpleIR) -> Result<(), String> {
 fn diagnostic(
     function: &str,
     op_index: isize,
-    kind: &str,
+    kind: impl ToString,
     message: impl Into<String>,
 ) -> SimpleIrDiagnostic {
     SimpleIrDiagnostic {
@@ -373,7 +368,7 @@ fn verify_function_references(
     errors: &mut Vec<SimpleIrDiagnostic>,
 ) {
     for (index, op) in function.ops.iter().enumerate() {
-        let Some(role) = simpleir_call_target_role(&op.kind) else {
+        let Some(role) = simpleir_call_target_role(op.kind) else {
             continue;
         };
         if role == SimpleIrCallTargetRole::Opaque {
@@ -417,7 +412,7 @@ pub fn verify_simple_ir_structure(
     let mut stack: Vec<(&str, usize, bool)> = Vec::new();
     let mut open_loops = 0usize;
     for (index, op) in ops.iter().enumerate() {
-        if let Some((region, role)) = simpleir_verifier_region_role(&op.kind) {
+        if let Some((region, role)) = simpleir_verifier_region_role(op.kind) {
             match role {
                 SimpleIrVerifierRegionRole::Start => {
                     stack.push((region, index, false));
@@ -454,7 +449,7 @@ pub fn verify_simple_ir_structure(
                     )),
                 },
             }
-        } else if simpleir_kind_is_verifier_loop_scoped(&op.kind) && open_loops == 0 {
+        } else if op.kind.is_verifier_loop_scoped() && open_loops == 0 {
             errors.push(diagnostic(
                 function_name,
                 index as isize,
@@ -477,7 +472,7 @@ fn verify_labels(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
     let mut definitions = BTreeMap::new();
     let mut references = Vec::new();
     for (index, op) in function.ops.iter().enumerate() {
-        if simpleir_kind_is_verifier_label_definition(&op.kind) {
+        if op.kind.is_verifier_label_definition() {
             match op.value {
                 None => errors.push(diagnostic(
                     &function.name,
@@ -496,7 +491,7 @@ fn verify_labels(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
                     }
                 }
             }
-        } else if simpleir_kind_is_verifier_label_reference(&op.kind) {
+        } else if op.kind.is_verifier_label_reference() {
             match op.value {
                 Some(value) => references.push((index, value)),
                 None => errors.push(diagnostic(
@@ -528,7 +523,7 @@ fn structured_targets(ops: &[OpIR]) -> StructuredTargets {
     let mut loop_ends = BTreeMap::new();
     let mut stack: Vec<(&str, usize, Option<usize>)> = Vec::new();
     for (index, op) in ops.iter().enumerate() {
-        let Some((region, role)) = simpleir_verifier_region_role(&op.kind) else {
+        let Some((region, role)) = simpleir_verifier_region_role(op.kind) else {
             continue;
         };
         match role {
@@ -555,7 +550,7 @@ fn structured_targets(ops: &[OpIR]) -> StructuredTargets {
     let mut loop_for_op = BTreeMap::new();
     let mut active_loops = Vec::new();
     for (index, op) in ops.iter().enumerate() {
-        if simpleir_verifier_region_role(&op.kind)
+        if simpleir_verifier_region_role(op.kind)
             == Some(("loop", SimpleIrVerifierRegionRole::Start))
             && loop_ends.contains_key(&index)
         {
@@ -564,8 +559,7 @@ fn structured_targets(ops: &[OpIR]) -> StructuredTargets {
         if let Some(active) = active_loops.last() {
             loop_for_op.insert(index, *active);
         }
-        if simpleir_verifier_region_role(&op.kind)
-            == Some(("loop", SimpleIrVerifierRegionRole::End))
+        if simpleir_verifier_region_role(op.kind) == Some(("loop", SimpleIrVerifierRegionRole::End))
         {
             active_loops.pop();
         }
@@ -584,14 +578,18 @@ fn structured_targets(ops: &[OpIR]) -> StructuredTargets {
 /// The target may be `ops.len()`: that is a real missing continuation, which
 /// whole-function verification must observe before block projection clips it.
 pub(crate) fn state_resume_op_edges(ops: &[OpIR]) -> Vec<(usize, usize, i64)> {
-    let Some(switch) = ops.iter().position(|op| op.kind == "state_switch") else {
+    let Some(switch) = ops
+        .iter()
+        .position(|op| op.kind == crate::OpKind::StateSwitch)
+    else {
         return Vec::new();
     };
     let labels: BTreeMap<i64, usize> = ops
         .iter()
         .enumerate()
         .filter_map(|(index, op)| {
-            simpleir_kind_is_verifier_label_definition(&op.kind)
+            op.kind
+                .is_verifier_label_definition()
                 .then_some(op.value.map(|label| (label, index)))
                 .flatten()
         })
@@ -608,7 +606,7 @@ pub(crate) fn state_resume_op_edges(ops: &[OpIR]) -> Vec<(usize, usize, i64)> {
         .iter()
         .enumerate()
         .filter_map(|(index, op)| {
-            (op.kind == "state_label")
+            (op.kind == crate::OpKind::StateLabel)
                 .then_some(op.value.map(|state| (state, index)))
                 .flatten()
         })
@@ -621,7 +619,7 @@ pub(crate) fn state_resume_op_edges(ops: &[OpIR]) -> Vec<(usize, usize, i64)> {
         let target = state_labels
             .get(&state)
             .copied()
-            .or_else(|| (!simpleir_kind_is_repoll(&ops[index].kind)).then_some(index + 1));
+            .or_else(|| (!crate::OpKind::is_repoll(ops[index].kind)).then_some(index + 1));
         if let Some(target) = target {
             edges.push((switch, target, state));
         }
@@ -638,16 +636,16 @@ fn suspension_saved_states(ops: &[OpIR]) -> Vec<(usize, Option<i64>)> {
     let const_values: BTreeMap<&str, i64> = ops
         .iter()
         .filter_map(|op| {
-            (op.kind == "const")
+            (op.kind == crate::OpKind::Const)
                 .then_some(op.out.as_deref().zip(op.value))
                 .flatten()
         })
         .collect();
     ops.iter()
         .enumerate()
-        .filter(|(_, op)| simpleir_kind_is_suspend(&op.kind))
+        .filter(|(_, op)| op.kind.is_suspend())
         .map(|(index, op)| {
-            let state = if simpleir_kind_is_repoll(&op.kind) {
+            let state = if op.kind.is_repoll() {
                 op.args
                     .as_deref()
                     .and_then(|args| args.last())
@@ -665,7 +663,7 @@ fn suspension_saved_states(ops: &[OpIR]) -> Vec<(usize, Option<i64>)> {
 /// call a validator, infer replacement cases, or recurse through CFG lifting.
 pub(crate) fn validate_explicit_state_resume_coverage(ops: &[OpIR]) -> Result<(), String> {
     let Some((switch, targets)) = ops.iter().enumerate().find_map(|(index, op)| {
-        (op.kind == "state_switch")
+        (op.kind == crate::OpKind::StateSwitch)
             .then_some(op.state_targets.as_ref().map(|targets| (index, targets)))
             .flatten()
     }) else {
@@ -673,7 +671,7 @@ pub(crate) fn validate_explicit_state_resume_coverage(ops: &[OpIR]) -> Result<()
     };
     // Terminal ownership removes suspension operations. StateSet alone also
     // records running/ready states, so it cannot require a resume case.
-    if !ops.iter().any(|op| simpleir_kind_is_suspend(&op.kind)) {
+    if !ops.iter().any(|op| op.kind.is_suspend()) {
         return Ok(());
     }
     let states: BTreeSet<_> = targets.iter().map(|&(state, _)| state).collect();
@@ -704,7 +702,7 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
         .iter()
         .enumerate()
         .filter_map(|(index, op)| {
-            (simpleir_kind_is_verifier_label_definition(&op.kind))
+            (op.kind.is_verifier_label_definition())
                 .then_some(op.value.map(|value| (value, index)))
                 .flatten()
         })
@@ -723,9 +721,9 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
         // runtime pending-state observation. LOOP_END's exit is likewise a
         // conservative verifier join; actual execution takes its latch.
         let executable = match role {
-            EdgeRole::Exception => kind_to_opcode_table(&ops[source].kind)
+            EdgeRole::Exception => kind_to_opcode_table(ops[source].kind)
                 .is_some_and(exception_edge_binds_handler_arguments),
-            EdgeRole::LoopExit => ops[source].kind != "loop_end",
+            EdgeRole::LoopExit => ops[source].kind != crate::OpKind::LoopEnd,
             _ => true,
         };
         if target >= count {
@@ -755,8 +753,8 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
     };
     for (index, op) in ops.iter().enumerate() {
         let next = index + 1;
-        match op.kind.as_str() {
-            "if" => {
+        match op.kind {
+            crate::OpKind::If => {
                 if let Some((alternate, end)) = targets.if_regions.get(&index) {
                     add(
                         index,
@@ -770,7 +768,7 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
                     );
                 }
             }
-            "else" => {
+            crate::OpKind::Else => {
                 if let Some(end) = targets
                     .if_regions
                     .values()
@@ -779,21 +777,21 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
                     add(index, end, EdgeRole::Taken);
                 }
             }
-            "loop_end" => {
+            crate::OpKind::LoopEnd => {
                 if let Some(start) = targets.loop_for_op.get(&index) {
                     add(index, next, EdgeRole::LoopExit);
                     add(index, *start, EdgeRole::LoopLatch);
                 }
             }
-            kind if simpleir_kind_is_verifier_loop_scoped(kind) => {
+            kind if kind.is_verifier_loop_scoped() => {
                 if let Some(start) = targets.loop_for_op.get(&index)
                     && let Some(end) = targets.loop_ends.get(start)
                 {
                     match kind {
-                        "loop_continue" => add(index, *start, EdgeRole::LoopLatch),
-                        "loop_break" => add(index, end + 1, EdgeRole::LoopExit),
+                        crate::OpKind::LoopContinue => add(index, *start, EdgeRole::LoopLatch),
+                        crate::OpKind::LoopBreak => add(index, end + 1, EdgeRole::LoopExit),
                         _ => {
-                            let true_break = kind != "loop_break_if_false";
+                            let true_break = kind != crate::OpKind::LoopBreakIfFalse;
                             add(
                                 index,
                                 end + 1,
@@ -822,18 +820,18 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
                     add(index, target, EdgeRole::Exception);
                 }
             }
-            "jump" | "goto" => {
+            crate::OpKind::Jump | crate::OpKind::Goto => {
                 if let Some(target) = op.value.and_then(|value| labels.get(&value).copied()) {
                     add(index, target, EdgeRole::Taken);
                 }
             }
-            "br_if" => {
+            crate::OpKind::BrIf => {
                 if let Some(target) = op.value.and_then(|value| labels.get(&value).copied()) {
                     add(index, target, EdgeRole::BranchTrue);
                 }
                 add(index, next, EdgeRole::BranchFalse);
             }
-            "state_switch" => {
+            crate::OpKind::StateSwitch => {
                 add(index, next, EdgeRole::DispatchDefault);
                 for &(source, target, _) in &resume_edges {
                     if source == index {
@@ -841,12 +839,12 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
                     }
                 }
             }
-            kind if simpleir_kind_is_suspend(kind) => {
-                if simpleir_kind_is_repoll(kind) {
+            kind if kind.is_suspend() => {
+                if kind.is_repoll() {
                     add(index, next, EdgeRole::Fallthrough);
                 }
             }
-            kind if simpleir_kind_is_terminator(kind) => {}
+            kind if kind.is_terminator() => {}
             _ => {
                 let role = if targets.loop_ends.contains_key(&next) {
                     EdgeRole::LoopEntry
@@ -1003,11 +1001,11 @@ impl ModeDefinitions {
         }
     }
 
-    fn apply_pending_effect(&mut self, kind: &str) {
-        if simpleir_kind_raises_pending_exception(kind) {
+    fn apply_pending_effect(&mut self, kind: crate::OpKind) {
+        if kind.raises_pending_exception() {
             self.pending = self.on_every_path();
             self.clear = None;
-        } else if simpleir_kind_clears_pending_exception(kind) {
+        } else if kind.clears_pending_exception() {
             self.clear = self.on_every_path();
             self.pending = None;
         } else {
@@ -1017,9 +1015,9 @@ impl ModeDefinitions {
     }
 
     /// The state that `edge` carries out of a block whose last op is `end_kind`.
-    fn along(&self, end_kind: &str, edge: &LogicalEdge) -> Self {
+    fn along(&self, end_kind: crate::OpKind, edge: &LogicalEdge) -> Self {
         let exceptional = edge.execution_role == EdgeRole::Exception;
-        if simpleir_kind_is_exception_check(end_kind) {
+        if end_kind.is_exception_check() {
             if exceptional {
                 Self {
                     clear: None,
@@ -1094,12 +1092,12 @@ fn verify_definite_definitions(
     for op in ops {
         visit_simple_ir_defined_names(op, |name| universe.insert(name_id(name)));
     }
-    let end_kind = |block: usize| ops[blocks.ranges[block].1].kind.as_str();
+    let end_kind = |block: usize| ops[blocks.ranges[block].1].kind;
     let transfer = |block: usize, state: &ModeDefinitions| {
         let mut state = state.clone();
         let (start, end) = blocks.ranges[block];
         for op in &ops[start..=end] {
-            state.apply_pending_effect(&op.kind);
+            state.apply_pending_effect(op.kind);
             visit_simple_ir_defined_names(op, |name| state.define(name_id(name)));
         }
         state
@@ -1139,7 +1137,7 @@ fn verify_definite_definitions(
         let mut state = block_in[block].clone();
         let phi_edges = canonical_phi_edges(block, &incoming, &reachable);
         for (index, op) in ops.iter().enumerate().take(end + 1).skip(start) {
-            if simpleir_kind_is_verifier_phi(&op.kind) {
+            if op.kind.is_verifier_phi() {
                 let args = op.args.as_deref().unwrap_or_default();
                 let collapsed = args.len() == 1 && !phi_edges.is_empty();
                 if args.len() != phi_edges.len() && !collapsed {
@@ -1202,7 +1200,7 @@ fn verify_definite_definitions(
                     ));
                 });
             }
-            state.apply_pending_effect(&op.kind);
+            state.apply_pending_effect(op.kind);
             visit_simple_ir_defined_names(op, |name| state.define(name_id(name)));
         }
     }
@@ -1216,10 +1214,10 @@ mod executable_flow_tests;
 mod tests {
     use super::*;
 
-    pub(super) fn op(kind: &str) -> OpIR {
+    pub(super) fn op(kind: crate::OpKind) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
-            ..OpIR::default()
+            kind,
+            ..crate::OpIR::new(kind)
         }
     }
 
@@ -1244,13 +1242,13 @@ mod tests {
     #[test]
     fn control_flow_admission_reuses_every_label_reference_family() {
         for kind in [
-            "jump",
-            "goto",
-            "br_if",
-            "try_start",
-            "try_end",
-            "check_exception",
-            "async_work_poll",
+            crate::OpKind::Jump,
+            crate::OpKind::Goto,
+            crate::OpKind::BrIf,
+            crate::OpKind::TryStart,
+            crate::OpKind::TryEnd,
+            crate::OpKind::CheckException,
+            crate::OpKind::AsyncWorkPoll,
         ] {
             for reference in [
                 OpIR {
@@ -1297,23 +1295,23 @@ mod tests {
                 ops: vec![
                     OpIR {
                         value: Some(19),
-                        ..op("try_start")
+                        ..op(crate::OpKind::TryStart)
                     },
                     OpIR {
                         value: Some(19),
-                        ..op("try_end")
+                        ..op(crate::OpKind::TryEnd)
                     },
                     OpIR {
                         value: Some(19),
-                        ..op("try_end")
+                        ..op(crate::OpKind::TryEnd)
                     },
                     OpIR {
                         value: Some(19),
-                        ..op("label")
+                        ..op(crate::OpKind::Label)
                     },
                     OpIR {
                         value: Some(19),
-                        ..op("check_exception")
+                        ..op(crate::OpKind::CheckException)
                     },
                 ],
                 ..FunctionIR::default()
@@ -1335,24 +1333,37 @@ mod tests {
     fn completion_follows_executable_paths_not_the_last_lexical_op() {
         let branch = OpIR {
             args: Some(vec!["condition".into()]),
-            ..op("if")
+            ..op(crate::OpKind::If)
         };
         for (ops, missing) in [
             (
                 vec![
                     branch.clone(),
-                    op("ret_void"),
-                    op("else"),
-                    op("ret_void"),
-                    op("end_if"),
+                    op(crate::OpKind::RetVoid),
+                    op(crate::OpKind::Else),
+                    op(crate::OpKind::RetVoid),
+                    op(crate::OpKind::EndIf),
                 ],
                 vec![],
             ),
-            (vec![branch, op("ret_void"), op("end_if")], vec![2]),
-            (vec![op("ret_void"), op("nop")], vec![]),
-            (vec![op("loop_start"), op("loop_end")], vec![]),
             (
-                vec![op("loop_start"), op("loop_continue"), op("loop_end")],
+                vec![branch, op(crate::OpKind::RetVoid), op(crate::OpKind::EndIf)],
+                vec![2],
+            ),
+            (
+                vec![op(crate::OpKind::RetVoid), op(crate::OpKind::Nop)],
+                vec![],
+            ),
+            (
+                vec![op(crate::OpKind::LoopStart), op(crate::OpKind::LoopEnd)],
+                vec![],
+            ),
+            (
+                vec![
+                    op(crate::OpKind::LoopStart),
+                    op(crate::OpKind::LoopContinue),
+                    op(crate::OpKind::LoopEnd),
+                ],
                 vec![],
             ),
         ] {
@@ -1375,18 +1386,18 @@ mod tests {
     #[test]
     fn completion_keeps_clipped_conditional_loop_and_exception_exits() {
         for kind in [
-            "loop_break",
-            "loop_break_if_true",
-            "loop_break_if_false",
-            "loop_break_if_exception",
+            crate::OpKind::LoopBreak,
+            crate::OpKind::LoopBreakIfTrue,
+            crate::OpKind::LoopBreakIfFalse,
+            crate::OpKind::LoopBreakIfException,
         ] {
             let ops = vec![
-                op("loop_start"),
+                op(crate::OpKind::LoopStart),
                 OpIR {
                     args: Some(vec!["condition".into()]),
                     ..op(kind)
                 },
-                op("loop_end"),
+                op(crate::OpKind::LoopEnd),
             ];
             let report = verify(&["condition"], ops);
             assert_eq!(report.errors.len(), 1, "{kind}: {report:?}");
@@ -1396,11 +1407,15 @@ mod tests {
                 "break falls off before the lexical tail"
             );
         }
-        for kind in ["br_if", "check_exception", "async_work_poll"] {
+        for kind in [
+            crate::OpKind::BrIf,
+            crate::OpKind::CheckException,
+            crate::OpKind::AsyncWorkPoll,
+        ] {
             let ops = vec![
                 OpIR {
                     value: Some(5),
-                    ..op("label")
+                    ..op(crate::OpKind::Label)
                 },
                 OpIR {
                     value: Some(5),
@@ -1426,9 +1441,9 @@ mod tests {
     #[test]
     fn completion_does_not_execute_try_registration_edges() {
         for (kind, missing) in [
-            ("try_start", false),
-            ("check_exception", true),
-            ("async_work_poll", true),
+            (crate::OpKind::TryStart, false),
+            (crate::OpKind::CheckException, true),
+            (crate::OpKind::AsyncWorkPoll, true),
         ] {
             let report = verify(
                 &[],
@@ -1437,10 +1452,10 @@ mod tests {
                         value: Some(9),
                         ..op(kind)
                     },
-                    op("ret_void"),
+                    op(crate::OpKind::RetVoid),
                     OpIR {
                         value: Some(9),
-                        ..op("label")
+                        ..op(crate::OpKind::Label)
                     },
                 ],
             );
@@ -1458,13 +1473,16 @@ mod tests {
 
     #[test]
     fn suspension_ends_or_repolls_the_activation_without_dispatching() {
-        for (kind, continues) in [("state_yield", false), ("state_transition", true)] {
+        for (kind, continues) in [
+            (crate::OpKind::StateYield, false),
+            (crate::OpKind::StateTransition, true),
+        ] {
             let suspend = OpIR {
                 args: Some(vec!["value".into()]),
                 value: Some(7),
                 ..op(kind)
             };
-            let ops = vec![suspend.clone(), op("ret_void")];
+            let ops = vec![suspend.clone(), op(crate::OpKind::RetVoid)];
             let flow = simple_ir_logical_flow(&ops);
             assert_eq!(flow.edges[0].len(), usize::from(continues), "{kind}");
             if continues {
@@ -1493,23 +1511,23 @@ mod tests {
             let ops = vec![
                 OpIR {
                     state_targets: targets,
-                    ..op("state_switch")
+                    ..op(crate::OpKind::StateSwitch)
                 },
-                op("ret_void"),
+                op(crate::OpKind::RetVoid),
                 OpIR {
                     value: Some(7),
-                    ..op("state_label")
+                    ..op(crate::OpKind::StateLabel)
                 },
                 OpIR {
                     value: Some(7),
                     args: Some(vec!["value".into()]),
-                    ..op("state_yield")
+                    ..op(crate::OpKind::StateYield)
                 },
                 OpIR {
                     value: Some(200),
-                    ..op("label")
+                    ..op(crate::OpKind::Label)
                 },
-                op("nop"),
+                op(crate::OpKind::Nop),
             ];
             let flow = simple_ir_logical_flow(&ops);
             assert_eq!(flow.edges[0][0].role, EdgeRole::DispatchDefault);
@@ -1558,14 +1576,14 @@ mod tests {
         for ops in [
             vec![OpIR {
                 state_targets: Some(vec![]),
-                ..op("state_switch")
+                ..op(crate::OpKind::StateSwitch)
             }],
             vec![
-                op("state_switch"),
+                op(crate::OpKind::StateSwitch),
                 OpIR {
                     value: Some(7),
                     args: Some(vec!["value".into()]),
-                    ..op("state_yield")
+                    ..op(crate::OpKind::StateYield)
                 },
             ],
         ] {
@@ -1591,13 +1609,13 @@ mod tests {
         let ops = vec![
             OpIR {
                 value: Some(7),
-                ..op("state_label")
+                ..op(crate::OpKind::StateLabel)
             },
-            op("state_switch"),
+            op(crate::OpKind::StateSwitch),
             OpIR {
                 value: Some(7),
                 args: Some(vec!["value".into()]),
-                ..op("state_yield")
+                ..op(crate::OpKind::StateYield)
             },
         ];
         let flow = simple_ir_logical_flow(&ops);
@@ -1636,25 +1654,25 @@ mod tests {
                     OpIR {
                         value: Some(7),
                         out: Some("pending".into()),
-                        ..op("const")
+                        ..op(crate::OpKind::Const)
                     },
                     OpIR {
                         state_targets: Some(targets.clone()),
-                        ..op("state_switch")
+                        ..op(crate::OpKind::StateSwitch)
                     },
                     OpIR {
                         value: Some(70),
-                        ..op("label")
+                        ..op(crate::OpKind::Label)
                     },
                     OpIR {
                         value: Some(8),
                         args: Some(args),
                         out: Some("polled".into()),
-                        ..op("state_transition")
+                        ..op(crate::OpKind::StateTransition)
                     },
                     OpIR {
                         args: Some(vec!["polled".into()]),
-                        ..op("ret")
+                        ..op(crate::OpKind::Ret)
                     },
                 ];
                 let admitted = targets.iter().any(|&(state, _)| state == 7);
@@ -1676,27 +1694,27 @@ mod tests {
         let mut ops = vec![
             OpIR {
                 state_targets: Some(vec![(1, 10)]),
-                ..op("state_switch")
+                ..op(crate::OpKind::StateSwitch)
             },
             OpIR {
                 value: Some(1),
                 args: Some(vec!["value".into()]),
-                ..op("state_yield")
+                ..op(crate::OpKind::StateYield)
             },
             OpIR {
                 value: Some(10),
-                ..op("state_label")
+                ..op(crate::OpKind::StateLabel)
             },
             OpIR {
                 value: Some(2),
                 args: Some(vec!["value".into()]),
-                ..op("state_yield")
+                ..op(crate::OpKind::StateYield)
             },
             OpIR {
                 value: Some(20),
-                ..op("label")
+                ..op(crate::OpKind::Label)
             },
-            op("ret_void"),
+            op(crate::OpKind::RetVoid),
         ];
         let error = crate::ir_schema::validate_state_dispatch(&ops).unwrap_err();
         assert!(
@@ -1712,25 +1730,25 @@ mod tests {
     fn empty_resume_maps_do_not_infer_cases_from_dead_or_running_state() {
         let switch = OpIR {
             state_targets: Some(vec![]),
-            ..op("state_switch")
+            ..op(crate::OpKind::StateSwitch)
         };
         for ops in [
-            vec![switch.clone(), op("ret_void")],
+            vec![switch.clone(), op(crate::OpKind::RetVoid)],
             vec![
                 switch.clone(),
                 OpIR {
                     value: Some(99),
-                    ..op("state_set")
+                    ..op(crate::OpKind::StateSet)
                 },
-                op("ret_void"),
+                op(crate::OpKind::RetVoid),
             ],
             vec![
                 switch.clone(),
-                op("ret_void"),
+                op(crate::OpKind::RetVoid),
                 OpIR {
                     value: Some(7),
                     args: Some(vec!["value".into()]),
-                    ..op("state_yield")
+                    ..op(crate::OpKind::StateYield)
                 },
             ],
         ] {
@@ -1743,22 +1761,25 @@ mod tests {
             );
             assert!(verify(&["value"], ops).is_ok());
         }
-        for (kind, executable) in [("try_start", false), ("check_exception", true)] {
+        for (kind, executable) in [
+            (crate::OpKind::TryStart, false),
+            (crate::OpKind::CheckException, true),
+        ] {
             let ops = vec![
                 switch.clone(),
                 OpIR {
                     value: Some(70),
                     ..op(kind)
                 },
-                op("ret_void"),
+                op(crate::OpKind::RetVoid),
                 OpIR {
                     value: Some(70),
-                    ..op("label")
+                    ..op(crate::OpKind::Label)
                 },
                 OpIR {
                     value: Some(7),
                     args: Some(vec!["value".into()]),
-                    ..op("state_yield")
+                    ..op(crate::OpKind::StateYield)
                 },
             ];
             assert_eq!(
@@ -1773,24 +1794,24 @@ mod tests {
         for suspend in [
             OpIR {
                 args: Some(vec!["value".into()]),
-                ..op("state_yield")
+                ..op(crate::OpKind::StateYield)
             },
             OpIR {
                 value: Some(8),
                 args: Some(vec!["future".into(), "unknown_pending".into()]),
                 out: Some("polled".into()),
-                ..op("state_transition")
+                ..op(crate::OpKind::StateTransition)
             },
         ] {
             for reachable in [false, true] {
                 let mut ops = vec![OpIR {
                     state_targets: Some(vec![]),
-                    ..op("state_switch")
+                    ..op(crate::OpKind::StateSwitch)
                 }];
                 if !reachable {
-                    ops.push(op("ret_void"));
+                    ops.push(op(crate::OpKind::RetVoid));
                 }
-                ops.extend([suspend.clone(), op("ret_void")]);
+                ops.extend([suspend.clone(), op(crate::OpKind::RetVoid)]);
                 let result = crate::ir_schema::validate_state_dispatch(&ops);
                 assert_eq!(result.is_err(), reachable);
                 if reachable {
@@ -1807,9 +1828,9 @@ mod tests {
     #[test]
     fn control_flow_admission_reuses_state_map_validation() {
         for (kind, targets) in [
-            ("state_switch", vec![(7, 404)]),
-            ("state_switch", vec![(7, 9), (7, 9)]),
-            ("nop", vec![(7, 9)]),
+            (crate::OpKind::StateSwitch, vec![(7, 404)]),
+            (crate::OpKind::StateSwitch, vec![(7, 9), (7, 9)]),
+            (crate::OpKind::Nop, vec![(7, 9)]),
         ] {
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
@@ -1819,12 +1840,12 @@ mod tests {
                             state_targets: Some(targets),
                             ..op(kind)
                         },
-                        op("ret_void"),
+                        op(crate::OpKind::RetVoid),
                         OpIR {
                             value: Some(9),
-                            ..op("label")
+                            ..op(crate::OpKind::Label)
                         },
-                        op("ret_void"),
+                        op(crate::OpKind::RetVoid),
                     ],
                     ..FunctionIR::default()
                 }],
@@ -1846,32 +1867,32 @@ mod tests {
 
     #[test]
     fn exception_phi_predecessors_are_explicit_transfers_not_try_region_blocks() {
-        let mut try_start = op("try_start");
+        let mut try_start = op(crate::OpKind::TryStart);
         try_start.value = Some(100);
-        let mut branch = op("if");
+        let mut branch = op(crate::OpKind::If);
         branch.args = Some(vec!["cond".to_string()]);
-        let mut then_value = op("copy_var");
+        let mut then_value = op(crate::OpKind::CopyVar);
         then_value.var = Some("seed".to_string());
         then_value.out = Some("then_value".to_string());
-        let mut else_value = op("copy_var");
+        let mut else_value = op(crate::OpKind::CopyVar);
         else_value.var = Some("seed".to_string());
         else_value.out = Some("else_value".to_string());
-        let mut try_end = op("try_end");
+        let mut try_end = op(crate::OpKind::TryEnd);
         try_end.value = Some(100);
-        let mut check = op("check_exception");
+        let mut check = op(crate::OpKind::CheckException);
         check.value = Some(100);
-        let mut poll = op("async_work_poll");
+        let mut poll = op(crate::OpKind::AsyncWorkPoll);
         poll.value = Some(100);
-        let mut label = op("label");
+        let mut label = op(crate::OpKind::Label);
         label.value = Some(100);
-        let mut phi = op("phi");
+        let mut phi = op(crate::OpKind::Phi);
         phi.args = Some(vec![
             "seed".to_string(),
             "seed".to_string(),
             "seed".to_string(),
         ]);
         phi.out = Some("handler_value".to_string());
-        let mut handler_return = op("ret");
+        let mut handler_return = op(crate::OpKind::Ret);
         handler_return.args = Some(vec!["handler_value".to_string()]);
 
         let report = verify(
@@ -1880,13 +1901,13 @@ mod tests {
                 try_start,
                 branch,
                 then_value,
-                op("else"),
+                op(crate::OpKind::Else),
                 else_value,
-                op("end_if"),
+                op(crate::OpKind::EndIf),
                 try_end,
                 check,
                 poll,
-                op("ret_void"),
+                op(crate::OpKind::RetVoid),
                 label,
                 phi,
                 handler_return,
@@ -1900,28 +1921,28 @@ mod tests {
 
     #[test]
     fn path_local_try_closes_do_not_pair_with_lexical_if_or_loop_regions() {
-        let labelled = |kind: &str| OpIR {
+        let labelled = |kind: crate::OpKind| OpIR {
             value: Some(100),
             ..op(kind)
         };
-        let mut branch = op("if");
+        let mut branch = op(crate::OpKind::If);
         branch.args = Some(vec!["condition".into()]);
         let report = verify(
             &["condition"],
             vec![
-                labelled("try_start"),
-                op("loop_start"),
+                labelled(crate::OpKind::TryStart),
+                op(crate::OpKind::LoopStart),
                 branch,
-                labelled("try_end"),
-                op("ret_void"),
-                op("end_if"),
-                labelled("try_end"),
-                op("loop_break"),
-                op("loop_end"),
-                op("ret_void"),
-                labelled("label"),
-                labelled("try_end"),
-                op("ret_void"),
+                labelled(crate::OpKind::TryEnd),
+                op(crate::OpKind::RetVoid),
+                op(crate::OpKind::EndIf),
+                labelled(crate::OpKind::TryEnd),
+                op(crate::OpKind::LoopBreak),
+                op(crate::OpKind::LoopEnd),
+                op(crate::OpKind::RetVoid),
+                labelled(crate::OpKind::Label),
+                labelled(crate::OpKind::TryEnd),
+                op(crate::OpKind::RetVoid),
             ],
         );
         assert!(
@@ -1932,23 +1953,23 @@ mod tests {
 
     #[test]
     fn executable_flow_separates_metadata_and_phi_order_from_transfer_polarity() {
-        let labelled = |kind: &str| OpIR {
+        let labelled = |kind: crate::OpKind| OpIR {
             value: Some(100),
             ..op(kind)
         };
         let branch = OpIR {
             args: Some(vec!["condition".into()]),
-            ..op("if")
+            ..op(crate::OpKind::If)
         };
         let ops = vec![
-            labelled("try_start"),
-            op("loop_start"),
+            labelled(crate::OpKind::TryStart),
+            op(crate::OpKind::LoopStart),
             branch,
-            labelled("check_exception"),
-            op("end_if"),
-            op("loop_end"),
-            labelled("label"),
-            op("ret_void"),
+            labelled(crate::OpKind::CheckException),
+            op(crate::OpKind::EndIf),
+            op(crate::OpKind::LoopEnd),
+            labelled(crate::OpKind::Label),
+            op(crate::OpKind::RetVoid),
         ];
         let analysis = op_flow(&ops).edges;
         assert!(
@@ -1987,28 +2008,28 @@ mod tests {
             OpIR {
                 value: Some(1),
                 out: Some("live".into()),
-                ..op("const_int")
+                ..op(crate::OpKind::ConstInt)
             },
             OpIR {
                 value: Some(2),
                 out: Some("local_only".into()),
-                ..op("const_int")
+                ..op(crate::OpKind::ConstInt)
             },
             OpIR {
                 value: Some(100),
-                ..op("check_exception")
+                ..op(crate::OpKind::CheckException)
             },
             OpIR {
                 args: Some(vec!["live".into()]),
-                ..op("ret")
+                ..op(crate::OpKind::Ret)
             },
             OpIR {
                 value: Some(100),
-                ..op("label")
+                ..op(crate::OpKind::Label)
             },
             OpIR {
                 args: Some(vec!["live".into()]),
-                ..op("ret")
+                ..op(crate::OpKind::Ret)
             },
         ];
         let flow = simple_ir_logical_flow(&ops);
@@ -2023,21 +2044,21 @@ mod tests {
         let ops = vec![
             OpIR {
                 value: Some(10),
-                ..op("label")
+                ..op(crate::OpKind::Label)
             },
             OpIR {
                 var: Some("carried".into()),
                 out: Some("local".into()),
-                ..op("load_var")
+                ..op(crate::OpKind::LoadVar)
             },
             OpIR {
                 var: Some("carried".into()),
                 args: Some(vec!["local".into()]),
-                ..op("store_var")
+                ..op(crate::OpKind::StoreVar)
             },
             OpIR {
                 value: Some(10),
-                ..op("jump")
+                ..op(crate::OpKind::Jump)
             },
         ];
         let flow = simple_ir_logical_flow(&ops);
@@ -2050,9 +2071,12 @@ mod tests {
 
     #[test]
     fn path_local_try_metadata_does_not_relax_lexical_bracket_validation() {
-        for (open, close) in [("if", "loop_end"), ("loop_start", "end_if")] {
+        for (open, close) in [
+            (crate::OpKind::If, crate::OpKind::LoopEnd),
+            (crate::OpKind::LoopStart, crate::OpKind::EndIf),
+        ] {
             let mut opener = op(open);
-            if open == "if" {
+            if open == crate::OpKind::If {
                 opener.args = Some(vec!["condition".into()]);
             }
             let report = verify(
@@ -2060,19 +2084,19 @@ mod tests {
                 vec![
                     OpIR {
                         value: Some(100),
-                        ..op("try_start")
+                        ..op(crate::OpKind::TryStart)
                     },
                     opener,
                     OpIR {
                         value: Some(100),
-                        ..op("try_end")
+                        ..op(crate::OpKind::TryEnd)
                     },
                     op(close),
                     OpIR {
                         value: Some(100),
-                        ..op("label")
+                        ..op(crate::OpKind::Label)
                     },
-                    op("ret_void"),
+                    op(crate::OpKind::RetVoid),
                 ],
             );
             assert!(
@@ -2087,12 +2111,15 @@ mod tests {
 
     #[test]
     fn path_local_try_metadata_still_requires_a_defined_handler_label() {
-        for kind in ["try_start", "try_end"] {
+        for kind in [crate::OpKind::TryStart, crate::OpKind::TryEnd] {
             for (value, diagnostic_kind) in [
                 (None, "malformed-label-reference"),
                 (Some(100), "invalid-jump-target"),
             ] {
-                let report = verify(&[], vec![OpIR { value, ..op(kind) }, op("ret_void")]);
+                let report = verify(
+                    &[],
+                    vec![OpIR { value, ..op(kind) }, op(crate::OpKind::RetVoid)],
+                );
                 assert!(
                     report
                         .errors
@@ -2113,15 +2140,18 @@ mod tests {
 
     #[test]
     fn branch_local_definition_does_not_dominate_join() {
-        let mut branch = op("if");
+        let mut branch = op(crate::OpKind::If);
         branch.args = Some(vec!["condition".to_string()]);
-        let mut local = op("const");
+        let mut local = op(crate::OpKind::Const);
         local.value = Some(1);
         local.out = Some("branch_local".to_string());
-        let mut ret = op("ret");
+        let mut ret = op(crate::OpKind::Ret);
         ret.args = Some(vec!["branch_local".to_string()]);
 
-        let report = verify(&["condition"], vec![branch, local, op("end_if"), ret]);
+        let report = verify(
+            &["condition"],
+            vec![branch, local, op(crate::OpKind::EndIf), ret],
+        );
         assert_eq!(
             report
                 .errors
@@ -2144,24 +2174,30 @@ mod tests {
     /// arm leaves through the check's exception edge, so `g` is defined on
     /// every path that reaches the code after the check (HF-100).
     fn reraise_arm(read_before_check: bool) -> SimpleIrVerificationReport {
-        let mut branch = op("if");
+        let mut branch = op(crate::OpKind::If);
         branch.args = Some(vec!["c".to_string()]);
-        let mut define = op("const");
+        let mut define = op(crate::OpKind::Const);
         define.value = Some(1);
         define.out = Some("g".to_string());
-        let mut raise = op("raise");
+        let mut raise = op(crate::OpKind::Raise);
         raise.args = Some(vec!["c".to_string()]);
-        let mut check = op("check_exception");
+        let mut check = op(crate::OpKind::CheckException);
         check.value = Some(3);
-        let mut use_g = op("ret");
+        let mut use_g = op(crate::OpKind::Ret);
         use_g.args = Some(vec!["g".to_string()]);
-        let mut exit_label = op("label");
+        let mut exit_label = op(crate::OpKind::Label);
         exit_label.value = Some(3);
-        let mut exit = op("ret");
+        let mut exit = op(crate::OpKind::Ret);
         exit.args = Some(vec!["c".to_string()]);
-        let mut ops = vec![branch, define, op("else"), raise, op("end_if")];
+        let mut ops = vec![
+            branch,
+            define,
+            op(crate::OpKind::Else),
+            raise,
+            op(crate::OpKind::EndIf),
+        ];
         if read_before_check {
-            let mut read = op("add");
+            let mut read = op(crate::OpKind::Add);
             read.args = Some(vec!["g".to_string(), "c".to_string()]);
             read.out = Some("early".to_string());
             ops.push(read);
@@ -2190,7 +2226,7 @@ mod tests {
 
     #[test]
     fn read_of_a_name_nothing_defines_is_use_before_def() {
-        let mut ret = op("ret");
+        let mut ret = op(crate::OpKind::Ret);
         ret.args = Some(vec!["ghost".to_string()]);
 
         let report = verify(&[], vec![ret]);
@@ -2199,27 +2235,34 @@ mod tests {
 
     #[test]
     fn definitions_on_every_branch_reach_the_join() {
-        let mut branch = op("if");
+        let mut branch = op(crate::OpKind::If);
         branch.args = Some(vec!["condition".to_string()]);
-        let mut left = op("const");
+        let mut left = op(crate::OpKind::Const);
         left.value = Some(1);
         left.out = Some("joined".to_string());
-        let mut right = op("const");
+        let mut right = op(crate::OpKind::Const);
         right.value = Some(2);
         right.out = Some("joined".to_string());
-        let mut ret = op("ret");
+        let mut ret = op(crate::OpKind::Ret);
         ret.args = Some(vec!["joined".to_string()]);
 
         let report = verify(
             &["condition", "unused_param"],
-            vec![branch, left, op("else"), right, op("end_if"), ret],
+            vec![
+                branch,
+                left,
+                op(crate::OpKind::Else),
+                right,
+                op(crate::OpKind::EndIf),
+                ret,
+            ],
         );
         assert_eq!(error_kinds(&report), Vec::<&str>::new());
     }
 
     #[test]
     fn parameter_reads_need_no_defining_op() {
-        let mut ret = op("ret");
+        let mut ret = op(crate::OpKind::Ret);
         ret.args = Some(vec!["param".to_string()]);
 
         let report = verify(&["param"], vec![ret]);
@@ -2228,20 +2271,26 @@ mod tests {
 
     #[test]
     fn phi_inputs_follow_semantic_branch_order() {
-        let mut branch = op("if");
+        let mut branch = op(crate::OpKind::If);
         branch.args = Some(vec!["condition".to_string()]);
-        let mut left = op("const");
+        let mut left = op(crate::OpKind::Const);
         left.value = Some(1);
         left.out = Some("left".to_string());
-        let mut right = op("const");
+        let mut right = op(crate::OpKind::Const);
         right.value = Some(2);
         right.out = Some("right".to_string());
-        let mut phi = op("phi");
+        let mut phi = op(crate::OpKind::Phi);
         phi.args = Some(vec!["left".to_string(), "right".to_string()]);
         phi.out = Some("merged".to_string());
-        let mut ret = op("ret");
+        let mut ret = op(crate::OpKind::Ret);
         ret.args = Some(vec!["merged".to_string()]);
-        let prefix = vec![branch, left, op("else"), right, op("end_if")];
+        let prefix = vec![
+            branch,
+            left,
+            op(crate::OpKind::Else),
+            right,
+            op(crate::OpKind::EndIf),
+        ];
 
         let mut valid = prefix.clone();
         valid.extend([phi.clone(), ret.clone()]);

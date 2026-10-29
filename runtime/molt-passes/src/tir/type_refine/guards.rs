@@ -252,6 +252,7 @@ pub(super) fn propagate_guard_types(
             } else {
                 infer_result_types_with_attrs(
                     op.opcode,
+                    op.origin,
                     &operand_types,
                     Some(&op.attrs),
                     op.results.len(),

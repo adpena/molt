@@ -81,6 +81,7 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
             } else {
                 infer_result_types_with_attrs(
                     op.opcode,
+                    op.origin,
                     &operand_types,
                     Some(&op.attrs),
                     op.results.len(),

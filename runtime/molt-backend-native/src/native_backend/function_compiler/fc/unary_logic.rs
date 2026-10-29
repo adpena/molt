@@ -1,24 +1,25 @@
 use super::super::*;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_unary_logic_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_unary_logic_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "is",
-    "not",
-    "neg",
-    "unary_neg",
-    "pos",
-    "unary_pos",
-    "abs",
-    "invert",
-    "bool",
-    "cast_bool",
-    "builtin_bool",
-    "and",
-    "or",
-    "contains",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Is,
+    OpKind::Not,
+    OpKind::Neg,
+    OpKind::UnaryNeg,
+    OpKind::Pos,
+    OpKind::UnaryPos,
+    OpKind::Abs,
+    OpKind::Invert,
+    OpKind::Bool,
+    OpKind::CastBool,
+    OpKind::BuiltinBool,
+    OpKind::And,
+    OpKind::Or,
+    OpKind::Contains,
+);
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -81,8 +82,8 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
         )
     };
 
-    match op.kind.as_str() {
-        "is" => {
+    match op.kind {
+        OpKind::Is => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let lhs = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -120,7 +121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 def_bool_result(&mut *builder, vars, representation_plan, out__, res, None);
             }
         }
-        "not" => {
+        OpKind::Not => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let mut not_raw: Option<Value> = None;
             let res = if let Some(raw_val) =
@@ -194,7 +195,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 );
             }
         }
-        "neg" | "unary_neg" => {
+        OpKind::Neg | OpKind::UnaryNeg => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_float_lane(op) {
                 // Float-primary operands are raw f64; boxed floats are extracted explicitly.
@@ -335,7 +336,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 );
             }
         }
-        "pos" | "unary_pos" => {
+        OpKind::Pos | OpKind::UnaryPos => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_float_lane(op) {
                 let src_f = float_value_for(&mut *builder, vars, representation_plan, &args[0])
@@ -434,7 +435,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 );
             }
         }
-        "abs" => {
+        OpKind::Abs => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
                 // abs(i64::MIN) needs a BigInt, just like unary negation.
@@ -551,7 +552,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 );
             }
         }
-        "invert" => {
+        OpKind::Invert => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let res = if op_prefers_int_lane(op) {
                 // ~x == x ^ -1 for integers; magnitude changes by at most 1.
@@ -662,7 +663,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 );
             }
         }
-        "bool" | "cast_bool" | "builtin_bool" => {
+        OpKind::Bool | OpKind::CastBool | OpKind::BuiltinBool => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let (res, bool_raw) = if let Some(raw_val) =
                 bool_raw_value(&mut *builder, vars, representation_plan, &args[0])
@@ -771,7 +772,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 );
             }
         }
-        "and" => {
+        OpKind::And => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Raw-bool fast lane: a Python value-select over two raw
             // 0/1 bools IS the boolean AND — a bare `band`, no boxing,
@@ -842,7 +843,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             if let Some(out__) = op.out.as_deref() {
                 debug_assert!(
                     crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(
-                        "and"
+                        OpKind::And
                     )
                 );
                 // The `select` result aliases one of the inputs (same
@@ -853,7 +854,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "or" => {
+        OpKind::Or => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             // Raw-bool fast lane: value-select over two raw 0/1
             // bools IS the boolean OR — a bare `bor` (see the
@@ -923,7 +924,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             if let Some(out__) = op.out.as_deref() {
                 debug_assert!(
                     crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(
-                        "or"
+                        OpKind::Or
                     )
                 );
                 // Same selected-alias ownership contract as `and`.
@@ -931,7 +932,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "contains" => {
+        OpKind::Contains => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let container = var_get_boxed_overflow_safe(
                 &mut *module,

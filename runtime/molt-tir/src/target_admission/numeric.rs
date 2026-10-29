@@ -27,7 +27,7 @@ pub(super) fn validate_numeric_function_target_contract(
     plan: &ScalarRepresentationPlan,
 ) -> Result<(), String> {
     for (index, op) in function.ops.iter().enumerate() {
-        let role = simpleir_integer_semantics_table(op.kind.as_str());
+        let role = simpleir_integer_semantics_table(op.kind);
         if let Some(reason) = numeric_admission_failure(plan, op, role, capabilities) {
             return Err(format!(
                 "{target} target rejected before source generation: {}:op#{index} `{}`: {reason}",

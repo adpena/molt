@@ -24,7 +24,17 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools.generator_io import generator_main  # noqa: E402
-from molt.rust_source_scan import mask_rust_comments_and_strings  # noqa: E402
+from molt.rust_source_scan import (  # noqa: E402
+    mask_rust_comments_and_strings,
+    rust_delimiter_end,
+    rust_match_arms,
+    scan_memo,
+)
+from tools.structural_audit_rust import (  # noqa: E402
+    kind_pattern_names,
+    op_kind_wire_names,
+    token_text,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +47,7 @@ from tools.op_kinds.runtime_requirements import (  # noqa: E402 - direct-script 
 )
 
 SOURCE = ROOT / "runtime" / "molt-backend-luau" / "src" / "luau"
+WIRE_SOURCE = ROOT / "runtime" / "molt-ir" / "src" / "tir" / "op_kinds_generated.rs"
 OUTPUT = (
     ROOT / "docs" / "spec" / "areas" / "compiler" / "luau_support_matrix.generated.md"
 )
@@ -91,13 +102,13 @@ class Row:
     note: str
 
 
-_ARM_START_RE = re.compile(
-    r'^\s*(?:_\s*=>|(?:\|\s*)?(?:"[^"]+"|kind if kind\.starts_with\())'
-)
-_STRING_RE = re.compile(r'"([^"]+)"')
-_STARTS_WITH_RE = re.compile(r'kind\.starts_with\("([^"]+)"\)')
 _EMIT_OP_FN_RE = re.compile(
-    r"\bfn\s+emit[A-Za-z0-9_]*\s*\(\s*&mut\s+self\s*,\s*op:\s*&OpIR\s*\)"
+    r"\bfn\s+(?P<name>emit[A-Za-z0-9_]*)\s*\(\s*&mut\s+self\s*,\s*op:\s*&OpIR\s*\)"
+)
+_KIND_MATCH_RE = re.compile(
+    r"\bmatch\s+(?P<expression>op\s*\.\s*kind|"
+    r"molt_ir\s*::\s*tir\s*::\s*op_kinds_generated\s*::\s*"
+    r"[A-Za-z_][A-Za-z0-9_]*\s*\(\s*op\s*\.\s*kind\s*\))\s*\{"
 )
 _UNSUPPORTED_EMISSION_CALL = re.compile(
     r"\bself\s*\.\s*emit_unsupported_op(?:_with_reason)?\s*\("
@@ -134,196 +145,135 @@ def _unsupported_emission_kind(body: str) -> str | None:
     return "conditional"
 
 
-def _find_matching_brace(text: str, open_idx: int) -> int:
-    depth = 0
-    in_string = False
-    in_char = False
-    in_line_comment = False
-    escaped = False
-
-    for idx in range(open_idx, len(text)):
-        ch = text[idx]
-        nxt = text[idx + 1] if idx + 1 < len(text) else ""
-
-        if in_line_comment:
-            if ch == "\n":
-                in_line_comment = False
-            continue
-
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-
-        if in_char:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == "'":
-                in_char = False
-            continue
-
-        if ch == "/" and nxt == "/":
-            in_line_comment = True
-            continue
-        if ch == '"':
-            in_string = True
-            continue
-        if ch == "'":
-            in_char = True
-            continue
-        if ch == "{":
-            depth += 1
-            continue
-        if ch == "}":
-            depth -= 1
-            if depth == 0:
-                return idx
-
-    raise ValueError("could not find closing brace for Luau emit_op match")
+@dataclass(frozen=True)
+class EmitterMatch:
+    function: str
+    expression: str
+    source: str
 
 
-def _strip_rust_strings_and_comments(line: str) -> str:
-    out: list[str] = []
-    in_string = False
-    in_char = False
-    escaped = False
-    idx = 0
-
-    while idx < len(line):
-        ch = line[idx]
-        nxt = line[idx + 1] if idx + 1 < len(line) else ""
-
-        if in_string:
-            out.append(" ")
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            idx += 1
-            continue
-
-        if in_char:
-            out.append(" ")
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == "'":
-                in_char = False
-            idx += 1
-            continue
-
-        if ch == "/" and nxt == "/":
-            break
-        if ch == '"':
-            in_string = True
-            out.append(" ")
-            idx += 1
-            continue
-        if ch == "'":
-            in_char = True
-            out.append(" ")
-            idx += 1
-            continue
-
-        out.append(ch)
-        idx += 1
-
-    return "".join(out)
-
-
-def _brace_delta(line: str) -> int:
-    code = _strip_rust_strings_and_comments(line)
-    return code.count("{") - code.count("}")
-
-
-def _extract_emit_op_matches(text: str) -> list[str]:
-    """Return op-kind match bodies from Luau emitter functions.
-
-    The Luau backend is decomposed by op family. The support matrix is an
-    authority over that whole emitter cluster, so it must follow every
-    `emit_*_op(&mut self, op: &OpIR)` function rather than a single façade.
-    """
-    matches: list[str] = []
-    for fn_match in _EMIT_OP_FN_RE.finditer(text):
-        fn_open_idx = text.find("{", fn_match.end())
-        if fn_open_idx < 0:
-            continue
-        fn_close_idx = _find_matching_brace(text, fn_open_idx)
-        cursor = fn_open_idx
-        while True:
-            match_start = text.find("match op.kind.as_str()", cursor, fn_close_idx)
-            if match_start < 0:
-                break
-            open_idx = text.find("{", match_start, fn_close_idx)
-            if open_idx < 0:
-                break
-            close_idx = _find_matching_brace(text, open_idx)
-            matches.append(text[open_idx + 1 : close_idx])
-            cursor = close_idx + 1
+def _extract_emit_op_matches(text: str) -> list[EmitterMatch]:
+    """Project typed dispatches, excluding nested operator/name matches."""
+    code = mask_rust_comments_and_strings(text)
+    matches: list[EmitterMatch] = []
+    for fn_match in _EMIT_OP_FN_RE.finditer(code):
+        fn_open = code.find("{", fn_match.end())
+        fn_end = rust_delimiter_end(text, fn_open)
+        if fn_end is None:
+            raise ValueError(f"unclosed Luau emitter {fn_match['name']}")
+        cursor = fn_open
+        while match := _KIND_MATCH_RE.search(code, cursor, fn_end):
+            end = rust_delimiter_end(text, match.end() - 1)
+            if end is None or end > fn_end:
+                raise ValueError(f"unclosed typed dispatch in {fn_match['name']}")
+            matches.append(
+                EmitterMatch(
+                    fn_match["name"],
+                    token_text(match["expression"]),
+                    text[match.start() : end],
+                )
+            )
+            cursor = end
     return matches
 
 
-def _ops_from_pattern(pattern: str) -> list[str]:
-    starts_with = _STARTS_WITH_RE.findall(pattern)
-    if starts_with:
-        return [f"{prefix}*" for prefix in starts_with]
-    return _STRING_RE.findall(pattern)
+def _selector_domains(
+    expression: str, generated: str, names: dict[str, str]
+) -> tuple[str, dict[str, frozenset[str]]]:
+    """Join a generated typed selector to its canonical OpKind input domain."""
+    selector = re.fullmatch(
+        r"molt_ir::tir::op_kinds_generated::(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+        r"\(op\.kind\)",
+        expression,
+    )
+    if selector is None:
+        raise ValueError(f"unsupported Luau kind selector: {expression}")
+    code = mask_rust_comments_and_strings(generated)
+    declaration = re.search(
+        rf"\bpub\s+const\s+fn\s+{selector['name']}\s*"
+        r"\(\s*kind\s*:\s*OpKind\s*\)\s*->\s*"
+        r"(?P<result>[A-Za-z_][A-Za-z0-9_]*)\s*\{",
+        code,
+    )
+    if declaration is None:
+        raise ValueError(f"missing generated typed selector: {selector['name']}")
+    end = rust_delimiter_end(generated, declaration.end() - 1)
+    if end is None:
+        raise ValueError(f"unclosed generated selector: {selector['name']}")
+    arms = rust_match_arms(generated[declaration.end() : end - 1], "kind", depth=0)
+    if not arms:
+        raise ValueError(f"missing generated selector arms: {selector['name']}")
+    domains: dict[str, set[str]] = {}
+    seen: set[str] = set()
+    for arm in arms:
+        kinds = kind_pattern_names(arm.pattern, names)
+        result = re.fullmatch(
+            rf"{declaration['result']}::(?P<variant>[A-Za-z_][A-Za-z0-9_]*)",
+            token_text(arm.body).removeprefix("{").removesuffix("}"),
+        )
+        if kinds is None or seen & kinds or result is None:
+            raise ValueError(f"invalid generated selector arm: {selector['name']}")
+        seen.update(kinds)
+        domains.setdefault(result["variant"], set()).update(kinds)
+    if seen != set(names.values()):
+        raise ValueError(f"incomplete generated selector: {selector['name']}")
+    return declaration["result"], {
+        variant: frozenset(kinds) for variant, kinds in domains.items()
+    }
 
 
-def _iter_arms(match_text: str) -> list[tuple[list[str], str]]:
-    arms: list[tuple[list[str], str]] = []
-    pending_pattern: list[str] = []
-    current_ops: list[str] | None = None
-    current_body: list[str] = []
-    body_depth = 0
-    body_started = False
-
-    for line in match_text.splitlines():
-        if current_ops is None:
-            if not pending_pattern and not _ARM_START_RE.match(line):
-                continue
-            pending_pattern.append(line)
-            code = _strip_rust_strings_and_comments(line)
-            if "=>" not in code:
-                continue
-            pattern = "\n".join(pending_pattern)
-            current_ops = _ops_from_pattern(pattern)
-            current_body = [line]
-            body_depth = _brace_delta(line)
-            body_started = bool(code.split("=>", 1)[1].strip())
-            pending_pattern = []
-            if body_started and body_depth == 0:
-                arms.append((current_ops, "\n".join(current_body)))
-                current_ops = None
-                current_body = []
+def _iter_arms(
+    match: EmitterMatch, generated: str | None = None
+) -> list[tuple[list[str], str]]:
+    if generated is None:
+        generated = WIRE_SOURCE.read_text(encoding="utf-8")
+    names = op_kind_wire_names(generated)
+    if names is None:
+        raise ValueError("could not project canonical OpKind serde names")
+    arms = rust_match_arms(match.source, match.expression, depth=0)
+    if not arms:
+        raise ValueError(f"could not project typed arms in {match.function}")
+    selector = (
+        _selector_domains(match.expression, generated, names)
+        if match.expression != "op.kind"
+        else None
+    )
+    result: list[tuple[list[str], str]] = []
+    for arm in arms:
+        pattern = token_text(arm.pattern)
+        body = token_text(arm.body).removeprefix("{").removesuffix("}")
+        declined = body.rstrip(";") == "returnfalse"
+        if pattern == "_":
+            if not declined:
+                raise ValueError(f"unclassified wildcard in {match.function}")
             continue
-
-        current_body.append(line)
-        body_depth += _brace_delta(line)
-        body_started = body_started or bool(
-            _strip_rust_strings_and_comments(line).strip()
-        )
-        if body_started and body_depth == 0:
-            arms.append((current_ops, "\n".join(current_body)))
-            current_ops = None
-            current_body = []
-
-    if current_ops is not None:
-        arms.append((current_ops, "\n".join(current_body)))
-    if pending_pattern:
-        raise ValueError(
-            f"unterminated Luau emit_op match arm pattern: {pending_pattern!r}"
-        )
-    return arms
+        if selector is None:
+            kinds = kind_pattern_names(arm.pattern, names)
+        else:
+            enum, domains = selector
+            variants = [
+                re.fullmatch(
+                    rf"(?:molt_ir::tir::op_kinds_generated::)?{enum}::"
+                    r"(?P<variant>[A-Za-z_][A-Za-z0-9_]*)",
+                    part,
+                )
+                for part in pattern.split("|")
+            ]
+            if any(part is None or part["variant"] not in domains for part in variants):
+                raise ValueError(f"unclassified selector pattern in {match.function}")
+            kinds = frozenset(
+                kind
+                for part in variants
+                if part is not None
+                for kind in domains[part["variant"]]
+            )
+        if kinds is None:
+            raise ValueError(
+                f"unclassified typed pattern in {match.function}: {pattern}"
+            )
+        if not declined:
+            result.append((sorted(kinds), arm.body))
+    return result
 
 
 def _classify(op: str, body: str) -> Row:
@@ -410,14 +360,27 @@ def _classify(op: str, body: str) -> Row:
     )
 
 
+@scan_memo()
 def collect_rows_from_text(text: str) -> list[Row]:
     by_op: dict[str, Row] = {}
     match_texts = _extract_emit_op_matches(text)
     if not match_texts:
         raise ValueError("could not find Luau emitter op-kind match arms")
-    for match_text in match_texts:
-        for ops, body in _iter_arms(match_text):
+    generated = WIRE_SOURCE.read_text(encoding="utf-8")
+    delegated: set[str] = set()
+    # emit_op tries the family emitters before its exhaustive final refusal.
+    # A family arm therefore owns its kind even though the fallback names it.
+    # Source filename order must not turn that fallback into a support claim or
+    # overwrite an actual lowering with a refusal it never reaches.
+    for match_text in sorted(
+        match_texts, key=lambda match: match.function != "emit_op"
+    ):
+        for ops, body in _iter_arms(match_text, generated):
             for op in ops:
+                if match_text.function != "emit_op":
+                    if op in delegated:
+                        raise ValueError(f"duplicate Luau family emitter for {op}")
+                    delegated.add(op)
                 by_op[op] = _classify(op, body)
 
     # A generated pre-source rejection is itself the backend's implementation

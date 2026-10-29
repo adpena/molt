@@ -272,7 +272,7 @@ impl ScalarRepresentationPlan {
         let needs_direct_numeric = func_ir
             .ops
             .iter()
-            .any(|op| Self::simple_op_supports_direct_numeric_result(&op.kind));
+            .any(|op| Self::simple_op_supports_direct_numeric_result(op.kind));
         // Tests can retain the former eager view as an independent negative
         // demand control without maintaining a second projection algorithm.
         let needs_optimized_view = FORCE_OPTIMIZED_VIEW || needs_primary || needs_direct_numeric;
@@ -394,7 +394,7 @@ impl ScalarRepresentationPlan {
         let needs_direct_numeric = func_ir
             .ops
             .iter()
-            .any(|op| Self::simple_op_supports_direct_numeric_result(&op.kind));
+            .any(|op| Self::simple_op_supports_direct_numeric_result(op.kind));
         trace_stage("before_fact_index");
         let fact_index = FunctionFactIndex::for_function(func_ir);
         let indexed_fact_index = fact_index
@@ -775,14 +775,14 @@ impl ScalarRepresentationPlan {
     }
 
     pub fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
-        simpleir_integer_semantics_table(op.kind.as_str()).prefers_integer_runtime_lane()
+        simpleir_integer_semantics_table(op.kind).prefers_integer_runtime_lane()
             && op.args.as_ref().is_some_and(|args| {
                 !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
             })
     }
 
     pub fn op_index_key_is_integer_family(&self, op: &OpIR) -> bool {
-        op.kind == "index"
+        op.kind == molt_ir::OpKind::Index
             && op.args.as_ref().is_some_and(|args| {
                 args.get(1)
                     .is_some_and(|key| self.name_is_integer_family(key))
@@ -966,7 +966,10 @@ impl ScalarRepresentationPlan {
     fn mark_container_storage_ops(&mut self, func_ir: &FunctionIR) {
         self.container_storage_ops.clear();
         for (op_index, op) in func_ir.ops.iter().enumerate() {
-            if !matches!(op.kind.as_str(), "index" | "store_index" | "dict_set") {
+            if !matches!(
+                op.kind,
+                molt_ir::OpKind::Index | molt_ir::OpKind::StoreIndex | molt_ir::OpKind::DictSet
+            ) {
                 continue;
             }
             let Some(container) = op.args.as_ref().and_then(|args| args.first()) else {
@@ -1015,9 +1018,9 @@ impl ScalarRepresentationPlan {
                 }
                 let inserted = if let Some(source) = alias_source_name(op) {
                     self.integer_family_names.contains(source)
-                } else if simpleir_integer_semantics_table(op.kind.as_str()).integer_only_result() {
+                } else if simpleir_integer_semantics_table(op.kind).integer_only_result() {
                     true
-                } else if simpleir_integer_semantics_table(op.kind.as_str())
+                } else if simpleir_integer_semantics_table(op.kind)
                     .integer_result_when_operands_integer()
                 {
                     op.args.as_ref().is_some_and(|args| {
@@ -1038,7 +1041,7 @@ impl ScalarRepresentationPlan {
         let mut names = HashSet::with_capacity(func_ir.ops.len() / 4 + 1);
         for op in &func_ir.ops {
             if let Some(out) = op.out.as_deref()
-                && simple_op_produces_non_scalar_value(op.kind.as_str())
+                && simple_op_produces_non_scalar_value(op.kind)
             {
                 names.insert(out.to_string());
             }
@@ -1120,7 +1123,7 @@ impl ScalarRepresentationPlan {
 
     #[cfg(any(test, feature = "wasm-backend"))]
     pub fn op_direct_numeric_repr(&self, op_index: usize, op: &OpIR) -> Option<Repr> {
-        Self::simple_op_supports_direct_numeric_result(op.kind.as_str())
+        Self::simple_op_supports_direct_numeric_result(op.kind)
             .then(|| self.direct_numeric_op_reprs.get(&op_index).copied())
             .flatten()
     }
@@ -1167,7 +1170,11 @@ impl ScalarRepresentationPlan {
         func_ir: &FunctionIR,
         tir_func: &TirFunction,
     ) -> BTreeMap<usize, TypedSlotStoreMode> {
-        if !func_ir.ops.iter().any(|op| op.kind == "store") {
+        if !func_ir
+            .ops
+            .iter()
+            .any(|op| op.kind == molt_ir::OpKind::Store)
+        {
             return BTreeMap::new();
         }
         let mut current_by_origin: BTreeMap<usize, Option<usize>> = BTreeMap::new();
@@ -1208,8 +1215,8 @@ impl ScalarRepresentationPlan {
             let Some((_, offset)) = lifted.plain_typed_slot_store() else {
                 continue;
             };
-            let original_kind = match lifted.attrs.get("_original_kind") {
-                Some(AttrValue::Str(kind)) => kind.as_str(),
+            let original_kind = match lifted.origin {
+                Some(kind) => kind,
                 _ => continue,
             };
             if current.kind != original_kind
@@ -1386,9 +1393,7 @@ impl ScalarRepresentationPlan {
                     let Some(&Some(op_index)) = current_ops_by_output.get(output) else {
                         continue;
                     };
-                    if !Self::simple_op_supports_direct_numeric_result(
-                        func_ir.ops[op_index].kind.as_str(),
-                    ) {
+                    if !Self::simple_op_supports_direct_numeric_result(func_ir.ops[op_index].kind) {
                         continue;
                     }
                     let Some(repr) = Self::direct_numeric_repr_for_tir_op(op, carrier_by_value)
@@ -1406,24 +1411,21 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn simple_op_supports_direct_numeric_result(kind: &str) -> bool {
+    fn simple_op_supports_direct_numeric_result(kind: molt_ir::OpKind) -> bool {
         matches!(
             kind,
-            "add"
-                | "inplace_add"
-                | "sub"
-                | "inplace_sub"
-                | "mul"
-                | "inplace_mul"
-                | "bit_and"
-                | "inplace_bit_and"
-                | "bit_or"
-                | "inplace_bit_or"
-                | "bit_xor"
-                | "inplace_bit_xor"
-                | "bitand"
-                | "bitor"
-                | "bitxor"
+            molt_ir::OpKind::Add
+                | molt_ir::OpKind::InplaceAdd
+                | molt_ir::OpKind::Sub
+                | molt_ir::OpKind::InplaceSub
+                | molt_ir::OpKind::Mul
+                | molt_ir::OpKind::InplaceMul
+                | molt_ir::OpKind::BitAnd
+                | molt_ir::OpKind::InplaceBitAnd
+                | molt_ir::OpKind::BitOr
+                | molt_ir::OpKind::InplaceBitOr
+                | molt_ir::OpKind::BitXor
+                | molt_ir::OpKind::InplaceBitXor
         )
     }
 
@@ -1632,22 +1634,17 @@ impl ScalarRepresentationPlan {
     fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> HashSet<String> {
         let mut unsafe_set = HashSet::with_capacity(func_ir.ops.len() / 4 + 1);
         for (op_index, op) in func_ir.ops.iter().enumerate() {
-            match op.kind.as_str() {
-                "call"
-                | "call_method"
-                | "call_builtin"
-                | "call_function_value"
-                | "call_super"
-                | "call_kw"
-                | "call_star"
-                | "call_ex"
-                | "bytearray_fill_range" => {
+            match op.kind {
+                molt_ir::OpKind::Call
+                | molt_ir::OpKind::CallMethod
+                | molt_ir::OpKind::CallBuiltin
+                | molt_ir::OpKind::BytearrayFillRange => {
                     self.collect_scalar_args(op, &mut unsafe_set);
                 }
-                "store_attr" | "store_global" | "store_name" => {
+                molt_ir::OpKind::StoreAttr => {
                     self.collect_scalar_args(op, &mut unsafe_set);
                 }
-                "store_index" => {
+                molt_ir::OpKind::StoreIndex => {
                     let has_flat_int_storage = self.op_has_container_storage(
                         op_index,
                         op,
@@ -1661,18 +1658,13 @@ impl ScalarRepresentationPlan {
                         unsafe_set.insert(val_name.clone());
                     }
                 }
-                _ if simpleir_return_shape(op.kind.as_str()) == SimpleIrReturnShape::Value => {
+                _ if simpleir_return_shape(op.kind) == SimpleIrReturnShape::Value => {
                     self.collect_scalar_args(op, &mut unsafe_set);
                 }
-                "inc_ref" | "dec_ref" | "borrow" | "release" => {
-                    self.collect_scalar_args(op, &mut unsafe_set);
-                    if let Some(var) = &op.var
-                        && self.name_is_slot_scalar(var)
-                    {
-                        unsafe_set.insert(var.clone());
-                    }
-                }
-                "state_yield" => {
+                molt_ir::OpKind::IncRef
+                | molt_ir::OpKind::DecRef
+                | molt_ir::OpKind::Borrow
+                | molt_ir::OpKind::Release => {
                     self.collect_scalar_args(op, &mut unsafe_set);
                     if let Some(var) = &op.var
                         && self.name_is_slot_scalar(var)
@@ -1680,7 +1672,15 @@ impl ScalarRepresentationPlan {
                         unsafe_set.insert(var.clone());
                     }
                 }
-                "delete_var" => {
+                molt_ir::OpKind::StateYield => {
+                    self.collect_scalar_args(op, &mut unsafe_set);
+                    if let Some(var) = &op.var
+                        && self.name_is_slot_scalar(var)
+                    {
+                        unsafe_set.insert(var.clone());
+                    }
+                }
+                molt_ir::OpKind::DeleteVar => {
                     if let Some(binding) = simple_ir_binding(op)
                         && self.name_is_slot_scalar(binding.destination)
                     {
@@ -1730,46 +1730,49 @@ impl ScalarRepresentationPlan {
         let is_str = |name: &str| has_kind(name, ScalarKind::Str);
         let is_int =
             |name: &str| has_kind(name, ScalarKind::Int) || has_kind(name, ScalarKind::Bool);
-        if kind_to_opcode_table(&op.kind) == Some(OpCode::ConstInt) {
+        if kind_to_opcode_table(op.kind) == Some(OpCode::ConstInt) {
             return Some(ScalarKind::Int);
         }
-        match op.kind.as_str() {
-            "loop_index_start" | "loop_index_next" | "len" => Some(ScalarKind::Int),
-            "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" => {
-                Some(ScalarKind::Int)
-            }
-            "const_bool" => Some(ScalarKind::Bool),
-            "const_float" => Some(ScalarKind::Float),
-            "const_str" => Some(ScalarKind::Str),
-            "float_from_obj" => Some(ScalarKind::Float),
-            "copy" | "copy_var" | "load_var" | "identity_alias" | "binding_alias" => {
-                alias_source_name(op).and_then(|src| {
-                    if has_kind(src, ScalarKind::Int) {
-                        Some(ScalarKind::Int)
-                    } else if has_kind(src, ScalarKind::Bool) {
-                        Some(ScalarKind::Bool)
-                    } else if has_kind(src, ScalarKind::Float) {
-                        Some(ScalarKind::Float)
-                    } else if has_kind(src, ScalarKind::Str) {
-                        Some(ScalarKind::Str)
-                    } else {
-                        None
-                    }
-                })
-            }
-            "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "is" => Some(ScalarKind::Bool),
-            "bool" | "cast_bool" | "builtin_bool" | "is_truthy" | "not" => {
-                first_source().and_then(|src| {
-                    if has_kind(src, ScalarKind::Bool) {
-                        Some(ScalarKind::Bool)
-                    } else if is_int(src) {
-                        Some(ScalarKind::Int)
-                    } else {
-                        None
-                    }
-                })
-            }
-            "if" => first_source().and_then(|src| {
+        match op.kind {
+            molt_ir::OpKind::LoopIndexStart
+            | molt_ir::OpKind::LoopIndexNext
+            | molt_ir::OpKind::Len => Some(ScalarKind::Int),
+            molt_ir::OpKind::GpuThreadId
+            | molt_ir::OpKind::GpuBlockId
+            | molt_ir::OpKind::GpuBlockDim
+            | molt_ir::OpKind::GpuGridDim => Some(ScalarKind::Int),
+            molt_ir::OpKind::ConstBool => Some(ScalarKind::Bool),
+            molt_ir::OpKind::ConstFloat => Some(ScalarKind::Float),
+            molt_ir::OpKind::ConstStr => Some(ScalarKind::Str),
+            molt_ir::OpKind::FloatFromObj => Some(ScalarKind::Float),
+            molt_ir::OpKind::Copy
+            | molt_ir::OpKind::CopyVar
+            | molt_ir::OpKind::LoadVar
+            | molt_ir::OpKind::IdentityAlias
+            | molt_ir::OpKind::BindingAlias => alias_source_name(op).and_then(|src| {
+                if has_kind(src, ScalarKind::Int) {
+                    Some(ScalarKind::Int)
+                } else if has_kind(src, ScalarKind::Bool) {
+                    Some(ScalarKind::Bool)
+                } else if has_kind(src, ScalarKind::Float) {
+                    Some(ScalarKind::Float)
+                } else if has_kind(src, ScalarKind::Str) {
+                    Some(ScalarKind::Str)
+                } else {
+                    None
+                }
+            }),
+            molt_ir::OpKind::Lt
+            | molt_ir::OpKind::Le
+            | molt_ir::OpKind::Gt
+            | molt_ir::OpKind::Ge
+            | molt_ir::OpKind::Eq
+            | molt_ir::OpKind::Ne
+            | molt_ir::OpKind::Is => Some(ScalarKind::Bool),
+            molt_ir::OpKind::Bool
+            | molt_ir::OpKind::CastBool
+            | molt_ir::OpKind::BuiltinBool
+            | molt_ir::OpKind::Not => first_source().and_then(|src| {
                 if has_kind(src, ScalarKind::Bool) {
                     Some(ScalarKind::Bool)
                 } else if is_int(src) {
@@ -1778,7 +1781,16 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }),
-            "add" | "inplace_add" => {
+            molt_ir::OpKind::If => first_source().and_then(|src| {
+                if has_kind(src, ScalarKind::Bool) {
+                    Some(ScalarKind::Bool)
+                } else if is_int(src) {
+                    Some(ScalarKind::Int)
+                } else {
+                    None
+                }
+            }),
+            molt_ir::OpKind::Add | molt_ir::OpKind::InplaceAdd => {
                 if args_all(&is_str) {
                     Some(ScalarKind::Str)
                 } else if args_all(&is_float)
@@ -1791,9 +1803,21 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }
-            "sub" | "mul" | "inplace_sub" | "inplace_mul" | "floordiv" | "mod" | "mod_"
-            | "inplace_floordiv" | "inplace_mod" | "bit_and" | "bit_or" | "bit_xor" | "bitand"
-            | "bitor" | "bitxor" | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" => {
+            molt_ir::OpKind::Sub
+            | molt_ir::OpKind::Mul
+            | molt_ir::OpKind::InplaceSub
+            | molt_ir::OpKind::InplaceMul
+            | molt_ir::OpKind::Floordiv
+            | molt_ir::OpKind::Mod
+            | molt_ir::OpKind::Mod_
+            | molt_ir::OpKind::InplaceFloordiv
+            | molt_ir::OpKind::InplaceMod
+            | molt_ir::OpKind::BitAnd
+            | molt_ir::OpKind::BitOr
+            | molt_ir::OpKind::BitXor
+            | molt_ir::OpKind::InplaceBitAnd
+            | molt_ir::OpKind::InplaceBitOr
+            | molt_ir::OpKind::InplaceBitXor => {
                 if args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
@@ -1804,7 +1828,7 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }
-            "pow" | "inplace_pow" => {
+            molt_ir::OpKind::Pow | molt_ir::OpKind::InplacePow => {
                 if (args.len() >= 2 && is_float(&args[1]))
                     || args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
@@ -1814,7 +1838,7 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }
-            "div" | "inplace_div" => {
+            molt_ir::OpKind::Div | molt_ir::OpKind::InplaceDiv => {
                 if args_all(&is_float)
                     || (args_any(&is_float) && args.iter().all(|arg| is_float(arg) || is_int(arg)))
                 {
@@ -1823,14 +1847,22 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }
-            "lshift" | "rshift" | "shl" | "shr" | "inplace_lshift" | "inplace_rshift" => {
+            molt_ir::OpKind::Lshift
+            | molt_ir::OpKind::Rshift
+            | molt_ir::OpKind::Shl
+            | molt_ir::OpKind::Shr
+            | molt_ir::OpKind::InplaceLshift
+            | molt_ir::OpKind::InplaceRshift => {
                 if args_all(&is_int) {
                     Some(ScalarKind::Int)
                 } else {
                     None
                 }
             }
-            "neg" | "pos" | "abs" | "builtin_abs" => first_source().and_then(|src| {
+            molt_ir::OpKind::Neg
+            | molt_ir::OpKind::Pos
+            | molt_ir::OpKind::Abs
+            | molt_ir::OpKind::BuiltinAbs => first_source().and_then(|src| {
                 if has_kind(src, ScalarKind::Float) {
                     Some(ScalarKind::Float)
                 } else if is_int(src) {
@@ -1839,10 +1871,10 @@ impl ScalarRepresentationPlan {
                     None
                 }
             }),
-            "invert" => first_source()
+            molt_ir::OpKind::Invert => first_source()
                 .filter(|src| is_int(src))
                 .map(|_| ScalarKind::Int),
-            "index" => op.out.as_deref().and_then(|out| self.name_scalar_kind(out)),
+            molt_ir::OpKind::Index => op.out.as_deref().and_then(|out| self.name_scalar_kind(out)),
             _ => None,
         }
     }

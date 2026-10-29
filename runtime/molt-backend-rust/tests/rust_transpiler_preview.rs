@@ -3,11 +3,8 @@
 use molt_backend_rust::rust::RustBackend;
 use molt_backend_rust::{FunctionIR, OpIR, SimpleIR};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 mod cargo_test_artifacts {
@@ -26,7 +23,7 @@ fn emitted_sys_default_and_full_release_metadata_execute() {
         functions: vec![FunctionIR {
             name: "molt_main".into(),
             return_abi: molt_ir::FunctionReturnAbi::Void,
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             ..FunctionIR::default()
         }],
         profile: None,
@@ -85,63 +82,63 @@ fn target_version_metadata() {{
 
 #[test]
 fn rust_backend_rejects_class_slots_without_object_representation() {
-    let mut alloc_obj = op("alloc_class");
+    let mut alloc_obj = op(molt_ir::OpKind::AllocClass);
     alloc_obj.args = Some(vec!["point_cls".to_string()]);
     alloc_obj.value = Some(24);
     alloc_obj.out = Some("point_obj".to_string());
 
-    let mut none0 = op("const_none");
+    let mut none0 = op(molt_ir::OpKind::ConstNone);
     none0.out = Some("slot0_init".to_string());
 
-    let mut store0_init = op("store");
+    let mut store0_init = op(molt_ir::OpKind::Store);
     store0_init.args = Some(vec!["point_obj".to_string(), "slot0_init".to_string()]);
     store0_init.value = Some(0);
 
-    let mut none1 = op("const_none");
+    let mut none1 = op(molt_ir::OpKind::ConstNone);
     none1.out = Some("slot1_init".to_string());
 
-    let mut store1_init = op("store");
+    let mut store1_init = op(molt_ir::OpKind::Store);
     store1_init.args = Some(vec!["point_obj".to_string(), "slot1_init".to_string()]);
     store1_init.value = Some(8);
 
-    let mut init_name = op("const_str");
+    let mut init_name = op(molt_ir::OpKind::ConstStr);
     init_name.s_value = Some("__init__".to_string());
     init_name.out = Some("init_name".to_string());
 
-    let mut get_init = op("get_attr_name");
+    let mut get_init = op(molt_ir::OpKind::GetAttrName);
     get_init.args = Some(vec!["point_cls".to_string(), "init_name".to_string()]);
     get_init.out = Some("init_func".to_string());
 
-    let mut bind_init = op("bound_method_new");
+    let mut bind_init = op(molt_ir::OpKind::BoundMethodNew);
     bind_init.args = Some(vec!["init_func".to_string(), "point_obj".to_string()]);
     bind_init.out = Some("bound_init".to_string());
 
-    let mut call_args = op("callargs_new");
+    let mut call_args = op(molt_ir::OpKind::CallargsNew);
     call_args.out = Some("call_args".to_string());
 
-    let mut call_init = op("call_bind");
+    let mut call_init = op(molt_ir::OpKind::CallBind);
     call_init.args = Some(vec!["bound_init".to_string(), "call_args".to_string()]);
     call_init.out = Some("init_result".to_string());
 
-    let mut store0 = op("store");
+    let mut store0 = op(molt_ir::OpKind::Store);
     store0.args = Some(vec!["point_obj".to_string(), "x".to_string()]);
     store0.value = Some(0);
 
-    let mut store1 = op("store");
+    let mut store1 = op(molt_ir::OpKind::Store);
     store1.args = Some(vec!["point_obj".to_string(), "y".to_string()]);
     store1.value = Some(8);
 
-    let mut load0 = op("load");
+    let mut load0 = op(molt_ir::OpKind::Load);
     load0.args = Some(vec!["point_obj".to_string()]);
     load0.value = Some(0);
     load0.out = Some("loaded_x".to_string());
 
-    let mut load1 = op("load");
+    let mut load1 = op(molt_ir::OpKind::Load);
     load1.args = Some(vec!["point_obj".to_string()]);
     load1.value = Some(8);
     load1.out = Some("loaded_y".to_string());
 
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["loaded_y".to_string()]);
 
     let ir = SimpleIR {
@@ -194,29 +191,29 @@ fn rust_backend_rejects_class_slots_without_object_representation() {
 
 #[test]
 fn rust_backend_rejects_module_attrs_without_python_object_protocols() {
-    let mut module_new = op("module_new");
+    let mut module_new = op(molt_ir::OpKind::ModuleNew);
     module_new.out = Some("module_obj".to_string());
 
-    let mut attr_name = op("const_str");
+    let mut attr_name = op(molt_ir::OpKind::ConstStr);
     attr_name.s_value = Some("Point".to_string());
     attr_name.out = Some("attr_name".to_string());
 
-    let mut attr_value = op("const_str");
+    let mut attr_value = op(molt_ir::OpKind::ConstStr);
     attr_value.s_value = Some("Point".to_string());
     attr_value.out = Some("point_value".to_string());
 
-    let mut module_set = op("module_set_attr");
+    let mut module_set = op(molt_ir::OpKind::ModuleSetAttr);
     module_set.args = Some(vec![
         "module_obj".to_string(),
         "attr_name".to_string(),
         "point_value".to_string(),
     ]);
 
-    let mut module_get = op("module_get_attr");
+    let mut module_get = op(molt_ir::OpKind::ModuleGetAttr);
     module_get.args = Some(vec!["module_obj".to_string(), "attr_name".to_string()]);
     module_get.out = Some("loaded_cls".to_string());
 
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["loaded_cls".to_string()]);
 
     let ir = SimpleIR {
@@ -257,11 +254,15 @@ fn rust_backend_rejects_module_attrs_without_python_object_protocols() {
 
 #[test]
 fn rust_backend_rejects_runtime_value_surface_without_catchable_exceptions() {
-    for kind in ["str_from_obj", "repr_from_obj", "ascii_from_obj"] {
+    for kind in [
+        molt_ir::OpKind::StrFromObj,
+        molt_ir::OpKind::ReprFromObj,
+        molt_ir::OpKind::AsciiFromObj,
+    ] {
         let mut call = op(kind);
         call.args = Some(vec!["word".to_string()]);
         call.out = Some("converted".to_string());
-        let mut ret = op("ret");
+        let mut ret = op(molt_ir::OpKind::Ret);
         ret.args = Some(vec!["converted".to_string()]);
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -293,15 +294,15 @@ fn rust_backend_rejects_runtime_value_surface_without_catchable_exceptions() {
 
 #[test]
 fn rust_backend_rejects_valid_branch_without_python_truthiness() {
-    let mut cond = op("const_bool");
+    let mut cond = op(molt_ir::OpKind::ConstBool);
     cond.value = Some(1);
     cond.out = Some("cond".to_string());
 
-    let mut branch = op("br_if");
+    let mut branch = op(molt_ir::OpKind::BrIf);
     branch.args = Some(vec!["cond".to_string()]);
     branch.value = Some(1);
 
-    let mut label = op("label");
+    let mut label = op(molt_ir::OpKind::Label);
     label.value = Some(1);
 
     let ir = SimpleIR {
@@ -309,7 +310,7 @@ fn rust_backend_rejects_valid_branch_without_python_truthiness() {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_branch_gap".to_string(),
             params: Vec::new(),
-            ops: vec![cond, branch, label, op("ret_void")],
+            ops: vec![cond, branch, label, op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -337,10 +338,10 @@ fn rust_backend_rejects_valid_branch_without_python_truthiness() {
 
 #[test]
 fn rust_backend_rejects_sys_version_call_without_catchable_exceptions() {
-    let mut call = op("call");
+    let mut call = op(molt_ir::OpKind::Call);
     call.s_value = Some("molt_sys_version".to_string());
     call.out = Some("version".to_string());
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["version".to_string()]);
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -367,10 +368,10 @@ fn rust_backend_rejects_sys_version_call_without_catchable_exceptions() {
 
 #[test]
 fn rust_backend_keeps_admitted_float_programs_available() {
-    let mut value = op("const_float");
+    let mut value = op(molt_ir::OpKind::ConstFloat);
     value.f_value = Some(1.5);
     value.out = Some("answer".to_string());
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["answer".to_string()]);
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -391,11 +392,11 @@ fn rust_backend_keeps_admitted_float_programs_available() {
 
 #[test]
 fn rust_backend_rejects_sys_import_without_python_import_protocol() {
-    let mut import_sys = op("module_import");
+    let mut import_sys = op(molt_ir::OpKind::ModuleImport);
     import_sys.s_value = Some("sys".to_string());
     import_sys.out = Some("sys_module".to_string());
 
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["sys_module".to_string()]);
 
     let ir = SimpleIR {

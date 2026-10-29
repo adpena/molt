@@ -3,9 +3,11 @@ use super::list_index_fast_path::{
     ListIndexFastPathState, ListStorageField, generic_list_int_lane_eligible,
     index_fallback_import_name, observe_generic_list_storage,
 };
+#[cfg(test)]
+use molt_ir::OpKind;
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &["index"];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;OpKind::Index);
 
 /// Publish an owned index result through boxed transport; a discarded result
 /// is released by the owned-result sink.

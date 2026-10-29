@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 /// Deterministic typed transport for values live into a semantic TIR block.
 ///
@@ -154,10 +155,8 @@ impl NativeSsaValues {
     ) -> Self {
         // Backend-managed loop carriers and resume-frame values do not expose
         // every definition as an immutable value in this invocation.
-        let explicit_definitions = !stateful
-            && !func.ops.iter().any(|op| {
-                crate::tir::op_kinds_generated::simpleir_kind_is_pre_ssa_rewritten(&op.kind)
-            });
+        let explicit_definitions =
+            !stateful && !func.ops.iter().any(|op| op.kind.is_pre_ssa_rewritten());
         Self::with_facts(
             &func.params,
             &func.ops,
@@ -330,11 +329,11 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
     slot_backed_join_names.extend(all_store_var_targets);
 
     for op in ops {
-        match op.kind.as_str() {
-            "try_start" => {
+        match op.kind {
+            OpKind::TryStart => {
                 exception_region_depth += 1;
             }
-            "exception_pop" => {
+            OpKind::ExceptionPop => {
                 exception_region_depth = (exception_region_depth - 1).max(0);
             }
             _ if exception_region_depth > 0 && simple_ir_binding(op).is_some() => {
@@ -350,7 +349,7 @@ pub(in crate::native_backend::function_compiler) fn collect_slot_backed_join_nam
                     }
                 }
             }
-            "copy_var" | "load_var" if exception_region_depth > 0 => {
+            OpKind::CopyVar | OpKind::LoadVar if exception_region_depth > 0 => {
                 // Use the same generated read roles as copy/load emission:
                 // explicit args make `var` metadata, not another storage home.
                 if let Some(name) = preanalyze_alias_source(op)

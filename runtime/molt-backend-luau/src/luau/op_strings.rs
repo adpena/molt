@@ -2,11 +2,11 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_string_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
+        match op.kind {
             // ================================================================
             // String ops
             // ================================================================
-            "string_join" => {
+            molt_ir::OpKind::StringJoin => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -15,7 +15,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = table.concat({list}, {sep})"));
                 }
             }
-            "string_format" => {
+            molt_ir::OpKind::StringFormat => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if !args.is_empty() {
@@ -34,7 +34,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_strip" => {
+            molt_ir::OpKind::StringStrip => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
@@ -42,7 +42,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = ({s}:match(\"^%s*(.-)%s*$\"))"));
                 }
             }
-            "string_lstrip" => {
+            molt_ir::OpKind::StringLstrip => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
@@ -50,7 +50,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = ({s}:match(\"^%s*(.+)\") or \"\")"));
                 }
             }
-            "string_rstrip" => {
+            molt_ir::OpKind::StringRstrip => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
@@ -58,7 +58,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = ({s}:match(\"^(.-)%s*$\"))"));
                 }
             }
-            "string_upper" => {
+            molt_ir::OpKind::StringUpper => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
@@ -68,7 +68,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_lower" => {
+            molt_ir::OpKind::StringLower => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
@@ -78,7 +78,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_startswith" | "string_startswith_slice" => {
+            molt_ir::OpKind::StringStartswith | molt_ir::OpKind::StringStartswithSlice => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -108,7 +108,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_endswith" | "string_endswith_slice" => {
+            molt_ir::OpKind::StringEndswith | molt_ir::OpKind::StringEndswithSlice => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -138,7 +138,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_replace" => {
+            molt_ir::OpKind::StringReplace => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
@@ -162,13 +162,19 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_find" | "string_find_slice" | "string_index" | "string_index_slice" => {
+            molt_ir::OpKind::StringFind
+            | molt_ir::OpKind::StringFindSlice
+            | molt_ir::OpKind::StringIndex
+            | molt_ir::OpKind::StringIndexSlice => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let sub = sanitize_ident(&args[1]);
-                    let needs_error = op.kind.contains("index");
+                    let needs_error = matches!(
+                        op.kind,
+                        molt_ir::OpKind::StringIndex | molt_ir::OpKind::StringIndexSlice
+                    );
                     let error_guard = if needs_error {
                         format!(
                             "; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end"
@@ -189,13 +195,19 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_rfind" | "string_rfind_slice" | "string_rindex" | "string_rindex_slice" => {
+            molt_ir::OpKind::StringRfind
+            | molt_ir::OpKind::StringRfindSlice
+            | molt_ir::OpKind::StringRindex
+            | molt_ir::OpKind::StringRindexSlice => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let s = sanitize_ident(&args[0]);
                     let sub = sanitize_ident(&args[1]);
-                    let needs_error = op.kind.contains("rindex");
+                    let needs_error = matches!(
+                        op.kind,
+                        molt_ir::OpKind::StringRindex | molt_ir::OpKind::StringRindexSlice
+                    );
                     let error_guard = if needs_error {
                         format!(
                             "; if {out} == -1 then error({{__type=\"ValueError\", __msg=\"substring not found\"}}) end"
@@ -219,7 +231,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_count" | "string_count_slice" => {
+            molt_ir::OpKind::StringCount | molt_ir::OpKind::StringCountSlice => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -239,7 +251,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_partition" => {
+            molt_ir::OpKind::StringPartition => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -253,7 +265,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_rpartition" => {
+            molt_ir::OpKind::StringRpartition => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -267,7 +279,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_splitlines" => {
+            molt_ir::OpKind::StringSplitlines => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
@@ -281,7 +293,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_split" => {
+            molt_ir::OpKind::StringSplit => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(s) = args.first() {
@@ -298,7 +310,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "string_split_validate" => {
+            molt_ir::OpKind::StringSplitValidate => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -309,7 +321,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_split_field" => {
+            molt_ir::OpKind::StringSplitField => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
@@ -321,7 +333,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_split_field_len" => {
+            molt_ir::OpKind::StringSplitFieldLen => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 3 {
@@ -333,7 +345,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_split_field_eq" => {
+            molt_ir::OpKind::StringSplitFieldEq => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 4 {
@@ -346,7 +358,7 @@ impl LuauBackend {
                     ));
                 }
             }
-            "string_concat" => {
+            molt_ir::OpKind::StringConcat => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -355,7 +367,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {a} .. {b}"));
                 }
             }
-            "string_repeat" => {
+            molt_ir::OpKind::StringRepeat => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -368,7 +380,7 @@ impl LuauBackend {
             // Python code and reads words as `str.split` does; this target
             // cannot check either, so the op declines, `(None, False)`, and the
             // ordinary loop lowered beside it runs.
-            "string_split_ws_dict_inc" | "string_split_sep_dict_inc" => {
+            molt_ir::OpKind::StringSplitWsDictInc | molt_ir::OpKind::StringSplitSepDictInc => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{nil, false}}"));
                 if let Some(ref out_name) = op.out {

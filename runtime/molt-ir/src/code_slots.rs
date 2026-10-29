@@ -92,9 +92,9 @@ impl CodeSlotBindings {
                     .class_definition
                     .as_deref()
                     .is_some_and(|symbol| !self.0.contains_key(symbol));
-                let violation = match op.kind.as_str() {
+                let violation = match op.kind {
                     _ if unbound_class_definition => Some(OpShapeViolation::UnboundClassDefinition),
-                    "code_slot_set" | "trace_enter_slot"
+                    crate::OpKind::CodeSlotSet | crate::OpKind::TraceEnterSlot
                         if op
                             .s_value
                             .as_deref()
@@ -102,7 +102,7 @@ impl CodeSlotBindings {
                     {
                         Some(OpShapeViolation::UnboundCodeSlot)
                     }
-                    "code_slots_init" if op.value != i64::try_from(self.len()).ok() => {
+                    crate::OpKind::CodeSlotsInit if op.value != i64::try_from(self.len()).ok() => {
                         Some(OpShapeViolation::CodeSlotCount {
                             expected: self.len(),
                             actual: op.value,
@@ -120,7 +120,7 @@ impl CodeSlotBindings {
                             } else {
                                 "code_metadata"
                             },
-                            kind: op.kind.clone(),
+                            kind: op.kind.to_string(),
                             violation,
                         },
                     });
@@ -178,14 +178,15 @@ mod tests {
     #[test]
     fn program_bindings_admit_unused_owners_and_diagnose_each_missing_reference() {
         let bindings: CodeSlotBindings = serde_json::from_str(r#"{"unused":0,"owner":1}"#).unwrap();
-        for kind in ["code_slot_set", "trace_enter_slot"] {
+        for kind in [crate::OpKind::CodeSlotSet, crate::OpKind::TraceEnterSlot] {
             let mut function = FunctionIR {
                 name: "owner".into(),
                 ops: vec![crate::OpIR {
-                    kind: kind.into(),
+                    kind,
                     s_value: Some("owner".into()),
-                    args: (kind == "code_slot_set").then(|| vec!["code".into(), "globals".into()]),
-                    ..Default::default()
+                    args: (kind == crate::OpKind::CodeSlotSet)
+                        .then(|| vec!["code".into(), "globals".into()]),
+                    ..crate::OpIR::new(kind)
                 }],
                 ..Default::default()
             };
@@ -196,16 +197,19 @@ mod tests {
             let error = bindings.validate_functions(&[function]).unwrap_err();
             assert_eq!(error.function, "owner");
             assert_eq!(error.op_index, 0);
-            assert_eq!(error.shape.kind, kind);
+            assert_eq!(error.shape.kind, kind.as_str());
             assert_eq!(error.shape.violation, OpShapeViolation::UnboundCodeSlot);
         }
-        for kind in ["class_set_definition", "guard_layout"] {
+        for kind in [
+            crate::OpKind::ClassSetDefinition,
+            crate::OpKind::GuardLayout,
+        ] {
             let mut function = FunctionIR {
                 name: "owner".into(),
                 ops: vec![crate::OpIR {
-                    kind: kind.into(),
+                    kind,
                     class_definition: Some("owner".into()),
-                    ..Default::default()
+                    ..crate::OpIR::new(kind)
                 }],
                 ..Default::default()
             };
@@ -215,7 +219,7 @@ mod tests {
             function.ops[0].class_definition = Some("class:absent:P".into());
             let error = bindings.validate_functions(&[function]).unwrap_err();
             assert_eq!(error.shape.family, "class_layout");
-            assert_eq!(error.shape.kind, kind);
+            assert_eq!(error.shape.kind, kind.as_str());
             assert_eq!(
                 error.shape.violation,
                 OpShapeViolation::UnboundClassDefinition
@@ -225,9 +229,9 @@ mod tests {
             let functions = [FunctionIR {
                 name: "molt_main".into(),
                 ops: vec![crate::OpIR {
-                    kind: "code_slots_init".into(),
+                    kind: crate::OpKind::CodeSlotsInit,
                     value: count,
-                    ..Default::default()
+                    ..crate::OpIR::new(crate::OpKind::CodeSlotsInit)
                 }],
                 ..Default::default()
             }];

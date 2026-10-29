@@ -94,8 +94,7 @@ fn owned_alias_source(func: &TirFunction, result: ValueId) -> Option<ValueId> {
         .find(|operation| operation.results == [result])
         .filter(|operation| {
             operation.opcode == OpCode::Copy
-                && operation.attrs.get("_original_kind")
-                    == Some(&AttrValue::Str("binding_alias".into()))
+                && operation.origin == Some(molt_ir::OpKind::BindingAlias)
         })
         .map(|operation| operation.operands[0])
 }
@@ -295,7 +294,7 @@ fn numbered_raw_scalar_stays_a_transparent_copy() {
     gvn::run(&mut func, &mut AnalysisManager::new());
     let copy = &func.blocks[&func.entry_block].ops[3];
     assert!(
-        copy.opcode == OpCode::Copy && !copy.attrs.contains_key("_original_kind"),
+        copy.opcode == OpCode::Copy && !copy.origin.is_some(),
         "{copy:?}"
     );
     copy_prop::run(&mut func);
@@ -326,9 +325,7 @@ fn numbered_type_guard_stays_a_transparent_alias() {
     gvn::run(&mut func, &mut AnalysisManager::new());
     let copy = &func.blocks[&func.entry_block].ops[2];
     assert!(
-        copy.opcode == OpCode::Copy
-            && copy.operands == [first]
-            && !copy.attrs.contains_key("_original_kind"),
+        copy.opcode == OpCode::Copy && copy.operands == [first] && !copy.origin.is_some(),
         "{copy:?}"
     );
     copy_prop::run(&mut func);
@@ -414,13 +411,10 @@ fn forwarded_load_keeps_the_reference_the_load_gave_it() {
     allocation.attrs.insert("value".into(), AttrValue::Int(16));
     let mut store = op(OpCode::StoreAttr, vec![object, text], vec![]);
     store.attrs.insert("value".into(), AttrValue::Int(0));
-    store
-        .attrs
-        .insert("_original_kind".into(), AttrValue::Str("store".into()));
+    store.origin = Some(molt_ir::OpKind::Store);
     let mut load = op(OpCode::LoadAttr, vec![object], vec![loaded]);
     load.attrs.insert("value".into(), AttrValue::Int(0));
-    load.attrs
-        .insert("_original_kind".into(), AttrValue::Str("load".into()));
+    load.origin = Some(molt_ir::OpKind::Load);
     body(
         &mut func,
         vec![

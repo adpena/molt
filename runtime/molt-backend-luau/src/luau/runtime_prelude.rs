@@ -361,17 +361,17 @@ pub(super) fn validate_ir_adapters(ir: &SimpleIR) -> Result<(), String> {
             // linkage. Opaque call operands retain their dynamic callable
             // contract, and code_new stores metadata rather than a target.
             let direct = matches!(
-                simpleir_call_target_role(&op.kind),
+                simpleir_call_target_role(op.kind),
                 Some(
                     SimpleIrCallTargetRole::ExternalOrRuntime
                         | SimpleIrCallTargetRole::InternalRequired
                 )
-            ) || op.kind == "func_new";
+            ) || op.kind == molt_ir::OpKind::FuncNew;
             if direct
                 && let Some(target) = op.s_value.as_deref()
                 && !functions.contains(target)
             {
-                let admission = if op.kind == "call"
+                let admission = if op.kind == molt_ir::OpKind::Call
                     && let Some(mapped) = op_calls::direct_builtin_target(target)
                 {
                     library.validate_adapter(mapped)
@@ -385,7 +385,9 @@ pub(super) fn validate_ir_adapters(ir: &SimpleIR) -> Result<(), String> {
                     function.name, op.kind,
                 ))?;
             }
-            if op.kind != "builtin_func" || op_calls::is_public_builtin_acquisition(op) {
+            if op.kind != molt_ir::OpKind::BuiltinFunc
+                || op_calls::is_public_builtin_acquisition(op)
+            {
                 continue;
             }
             if let Some(adapter) = op

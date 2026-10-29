@@ -25,6 +25,7 @@ use crate::native_backend::simple_backend::tests::{
     compile_selected_functions_direct, emit_direct_object,
 };
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
+use molt_ir::OpKind;
 use native_object_execution::{link_and_run_native_object, rustc_path};
 
 mod cargo_test_artifacts {
@@ -47,18 +48,16 @@ const INVOKE_FFI_IC_SYMBOL: &[u8] = b"molt_invoke_ffi_ic";
 
 fn const_int(out: &str, v: i64) -> OpIR {
     OpIR {
-        kind: "const".to_string(),
         out: Some(out.to_string()),
         value: Some(v),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Const)
     }
 }
 
 fn ret(name: &str) -> OpIR {
     OpIR {
-        kind: "ret".to_string(),
         args: Some(vec![name.to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Ret)
     }
 }
 
@@ -76,14 +75,13 @@ fn native_callable_program(
         ops.push(const_int(name, idx as i64 + 1));
     }
     ops.push(OpIR {
-        kind: "invoke_ffi".to_string(),
         out: Some("result".to_string()),
         args: Some(arg_names.iter().map(|s| s.to_string()).collect()),
         native_callable_export: Some(export_name.to_string()),
         native_callable_binding: Some(binding.to_string()),
         native_callable_abi: Some(abi.to_string()),
         native_callable_symbol: symbol.map(|s| s.to_string()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::InvokeFfi)
     });
     ops.push(ret("result"));
     SimpleIR {
@@ -274,17 +272,15 @@ fn cleanup_oracle_function(
 
 fn cleanup_classmethod_new(input: &str, out: &str) -> OpIR {
     OpIR {
-        kind: "classmethod_new".into(),
         args: Some(vec![input.into()]),
         out: Some(out.into()),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ClassmethodNew)
     }
 }
 
 fn cleanup_ret_void() -> OpIR {
     OpIR {
-        kind: "ret_void".into(),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::RetVoid)
     }
 }
 
@@ -295,23 +291,20 @@ fn scalarized_tuple_head_function(name: &str) -> FunctionIR {
         Some(&["dyn", "dyn"]),
         vec![
             OpIR {
-                kind: "tuple_new".into(),
                 args: Some(vec!["head".into(), "tail".into()]),
                 out: Some("pair".into()),
                 stack_eligible: Some(true),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::TupleNew)
             },
             OpIR {
-                kind: "const".into(),
                 out: Some("zero".into()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "index".into(),
                 args: Some(vec!["pair".into(), "zero".into()]),
                 out: Some("item".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Index)
             },
             ret("item"),
         ],
@@ -447,52 +440,46 @@ fn main() {
 
 fn cleanup_jump(label: i64) -> OpIR {
     OpIR {
-        kind: "jump".into(),
         value: Some(label),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Jump)
     }
 }
 
 fn cleanup_label(label: i64) -> OpIR {
     OpIR {
-        kind: "label".into(),
         value: Some(label),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Label)
     }
 }
 
 fn cleanup_br_if(condition: &str, label: i64) -> OpIR {
     OpIR {
-        kind: "br_if".into(),
         args: Some(vec![condition.into()]),
         value: Some(label),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::BrIf)
     }
 }
 
-fn cleanup_owned_alias_function(name: &str, alias_kind: &str) -> FunctionIR {
+fn cleanup_owned_alias_function(name: &str, alias_kind: OpKind) -> FunctionIR {
     cleanup_oracle_function(
         name,
         &[],
         None,
         vec![
             OpIR {
-                kind: "const_none".into(),
                 out: Some("borrowed".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             cleanup_classmethod_new("borrowed", "owner"),
             OpIR {
-                kind: alias_kind.into(),
                 args: Some(vec!["owner".into()]),
                 out: Some("alias".into()),
-                ..OpIR::default()
+                ..OpIR::new(alias_kind)
             },
             OpIR {
-                kind: "is".into(),
                 args: Some(vec!["alias".into(), "borrowed".into()]),
                 out: Some("alias_is_none".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Is)
             },
             cleanup_ret_void(),
         ],
@@ -506,31 +493,27 @@ fn cleanup_result_store_function(name: &str, first_owner: &str, second_owner: &s
         None,
         vec![
             OpIR {
-                kind: "const_none".into(),
                 out: Some("borrowed".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstNone)
             },
             cleanup_classmethod_new("borrowed", first_owner),
             OpIR {
-                kind: "store_var".into(),
                 var: Some("local".into()),
                 out: Some("first_result".into()),
                 args: Some(vec![first_owner.into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "load_var".into(),
                 var: Some("local".into()),
                 out: Some("snapshot".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoadVar)
             },
             cleanup_classmethod_new("borrowed", second_owner),
             OpIR {
-                kind: "store_var".into(),
                 var: Some("local".into()),
                 out: Some("second_result".into()),
                 args: Some(vec![second_owner.into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             ret("snapshot"),
         ],
@@ -570,10 +553,9 @@ fn native_unhandled_binding_without_out_fails_closed() {
         Some(&["dyn"]),
         vec![
             OpIR {
-                kind: "store_fast".into(),
                 var: Some("local".into()),
                 args: Some(vec!["source".into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreFast)
             },
             cleanup_ret_void(),
         ],
@@ -590,67 +572,58 @@ fn cleanup_integer_binding_function(
     let snapshot = "snapshot";
     let mut ops = vec![
         OpIR {
-            kind: "const_int".into(),
             out: Some("lhs".into()),
             value: Some(1_i64 << 31),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstInt)
         },
         OpIR {
-            kind: "const_int".into(),
             out: Some("rhs".into()),
             value: Some(1_i64 << 31),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstInt)
         },
         OpIR {
-            kind: "checked_mul".into(),
             args: Some(vec!["lhs".into(), "rhs".into()]),
             var: Some("wide".into()),
             out: Some("overflow".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::CheckedMul)
         },
         OpIR {
-            kind: "const_none".into(),
             out: Some("none_value".into()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstNone)
         },
     ];
     if boxed_destination {
         ops.push(OpIR {
-            kind: "store_var".into(),
             var: Some("local".into()),
             args: Some(vec!["none_value".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         });
     }
     ops.push(OpIR {
-        kind: "store_var".into(),
         var: Some("local".into()),
         out: Some(snapshot.into()),
         args: Some(vec!["wide".into()]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::StoreVar)
     });
     if identity_result {
         ops.extend([
             OpIR {
-                kind: "load_var".into(),
                 var: Some("local".into()),
                 out: Some("loaded".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoadVar)
             },
             OpIR {
-                kind: "is".into(),
                 args: Some(vec!["loaded".into(), snapshot.into()]),
                 out: Some("same_object".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Is)
             },
         ]);
     }
     if boxed_destination {
         ops.push(OpIR {
-            kind: "store_var".into(),
             var: Some("local".into()),
             args: Some(vec!["none_value".into()]),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::StoreVar)
         });
     }
     ops.push(ret(if identity_result {
@@ -694,10 +667,9 @@ fn native_binding_emission_rejects_empty_and_reserved_destinations() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "store_var".into(),
                     var: Some(destination.into()),
                     args: Some(vec!["source".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 cleanup_ret_void(),
             ],
@@ -814,15 +786,13 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 cleanup_ret_void(),
                 cleanup_label(20),
                 OpIR {
-                    kind: "const_none".into(),
                     out: Some("none_value".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstNone)
                 },
                 OpIR {
-                    kind: "is".into(),
                     args: Some(vec!["owner".into(), "none_value".into()]),
                     out: Some("owner_is_none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Is)
                 },
                 cleanup_ret_void(),
             ],
@@ -835,9 +805,8 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 cleanup_classmethod_new("condition", "owner"),
                 cleanup_br_if("condition", 30),
                 OpIR {
-                    kind: "release".into(),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Release)
                 },
                 cleanup_jump(40),
                 cleanup_label(30),
@@ -870,52 +839,45 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 ret("owner"),
             ],
         ),
-        cleanup_owned_alias_function(TARGET_NAMES[4], "copy"),
-        cleanup_owned_alias_function(TARGET_NAMES[5], "binding_alias"),
-        cleanup_owned_alias_function(TARGET_NAMES[6], "box"),
-        cleanup_owned_alias_function(TARGET_NAMES[7], "unbox"),
+        cleanup_owned_alias_function(TARGET_NAMES[4], OpKind::Copy),
+        cleanup_owned_alias_function(TARGET_NAMES[5], OpKind::BindingAlias),
+        cleanup_owned_alias_function(TARGET_NAMES[6], OpKind::Box),
+        cleanup_owned_alias_function(TARGET_NAMES[7], OpKind::Unbox),
         cleanup_oracle_function(
             TARGET_NAMES[8],
             &[],
             None,
             vec![
                 OpIR {
-                    kind: "const_none".into(),
                     out: Some("borrowed".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstNone)
                 },
                 const_int("index", 0),
                 const_int("limit", 2),
                 const_int("one", 1),
                 OpIR {
-                    kind: "loop_start".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopStart)
                 },
                 OpIR {
-                    kind: "lt".into(),
                     args: Some(vec!["index".into(), "limit".into()]),
                     out: Some("keep_going".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Lt)
                 },
                 OpIR {
-                    kind: "loop_break_if_false".into(),
                     args: Some(vec!["keep_going".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopBreakIfFalse)
                 },
                 cleanup_classmethod_new("borrowed", "loop_owner"),
                 OpIR {
-                    kind: "add".into(),
                     args: Some(vec!["index".into(), "one".into()]),
                     out: Some("index".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Add)
                 },
                 OpIR {
-                    kind: "loop_continue".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopContinue)
                 },
                 OpIR {
-                    kind: "loop_end".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoopEnd)
                 },
                 cleanup_ret_void(),
             ],
@@ -944,29 +906,25 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             None,
             vec![
                 OpIR {
-                    kind: "const_none".into(),
                     out: Some("borrowed".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstNone)
                 },
                 cleanup_classmethod_new("borrowed", "first_owner"),
                 OpIR {
-                    kind: "store_var".into(),
                     var: Some("_bb1_arg0".into()),
                     args: Some(vec!["first_owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "load_var".into(),
                     var: Some("_bb1_arg0".into()),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoadVar)
                 },
                 cleanup_classmethod_new("borrowed", "second_owner"),
                 OpIR {
-                    kind: "store_var".into(),
                     var: Some("_bb1_arg0".into()),
                     args: Some(vec!["second_owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 ret("snapshot"),
             ],
@@ -991,28 +949,24 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             None,
             vec![
                 OpIR {
-                    kind: "const_none".into(),
                     out: Some("borrowed".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstNone)
                 },
                 cleanup_classmethod_new("borrowed", "owner"),
                 OpIR {
-                    kind: "inc_ref".into(),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IncRef)
                 },
                 // Keep the retained owner observable between the two explicit
                 // operations; adjacent inc/release pairs are canonically elided.
                 OpIR {
-                    kind: "is".into(),
                     args: Some(vec!["owner".into(), "borrowed".into()]),
                     out: Some("owner_is_none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Is)
                 },
                 OpIR {
-                    kind: "release".into(),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Release)
                 },
                 cleanup_ret_void(),
             ],
@@ -1027,16 +981,14 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 cleanup_jump(110),
                 cleanup_label(100),
                 OpIR {
-                    kind: "inc_ref".into(),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IncRef)
                 },
                 cleanup_jump(110),
                 cleanup_label(110),
                 OpIR {
-                    kind: "release".into(),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Release)
                 },
                 cleanup_ret_void(),
             ],
@@ -1047,17 +999,15 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "iter_next_unboxed".into(),
                     args: Some(vec!["iterator".into()]),
                     var: Some("pair".into()),
                     out: Some("done".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IterNextUnboxed)
                 },
                 OpIR {
-                    kind: "unpack_sequence".into(),
                     args: Some(vec!["pair".into(), "left".into(), "right".into()]),
                     value: Some(2),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::UnpackSequence)
                 },
                 ret("pair"),
             ],
@@ -1069,39 +1019,33 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             None,
             vec![
                 OpIR {
-                    kind: "const_none".into(),
                     out: Some("borrowed".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstNone)
                 },
                 cleanup_classmethod_new("borrowed", "owner"),
                 OpIR {
-                    kind: "binding_alias".into(),
                     args: Some(vec!["owner".into()]),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::BindingAlias)
                 },
                 OpIR {
-                    kind: "inc_ref".into(),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IncRef)
                 },
                 cleanup_classmethod_new("borrowed", "owner"),
                 OpIR {
-                    kind: "release".into(),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Release)
                 },
                 // The surviving old-value handle balances its own credit and
                 // the explicit external credit from before the rebind.
                 OpIR {
-                    kind: "release".into(),
                     args: Some(vec!["snapshot".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Release)
                 },
                 OpIR {
-                    kind: "release".into(),
                     args: Some(vec!["snapshot".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Release)
                 },
                 cleanup_ret_void(),
             ],
@@ -1112,10 +1056,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "copy".into(),
                     args: Some(vec!["owner".into()]),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Copy)
                 },
                 cleanup_classmethod_new("owner", "owner"),
                 ret("snapshot"),
@@ -1158,18 +1101,16 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "store_var".into(),
                     var: Some("local".into()),
                     out: Some("owner".into()),
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 cleanup_classmethod_new("owner", "owner"),
                 OpIR {
-                    kind: "load_var".into(),
                     var: Some("local".into()),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoadVar)
                 },
                 ret("snapshot"),
             ],
@@ -1183,11 +1124,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 cleanup_classmethod_new("borrowed", "first_owner"),
                 cleanup_classmethod_new("borrowed", "metadata_owner"),
                 OpIR {
-                    kind: "load_var".into(),
                     args: Some(vec!["first_owner".into()]),
                     var: Some("metadata_owner".into()),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoadVar)
                 },
                 ret("snapshot"),
             ],
@@ -1198,11 +1138,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "iter_next_unboxed".into(),
                     args: Some(vec!["iterator".into()]),
                     var: Some("none".into()),
                     out: Some("done".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IterNextUnboxed)
                 },
                 ret("done"),
             ],
@@ -1213,11 +1152,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "iter_next_unboxed".into(),
                     args: Some(vec!["iterator".into()]),
                     var: Some("value".into()),
                     out: None,
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IterNextUnboxed)
                 },
                 ret("value"),
             ],
@@ -1228,11 +1166,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "iter_next_unboxed".into(),
                     args: Some(vec!["iterator".into()]),
                     var: None,
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IterNextUnboxed)
                 },
                 cleanup_ret_void(),
             ],
@@ -1243,11 +1180,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn", "dyn"]),
             vec![
                 OpIR {
-                    kind: "checked_add".into(),
                     args: Some(vec!["lhs".into(), "rhs".into()]),
                     var: Some("none".into()),
                     out: Some("overflow".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedAdd)
                 },
                 ret("overflow"),
             ],
@@ -1258,11 +1194,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn", "dyn"]),
             vec![
                 OpIR {
-                    kind: "checked_mul".into(),
                     args: Some(vec!["lhs".into(), "rhs".into()]),
                     var: None,
                     out: Some("overflow".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedMul)
                 },
                 ret("overflow"),
             ],
@@ -1273,24 +1208,21 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             None,
             vec![
                 OpIR {
-                    kind: "const_int".into(),
                     out: Some("limb".into()),
                     value: Some(1_i64 << 31),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "checked_mul".into(),
                     args: Some(vec!["limb".into(), "limb".into()]),
                     var: Some("wide".into()),
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedMul)
                 },
                 OpIR {
-                    kind: "checked_add".into(),
                     args: Some(vec!["wide".into(), "wide".into()]),
                     var: Some("none".into()),
                     out: Some("overflow".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedAdd)
                 },
                 ret("overflow"),
             ],
@@ -1301,31 +1233,27 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             None,
             vec![
                 OpIR {
-                    kind: "store_var".into(),
                     args: Some(vec!["none".into()]),
                     var: Some("local".into()),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 cleanup_classmethod_new("none", "owner"),
                 OpIR {
-                    kind: "store_var".into(),
                     args: Some(vec!["owner".into()]),
                     var: Some("local".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "store_var".into(),
                     args: Some(vec!["none".into()]),
                     var: Some("local".into()),
                     out: Some("cleared".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::StoreVar)
                 },
                 OpIR {
-                    kind: "is".into(),
                     args: Some(vec!["snapshot".into(), "cleared".into()]),
                     out: Some("both_none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Is)
                 },
                 ret("both_none"),
             ],
@@ -1336,10 +1264,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             None,
             vec![
                 OpIR {
-                    kind: "load_var".into(),
                     var: Some("none".into()),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::LoadVar)
                 },
                 ret("snapshot"),
             ],
@@ -1351,10 +1278,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "iter_next".into(),
                     args: Some(vec!["iterator".into()]),
                     out: None,
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IterNext)
                 },
                 cleanup_ret_void(),
             ],
@@ -1365,10 +1291,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "iter_next".into(),
                     args: Some(vec!["iterator".into()]),
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::IterNext)
                 },
                 cleanup_ret_void(),
             ],
@@ -1385,11 +1310,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn"]),
             vec![
                 OpIR {
-                    kind: "call".into(),
                     args: Some(vec!["source".into(), "none".into(), "none".into()]),
                     out: output.map(str::to_string),
                     s_value: Some("molt_dict_set".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::Call)
                 },
                 if output == Some("result") {
                     ret("result")
@@ -1399,7 +1323,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ));
     }
-    for (offset, kind) in [(49, "dict_set"), (52, "dict_update_missing")] {
+    for (offset, kind) in [(49, OpKind::DictSet), (52, OpKind::DictUpdateMissing)] {
         for (index, output) in [Some("result"), None, Some("none")].into_iter().enumerate() {
             functions.push(cleanup_oracle_function(
                 TARGET_NAMES[offset + index],
@@ -1407,10 +1331,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 Some(&["dyn"]),
                 vec![
                     OpIR {
-                        kind: kind.into(),
                         args: Some(vec!["source".into(), "none".into(), "none".into()]),
                         out: output.map(str::to_string),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     if output == Some("result") {
                         ret("result")
@@ -1427,10 +1350,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         Some(&["dyn"]),
         vec![
             OpIR {
-                kind: "store_index".into(),
                 args: Some(vec!["source".into(), "none".into(), "none".into()]),
                 out: Some("not_a_result".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreIndex)
             },
             cleanup_ret_void(),
         ],
@@ -1442,24 +1364,23 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         vec![
             cleanup_classmethod_new("none", "source"),
             OpIR {
-                kind: "dict_set".into(),
                 args: Some(vec!["source".into(), "none".into(), "none".into()]),
                 out: Some("result".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::DictSet)
             },
             ret("result"),
         ],
     ));
     for (name, kind, source_type, symbol, args) in [
-        (TARGET_NAMES[74], "store_index", "dict", None, 3),
+        (TARGET_NAMES[74], OpKind::StoreIndex, "dict", None, 3),
         (
             TARGET_NAMES[75],
-            "call",
+            OpKind::Call,
             "dyn",
             Some("molt_list_int_setitem"),
             3,
         ),
-        (TARGET_NAMES[76], "del_index", "dyn", None, 2),
+        (TARGET_NAMES[76], OpKind::DelIndex, "dyn", None, 2),
     ] {
         functions.push(cleanup_oracle_function(
             name,
@@ -1467,7 +1388,6 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&[source_type]),
             vec![
                 OpIR {
-                    kind: kind.into(),
                     args: Some(
                         std::iter::once("source".into())
                             .chain(std::iter::repeat_n("none".into(), args - 1))
@@ -1484,16 +1404,16 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                         .into(),
                     ),
                     s_value: symbol.map(str::to_string),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 cleanup_ret_void(),
             ],
         ));
     }
     for (offset, kind, width) in [
-        (57, "dict_new", 2),
-        (60, "set_new", 1),
-        (63, "frozenset_new", 1),
+        (57, OpKind::DictNew, 2),
+        (60, OpKind::SetNew, 1),
+        (63, OpKind::FrozensetNew, 1),
     ] {
         for (index, output) in [Some("result"), None, Some("none")].into_iter().enumerate() {
             let args = (0..3)
@@ -1512,10 +1432,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 vec![
                     cleanup_classmethod_new("none", "source"),
                     OpIR {
-                        kind: kind.into(),
                         args: Some(args),
                         out: output.map(str::to_string),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     if output == Some("result") {
                         ret("result")
@@ -1527,9 +1446,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         }
     }
     for (index, kind, width) in [
-        (66, "dict_new", 2),
-        (67, "set_new", 1),
-        (68, "frozenset_new", 1),
+        (66, OpKind::DictNew, 2),
+        (67, OpKind::SetNew, 1),
+        (68, OpKind::FrozensetNew, 1),
     ] {
         // Sources repeat across entries; `wider` first appears in a later
         // entry, so it is boxed only after the inserts that precede it.
@@ -1544,30 +1463,26 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             None,
             vec![
                 OpIR {
-                    kind: "const_int".into(),
                     value: Some(1_i64 << 31),
                     out: Some("limb".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "checked_mul".into(),
                     args: Some(vec!["limb".into(), "limb".into()]),
                     var: Some("wide".into()),
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedMul)
                 },
                 OpIR {
-                    kind: "checked_add".into(),
                     args: Some(vec!["wide".into(), "limb".into()]),
                     var: Some("wider".into()),
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedAdd)
                 },
                 OpIR {
-                    kind: kind.into(),
                     args: Some(sources.iter().map(|name| name.to_string()).collect()),
                     out: Some("result".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 ret("result"),
             ],
@@ -1585,10 +1500,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         functions.push(function);
     }
     for (index, kind, empty_args) in [
-        (69, "copy_var", false),
-        (70, "copy_var", true),
-        (71, "load_var", false),
-        (72, "load_var", true),
+        (69, OpKind::CopyVar, false),
+        (70, OpKind::CopyVar, true),
+        (71, OpKind::LoadVar, false),
+        (72, OpKind::LoadVar, true),
     ] {
         functions.push(cleanup_oracle_function(
             TARGET_NAMES[index],
@@ -1596,32 +1511,27 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             Some(&["dyn", "dyn"]),
             vec![
                 OpIR {
-                    kind: "try_start".into(),
                     value: Some(80),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::TryStart)
                 },
                 OpIR {
-                    kind: kind.into(),
                     var: Some("_bb1_arg0".into()),
                     args: Some(vec!["source".into()]),
                     out: Some("snapshot".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 OpIR {
-                    kind: "try_end".into(),
                     value: Some(80),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::TryEnd)
                 },
                 OpIR {
-                    kind: "exception_pop".into(),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ExceptionPop)
                 },
                 OpIR {
-                    kind: kind.into(),
                     var: Some("_bb1_arg0".into()),
                     args: empty_args.then(Vec::new),
                     out: Some("result".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 ret("result"),
                 cleanup_label(80),
@@ -1635,30 +1545,25 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         Some(&["dyn", "dyn"]),
         vec![
             OpIR {
-                kind: "if".into(),
                 args: Some(vec!["_bb1_arg0".into()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::If)
             },
             OpIR {
-                kind: "else".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Else)
             },
             OpIR {
-                kind: "end_if".into(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::EndIf)
             },
             OpIR {
-                kind: "phi".into(),
                 args: Some(vec!["source".into(), "source".into()]),
                 out: Some("merged".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Phi)
             },
             OpIR {
-                kind: "load_var".into(),
                 var: Some("_bb1_arg0".into()),
                 args: Some(vec!["source".into()]),
                 out: Some("snapshot".into()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoadVar)
             },
             ret("_bb1_arg0"),
         ],
@@ -1667,7 +1572,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         functions
             .iter()
             .flat_map(|function| &function.ops)
-            .all(|op| op.kind != "drop_inserted"),
+            .all(|op| op.kind != OpKind::DropInserted),
         "the executable oracle must exercise NativeValueTracking, not TIR drop authority"
     );
 
@@ -2709,49 +2614,49 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
     ];
     let mut functions = Vec::new();
     for (name, kind, bound) in [
-        (names[0], "tuple_new", true),
-        (names[1], "list_new", true),
-        (names[2], "dataclass_new_values", true),
-        (names[3], "tuple_new", false),
-        (names[4], "class_def", true),
-        (names[5], "class_def", false),
-        (names[6], "slice_new", true),
-        (names[7], "slice_new", false),
-        (names[8], "dataclass_new", true),
-        (names[9], "dataclass_new", false),
-        (names[10], "slice", true),
-        (names[11], "slice", false),
-        (names[12], "index", true),
-        (names[13], "index", false),
-        (names[14], "store_index", false),
-        (names[15], "del_index", false),
-        (names[16], "dict_set", false),
-        (names[17], "dict_update_missing", false),
-        (names[18], "dict_get", true),
-        (names[19], "dict_get", false),
-        (names[20], "set_add", false),
-        (names[21], "vec_sum", true),
-        (names[22], "vec_sum", false),
-        (names[23], "vec_prod", true),
-        (names[24], "vec_prod", false),
-        (names[25], "vec_min", true),
-        (names[26], "vec_min", false),
-        (names[27], "vec_max", true),
-        (names[28], "vec_max", false),
-        (names[29], "operator_index", true),
-        (names[30], "operator_index", false),
+        (names[0], OpKind::TupleNew, true),
+        (names[1], OpKind::ListNew, true),
+        (names[2], OpKind::DataclassNewValues, true),
+        (names[3], OpKind::TupleNew, false),
+        (names[4], OpKind::ClassDef, true),
+        (names[5], OpKind::ClassDef, false),
+        (names[6], OpKind::SliceNew, true),
+        (names[7], OpKind::SliceNew, false),
+        (names[8], OpKind::DataclassNew, true),
+        (names[9], OpKind::DataclassNew, false),
+        (names[10], OpKind::Slice, true),
+        (names[11], OpKind::Slice, false),
+        (names[12], OpKind::Index, true),
+        (names[13], OpKind::Index, false),
+        (names[14], OpKind::StoreIndex, false),
+        (names[15], OpKind::DelIndex, false),
+        (names[16], OpKind::DictSet, false),
+        (names[17], OpKind::DictUpdateMissing, false),
+        (names[18], OpKind::DictGet, true),
+        (names[19], OpKind::DictGet, false),
+        (names[20], OpKind::SetAdd, false),
+        (names[21], OpKind::VecSum, true),
+        (names[22], OpKind::VecSum, false),
+        (names[23], OpKind::VecProd, true),
+        (names[24], OpKind::VecProd, false),
+        (names[25], OpKind::VecMin, true),
+        (names[26], OpKind::VecMin, false),
+        (names[27], OpKind::VecMax, true),
+        (names[28], OpKind::VecMax, false),
+        (names[29], OpKind::OperatorIndex, true),
+        (names[30], OpKind::OperatorIndex, false),
     ] {
-        let mut args: Vec<String> = if kind == "dataclass_new_values" {
+        let mut args: Vec<String> = if kind == OpKind::DataclassNewValues {
             vec!["none".into(); 3]
-        } else if matches!(kind, "class_def" | "dataclass_new") {
+        } else if matches!(kind, OpKind::ClassDef | OpKind::DataclassNew) {
             vec!["none".into()]
         } else {
             Vec::new()
         };
         match kind {
-            "operator_index" => args.push("wide".into()),
-            "index" | "set_add" => args.extend(["wide".into(), "wider".into()]),
-            "del_index" => args.extend(["wide".into(), "wide".into()]),
+            OpKind::OperatorIndex => args.push("wide".into()),
+            OpKind::Index | OpKind::SetAdd => args.extend(["wide".into(), "wider".into()]),
+            OpKind::DelIndex => args.extend(["wide".into(), "wide".into()]),
             _ => args.extend(["wide".into(), "wide".into(), "wider".into()]),
         }
         let function = cleanup_oracle_function(
@@ -2760,32 +2665,28 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
             None,
             vec![
                 OpIR {
-                    kind: "const_int".into(),
                     value: Some(1_i64 << 31),
                     out: Some("limb".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::ConstInt)
                 },
                 OpIR {
-                    kind: "checked_mul".into(),
                     args: Some(vec!["limb".into(), "limb".into()]),
                     var: Some("wide".into()),
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedMul)
                 },
                 OpIR {
-                    kind: "checked_add".into(),
                     args: Some(vec!["wide".into(), "limb".into()]),
                     var: Some("wider".into()),
                     out: Some("none".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(OpKind::CheckedAdd)
                 },
                 OpIR {
-                    kind: kind.into(),
                     args: Some(args),
-                    s_value: (kind == "class_def").then(|| "1,1,16,7,3".into()),
+                    s_value: (kind == OpKind::ClassDef).then(|| "1,1,16,7,3".into()),
                     out: bound.then(|| "result".into()),
                     stack_eligible: Some(true),
-                    ..OpIR::default()
+                    ..OpIR::new(kind)
                 },
                 if bound {
                     ret("result")

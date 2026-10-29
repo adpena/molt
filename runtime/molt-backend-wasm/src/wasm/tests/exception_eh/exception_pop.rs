@@ -2,18 +2,18 @@ use super::*;
 
 #[test]
 fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
-    let mut owned = wasm_test_op("const_str", Some("v0"), vec![]);
+    let mut owned = wasm_test_op(molt_ir::OpKind::ConstStr, Some("v0"), vec![]);
     owned.s_value = Some("owned".to_string());
     let func = wasm_test_function(
         "exception_drop",
         vec![],
         None,
         vec![
-            wasm_test_op("exception_region_drops_inserted", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::ExceptionRegionDropsInserted, None, vec![]),
             owned,
-            wasm_test_op("exception_pop", None, vec![]),
-            wasm_test_op("dec_ref", None, vec!["v0"]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::ExceptionPop, None, vec![]),
+            wasm_test_op(molt_ir::OpKind::DecRef, None, vec!["v0"]),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
     let ir = SimpleIR {
@@ -41,7 +41,7 @@ fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
 
 #[test]
 fn generic_wasm_del_boundary_lowers_through_shared_dec_ref_authority() {
-    let mut owned = wasm_test_op("const_str", Some("v0"), vec![]);
+    let mut owned = wasm_test_op(molt_ir::OpKind::ConstStr, Some("v0"), vec![]);
     owned.s_value = Some("owned".to_string());
     let ir = SimpleIR {
         functions: vec![wasm_test_function(
@@ -50,8 +50,8 @@ fn generic_wasm_del_boundary_lowers_through_shared_dec_ref_authority() {
             None,
             vec![
                 owned,
-                wasm_test_op("del_boundary", None, vec!["v0"]),
-                wasm_test_op("ret_void", None, vec![]),
+                wasm_test_op(molt_ir::OpKind::DelBoundary, None, vec!["v0"]),
+                wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
             ],
         )],
         profile: None,
@@ -92,13 +92,13 @@ fn compile_local_alias_body(
 
 #[test]
 fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
-    let mut load_one = wasm_test_op("load_var", Some("v1"), vec![]);
+    let mut load_one = wasm_test_op(molt_ir::OpKind::LoadVar, Some("v1"), vec![]);
     load_one.var = Some("slot".to_string());
-    let mut load_two = wasm_test_op("load_var", Some("v2"), vec![]);
+    let mut load_two = wasm_test_op(molt_ir::OpKind::LoadVar, Some("v2"), vec![]);
     load_two.var = Some("slot".to_string());
-    let mut owned = wasm_test_op("const_str", Some("owned"), vec![]);
+    let mut owned = wasm_test_op(molt_ir::OpKind::ConstStr, Some("owned"), vec![]);
     owned.s_value = Some("owned".to_string());
-    let mut store = wasm_test_op("store_var", None, vec!["owned"]);
+    let mut store = wasm_test_op(molt_ir::OpKind::StoreVar, None, vec!["owned"]);
     store.var = Some("slot".to_string());
     let (drop_calls, drop_operators, drop_imports) = compile_local_alias_body(
         vec![],
@@ -107,10 +107,14 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
             store,
             load_one.clone(),
             load_two,
-            wasm_test_op("const_none", Some("none_value"), vec![]),
-            wasm_test_op("is", Some("result"), vec!["v1", "none_value"]),
-            wasm_test_op("del_boundary", None, vec!["v2"]),
-            wasm_test_op("ret", None, vec!["result"]),
+            wasm_test_op(molt_ir::OpKind::ConstNone, Some("none_value"), vec![]),
+            wasm_test_op(
+                molt_ir::OpKind::Is,
+                Some("result"),
+                vec!["v1", "none_value"],
+            ),
+            wasm_test_op(molt_ir::OpKind::DelBoundary, None, vec!["v2"]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["result"]),
         ],
     );
     let dec_index = drop_imports["dec_ref_obj"];
@@ -134,8 +138,8 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
     let (binding_calls, _, binding_imports) = compile_local_alias_body(
         vec!["slot"],
         vec![
-            wasm_test_op("binding_alias", Some("owned"), vec!["slot"]),
-            wasm_test_op("ret", None, vec!["owned"]),
+            wasm_test_op(molt_ir::OpKind::BindingAlias, Some("owned"), vec!["slot"]),
+            wasm_test_op(molt_ir::OpKind::Ret, None, vec!["owned"]),
         ],
     );
     let inc_index = binding_imports["inc_ref_obj"];

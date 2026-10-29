@@ -1,9 +1,6 @@
 use crate::wasm::WasmFrameLocals;
 use crate::{FunctionIR, OpIR};
 use molt_tir::tir::cfg_liveness::{SimpleCfgLivenessFacts, analyze_simple_cfg_liveness_facts};
-use molt_tir::tir::op_kinds_generated::{
-    simpleir_kind_is_pre_ssa_rewritten, simpleir_kind_is_wasm_stateful_dispatch,
-};
 use molt_tir::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap};
@@ -99,10 +96,10 @@ pub(super) fn plan_local_storage(
     param_set: &BTreeSet<String>,
 ) -> LocalStoragePlan {
     let ops = &func_ir.ops;
-    if ops.iter().any(|op| {
-        simpleir_kind_is_wasm_stateful_dispatch(op.kind.as_str())
-            || simpleir_kind_is_pre_ssa_rewritten(op.kind.as_str())
-    }) {
+    if ops
+        .iter()
+        .any(|op| op.kind.is_wasm_stateful_dispatch() || op.kind.is_pre_ssa_rewritten())
+    {
         return LocalStoragePlan::default();
     }
 
@@ -318,29 +315,29 @@ mod tests {
     use molt_tir::tir::cfg::CFG;
     use molt_tir::tir::cfg_liveness::liveness_block_successors;
 
-    fn op(kind: &str, args: &[&str], out: Option<&str>) -> OpIR {
+    // Real tuple construction/discard fixtures retain arbitrary read/result
+    // topology without inventing operations outside the closed wire domain.
+    fn op(kind: molt_ir::OpKind, args: &[&str], out: Option<&str>) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
             args: if args.is_empty() {
                 None
             } else {
                 Some(args.iter().map(|arg| arg.to_string()).collect())
             },
             out: out.map(str::to_string),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
-    fn labelled(kind: &str, label: i64) -> OpIR {
+    fn labelled(kind: molt_ir::OpKind, label: i64) -> OpIR {
         OpIR {
-            kind: kind.to_string(),
             value: Some(label),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         }
     }
 
     fn bind(source: &str, destination: &str) -> OpIR {
-        let mut store = op("store_var", &[source], None);
+        let mut store = op(molt_ir::OpKind::StoreVar, &[source], None);
         store.var = Some(destination.to_string());
         store
     }
@@ -369,12 +366,12 @@ mod tests {
     #[test]
     fn values_share_by_liveness_regardless_of_spelling() {
         let storage = plan(vec![
-            op("const", &[], Some("v1")),
-            op("use", &["v1"], Some("_v2")),
-            op("use", &["_v2"], Some("slot_x")),
-            op("sink", &["slot_x"], None),
-            op("const", &[], Some("_bb3_arg0")),
-            op("sink", &["_bb3_arg0"], None),
+            op(molt_ir::OpKind::Const, &[], Some("v1")),
+            op(molt_ir::OpKind::TupleNew, &["v1"], Some("_v2")),
+            op(molt_ir::OpKind::TupleNew, &["_v2"], Some("slot_x")),
+            op(molt_ir::OpKind::TupleNew, &["slot_x"], None),
+            op(molt_ir::OpKind::Const, &[], Some("_bb3_arg0")),
+            op(molt_ir::OpKind::TupleNew, &["_bb3_arg0"], None),
         ]);
         // No spelling is admitted or excluded: every read value is planned.
         for name in ["v1", "_v2", "slot_x", "_bb3_arg0"] {
@@ -392,16 +389,16 @@ mod tests {
     #[test]
     fn sibling_branch_values_share_one_local() {
         let storage = plan(vec![
-            op("const", &[], Some("cond")),
-            op("if", &["cond"], None),
-            op("const", &[], Some("then_value")),
-            op("sink", &["then_value"], None),
-            op("else", &[], None),
-            op("const", &[], Some("else_value")),
-            op("sink", &["else_value"], None),
-            op("end_if", &[], None),
-            op("const", &[], Some("after")),
-            op("sink", &["after"], None),
+            op(molt_ir::OpKind::Const, &[], Some("cond")),
+            op(molt_ir::OpKind::If, &["cond"], None),
+            op(molt_ir::OpKind::Const, &[], Some("then_value")),
+            op(molt_ir::OpKind::TupleNew, &["then_value"], None),
+            op(molt_ir::OpKind::Else, &[], None),
+            op(molt_ir::OpKind::Const, &[], Some("else_value")),
+            op(molt_ir::OpKind::TupleNew, &["else_value"], None),
+            op(molt_ir::OpKind::EndIf, &[], None),
+            op(molt_ir::OpKind::Const, &[], Some("after")),
+            op(molt_ir::OpKind::TupleNew, &["after"], None),
         ]);
         assert!(shares(&storage, "then_value", "else_value"));
         assert!(shares(&storage, "cond", "after"));
@@ -409,18 +406,18 @@ mod tests {
 
     #[test]
     fn a_value_live_around_a_backward_edge_keeps_its_local_for_the_loop() {
-        let mut again = op("br_if", &["cond"], None);
+        let mut again = op(molt_ir::OpKind::BrIf, &["cond"], None);
         again.value = Some(7);
         let storage = plan(vec![
-            op("const", &[], Some("carried")),
-            labelled("label", 7),
-            op("sink", &["carried"], None),
-            op("const", &[], Some("iteration")),
-            op("sink", &["iteration"], None),
-            op("const", &[], Some("cond")),
+            op(molt_ir::OpKind::Const, &[], Some("carried")),
+            labelled(molt_ir::OpKind::Label, 7),
+            op(molt_ir::OpKind::TupleNew, &["carried"], None),
+            op(molt_ir::OpKind::Const, &[], Some("iteration")),
+            op(molt_ir::OpKind::TupleNew, &["iteration"], None),
+            op(molt_ir::OpKind::Const, &[], Some("cond")),
             again,
-            op("const", &[], Some("after")),
-            op("sink", &["after"], None),
+            op(molt_ir::OpKind::Const, &[], Some("after")),
+            op(molt_ir::OpKind::TupleNew, &["after"], None),
         ]);
         // The next iteration reads `carried` again before any write.
         assert!(!shares(&storage, "carried", "iteration"));
@@ -431,17 +428,17 @@ mod tests {
     #[test]
     fn a_value_read_inside_a_structured_loop_stays_live_for_the_whole_loop() {
         let storage = plan(vec![
-            op("const", &[], Some("__tmp1")),
-            op("loop_start", &[], None),
-            op("use", &["__tmp1"], Some("__tmp2")),
-            op("sink", &["__tmp2"], None),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp1")),
+            op(molt_ir::OpKind::LoopStart, &[], None),
+            op(molt_ir::OpKind::TupleNew, &["__tmp1"], Some("__tmp2")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp2"], None),
             // Born after __tmp1's last read in op order, but the next
             // iteration reads __tmp1 again.
-            op("const", &[], Some("__tmp3")),
-            op("sink", &["__tmp3"], None),
-            op("loop_end", &[], None),
-            op("const", &[], Some("__tmp4")),
-            op("sink", &["__tmp4"], None),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp3")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp3"], None),
+            op(molt_ir::OpKind::LoopEnd, &[], None),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp4")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp4"], None),
         ]);
         assert!(!shares(&storage, "__tmp1", "__tmp3"));
         assert!(!shares(&storage, "__tmp1", "__tmp2"));
@@ -450,17 +447,17 @@ mod tests {
 
     #[test]
     fn values_rewritten_before_every_read_share_inside_a_loop() {
-        let mut again = op("br_if", &["cond"], None);
+        let mut again = op(molt_ir::OpKind::BrIf, &["cond"], None);
         again.value = Some(7);
         let storage = plan_with_params(
             vec![
-                labelled("label", 7),
-                op("const", &[], Some("first")),
-                op("sink", &["first"], None),
-                op("const", &[], Some("second")),
-                op("sink", &["second"], None),
+                labelled(molt_ir::OpKind::Label, 7),
+                op(molt_ir::OpKind::Const, &[], Some("first")),
+                op(molt_ir::OpKind::TupleNew, &["first"], None),
+                op(molt_ir::OpKind::Const, &[], Some("second")),
+                op(molt_ir::OpKind::TupleNew, &["second"], None),
                 again,
-                op("ret", &["cond"], None),
+                op(molt_ir::OpKind::Ret, &["cond"], None),
             ],
             &["cond"],
         )
@@ -475,14 +472,14 @@ mod tests {
         let storage = plan_with_params(
             vec![
                 bind("first", "held"),
-                labelled("check_exception", 9),
+                labelled(molt_ir::OpKind::CheckException, 9),
                 bind("second", "early"),
                 bind("early", "early_sink"),
-                labelled("check_exception", 9),
+                labelled(molt_ir::OpKind::CheckException, 9),
                 bind("second", "late"),
-                op("ret", &["late"], None),
-                labelled("label", 9),
-                op("ret", &["held"], None),
+                op(molt_ir::OpKind::Ret, &["late"], None),
+                labelled(molt_ir::OpKind::Label, 9),
+                op(molt_ir::OpKind::Ret, &["held"], None),
             ],
             &["first", "second"],
         )
@@ -501,15 +498,15 @@ mod tests {
     fn a_read_before_every_definition_keeps_the_entry_seed_local() {
         let storage = plan_with_params(
             vec![
-                labelled("jump", 1),
-                labelled("label", 3),
-                op("ret", &["seeded"], None),
-                labelled("label", 1),
+                labelled(molt_ir::OpKind::Jump, 1),
+                labelled(molt_ir::OpKind::Label, 3),
+                op(molt_ir::OpKind::Ret, &["seeded"], None),
+                labelled(molt_ir::OpKind::Label, 1),
                 bind("first", "scratch"),
                 bind("scratch", "sink"),
-                labelled("jump", 3),
-                op("const", &[], Some("seeded")),
-                op("ret", &["sink"], None),
+                labelled(molt_ir::OpKind::Jump, 3),
+                op(molt_ir::OpKind::Const, &[], Some("seeded")),
+                op(molt_ir::OpKind::Ret, &["sink"], None),
             ],
             &["first"],
         )
@@ -528,21 +525,21 @@ mod tests {
     fn every_backward_transfer_keeps_a_value_read_around_it_apart() {
         // The exception transfers target the label leading their own block.
         for kind in [
-            "jump",
-            "goto",
-            "br_if",
-            "check_exception",
-            "async_work_poll",
+            molt_ir::OpKind::Jump,
+            molt_ir::OpKind::Goto,
+            molt_ir::OpKind::BrIf,
+            molt_ir::OpKind::CheckException,
+            molt_ir::OpKind::AsyncWorkPoll,
         ] {
             let storage = plan(vec![
-                op("const", &[], Some("__tmp1")),
-                labelled("label", 7),
-                op("sink", &["__tmp1"], None),
-                op("const", &[], Some("__tmp2")),
-                op("sink", &["__tmp2"], None),
+                op(molt_ir::OpKind::Const, &[], Some("__tmp1")),
+                labelled(molt_ir::OpKind::Label, 7),
+                op(molt_ir::OpKind::TupleNew, &["__tmp1"], None),
+                op(molt_ir::OpKind::Const, &[], Some("__tmp2")),
+                op(molt_ir::OpKind::TupleNew, &["__tmp2"], None),
                 labelled(kind, 7),
-                op("const", &[], Some("__tmp3")),
-                op("sink", &["__tmp3"], None),
+                op(molt_ir::OpKind::Const, &[], Some("__tmp3")),
+                op(molt_ir::OpKind::TupleNew, &["__tmp3"], None),
             ]);
             assert!(!shares(&storage, "__tmp1", "__tmp2"), "{kind}");
             assert!(shares(&storage, "__tmp1", "__tmp3"), "{kind}");
@@ -552,14 +549,14 @@ mod tests {
     #[test]
     fn a_forward_exception_edge_does_not_pin_a_dead_value() {
         let storage = plan(vec![
-            op("const", &[], Some("__tmp1")),
-            op("use", &["__tmp1"], Some("__tmp2")),
-            labelled("check_exception", 3),
-            op("const", &[], Some("__tmp3")),
-            op("sink", &["__tmp2", "__tmp3"], None),
-            labelled("label", 3),
-            op("const", &[], Some("__tmp4")),
-            op("sink", &["__tmp4"], None),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp1")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp1"], Some("__tmp2")),
+            labelled(molt_ir::OpKind::CheckException, 3),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp3")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp2", "__tmp3"], None),
+            labelled(molt_ir::OpKind::Label, 3),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp4")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp4"], None),
         ]);
         assert!(shares(&storage, "__tmp1", "__tmp3"));
         assert!(!shares(&storage, "__tmp2", "__tmp3"));
@@ -567,15 +564,19 @@ mod tests {
 
     #[test]
     fn late_binding_writes_and_secondary_results_keep_their_physical_slots() {
-        let mut late_write = op("store_var", &["source"], None);
+        let mut late_write = op(molt_ir::OpKind::StoreVar, &["source"], None);
         late_write.var = Some("__tmp1".into());
         let storage = plan_with_params(
             vec![
-                op("const", &[], Some("__tmp1")),
-                op("sink", &["__tmp1"], None),
-                op("unpack_sequence", &["sequence", "__tmp2", "__tmp3"], None),
+                op(molt_ir::OpKind::Const, &[], Some("__tmp1")),
+                op(molt_ir::OpKind::TupleNew, &["__tmp1"], None),
+                op(
+                    molt_ir::OpKind::UnpackSequence,
+                    &["sequence", "__tmp2", "__tmp3"],
+                    None,
+                ),
                 late_write,
-                op("sink", &["__tmp2", "__tmp3"], None),
+                op(molt_ir::OpKind::TupleNew, &["__tmp2", "__tmp3"], None),
             ],
             &["sequence", "source"],
         )
@@ -588,12 +589,12 @@ mod tests {
     #[test]
     fn resumable_state_machines_keep_one_local_per_name() {
         let storage = plan(vec![
-            op("state_switch", &[], None),
-            op("const", &[], Some("__tmp1")),
-            op("sink", &["__tmp1"], None),
-            labelled("state_label", 1),
-            op("const", &[], Some("__tmp2")),
-            op("sink", &["__tmp2"], None),
+            op(molt_ir::OpKind::StateSwitch, &[], None),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp1")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp1"], None),
+            labelled(molt_ir::OpKind::StateLabel, 1),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp2")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp2"], None),
         ]);
         assert_eq!(storage.shared_slot("__tmp1"), None);
         assert_eq!(storage.shared_slot("__tmp2"), None);
@@ -604,11 +605,11 @@ mod tests {
     fn counted_loop_index_frames_keep_one_local_per_name() {
         let storage = plan_with_params(
             vec![
-                op("loop_start", &[], None),
-                op("loop_index_start", &["start"], Some("index")),
-                op("sink", &["index"], None),
-                op("loop_continue", &[], None),
-                op("loop_end", &[], None),
+                op(molt_ir::OpKind::LoopStart, &[], None),
+                op(molt_ir::OpKind::LoopIndexStart, &["start"], Some("index")),
+                op(molt_ir::OpKind::TupleNew, &["index"], None),
+                op(molt_ir::OpKind::LoopContinue, &[], None),
+                op(molt_ir::OpKind::LoopEnd, &[], None),
             ],
             &["start"],
         )
@@ -620,11 +621,11 @@ mod tests {
     #[test]
     fn label_only_functions_use_the_nonstateful_frame_contract() {
         let storage = plan(vec![
-            labelled("state_label", 1),
-            op("const", &[], Some("__tmp1")),
-            op("sink", &["__tmp1"], None),
-            op("const", &[], Some("__tmp2")),
-            op("sink", &["__tmp2"], None),
+            labelled(molt_ir::OpKind::StateLabel, 1),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp1")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp1"], None),
+            op(molt_ir::OpKind::Const, &[], Some("__tmp2")),
+            op(molt_ir::OpKind::TupleNew, &["__tmp2"], None),
         ]);
         assert!(shares(&storage, "__tmp1", "__tmp2"));
     }
@@ -633,9 +634,13 @@ mod tests {
     fn parameters_and_the_none_input_keep_their_reserved_locals() {
         let storage = plan_with_params(
             vec![
-                op("use", &["param", "none"], Some("value")),
-                op("use", &["param", "value"], Some("result")),
-                op("ret", &["result"], None),
+                op(molt_ir::OpKind::TupleNew, &["param", "none"], Some("value")),
+                op(
+                    molt_ir::OpKind::TupleNew,
+                    &["param", "value"],
+                    Some("result"),
+                ),
+                op(molt_ir::OpKind::Ret, &["result"], None),
             ],
             &["param"],
         )
@@ -665,15 +670,15 @@ mod tests {
             .collect();
         let mut ops: Vec<_> = names
             .iter()
-            .map(|name| op("const", &[], Some(name)))
+            .map(|name| op(molt_ir::OpKind::Const, &[], Some(name)))
             .collect();
         ops.push(op(
-            "sink",
+            molt_ir::OpKind::TupleNew,
             &names.iter().map(String::as_str).collect::<Vec<_>>(),
             None,
         ));
-        ops.push(op("const", &[], Some("__tmpnext")));
-        ops.push(op("sink", &["__tmpnext"], None));
+        ops.push(op(molt_ir::OpKind::Const, &[], Some("__tmpnext")));
+        ops.push(op(molt_ir::OpKind::TupleNew, &["__tmpnext"], None));
         let storage = plan(ops);
         let slots: BTreeSet<_> = names.iter().map(|name| storage.shared_slot(name)).collect();
         assert_eq!(slots.len(), names.len(), "simultaneously live values");
@@ -749,51 +754,51 @@ mod tests {
 
     fn generated_op(rng: &mut Lcg) -> OpIR {
         let label = 1 + rng.below(3) as i64;
-        let mut generated = OpIR::default();
+        let mut generated = OpIR::new(molt_ir::OpKind::Nop);
         match rng.below(11) {
             0 | 1 => {
-                generated.kind = "add".into();
+                generated.kind = molt_ir::OpKind::Add;
                 generated.args = Some(vec![pick(rng), pick(rng)]);
                 generated.out = Some(pick(rng));
             }
             2 => {
-                generated.kind = "store_var".into();
+                generated.kind = molt_ir::OpKind::StoreVar;
                 generated.args = Some(vec![pick(rng)]);
                 generated.var = Some(pick(rng));
             }
             3 => {
-                generated.kind = "unpack_sequence".into();
+                generated.kind = molt_ir::OpKind::UnpackSequence;
                 generated.args = Some(vec![pick(rng), pick(rng), pick(rng)]);
             }
             4 => {
-                generated.kind = "iter_next_unboxed".into();
+                generated.kind = molt_ir::OpKind::IterNextUnboxed;
                 generated.args = Some(vec![pick(rng)]);
                 generated.var = Some(pick(rng));
                 generated.out = Some(pick(rng));
             }
             5 => {
-                generated.kind = "jump".into();
+                generated.kind = molt_ir::OpKind::Jump;
                 generated.value = Some(label);
             }
             6 => {
-                generated.kind = "br_if".into();
+                generated.kind = molt_ir::OpKind::BrIf;
                 generated.args = Some(vec![pick(rng)]);
                 generated.value = Some(label);
             }
             7 => {
-                generated.kind = "check_exception".into();
+                generated.kind = molt_ir::OpKind::CheckException;
                 generated.value = Some(label);
             }
             8 => {
-                generated.kind = "ret".into();
+                generated.kind = molt_ir::OpKind::Ret;
                 generated.args = Some(vec![pick(rng)]);
             }
             9 => {
-                generated.kind = "print".into();
+                generated.kind = molt_ir::OpKind::Print;
                 generated.args = Some(vec![pick(rng)]);
             }
             _ => {
-                generated.kind = "const".into();
+                generated.kind = molt_ir::OpKind::Const;
                 generated.out = Some(pick(rng));
             }
         }
@@ -809,9 +814,9 @@ mod tests {
         let mut ops: Vec<OpIR> = (0..count).map(|_| generated_op(&mut rng)).collect();
         for label in 1..=3 {
             let at = rng.below(ops.len() as u64 + 1) as usize;
-            ops.insert(at, labelled("label", label));
+            ops.insert(at, labelled(molt_ir::OpKind::Label, label));
         }
-        ops.push(op("ret_void", &[], None));
+        ops.push(op(molt_ir::OpKind::RetVoid, &[], None));
         ops
     }
 

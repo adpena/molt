@@ -406,257 +406,257 @@ pub(crate) struct LirFixedRuntimeCall {
 }
 
 #[inline]
-pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> {
+pub(crate) fn lir_fixed_runtime_call(kind: molt_ir::OpKind) -> Option<LirFixedRuntimeCall> {
     match kind {
-        "guard_type" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::GuardType => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::GuardType,
             operand_count: 2,
         }),
-        "import" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Import => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleImport,
             operand_count: 1,
         }),
-        "module_import_star" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleImportStar => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleImportStar,
             operand_count: 2,
         }),
-        "module_new" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleNew => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleNew,
             operand_count: 1,
         }),
-        "function_defaults_version" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::FunctionDefaultsVersion => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::FunctionDefaultsVersion,
             operand_count: 1,
         }),
-        "module_cache_get" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleCacheGet => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleCacheGet,
             operand_count: 1,
         }),
-        "module_cache_set" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleCacheSet => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleCacheSet,
             operand_count: 2,
         }),
-        "module_cache_del" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleCacheDel => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleCacheDel,
             operand_count: 1,
         }),
-        "module_get_attr" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleGetAttr => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleGetAttr,
             operand_count: 2,
         }),
-        "module_import_from" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleImportFrom => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleImportFrom,
             operand_count: 2,
         }),
-        "frame_context_set" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::FrameContextSet => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::FrameContextSet,
             operand_count: 3,
         }),
-        "module_get_global" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleGetGlobal => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleGetGlobal,
             operand_count: 2,
         }),
-        "module_get_name" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleGetName => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleGetName,
             operand_count: 2,
         }),
-        "module_set_attr" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleSetAttr => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleSetAttr,
             operand_count: 3,
         }),
-        "module_del_global" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleDelGlobal => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleDelGlobal,
             operand_count: 2,
         }),
-        "module_del_global_if_present" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ModuleDelGlobalIfPresent => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleDelGlobalIfPresent,
             operand_count: 2,
         }),
-        "context_enter" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ContextEnter => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextEnter,
             operand_count: 1,
         }),
-        "context_exit" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::ContextExit => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextExit,
             operand_count: 2,
         }),
-        "guard_tag" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::GuardTag => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::GuardType,
             operand_count: 2,
         }),
-        "add" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Add => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Add,
             operand_count: 2,
         }),
-        "inplace_add" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceAdd => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceAdd,
             operand_count: 2,
         }),
-        "sub" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Sub => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Sub,
             operand_count: 2,
         }),
-        "inplace_sub" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceSub => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceSub,
             operand_count: 2,
         }),
-        "mul" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Mul => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Mul,
             operand_count: 2,
         }),
-        "inplace_mul" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceMul => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceMul,
             operand_count: 2,
         }),
-        "div" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Div => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Div,
             operand_count: 2,
         }),
-        "inplace_div" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceDiv => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceDiv,
             operand_count: 2,
         }),
-        "floordiv" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Floordiv => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::FloorDiv,
             operand_count: 2,
         }),
-        "inplace_floordiv" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceFloordiv => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceFloorDiv,
             operand_count: 2,
         }),
-        "mod" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Mod => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Mod,
             operand_count: 2,
         }),
-        "inplace_mod" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceMod => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceMod,
             operand_count: 2,
         }),
-        "matmul" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Matmul => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Matmul,
             operand_count: 2,
         }),
-        "inplace_matmul" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceMatmul => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceMatmul,
             operand_count: 2,
         }),
-        "pow" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Pow => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Pow,
             operand_count: 2,
         }),
-        "inplace_pow" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplacePow => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplacePow,
             operand_count: 2,
         }),
-        "pow_mod" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::PowMod => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::PowMod,
             operand_count: 3,
         }),
-        "round" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Round => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Round,
             operand_count: 3,
         }),
-        "trunc" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Trunc => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Trunc,
             operand_count: 1,
         }),
-        "bit_and" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::BitAnd => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::BitAnd,
             operand_count: 2,
         }),
-        "inplace_bit_and" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceBitAnd => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceBitAnd,
             operand_count: 2,
         }),
-        "bit_or" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::BitOr => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::BitOr,
             operand_count: 2,
         }),
-        "inplace_bit_or" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceBitOr => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceBitOr,
             operand_count: 2,
         }),
-        "bit_xor" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::BitXor => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::BitXor,
             operand_count: 2,
         }),
-        "inplace_bit_xor" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceBitXor => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceBitXor,
             operand_count: 2,
         }),
-        "invert" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Invert => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Invert,
             operand_count: 1,
         }),
-        "bit_not" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::BitNot => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Invert,
             operand_count: 1,
         }),
-        "neg" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Neg => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Neg,
             operand_count: 1,
         }),
-        "unary_neg" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::UnaryNeg => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Neg,
             operand_count: 1,
         }),
-        "pos" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Pos => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Pos,
             operand_count: 1,
         }),
-        "unary_pos" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::UnaryPos => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Pos,
             operand_count: 1,
         }),
-        "lshift" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Lshift => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::LShift,
             operand_count: 2,
         }),
-        "shl" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Shl => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::LShift,
             operand_count: 2,
         }),
-        "inplace_lshift" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceLshift => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceLShift,
             operand_count: 2,
         }),
-        "rshift" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Rshift => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::RShift,
             operand_count: 2,
         }),
-        "shr" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Shr => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::RShift,
             operand_count: 2,
         }),
-        "inplace_rshift" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::InplaceRshift => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::InplaceRShift,
             operand_count: 2,
         }),
-        "lt" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Lt => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Lt,
             operand_count: 2,
         }),
-        "le" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Le => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Le,
             operand_count: 2,
         }),
-        "gt" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Gt => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Gt,
             operand_count: 2,
         }),
-        "ge" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Ge => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Ge,
             operand_count: 2,
         }),
-        "eq" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Eq => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Eq,
             operand_count: 2,
         }),
-        "ne" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::Ne => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Ne,
             operand_count: 2,
         }),
-        "string_eq" => Some(LirFixedRuntimeCall {
+        molt_ir::OpKind::StringEq => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::StringEq,
             operand_count: 2,
         }),
@@ -679,7 +679,10 @@ pub(crate) struct OpLoopRuntimeCallSpec {
 }
 
 #[inline]
-pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRuntimeCallSpec> {
+pub(crate) fn op_loop_runtime_call(
+    kind: molt_ir::OpKind,
+    marked: bool,
+) -> Option<OpLoopRuntimeCallSpec> {
     if let Some(abi) = molt_ir::runtime_boxed_abi_generated::runtime_boxed_op_abi(kind) {
         return Some(match abi.symbol {
             "molt_bytearray_count" => OpLoopRuntimeCallSpec {
@@ -950,49 +953,49 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
         });
     }
     match kind {
-        "gpu_thread_id" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GpuThreadId => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GpuThreadId,
             args: &[],
             required_imports: &[WasmRuntimeImport::GpuThreadId],
             discard_result: false,
         }),
-        "gpu_block_id" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GpuBlockId => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GpuBlockId,
             args: &[],
             required_imports: &[WasmRuntimeImport::GpuBlockId],
             discard_result: false,
         }),
-        "gpu_block_dim" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GpuBlockDim => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GpuBlockDim,
             args: &[],
             required_imports: &[WasmRuntimeImport::GpuBlockDim],
             discard_result: false,
         }),
-        "gpu_grid_dim" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GpuGridDim => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GpuGridDim,
             args: &[],
             required_imports: &[WasmRuntimeImport::GpuGridDim],
             discard_result: false,
         }),
-        "gpu_barrier" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GpuBarrier => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GpuBarrier,
             args: &[],
             required_imports: &[WasmRuntimeImport::GpuBarrier],
             discard_result: false,
         }),
-        "import" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Import => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleImport,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ModuleImport],
             discard_result: false,
         }),
-        "module_import" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleImport => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleImport,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ModuleImport],
             discard_result: false,
         }),
-        "module_import_star" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleImportStar => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleImportStar,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1001,25 +1004,25 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleImportStar],
             discard_result: false,
         }),
-        "module_new" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleNew => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleNew,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ModuleNew],
             discard_result: false,
         }),
-        "function_defaults_version" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::FunctionDefaultsVersion => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::FunctionDefaultsVersion,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::FunctionDefaultsVersion],
             discard_result: false,
         }),
-        "module_cache_get" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleCacheGet => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleCacheGet,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ModuleCacheGet],
             discard_result: false,
         }),
-        "module_cache_set" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleCacheSet => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleCacheSet,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1028,13 +1031,13 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleCacheSet],
             discard_result: false,
         }),
-        "module_cache_del" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleCacheDel => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleCacheDel,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ModuleCacheDel],
             discard_result: false,
         }),
-        "module_get_attr" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleGetAttr => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleGetAttr,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1043,7 +1046,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleGetAttr],
             discard_result: false,
         }),
-        "module_import_from" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleImportFrom => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleImportFrom,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1052,7 +1055,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleImportFrom],
             discard_result: false,
         }),
-        "frame_context_set" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::FrameContextSet => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::FrameContextSet,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1062,7 +1065,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::FrameContextSet],
             discard_result: false,
         }),
-        "module_get_global" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleGetGlobal => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleGetGlobal,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1071,7 +1074,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleGetGlobal],
             discard_result: false,
         }),
-        "module_get_name" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleGetName => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleGetName,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1080,7 +1083,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleGetName],
             discard_result: false,
         }),
-        "module_set_attr" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleSetAttr => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleSetAttr,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1090,7 +1093,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleSetAttr],
             discard_result: false,
         }),
-        "module_del_global" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleDelGlobal => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleDelGlobal,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1099,7 +1102,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleDelGlobal],
             discard_result: false,
         }),
-        "module_del_global_if_present" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ModuleDelGlobalIfPresent => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleDelGlobalIfPresent,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1108,7 +1111,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleDelGlobalIfPresent],
             discard_result: false,
         }),
-        "context_enter" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ContextEnter => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ContextEnter,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[
@@ -1122,7 +1125,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             ],
             discard_result: false,
         }),
-        "context_exit" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ContextExit => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ContextExit,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1135,13 +1138,13 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             ],
             discard_result: false,
         }),
-        "abs" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Abs => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::AbsBuiltin,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::AbsBuiltin],
             discard_result: false,
         }),
-        "guard_tag" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GuardTag => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GuardType,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1153,7 +1156,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             ],
             discard_result: false,
         }),
-        "guard_type" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GuardType => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GuardType,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1165,7 +1168,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             ],
             discard_result: false,
         }),
-        "string_format" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringFormat => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::FormatBuiltin,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1174,19 +1177,19 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::FormatBuiltin],
             discard_result: false,
         }),
-        "exception_finally_pending_observer" if marked => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionFinallyPendingObserver if marked => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending,
             args: &[],
             required_imports: &[WasmRuntimeImport::AsyncWorkPollAndExceptionLastPending],
             discard_result: false,
         }),
-        "exception_finally_pending_observer" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionFinallyPendingObserver => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionLastPending,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionLastPending],
             discard_result: false,
         }),
-        "exception_new_builtin" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionNewBuiltin => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionNewBuiltin,
             args: &[
                 OpLoopRuntimeArgSpec::OpValueI64("exception_new_builtin missing tag value"),
@@ -1195,7 +1198,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptionNewBuiltin],
             discard_result: false,
         }),
-        "exception_new_builtin_empty" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionNewBuiltinEmpty => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionNewBuiltinEmpty,
             args: &[OpLoopRuntimeArgSpec::OpValueI64(
                 "exception_new_builtin_empty missing tag value",
@@ -1203,7 +1206,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptionNewBuiltinEmpty],
             discard_result: false,
         }),
-        "exception_new_builtin_one" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionNewBuiltinOne => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionNewBuiltinOne,
             args: &[
                 OpLoopRuntimeArgSpec::OpValueI64("exception_new_builtin_one missing tag value"),
@@ -1212,7 +1215,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptionNewBuiltinOne],
             discard_result: false,
         }),
-        "gen_send" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GenSend => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GeneratorSend,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1221,7 +1224,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::GeneratorSend],
             discard_result: false,
         }),
-        "gen_throw" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GenThrow => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GeneratorThrow,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1230,19 +1233,19 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::GeneratorThrow],
             discard_result: false,
         }),
-        "gen_close" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::GenClose => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::GeneratorClose,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::GeneratorClose],
             discard_result: false,
         }),
-        "print_newline" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::PrintNewline => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::PrintNewline,
             args: &[],
             required_imports: &[WasmRuntimeImport::PrintNewline],
             discard_result: false,
         }),
-        "asyncgen_new" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::AsyncgenNew => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::AsyncgenNew,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[
@@ -1254,223 +1257,217 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             ],
             discard_result: false,
         }),
-        "errno_constants" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ErrnoConstants,
-            args: &[],
-            required_imports: &[WasmRuntimeImport::ErrnoConstants],
-            discard_result: false,
-        }),
-        "exception_stack_clear" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionStackClear => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionStackClear,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionStackClear],
             discard_result: false,
         }),
-        "exception_stack_enter" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionStackEnter => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionStackEnter,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionStackEnter],
             discard_result: false,
         }),
-        "exception_stack_depth" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionStackDepth => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionStackDepth,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionStackDepth],
             discard_result: false,
         }),
-        "exception_last" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionLast => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionLast,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionLast],
             discard_result: false,
         }),
-        "exception_last_pending" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionLastPending => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionLastPending,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionLastPending],
             discard_result: false,
         }),
-        "exception_active" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionActive => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionActive,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionActive],
             discard_result: false,
         }),
-        "exception_current" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionCurrent => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionCurrent,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionCurrent],
             discard_result: false,
         }),
-        "exception_clear" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionClear => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionClear,
             args: &[],
             required_imports: &[WasmRuntimeImport::ExceptionClear],
             discard_result: false,
         }),
-        "not" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Not => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Not,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::Not],
             discard_result: false,
         }),
-        "id" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Id => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Id,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::Id],
             discard_result: false,
         }),
-        "is_generator" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::IsGenerator => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IsGenerator,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::IsGenerator],
             discard_result: false,
         }),
-        "is_native_awaitable" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::IsNativeAwaitable => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IsNativeAwaitable,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::IsNativeAwaitable],
             discard_result: false,
         }),
-        "is_callable" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::IsCallable => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IsCallable,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::IsCallable],
             discard_result: false,
         }),
-        "iter" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Iter => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Iter,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::Iter],
             discard_result: false,
         }),
-        "aiter" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Aiter => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Aiter,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::Aiter],
             discard_result: false,
         }),
-        "iter_next" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::IterNext => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IterNext,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::IterNext],
             discard_result: false,
         }),
-        "anext" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Anext => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Anext,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::Anext],
             discard_result: false,
         }),
-        "list_clear" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListClear => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListClear,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ListClear],
             discard_result: false,
         }),
-        "list_copy" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListCopy => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListCopy,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ListCopy],
             discard_result: false,
         }),
-        "list_reverse" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListReverse => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListReverse,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ListReverse],
             discard_result: false,
         }),
-        "tuple_from_list" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::TupleFromList => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::TupleFromList,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::TupleFromList],
             discard_result: false,
         }),
-        "dict_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::DictFromObj],
             discard_result: false,
         }),
-        "dict_clear" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictClear => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictClear,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::DictClear],
             discard_result: false,
         }),
-        "dict_copy" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictCopy => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictCopy,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::DictCopy],
             discard_result: false,
         }),
-        "dict_popitem" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictPopitem => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictPopitem,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::DictPopitem],
             discard_result: false,
         }),
-        "dict_keys" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictKeys => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictKeys,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::DictKeys],
             discard_result: false,
         }),
-        "dict_values" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictValues => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictValues,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::DictValues],
             discard_result: false,
         }),
-        "dict_items" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictItems => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictItems,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::DictItems],
             discard_result: false,
         }),
-        "set_pop" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetPop => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetPop,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::SetPop],
             discard_result: false,
         }),
-        "exception_stack_exit" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionStackExit => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionStackExit,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptionStackExit],
             discard_result: false,
         }),
-        "exception_stack_set_depth" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionStackSetDepth => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionStackSetDepth,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptionStackSetDepth],
             discard_result: false,
         }),
-        "exceptiongroup_combine" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptiongroupCombine => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptiongroupCombine,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptiongroupCombine],
             discard_result: false,
         }),
-        "exception_class" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionClass => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionClass,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptionClass],
             discard_result: false,
         }),
-        "exception_context_set" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionContextSet => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionContextSet,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptionContextSet],
             discard_result: false,
         }),
-        "exception_set_last" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionSetLast => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionSetLast,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ExceptionSetLast],
             discard_result: false,
         }),
-        "is" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Is => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Is,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1479,7 +1476,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::Is],
             discard_result: false,
         }),
-        "del_index" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DelIndex => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DelIndex,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1488,7 +1485,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DelIndex],
             discard_result: false,
         }),
-        "list_append" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListAppend => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListAppend,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1497,7 +1494,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListAppend],
             discard_result: false,
         }),
-        "list_int_new" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListIntNew => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListIntNew,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1506,7 +1503,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListIntNew],
             discard_result: false,
         }),
-        "list_fill_new" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListFillNew => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListFillNew,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1515,7 +1512,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListFillNew],
             discard_result: false,
         }),
-        "list_pop" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListPop => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListPop,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1524,7 +1521,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListPop],
             discard_result: false,
         }),
-        "list_extend" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListExtend => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListExtend,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1533,7 +1530,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListExtend],
             discard_result: false,
         }),
-        "list_remove" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListRemove => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListRemove,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1542,7 +1539,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListRemove],
             discard_result: false,
         }),
-        "list_count" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListCount => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListCount,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1551,7 +1548,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListCount],
             discard_result: false,
         }),
-        "list_index" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListIndex => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListIndex,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1560,7 +1557,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListIndex],
             discard_result: false,
         }),
-        "tuple_count" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::TupleCount => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::TupleCount,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1569,7 +1566,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::TupleCount],
             discard_result: false,
         }),
-        "dict_unpack" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictUnpack => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictUnpack,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1578,7 +1575,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictUnpack],
             discard_result: false,
         }),
-        "dict_update" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictUpdate => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictUpdate,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1587,7 +1584,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictUpdate],
             discard_result: false,
         }),
-        "dict_setdefault_empty_list" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictSetdefaultEmptyList => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictSetdefaultEmptyList,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1596,7 +1593,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictSetdefaultEmptyList],
             discard_result: false,
         }),
-        "dict_update_kwstar" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictUpdateKwstar => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictUpdateKwstar,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1605,7 +1602,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictUpdateKwstar],
             discard_result: false,
         }),
-        "set_add" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetAdd => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetAdd,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1614,7 +1611,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetAdd],
             discard_result: false,
         }),
-        "set_add_probe" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetAddProbe => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetAddProbe,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1623,7 +1620,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetAddProbe],
             discard_result: false,
         }),
-        "frozenset_add" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::FrozensetAdd => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::FrozensetAdd,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1632,7 +1629,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::FrozensetAdd],
             discard_result: false,
         }),
-        "set_discard" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetDiscard => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetDiscard,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1641,7 +1638,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetDiscard],
             discard_result: false,
         }),
-        "set_remove" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetRemove => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetRemove,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1650,7 +1647,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetRemove],
             discard_result: false,
         }),
-        "set_update" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetUpdate => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetUpdate,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1659,7 +1656,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetUpdate],
             discard_result: false,
         }),
-        "set_intersection_update" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetIntersectionUpdate => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetIntersectionUpdate,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1668,7 +1665,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetIntersectionUpdate],
             discard_result: false,
         }),
-        "set_difference_update" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetDifferenceUpdate => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetDifferenceUpdate,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1677,7 +1674,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetDifferenceUpdate],
             discard_result: false,
         }),
-        "set_symdiff_update" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SetSymdiffUpdate => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SetSymdiffUpdate,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1686,7 +1683,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SetSymdiffUpdate],
             discard_result: false,
         }),
-        "exception_new" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionNew => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionNew,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1695,7 +1692,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptionNew],
             discard_result: false,
         }),
-        "exception_new_from_class" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptionNewFromClass => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionNewFromClass,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1704,7 +1701,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptionNewFromClass],
             discard_result: false,
         }),
-        "exceptiongroup_match" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ExceptiongroupMatch => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptiongroupMatch,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1713,7 +1710,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptiongroupMatch],
             discard_result: false,
         }),
-        "slice" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Slice => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Slice,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1723,7 +1720,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::Slice],
             discard_result: false,
         }),
-        "slice_new" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::SliceNew => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::SliceNew,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1733,7 +1730,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::SliceNew],
             discard_result: false,
         }),
-        "list_from_range" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListFromRange => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListFromRange,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1743,7 +1740,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListFromRange],
             discard_result: false,
         }),
-        "range_new" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::RangeNew => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::RangeNew,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1753,7 +1750,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::RangeNew],
             discard_result: false,
         }),
-        "list_insert" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListInsert => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListInsert,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1763,7 +1760,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListInsert],
             discard_result: false,
         }),
-        "dict_get" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictGet => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictGet,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1773,7 +1770,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictGet],
             discard_result: false,
         }),
-        "dict_str_int_inc" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictStrIntInc => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictStrIntInc,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1783,7 +1780,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictStrIntInc],
             discard_result: false,
         }),
-        "dict_set" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictSet => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictSet,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1793,7 +1790,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictSet],
             discard_result: false,
         }),
-        "dict_setdefault" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictSetdefault => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictSetdefault,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1803,7 +1800,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictSetdefault],
             discard_result: false,
         }),
-        "dict_update_missing" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictUpdateMissing => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictUpdateMissing,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1813,7 +1810,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictUpdateMissing],
             discard_result: false,
         }),
-        "callargs_push_kw" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::CallargsPushKw => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::CallargsPushKw,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1823,7 +1820,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::CallargsPushKw],
             discard_result: false,
         }),
-        "enumerate" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Enumerate => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Enumerate,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1833,7 +1830,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::Enumerate],
             discard_result: false,
         }),
-        "list_index_range" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ListIndexRange => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ListIndexRange,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1844,7 +1841,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ListIndexRange],
             discard_result: false,
         }),
-        "dict_pop" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::DictPop => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::DictPop,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1855,7 +1852,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::DictPop],
             discard_result: false,
         }),
-        "callargs_push_pos" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::CallargsPushPos => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::CallargsPushPos,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1864,7 +1861,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::CallargsPushPos],
             discard_result: false,
         }),
-        "callargs_expand_star" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::CallargsExpandStar => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::CallargsExpandStar,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1873,7 +1870,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::CallargsExpandStar],
             discard_result: false,
         }),
-        "callargs_expand_kwstar" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::CallargsExpandKwstar => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::CallargsExpandKwstar,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1882,79 +1879,79 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::CallargsExpandKwstar],
             discard_result: false,
         }),
-        "ord" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Ord => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Ord,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::Ord],
             discard_result: false,
         }),
-        "chr" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::Chr => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::Chr,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::Chr],
             discard_result: false,
         }),
-        "operator_index" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::OperatorIndex => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::OperatorIndex,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::OperatorIndex],
             discard_result: false,
         }),
-        "string_lower" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringLower => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringLower,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::StringLower],
             discard_result: false,
         }),
-        "string_upper" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringUpper => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringUpper,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::StringUpper],
             discard_result: false,
         }),
-        "string_capitalize" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringCapitalize => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringCapitalize,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::StringCapitalize],
             discard_result: false,
         }),
-        "bytes_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytesFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytesFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::BytesFromObj],
             discard_result: false,
         }),
-        "bytearray_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytearrayFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytearrayFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::BytearrayFromObj],
             discard_result: false,
         }),
-        "float_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::FloatFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::FloatFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::FloatFromObj],
             discard_result: false,
         }),
-        "str_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StrFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StrFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::StrFromObj],
             discard_result: false,
         }),
-        "repr_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ReprFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ReprFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::ReprFromObj],
             discard_result: false,
         }),
-        "ascii_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::AsciiFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::AsciiFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::AsciiFromObj],
             discard_result: false,
         }),
-        "ord_at" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::OrdAt => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::OrdAt,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1963,7 +1960,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::OrdAt],
             discard_result: false,
         }),
-        "string_join" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringJoin => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringJoin,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1972,7 +1969,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringJoin],
             discard_result: false,
         }),
-        "string_split" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplit => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplit,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1981,7 +1978,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplit],
             discard_result: false,
         }),
-        "string_split_validate" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitValidate => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitValidate,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1990,7 +1987,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitValidate],
             discard_result: false,
         }),
-        "string_strip" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringStrip => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringStrip,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -1999,7 +1996,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringStrip],
             discard_result: false,
         }),
-        "string_lstrip" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringLstrip => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringLstrip,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2008,7 +2005,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringLstrip],
             discard_result: false,
         }),
-        "string_rstrip" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringRstrip => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringRstrip,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2017,7 +2014,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringRstrip],
             discard_result: false,
         }),
-        "bytes_split" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytesSplit => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytesSplit,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2026,7 +2023,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytesSplit],
             discard_result: false,
         }),
-        "bytearray_split" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytearraySplit => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytearraySplit,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2035,7 +2032,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytearraySplit],
             discard_result: false,
         }),
-        "string_split_field" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitField => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitField,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2045,7 +2042,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitField],
             discard_result: false,
         }),
-        "string_split_field_len" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldLen => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldLen,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2055,7 +2052,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldLen],
             discard_result: false,
         }),
-        "string_split_max" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitMax => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitMax,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2065,7 +2062,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitMax],
             discard_result: false,
         }),
-        "bytes_split_max" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytesSplitMax => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytesSplitMax,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2075,7 +2072,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytesSplitMax],
             discard_result: false,
         }),
-        "bytearray_split_max" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytearraySplitMax => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytearraySplitMax,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2085,7 +2082,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytearraySplitMax],
             discard_result: false,
         }),
-        "bytes_from_str" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytesFromStr => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytesFromStr,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2095,7 +2092,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytesFromStr],
             discard_result: false,
         }),
-        "bytearray_from_str" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytearrayFromStr => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytearrayFromStr,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2105,7 +2102,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytearrayFromStr],
             discard_result: false,
         }),
-        "int_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::IntFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IntFromObj,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2115,7 +2112,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::IntFromObj],
             discard_result: false,
         }),
-        "int_from_str_of_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::IntFromStrOfObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IntFromStrOfObj,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2125,7 +2122,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::IntFromStrOfObj],
             discard_result: false,
         }),
-        "complex_from_obj" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::ComplexFromObj => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ComplexFromObj,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2135,7 +2132,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ComplexFromObj],
             discard_result: false,
         }),
-        "string_split_field_start" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldStart => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldStart,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2145,7 +2142,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldStart],
             discard_result: false,
         }),
-        "string_split_field_end" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldEnd => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldEnd,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2155,7 +2152,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldEnd],
             discard_result: false,
         }),
-        "string_split_field_is_ascii" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldIsAscii => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldIsAscii,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2165,7 +2162,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldIsAscii],
             discard_result: false,
         }),
-        "string_split_field_to_int" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldToInt => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldToInt,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2175,7 +2172,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldToInt],
             discard_result: false,
         }),
-        "string_split_field_eq" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldEq => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldEq,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2186,7 +2183,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldEq],
             discard_result: false,
         }),
-        "string_split_field_len_from_bounds" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldLenFromBounds => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldLenFromBounds,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2197,7 +2194,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldLenFromBounds],
             discard_result: false,
         }),
-        "bytes_replace" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytesReplace => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytesReplace,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2208,7 +2205,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytesReplace],
             discard_result: false,
         }),
-        "string_replace" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringReplace => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringReplace,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2219,7 +2216,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringReplace],
             discard_result: false,
         }),
-        "bytearray_replace" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytearrayReplace => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytearrayReplace,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2230,7 +2227,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytearrayReplace],
             discard_result: false,
         }),
-        "string_split_ws_dict_inc" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitWsDictInc => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitWsDictInc,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2241,7 +2238,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitWsDictInc],
             discard_result: false,
         }),
-        "bytearray_fill_range" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::BytearrayFillRange => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::BytearrayFillRange,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2252,7 +2249,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::BytearrayFillRange],
             discard_result: false,
         }),
-        "string_split_field_ord_at_bounds" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitFieldOrdAtBounds => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldOrdAtBounds,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
@@ -2264,7 +2261,7 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::StringSplitFieldOrdAtBounds],
             discard_result: false,
         }),
-        "string_split_sep_dict_inc" => Some(OpLoopRuntimeCallSpec {
+        molt_ir::OpKind::StringSplitSepDictInc => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitSepDictInc,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),

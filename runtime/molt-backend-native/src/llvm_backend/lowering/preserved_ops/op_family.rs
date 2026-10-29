@@ -1,14 +1,7 @@
-//! Handler-owned routing for LLVM preserved SimpleIR ops.
-//!
-//! `lower_preserved_simpleir_op` used to hand-mirror the same kind families it
-//! delegated to child handlers. This module builds the dispatcher from those
-//! handlers' local authorities so adding or removing a kind happens beside the
-//! lowering arm that owns it.
-
-use std::collections::HashMap;
-use std::sync::OnceLock;
-
+//! Exhaustive typed LLVM preserved-operation family routing.
+#[cfg(test)]
 use super::{callable_ops, container_ops, direct_ops};
+use molt_ir::OpKind;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub(super) enum LlvmPreservedOpFamily {
@@ -17,7 +10,8 @@ pub(super) enum LlvmPreservedOpFamily {
     Callable,
 }
 
-const FAMILY_DISPATCH_TABLE: &[(LlvmPreservedOpFamily, &[&str])] = &[
+#[cfg(test)]
+const FAMILY_DISPATCH_TABLE: &[(LlvmPreservedOpFamily, &[OpKind])] = &[
     (LlvmPreservedOpFamily::Direct, direct_ops::HANDLED_KINDS),
     (
         LlvmPreservedOpFamily::Container,
@@ -26,26 +20,462 @@ const FAMILY_DISPATCH_TABLE: &[(LlvmPreservedOpFamily, &[&str])] = &[
     (LlvmPreservedOpFamily::Callable, callable_ops::HANDLED_KINDS),
 ];
 
-fn family_map() -> &'static HashMap<&'static str, LlvmPreservedOpFamily> {
-    static MAP: OnceLock<HashMap<&'static str, LlvmPreservedOpFamily>> = OnceLock::new();
-    MAP.get_or_init(|| {
-        let mut map: HashMap<&'static str, LlvmPreservedOpFamily> = HashMap::new();
-        for (family, kinds) in FAMILY_DISPATCH_TABLE {
-            for &kind in *kinds {
-                if let Some(existing) = map.insert(kind, *family) {
-                    panic!(
-                        "LLVM preserved-op family table is not disjoint: kind `{kind}` \
-                         is claimed by both {existing:?} and {family:?}",
-                    );
-                }
-            }
-        }
-        map
-    })
-}
-
-pub(super) fn llvm_preserved_op_family(kind: &str) -> Option<LlvmPreservedOpFamily> {
-    family_map().get(kind).copied()
+pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreservedOpFamily> {
+    match kind {
+        super::direct_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Direct),
+        super::container_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Container),
+        super::callable_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Callable),
+        OpKind::Add
+        | OpKind::Aiter
+        | OpKind::All
+        | OpKind::Alloc
+        | OpKind::AllocClassStatic
+        | OpKind::AllocClassTrusted
+        | OpKind::AllocInstance
+        | OpKind::AllocTask
+        | OpKind::And
+        | OpKind::Anext
+        | OpKind::Any
+        | OpKind::AsciiFromObj
+        | OpKind::AsyncForEnd
+        | OpKind::AsyncForStart
+        | OpKind::AsyncWorkPoll
+        | OpKind::Band
+        | OpKind::Binop
+        | OpKind::BinopAdd
+        | OpKind::BinopFloorDiv
+        | OpKind::BinopMod
+        | OpKind::BinopMul
+        | OpKind::BinopPow
+        | OpKind::BinopSub
+        | OpKind::BitAnd
+        | OpKind::BitNot
+        | OpKind::BitOr
+        | OpKind::BitXor
+        | OpKind::Bool
+        | OpKind::BoolConst
+        | OpKind::Bor
+        | OpKind::BoundMethodNew
+        | OpKind::Box
+        | OpKind::BoxFromRawInt
+        | OpKind::BrIf
+        | OpKind::Branch
+        | OpKind::BranchFalse
+        | OpKind::BranchTrue
+        | OpKind::BuildDict
+        | OpKind::BuildList
+        | OpKind::BuildSet
+        | OpKind::BuildSlice
+        | OpKind::BuildTuple
+        | OpKind::BuiltinAbs
+        | OpKind::BuiltinAll
+        | OpKind::BuiltinAny
+        | OpKind::BuiltinBool
+        | OpKind::BuiltinFloat
+        | OpKind::BuiltinInt
+        | OpKind::BuiltinLen
+        | OpKind::BuiltinPrint
+        | OpKind::BuiltinRange
+        | OpKind::BuiltinReversed
+        | OpKind::BuiltinSorted
+        | OpKind::BuiltinStr
+        | OpKind::BuiltinSum
+        | OpKind::Bxor
+        | OpKind::BytearrayCount
+        | OpKind::BytearrayCountSlice
+        | OpKind::BytearrayEndswith
+        | OpKind::BytearrayEndswithSlice
+        | OpKind::BytearrayFillRange
+        | OpKind::BytearrayFind
+        | OpKind::BytearrayFindSlice
+        | OpKind::BytearrayFromObj
+        | OpKind::BytearrayFromStr
+        | OpKind::BytearrayReplace
+        | OpKind::BytearraySplit
+        | OpKind::BytearraySplitMax
+        | OpKind::BytearrayStartswith
+        | OpKind::BytearrayStartswithSlice
+        | OpKind::BytesCount
+        | OpKind::BytesCountSlice
+        | OpKind::BytesEndswith
+        | OpKind::BytesEndswithSlice
+        | OpKind::BytesFind
+        | OpKind::BytesFindSlice
+        | OpKind::BytesFromObj
+        | OpKind::BytesFromStr
+        | OpKind::BytesReplace
+        | OpKind::BytesSplit
+        | OpKind::BytesSplitMax
+        | OpKind::BytesStartswith
+        | OpKind::BytesStartswithSlice
+        | OpKind::Call
+        | OpKind::CallBind
+        | OpKind::CallBuiltin
+        | OpKind::CallFunc
+        | OpKind::CallFunction
+        | OpKind::CallGuarded
+        | OpKind::CallIndirect
+        | OpKind::CallInternal
+        | OpKind::CallLoadedMethod
+        | OpKind::CallMethod
+        | OpKind::CallargsExpandKwstar
+        | OpKind::CallargsExpandStar
+        | OpKind::CallargsPushKw
+        | OpKind::CallargsPushMethodReceiver
+        | OpKind::CallargsPushPos
+        | OpKind::CastBool
+        | OpKind::CastFloat
+        | OpKind::CastInt
+        | OpKind::CastStr
+        | OpKind::CheckException
+        | OpKind::CheckedAdd
+        | OpKind::CheckedMul
+        | OpKind::Chr
+        | OpKind::ClassLayoutFieldCount
+        | OpKind::ClassLayoutSlotCount
+        | OpKind::ClassmethodNew
+        | OpKind::ClosureLoad
+        | OpKind::ClosureStore
+        | OpKind::CmpEq
+        | OpKind::CmpGe
+        | OpKind::CmpGt
+        | OpKind::CmpLe
+        | OpKind::CmpLt
+        | OpKind::CmpNe
+        | OpKind::CodeNew
+        | OpKind::Compare
+        | OpKind::ComplexFromObj
+        | OpKind::Const
+        | OpKind::ConstBigint
+        | OpKind::ConstBool
+        | OpKind::ConstBytes
+        | OpKind::ConstFloat
+        | OpKind::ConstInt
+        | OpKind::ConstNone
+        | OpKind::ConstStr
+        | OpKind::ContextEnter
+        | OpKind::ContextExit
+        | OpKind::Copy
+        | OpKind::DataclassGet
+        | OpKind::DataclassSet
+        | OpKind::DataclassSetClass
+        | OpKind::DecRef
+        | OpKind::DelAttr
+        | OpKind::DelAttrGenericObj
+        | OpKind::DelAttrGenericPtr
+        | OpKind::DelAttrName
+        | OpKind::DelBoundary
+        | OpKind::DelIndex
+        | OpKind::DelItem
+        | OpKind::DeleteVar
+        | OpKind::DictClear
+        | OpKind::DictCopy
+        | OpKind::DictFromObj
+        | OpKind::DictGet
+        | OpKind::DictItems
+        | OpKind::DictKeys
+        | OpKind::DictPop
+        | OpKind::DictPopitem
+        | OpKind::DictSet
+        | OpKind::DictSetdefault
+        | OpKind::DictSetdefaultEmptyList
+        | OpKind::DictStrIntInc
+        | OpKind::DictUnpack
+        | OpKind::DictUpdate
+        | OpKind::DictUpdateKwstar
+        | OpKind::DictUpdateMissing
+        | OpKind::DictValues
+        | OpKind::Div
+        | OpKind::DropInserted
+        | OpKind::Else
+        | OpKind::EndFor
+        | OpKind::EndIf
+        | OpKind::Enumerate
+        | OpKind::Eq
+        | OpKind::ExceptEnd
+        | OpKind::ExceptStart
+        | OpKind::ExceptionClass
+        | OpKind::ExceptionContextSet
+        | OpKind::ExceptionNew
+        | OpKind::ExceptionNewFromClass
+        | OpKind::ExceptionPending
+        | OpKind::ExceptionRegionDropsInserted
+        | OpKind::ExceptionSetLast
+        | OpKind::ExceptionStackExit
+        | OpKind::ExceptionStackSetDepth
+        | OpKind::ExceptiongroupCombine
+        | OpKind::ExceptiongroupMatch
+        | OpKind::FinallyEnd
+        | OpKind::FinallyStart
+        | OpKind::Float
+        | OpKind::FloatFromObj
+        | OpKind::FloorDiv
+        | OpKind::ForIter
+        | OpKind::ForIterEnd
+        | OpKind::ForIterStart
+        | OpKind::ForRange
+        | OpKind::FormatString
+        | OpKind::FrameContextSet
+        | OpKind::Free
+        | OpKind::FrozensetAdd
+        | OpKind::FunctionDefaultsVersion
+        | OpKind::Ge
+        | OpKind::GetAttr
+        | OpKind::GetAttrGenericObj
+        | OpKind::GetAttrGenericPtr
+        | OpKind::GetAttrName
+        | OpKind::GetItem
+        | OpKind::GetIter
+        | OpKind::Getframe
+        | OpKind::Goto
+        | OpKind::GpuBarrier
+        | OpKind::GpuBlockDim
+        | OpKind::GpuBlockId
+        | OpKind::GpuGridDim
+        | OpKind::GpuThreadId
+        | OpKind::Gt
+        | OpKind::GuardBool
+        | OpKind::GuardFloat
+        | OpKind::GuardInt
+        | OpKind::GuardNone
+        | OpKind::GuardStr
+        | OpKind::GuardedFieldGet
+        | OpKind::GuardedFieldSet
+        | OpKind::GuardedLoad
+        | OpKind::HasAttrName
+        | OpKind::Id
+        | OpKind::If
+        | OpKind::IfNot
+        | OpKind::Import
+        | OpKind::ImportFrom
+        | OpKind::ImportName
+        | OpKind::In
+        | OpKind::IncRef
+        | OpKind::Index
+        | OpKind::IndexSet
+        | OpKind::InitInstance
+        | OpKind::InplaceAdd
+        | OpKind::InplaceMatmul
+        | OpKind::InplaceMul
+        | OpKind::InplaceSub
+        | OpKind::InstanceGetField
+        | OpKind::InstanceHasField
+        | OpKind::InstanceSetField
+        | OpKind::Int
+        | OpKind::IntFromObj
+        | OpKind::IntFromStrOfObj
+        | OpKind::InvokeFfi
+        | OpKind::Is
+        | OpKind::IsBoundMethod
+        | OpKind::IsCallable
+        | OpKind::IsGenerator
+        | OpKind::IsNativeAwaitable
+        | OpKind::IsNot
+        | OpKind::IsPending
+        | OpKind::Isinstance
+        | OpKind::Issubclass
+        | OpKind::IterNext
+        | OpKind::Jump
+        | OpKind::Label
+        | OpKind::Le
+        | OpKind::ListAppend
+        | OpKind::ListClear
+        | OpKind::ListCopy
+        | OpKind::ListCount
+        | OpKind::ListExtend
+        | OpKind::ListFillNew
+        | OpKind::ListFromRange
+        | OpKind::ListIndex
+        | OpKind::ListIndexRange
+        | OpKind::ListInsert
+        | OpKind::ListIntNew
+        | OpKind::ListPop
+        | OpKind::ListRemove
+        | OpKind::ListReverse
+        | OpKind::Load
+        | OpKind::LoadAttr
+        | OpKind::LoadConst
+        | OpKind::LoadLocal
+        | OpKind::LoadMethod
+        | OpKind::LoadSuperMethod
+        | OpKind::LoadVar
+        | OpKind::LoopBreak
+        | OpKind::LoopBreakIfException
+        | OpKind::LoopBreakIfFalse
+        | OpKind::LoopBreakIfTrue
+        | OpKind::LoopCarryInit
+        | OpKind::LoopCarryUpdate
+        | OpKind::LoopContinue
+        | OpKind::LoopEnd
+        | OpKind::LoopIndexEnd
+        | OpKind::LoopIndexNext
+        | OpKind::LoopIndexStart
+        | OpKind::LoopStart
+        | OpKind::Lshift
+        | OpKind::Lt
+        | OpKind::MAnd
+        | OpKind::Matmul
+        | OpKind::Mod
+        | OpKind::Mod_
+        | OpKind::ModuleCacheDel
+        | OpKind::ModuleCacheGet
+        | OpKind::ModuleCacheSet
+        | OpKind::ModuleDelGlobal
+        | OpKind::ModuleDelGlobalIfPresent
+        | OpKind::ModuleGetAttr
+        | OpKind::ModuleGetGlobal
+        | OpKind::ModuleGetName
+        | OpKind::ModuleImport
+        | OpKind::ModuleImportFrom
+        | OpKind::ModuleImportStar
+        | OpKind::ModuleLoadCached
+        | OpKind::ModuleNew
+        | OpKind::ModuleSetAttr
+        | OpKind::ModuleSlot
+        | OpKind::Modulo
+        | OpKind::Mul
+        | OpKind::Ne
+        | OpKind::Neg
+        | OpKind::NoneConst
+        | OpKind::Nop
+        | OpKind::Not
+        | OpKind::NotIn
+        | OpKind::ObjectNewBound
+        | OpKind::OperatorIndex
+        | OpKind::Or
+        | OpKind::Ord
+        | OpKind::OrdAt
+        | OpKind::PcallWrapBegin
+        | OpKind::PcallWrapEnd
+        | OpKind::Phi
+        | OpKind::Pos
+        | OpKind::Pow
+        | OpKind::PowMod
+        | OpKind::Print
+        | OpKind::PrintNewline
+        | OpKind::PropertyNew
+        | OpKind::Raise
+        | OpKind::RaiseFrom
+        | OpKind::Range
+        | OpKind::RangeNew
+        | OpKind::ReprFromObj
+        | OpKind::Reraise
+        | OpKind::Ret
+        | OpKind::RetVoid
+        | OpKind::Reversed
+        | OpKind::Round
+        | OpKind::Rshift
+        | OpKind::SetAdd
+        | OpKind::SetAddProbe
+        | OpKind::SetAttr
+        | OpKind::SetAttrGenericObj
+        | OpKind::SetAttrGenericPtr
+        | OpKind::SetAttrName
+        | OpKind::SetClear
+        | OpKind::SetDifferenceUpdate
+        | OpKind::SetDiscard
+        | OpKind::SetIntersectionUpdate
+        | OpKind::SetItem
+        | OpKind::SetPop
+        | OpKind::SetRemove
+        | OpKind::SetSymdiffUpdate
+        | OpKind::SetUpdate
+        | OpKind::Shl
+        | OpKind::Shr
+        | OpKind::Slice
+        | OpKind::SliceNew
+        | OpKind::Sorted
+        | OpKind::StackAlloc
+        | OpKind::StateBlockEnd
+        | OpKind::StateBlockStart
+        | OpKind::StateLabel
+        | OpKind::StateSet
+        | OpKind::StateSwitch
+        | OpKind::StateTransition
+        | OpKind::StateYield
+        | OpKind::StaticmethodNew
+        | OpKind::Store
+        | OpKind::StoreAttr
+        | OpKind::StoreFast
+        | OpKind::StoreIndex
+        | OpKind::StoreLocal
+        | OpKind::StoreSubscript
+        | OpKind::Str
+        | OpKind::StrFromObj
+        | OpKind::StringCapitalize
+        | OpKind::StringConcat
+        | OpKind::StringConst
+        | OpKind::StringCount
+        | OpKind::StringCountSlice
+        | OpKind::StringEndswith
+        | OpKind::StringEndswithSlice
+        | OpKind::StringEq
+        | OpKind::StringFind
+        | OpKind::StringFindSlice
+        | OpKind::StringIndex
+        | OpKind::StringIndexSlice
+        | OpKind::StringJoin
+        | OpKind::StringLower
+        | OpKind::StringLstrip
+        | OpKind::StringPartition
+        | OpKind::StringRepeat
+        | OpKind::StringReplace
+        | OpKind::StringRfind
+        | OpKind::StringRfindSlice
+        | OpKind::StringRindex
+        | OpKind::StringRindexSlice
+        | OpKind::StringRpartition
+        | OpKind::StringRstrip
+        | OpKind::StringSplit
+        | OpKind::StringSplitField
+        | OpKind::StringSplitFieldEnd
+        | OpKind::StringSplitFieldEq
+        | OpKind::StringSplitFieldIsAscii
+        | OpKind::StringSplitFieldLen
+        | OpKind::StringSplitFieldLenFromBounds
+        | OpKind::StringSplitFieldOrdAtBounds
+        | OpKind::StringSplitFieldStart
+        | OpKind::StringSplitFieldToInt
+        | OpKind::StringSplitMax
+        | OpKind::StringSplitSepDictInc
+        | OpKind::StringSplitValidate
+        | OpKind::StringSplitWsDictInc
+        | OpKind::StringSplitlines
+        | OpKind::StringStartswith
+        | OpKind::StringStartswithSlice
+        | OpKind::StringStrip
+        | OpKind::StringUpper
+        | OpKind::Sub
+        | OpKind::Subscript
+        | OpKind::Sum
+        | OpKind::TaskWait
+        | OpKind::TrueDiv
+        | OpKind::Trunc
+        | OpKind::TryEnd
+        | OpKind::TryStart
+        | OpKind::TupleCount
+        | OpKind::TupleFromList
+        | OpKind::TupleIndex
+        | OpKind::TypeGuard
+        | OpKind::UnaryInvert
+        | OpKind::UnaryNeg
+        | OpKind::UnaryNot
+        | OpKind::UnaryOp
+        | OpKind::UnaryPos
+        | OpKind::Unbox
+        | OpKind::UnboxToRawInt
+        | OpKind::Unreachable
+        | OpKind::VecMax
+        | OpKind::VecMin
+        | OpKind::VecProd
+        | OpKind::VecSum
+        | OpKind::WarnStderr
+        | OpKind::WhileEnd
+        | OpKind::WhileStart
+        | OpKind::Yield
+        | OpKind::YieldFrom
+        | OpKind::Zip => None,
+    }
 }
 
 #[cfg(test)]
@@ -55,7 +485,7 @@ mod tests {
 
     #[test]
     fn family_dispatch_table_is_disjoint() {
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<OpKind> = HashSet::new();
         for (family, kinds) in FAMILY_DISPATCH_TABLE {
             for &kind in *kinds {
                 assert!(
@@ -65,7 +495,6 @@ mod tests {
                 );
             }
         }
-        let _ = family_map();
     }
 
     #[test]
@@ -81,15 +510,15 @@ mod tests {
     #[test]
     fn representative_kinds_route_to_their_owning_family() {
         assert_eq!(
-            llvm_preserved_op_family("floordiv"),
+            llvm_preserved_op_family(OpKind::Floordiv),
             Some(LlvmPreservedOpFamily::Direct),
         );
         assert_eq!(
-            llvm_preserved_op_family("dict_new"),
+            llvm_preserved_op_family(OpKind::DictNew),
             Some(LlvmPreservedOpFamily::Container),
         );
         assert_eq!(
-            llvm_preserved_op_family("func_new"),
+            llvm_preserved_op_family(OpKind::FuncNew),
             Some(LlvmPreservedOpFamily::Callable),
         );
     }
@@ -97,32 +526,32 @@ mod tests {
     #[test]
     fn fixed_boxed_container_calls_bypass_dedicated_family_routing() {
         for (kind, arity) in [
-            ("list_from_range", 3),
-            ("list_fill_new", 2),
-            ("list_append", 2),
-            ("list_extend", 2),
-            ("tuple_from_list", 1),
-            ("set_add", 2),
-            ("set_add_probe", 2),
-            ("frozenset_add", 2),
-            ("dict_set", 3),
-            ("dict_setdefault", 3),
-            ("dict_setdefault_empty_list", 2),
-            ("dict_get", 3),
-            ("dict_unpack", 2),
-            ("dict_update", 2),
-            ("dict_update_missing", 3),
-            ("dict_update_kwstar", 2),
-            ("dict_clear", 1),
-            ("dict_copy", 1),
-            ("dict_popitem", 1),
-            ("slice", 3),
-            ("slice_new", 3),
-            ("dict_keys", 1),
-            ("dict_values", 1),
-            ("dict_items", 1),
-            ("enumerate", 3),
-            ("dict_from_obj", 1),
+            (OpKind::ListFromRange, 3),
+            (OpKind::ListFillNew, 2),
+            (OpKind::ListAppend, 2),
+            (OpKind::ListExtend, 2),
+            (OpKind::TupleFromList, 1),
+            (OpKind::SetAdd, 2),
+            (OpKind::SetAddProbe, 2),
+            (OpKind::FrozensetAdd, 2),
+            (OpKind::DictSet, 3),
+            (OpKind::DictSetdefault, 3),
+            (OpKind::DictSetdefaultEmptyList, 2),
+            (OpKind::DictGet, 3),
+            (OpKind::DictUnpack, 2),
+            (OpKind::DictUpdate, 2),
+            (OpKind::DictUpdateMissing, 3),
+            (OpKind::DictUpdateKwstar, 2),
+            (OpKind::DictClear, 1),
+            (OpKind::DictCopy, 1),
+            (OpKind::DictPopitem, 1),
+            (OpKind::Slice, 3),
+            (OpKind::SliceNew, 3),
+            (OpKind::DictKeys, 1),
+            (OpKind::DictValues, 1),
+            (OpKind::DictItems, 1),
+            (OpKind::Enumerate, 3),
+            (OpKind::DictFromObj, 1),
         ] {
             assert_eq!(
                 llvm_preserved_op_family(kind),
@@ -140,15 +569,15 @@ mod tests {
         }
 
         for kind in [
-            "iter_next_unboxed",
-            "len",
-            "list_new",
-            "dict_new",
-            "tuple_new",
-            "set_new",
-            "frozenset_new",
-            "iter",
-            "unpack_sequence",
+            OpKind::IterNextUnboxed,
+            OpKind::Len,
+            OpKind::ListNew,
+            OpKind::DictNew,
+            OpKind::TupleNew,
+            OpKind::SetNew,
+            OpKind::FrozensetNew,
+            OpKind::Iter,
+            OpKind::UnpackSequence,
         ] {
             assert_eq!(
                 llvm_preserved_op_family(kind),
@@ -162,7 +591,12 @@ mod tests {
     fn vector_reductions_use_the_shared_owned_boxed_abi() {
         use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
 
-        for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+        for kind in [
+            OpKind::VecSum,
+            OpKind::VecProd,
+            OpKind::VecMin,
+            OpKind::VecMax,
+        ] {
             assert_eq!(llvm_preserved_op_family(kind), None);
             let symbol = format!("molt_{kind}");
             let abi = runtime_boxed_abi(&symbol, 3)
@@ -180,43 +614,43 @@ mod tests {
     #[test]
     fn exact_boxed_runtime_kinds_bypass_direct_and_callable_family_routing() {
         for (kind, arity) in [
-            ("aiter", 1),
-            ("context_exit", 2),
-            ("module_new", 1),
-            ("module_cache_get", 1),
-            ("module_cache_set", 2),
-            ("module_cache_del", 1),
-            ("module_get_attr", 2),
-            ("module_import_from", 2),
-            ("module_get_global", 2),
-            ("module_set_attr", 3),
-            ("module_del_global", 2),
-            ("module_del_global_if_present", 2),
-            ("exception_class", 1),
-            ("exception_new", 2),
-            ("exception_stack_set_depth", 1),
-            ("exception_stack_exit", 1),
-            ("exception_set_last", 1),
-            ("exception_context_set", 1),
-            ("str_from_obj", 1),
-            ("repr_from_obj", 1),
-            ("int_from_obj", 3),
-            ("float_from_obj", 1),
-            ("ascii_from_obj", 1),
-            ("complex_from_obj", 3),
-            ("int_from_str_of_obj", 3),
-            ("ord", 1),
-            ("ord_at", 2),
-            ("string_join", 2),
-            ("isinstance", 2),
-            ("issubclass", 2),
-            ("has_attr_name", 2),
-            ("is_callable", 1),
-            ("code_new", 9),
-            ("callargs_push_pos", 2),
-            ("callargs_push_kw", 3),
-            ("callargs_expand_star", 2),
-            ("callargs_expand_kwstar", 2),
+            (OpKind::Aiter, 1),
+            (OpKind::ContextExit, 2),
+            (OpKind::ModuleNew, 1),
+            (OpKind::ModuleCacheGet, 1),
+            (OpKind::ModuleCacheSet, 2),
+            (OpKind::ModuleCacheDel, 1),
+            (OpKind::ModuleGetAttr, 2),
+            (OpKind::ModuleImportFrom, 2),
+            (OpKind::ModuleGetGlobal, 2),
+            (OpKind::ModuleSetAttr, 3),
+            (OpKind::ModuleDelGlobal, 2),
+            (OpKind::ModuleDelGlobalIfPresent, 2),
+            (OpKind::ExceptionClass, 1),
+            (OpKind::ExceptionNew, 2),
+            (OpKind::ExceptionStackSetDepth, 1),
+            (OpKind::ExceptionStackExit, 1),
+            (OpKind::ExceptionSetLast, 1),
+            (OpKind::ExceptionContextSet, 1),
+            (OpKind::StrFromObj, 1),
+            (OpKind::ReprFromObj, 1),
+            (OpKind::IntFromObj, 3),
+            (OpKind::FloatFromObj, 1),
+            (OpKind::AsciiFromObj, 1),
+            (OpKind::ComplexFromObj, 3),
+            (OpKind::IntFromStrOfObj, 3),
+            (OpKind::Ord, 1),
+            (OpKind::OrdAt, 2),
+            (OpKind::StringJoin, 2),
+            (OpKind::Isinstance, 2),
+            (OpKind::Issubclass, 2),
+            (OpKind::HasAttrName, 2),
+            (OpKind::IsCallable, 1),
+            (OpKind::CodeNew, 9),
+            (OpKind::CallargsPushPos, 2),
+            (OpKind::CallargsPushKw, 3),
+            (OpKind::CallargsExpandStar, 2),
+            (OpKind::CallargsExpandKwstar, 2),
         ] {
             assert_eq!(
                 llvm_preserved_op_family(kind),

@@ -18,8 +18,8 @@ pub(in crate::wasm::state_dispatch) fn emit_activation_op(
     locals: WasmDispatchFrameLocals,
     op: &OpIR,
 ) {
-    match op.kind.as_str() {
-        "state_set" => {
+    match op.kind {
+        molt_ir::OpKind::StateSet => {
             let state = op.value.expect("state_set requires its resume state");
             let encoded = plan
                 .state_resume
@@ -34,7 +34,7 @@ pub(in crate::wasm::state_dispatch) fn emit_activation_op(
                 context.import_ids[WasmRuntimeImport::ObjSetState],
             );
         }
-        "is_pending" => {
+        molt_ir::OpKind::IsPending => {
             let args = op.args.as_ref().expect("is_pending requires an operand");
             func.instruction(&Instruction::LocalGet(context.locals()[&args[0]]));
             func.instruction(&Instruction::I64Const(box_pending()));
@@ -44,7 +44,7 @@ pub(in crate::wasm::state_dispatch) fn emit_activation_op(
                 context.locals()[op.out.as_ref().unwrap()],
             ));
         }
-        "task_wait" => {
+        molt_ir::OpKind::TaskWait => {
             let args = op.args.as_ref().expect("task_wait requires a future");
             func.instruction(&Instruction::LocalGet(
                 locals

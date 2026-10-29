@@ -17,20 +17,20 @@ const HANDLER: i64 = 1_000_000;
 /// Rust's default stack for a spawned thread.
 const DEFAULT_THREAD_STACK: usize = 2 << 20;
 
-fn marked(kind: &str, value: i64) -> OpIR {
+fn marked(kind: molt_ir::OpKind, value: i64) -> OpIR {
     OpIR {
-        kind: kind.into(),
+        kind,
         value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
-fn op(kind: &str, args: &[&str], out: Option<String>) -> OpIR {
+fn op(kind: molt_ir::OpKind, args: &[&str], out: Option<String>) -> OpIR {
     OpIR {
-        kind: kind.into(),
+        kind,
         args: Some(args.iter().map(|arg| arg.to_string()).collect()),
         out,
-        ..OpIR::default()
+        ..OpIR::new(kind)
     }
 }
 
@@ -39,19 +39,31 @@ fn op(kind: &str, args: &[&str], out: Option<String>) -> OpIR {
 /// deep above a join with 20,000 predecessors. A recursive walk overflowed a
 /// 2 MiB thread on this shape; per-query idom walks took minutes.
 fn huge_function() -> FunctionIR {
-    let mut ops = vec![marked("label", 0)];
+    let mut ops = vec![marked(molt_ir::OpKind::Label, 0)];
     for line in 1..=STATEMENTS {
-        ops.push(marked("line", line));
-        ops.push(op("store_index", &["obj", "key", "obj"], None));
-        ops.push(op("index", &["obj", "key"], Some(format!("r{line}"))));
-        ops.push(marked("check_exception", HANDLER));
+        ops.push(marked(molt_ir::OpKind::Line, line));
+        ops.push(op(
+            molt_ir::OpKind::StoreIndex,
+            &["obj", "key", "obj"],
+            None,
+        ));
+        ops.push(op(
+            molt_ir::OpKind::Index,
+            &["obj", "key"],
+            Some(format!("r{line}")),
+        ));
+        ops.push(marked(molt_ir::OpKind::CheckException, HANDLER));
     }
     ops.extend([
-        op("ret_void", &[], None),
-        marked("label", HANDLER),
-        marked("line", HANDLER),
-        op("index", &["obj", "key"], Some("handled".into())),
-        op("ret_void", &[], None),
+        op(molt_ir::OpKind::RetVoid, &[], None),
+        marked(molt_ir::OpKind::Label, HANDLER),
+        marked(molt_ir::OpKind::Line, HANDLER),
+        op(
+            molt_ir::OpKind::Index,
+            &["obj", "key"],
+            Some("handled".into()),
+        ),
+        op(molt_ir::OpKind::RetVoid, &[], None),
     ]);
     FunctionIR {
         name: "huge".into(),
@@ -93,7 +105,7 @@ fn twenty_thousand_block_function_compiles_on_a_default_thread() {
             let lowered = lower_to_simple_ir(&tir);
             let checks = lowered
                 .iter()
-                .filter(|op| op.kind == "check_exception")
+                .filter(|op| op.kind == molt_ir::OpKind::CheckException)
                 .count();
             assert_eq!(
                 checks, STATEMENTS as usize,

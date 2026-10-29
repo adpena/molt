@@ -685,6 +685,7 @@ fn materialize_value_for_type(
         let boxed_id = allocator.fresh();
         ops.push(LirOp {
             tir_op: TirOp {
+                origin: None,
                 dialect: super::ops::Dialect::Molt,
                 opcode: OpCode::BoxVal,
                 operands: vec![value_id],
@@ -724,6 +725,7 @@ fn materialize_branch_condition(
     attrs.insert("lir.truthy_cond".to_string(), AttrValue::Bool(true));
     ops.push(LirOp {
         tir_op: TirOp {
+            origin: None,
             dialect: super::ops::Dialect::Molt,
             opcode: OpCode::Bool,
             operands: vec![cond],
@@ -765,6 +767,7 @@ mod tests {
 
     fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -781,6 +784,7 @@ mod tests {
         attrs: AttrDict,
     ) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands,

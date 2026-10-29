@@ -489,11 +489,11 @@ simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
 # An exact s_value matching a defined body retains that body. No operation
 # invents a companion symbol; task/poll targets must be explicitly named.
 simpleir_defined_function_reference_s_value_kinds = [
-    "call", "call_internal", "func_new", "func_new_closure", "func_new_builtin",
+    "call", "call_internal", "func_new", "func_new_closure",
     "code_new", "call_guarded", "call_indirect", "alloc_task", "call_async",
-    "stateful_locals_register", "task_new",
-    "generator_send", "call_func", "call_method", "import_from",
-    "import_name", "class_def", "decorator", "super_call", "yield_from", "await",
+    "stateful_locals_register",
+    "call_func", "call_method", "import_from",
+    "import_name", "class_def", "yield_from",
 ]
 simpleir_runtime_qualified_callable = [
     { qualified = "builtins.__import__", symbol = "molt_importlib_import_transaction" },

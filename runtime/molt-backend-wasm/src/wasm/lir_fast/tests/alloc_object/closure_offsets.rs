@@ -31,6 +31,7 @@ fn closure_offset_ops_stay_lir_fast_runtime_calls() {
         });
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),

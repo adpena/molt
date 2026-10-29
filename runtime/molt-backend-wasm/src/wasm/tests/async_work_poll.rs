@@ -2,17 +2,15 @@ use super::support::*;
 
 fn poll_ir() -> SimpleIR {
     let poll = OpIR {
-        kind: "async_work_poll".into(),
         value: Some(41),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::AsyncWorkPoll)
     };
-    let fallthrough = wasm_test_op("const_none", Some("ok"), vec![]);
-    let mut ret = wasm_test_op("ret", None, vec!["ok"]);
+    let fallthrough = wasm_test_op(molt_ir::OpKind::ConstNone, Some("ok"), vec![]);
+    let mut ret = wasm_test_op(molt_ir::OpKind::Ret, None, vec!["ok"]);
     ret.args = Some(vec!["ok".into()]);
     let exit = OpIR {
-        kind: "label".into(),
         value: Some(41),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::Label)
     };
     SimpleIR {
         functions: vec![wasm_test_function(
@@ -24,7 +22,7 @@ fn poll_ir() -> SimpleIR {
                 fallthrough,
                 ret,
                 exit,
-                wasm_test_op("ret_void", None, vec![]),
+                wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
             ],
         )],
         profile: None,
@@ -53,17 +51,19 @@ fn compile_final_poll(native_eh_enabled: bool) -> Vec<u8> {
 
 fn finally_pending_observer_ir(async_work_poll: bool) -> SimpleIR {
     let observer = OpIR {
-        kind: "exception_finally_pending_observer".into(),
         async_work_poll,
         out: Some("pending".into()),
-        ..Default::default()
+        ..OpIR::new(molt_ir::OpKind::ExceptionFinallyPendingObserver)
     };
     SimpleIR {
         functions: vec![wasm_test_function(
             "molt_main",
             vec![],
             None,
-            vec![observer, wasm_test_op("ret", None, vec!["pending"])],
+            vec![
+                observer,
+                wasm_test_op(molt_ir::OpKind::Ret, None, vec!["pending"]),
+            ],
         )],
         profile: None,
     }

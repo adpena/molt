@@ -10,14 +10,14 @@ pub(super) fn emit_function_object_call_op(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    match op.kind.as_str() {
-        "func_new" => {
+    match op.kind {
+        molt_ir::OpKind::FuncNew => {
             let custody = entry_custody_word(call_ctx, op, false);
             emit_function_constructor(
                 call_ctx,
                 func,
                 op,
-                "func_new",
+                molt_ir::OpKind::FuncNew,
                 WasmRuntimeImport::FuncNew,
                 None,
                 None,
@@ -25,7 +25,7 @@ pub(super) fn emit_function_object_call_op(
             );
             CallOpEmission::Handled
         }
-        "func_new_closure" => {
+        molt_ir::OpKind::FuncNewClosure => {
             let closure_name = op
                 .args
                 .as_ref()
@@ -37,7 +37,7 @@ pub(super) fn emit_function_object_call_op(
                 call_ctx,
                 func,
                 op,
-                "func_new_closure",
+                molt_ir::OpKind::FuncNewClosure,
                 WasmRuntimeImport::FuncNewClosure,
                 None,
                 Some(closure_bits),
@@ -45,8 +45,8 @@ pub(super) fn emit_function_object_call_op(
             );
             CallOpEmission::Handled
         }
-        "builtin_func" => emit_builtin_func(call_ctx, func, op),
-        "missing" => {
+        molt_ir::OpKind::BuiltinFunc => emit_builtin_func(call_ctx, func, op),
+        molt_ir::OpKind::Missing => {
             emit_call(
                 func,
                 call_ctx.reloc_enabled,
@@ -62,7 +62,7 @@ pub(super) fn emit_function_object_call_op(
             );
             CallOpEmission::Handled
         }
-        "function_closure_bits" => {
+        molt_ir::OpKind::FunctionClosureBits => {
             let args = op.args.as_ref().unwrap();
             let func_bits = call_ctx.locals[&args[0]];
             func.instruction(&Instruction::LocalGet(func_bits));
@@ -103,7 +103,7 @@ fn emit_builtin_func(
         call_ctx,
         func,
         op,
-        "builtin_func",
+        molt_ir::OpKind::BuiltinFunc,
         if op.args.as_ref().is_some_and(|args| !args.is_empty()) {
             WasmRuntimeImport::FuncNewBuiltinNamed
         } else {
@@ -141,7 +141,7 @@ fn emit_function_constructor(
     call_ctx: &mut CallOpContext<'_, '_, '_>,
     func: &mut Function,
     op: &OpIR,
-    table_context: &str,
+    table_context: molt_ir::OpKind,
     import: WasmRuntimeImport,
     leading_local: Option<u32>,
     trailing_local: Option<u32>,

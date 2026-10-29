@@ -10,12 +10,10 @@ pub(super) fn emit_exception_control_op(
     func: &mut Function,
     op: &OpIR,
 ) -> bool {
-    match op.kind.as_str() {
-        "try_start" => emit_try_start(context, func),
-        "try_end" => emit_try_end(context, func),
-        kind if molt_tir::tir::op_kinds_generated::simpleir_kind_is_exception_check(kind) => {
-            emit_check_exception(context, func, op)
-        }
+    match op.kind {
+        molt_ir::OpKind::TryStart => emit_try_start(context, func),
+        molt_ir::OpKind::TryEnd => emit_try_end(context, func),
+        kind if kind.is_exception_check() => emit_check_exception(context, func, op),
         _ => return false,
     }
     true
@@ -82,7 +80,7 @@ fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op:
     let target = op
         .value
         .unwrap_or_else(|| panic!("{} missing exception label", op.kind));
-    let depth = super::branches::label_branch_depth(context, target, op.kind.as_str());
+    let depth = super::branches::label_branch_depth(context, target, op.kind);
     func.instruction(&Instruction::BrIf(depth));
 }
 
@@ -137,13 +135,16 @@ mod tests {
         let mut label_depths = BTreeMap::from([(41, usize::from(cleanup_inside_try))]);
         let op = OpIR {
             kind: if cleanup_inside_try {
-                "check_exception"
+                molt_ir::OpKind::CheckException
             } else {
-                "async_work_poll"
-            }
-            .into(),
+                molt_ir::OpKind::AsyncWorkPoll
+            },
             value: Some(41),
-            ..Default::default()
+            ..OpIR::new(if cleanup_inside_try {
+                molt_ir::OpKind::CheckException
+            } else {
+                molt_ir::OpKind::AsyncWorkPoll
+            })
         };
         let mut body = Function::new([]);
         body.instruction(&Instruction::Block(BlockType::Empty));

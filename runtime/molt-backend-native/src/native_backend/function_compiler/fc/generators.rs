@@ -1,20 +1,21 @@
 use super::super::*;
 use crate::runtime_import_abi::MOLT_ASYNCGEN_NEW;
+use molt_ir::OpKind;
 
-/// Single-source kind authority for [`handle_generator_op`], consulted by
-/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+// Single-source kind authority for [`handle_generator_op`], consulted by
+// `op_family::native_op_family`. Mirror the `match op.kind` arms below.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
-    "aiter",
-    "anext",
-    "asyncgen_new",
-    "gen_send",
-    "gen_throw",
-    "gen_close",
-    "is_generator",
-    "is_bound_method",
-    "is_callable",
-];
+define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
+    OpKind::Aiter,
+    OpKind::Anext,
+    OpKind::AsyncgenNew,
+    OpKind::GenSend,
+    OpKind::GenThrow,
+    OpKind::GenClose,
+    OpKind::IsGenerator,
+    OpKind::IsBoundMethod,
+    OpKind::IsCallable,
+);
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for generator/async-generator protocol ops: `gen_send`/`gen_throw`/`gen_close`/`is_generator`/`is_bound_method`/`is_callable`/`asyncgen_new`/`anext`/`aiter`.
@@ -65,8 +66,8 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
             nbc,
         )
     };
-    match op.kind.as_str() {
-        "aiter" => {
+    match op.kind {
+        OpKind::Aiter => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -93,7 +94,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "anext" => {
+        OpKind::Anext => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let iter = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -120,7 +121,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "asyncgen_new" => {
+        OpKind::AsyncgenNew => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let gen_obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -143,7 +144,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, vars);
         }
-        "gen_send" => {
+        OpKind::GenSend => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let gen_obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -181,7 +182,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "gen_throw" => {
+        OpKind::GenThrow => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let gen_obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -219,7 +220,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "gen_close" => {
+        OpKind::GenClose => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let gen_obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -246,7 +247,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "is_generator" => {
+        OpKind::IsGenerator => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -273,7 +274,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "is_bound_method" => {
+        OpKind::IsBoundMethod => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,
@@ -300,7 +301,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "is_callable" => {
+        OpKind::IsCallable => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
             let obj = var_get_boxed_overflow_safe(
                 &mut *module,

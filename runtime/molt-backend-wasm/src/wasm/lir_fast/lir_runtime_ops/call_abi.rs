@@ -32,11 +32,8 @@ impl LirRuntimeArg {
     }
 }
 
-pub(in crate::wasm::lir_fast) fn original_kind(op: &LirOp) -> Option<&str> {
-    match op.tir_op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
+pub(in crate::wasm::lir_fast) fn original_kind(op: &LirOp) -> Option<molt_ir::OpKind> {
+    op.tir_op.origin
 }
 
 pub(in crate::wasm::lir_fast) fn emit_lir_boxed_operands_runtime_call(
@@ -113,7 +110,7 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn emit_lir_runtime_call_with_res
 pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_i64_attr(
     op: &LirOp,
     attr: &str,
-    op_name: &str,
+    op_name: molt_ir::OpKind,
 ) -> i64 {
     match op.tir_op.attrs.get(attr) {
         Some(AttrValue::Int(value)) => *value,
@@ -123,7 +120,7 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_i64_attr(
 
 pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_name_bytes(
     op: &LirOp,
-    op_name: &str,
+    op_name: molt_ir::OpKind,
 ) -> Arc<[u8]> {
     match op.tir_op.attrs.get("name") {
         Some(AttrValue::Str(name)) => Arc::from(name.as_bytes()),
@@ -134,7 +131,7 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_name_bytes(
 pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_operand(
     op: &LirOp,
     index: usize,
-    op_name: &str,
+    op_name: molt_ir::OpKind,
 ) -> ValueId {
     op.tir_op
         .operands
@@ -145,7 +142,7 @@ pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_operand(
 
 pub(in crate::wasm::lir_fast::lir_runtime_ops) fn required_source_op_index(
     op: &LirOp,
-    op_name: &str,
+    op_name: molt_ir::OpKind,
 ) -> usize {
     op.tir_op
         .source_op_index()

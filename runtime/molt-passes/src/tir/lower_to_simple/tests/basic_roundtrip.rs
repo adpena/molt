@@ -7,39 +7,39 @@ fn module_slots_survive_ssa_sccp_gvn_and_have_bounded_raw_carriers() {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         ops: vec![
             OpIR {
-                kind: "module_slot".into(),
+                kind: molt_ir::OpKind::ModuleSlot,
                 s_value: Some("pkg.sub".into()),
                 out: Some("v0".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleSlot)
             },
             OpIR {
-                kind: "box".into(),
+                kind: molt_ir::OpKind::Box,
                 args: Some(vec!["v0".into()]),
                 out: Some("v1".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Box)
             },
             OpIR {
-                kind: "module_slot".into(),
+                kind: molt_ir::OpKind::ModuleSlot,
                 s_value: Some("pkg.other".into()),
                 out: Some("v2".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleSlot)
             },
             OpIR {
-                kind: "box".into(),
+                kind: molt_ir::OpKind::Box,
                 args: Some(vec!["v2".into()]),
                 out: Some("v3".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Box)
             },
             OpIR {
-                kind: "tuple_new".into(),
+                kind: molt_ir::OpKind::TupleNew,
                 args: Some(vec!["v1".into(), "v3".into()]),
                 out: Some("v4".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::TupleNew)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["v4".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         ..FunctionIR::default()
@@ -77,7 +77,7 @@ fn module_slots_survive_ssa_sccp_gvn_and_have_bounded_raw_carriers() {
         let slots: Vec<_> = function
             .ops
             .iter()
-            .filter(|op| op.kind == "module_slot")
+            .filter(|op| op.kind == molt_ir::OpKind::ModuleSlot)
             .collect();
         assert_eq!(
             slots
@@ -87,42 +87,50 @@ fn module_slots_survive_ssa_sccp_gvn_and_have_bounded_raw_carriers() {
             HashSet::from(["pkg.sub", "pkg.other"])
         );
         assert!(slots.iter().all(|op| op.value.is_none()));
-        assert!(function.ops.iter().any(|op| op.kind == "box"));
+        assert!(
+            function
+                .ops
+                .iter()
+                .any(|op| op.kind == molt_ir::OpKind::Box)
+        );
     }
 }
 
 #[test]
 fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
     let byte_cases = [
-        ("const_str", vec![]),
-        ("const_str", vec![0, b'a', 0]),
-        ("const_str", vec![0xed, 0xa0, 0x80]),
-        ("const_str", vec![0xed, 0xbf, 0xbf, b'f']),
-        ("const_bytes", vec![]),
-        ("const_bytes", vec![0, 0xff, 0x80]),
+        (molt_ir::OpKind::ConstStr, vec![]),
+        (molt_ir::OpKind::ConstStr, vec![0, b'a', 0]),
+        (molt_ir::OpKind::ConstStr, vec![0xed, 0xa0, 0x80]),
+        (molt_ir::OpKind::ConstStr, vec![0xed, 0xbf, 0xbf, b'f']),
+        (molt_ir::OpKind::ConstBytes, vec![]),
+        (molt_ir::OpKind::ConstBytes, vec![0, 0xff, 0x80]),
         (
-            "const_bigint",
+            molt_ir::OpKind::ConstBigint,
             vec![0xff, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
         ),
     ];
     let mut cases: Vec<OpIR> = byte_cases
         .into_iter()
         .map(|(kind, bytes)| OpIR {
-            kind: kind.into(),
+            kind,
             bytes: Some(bytes),
             out: Some("v0".into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         })
         .collect();
     cases.extend(
-        [("const_str", ""), ("const_str", "a\0é")]
-            .into_iter()
-            .map(|(kind, text)| OpIR {
-                kind: kind.into(),
-                s_value: Some(text.into()),
-                out: Some("v0".into()),
-                ..OpIR::default()
-            }),
+        [
+            (molt_ir::OpKind::ConstStr, ""),
+            (molt_ir::OpKind::ConstStr, "a\0é"),
+        ]
+        .into_iter()
+        .map(|(kind, text)| OpIR {
+            kind,
+            s_value: Some(text.into()),
+            out: Some("v0".into()),
+            ..OpIR::new(kind)
+        }),
     );
     for literal in cases {
         let mut function = FunctionIR {
@@ -131,9 +139,9 @@ fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
             ops: vec![
                 literal.clone(),
                 OpIR {
-                    kind: "ret".into(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["v0".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -171,6 +179,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops = vec![
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -179,6 +188,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
             source_span: None,
         },
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::BoxVal,
             operands: vec![raw],
@@ -187,6 +197,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
             source_span: None,
         },
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnboxVal,
             operands: vec![boxed],
@@ -217,15 +228,18 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
         );
     }
     let ops = lower_to_simple_ir(&func);
-    assert!(ops.iter().any(|op| op.kind == "drop_inserted"));
+    assert!(
+        ops.iter()
+            .any(|op| op.kind == molt_ir::OpKind::DropInserted)
+    );
     let aliases: Vec<_> = ops
         .iter()
-        .filter(|op| matches!(op.kind.as_str(), "box" | "unbox"))
+        .filter(|op| matches!(op.kind, molt_ir::OpKind::Box | molt_ir::OpKind::Unbox))
         .collect();
     assert_eq!(aliases.len(), 2);
     for alias in aliases {
         assert!(
-            ops.iter().any(|op| op.kind == "dec_ref"
+            ops.iter().any(|op| op.kind == molt_ir::OpKind::DecRef
                 && op
                     .args
                     .as_ref()
@@ -245,6 +259,7 @@ fn discarded_boxing_effect_survives_simple_ir_roundtrip() {
     );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BoxVal,
         operands: vec![crate::tir::values::ValueId(0)],
@@ -254,10 +269,16 @@ fn discarded_boxing_effect_survives_simple_ir_roundtrip() {
     });
     entry.terminator = Terminator::Return { values: vec![] };
     let ops = lower_to_simple_ir(&func);
-    let boxed = ops.iter().find(|op| op.kind == "box").unwrap();
+    let boxed = ops
+        .iter()
+        .find(|op| op.kind == molt_ir::OpKind::Box)
+        .unwrap();
     assert!(boxed.out.is_none());
     assert_eq!(boxed.args.as_ref().unwrap().len(), 1);
-    assert!(!ops.iter().any(|op| op.kind == "binding_alias"));
+    assert!(
+        !ops.iter()
+            .any(|op| op.kind == molt_ir::OpKind::BindingAlias)
+    );
 }
 
 #[test]
@@ -272,9 +293,7 @@ fn linearize_simple_function_compiles() {
 fn linearize_emits_return() {
     let func = add_function();
     let ops = lower_to_simple_ir(&func);
-    let has_ret = ops.iter().any(|op| {
-        crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(op.kind.as_str())
-    });
+    let has_ret = ops.iter().any(|op| op.kind.is_return_terminator());
     assert!(has_ret, "expected a return op, got: {:?}", ops);
 }
 
@@ -286,21 +305,21 @@ fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
         params: vec![],
         ops: vec![
             OpIR {
-                kind: "module_get_attr".into(),
+                kind: molt_ir::OpKind::ModuleGetAttr,
                 args: Some(vec!["module".into(), "name".into()]),
                 out: Some("callable".into()),
                 runtime_symbol: Some("molt_getframe".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
             },
             OpIR {
-                kind: "call_internal".into(),
+                kind: molt_ir::OpKind::CallInternal,
                 s_value: Some("module_chunk".into()),
                 passes_execution_context: true,
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
             OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             },
         ],
         ..FunctionIR::default()
@@ -309,12 +328,12 @@ fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
     let round_tripped = lower_to_simple_ir(&lower_to_tir(&func));
     let callable = round_tripped
         .iter()
-        .find(|op| op.kind == "module_get_attr")
+        .find(|op| op.kind == molt_ir::OpKind::ModuleGetAttr)
         .expect("module callable read must round-trip");
     assert_eq!(callable.runtime_symbol.as_deref(), Some("molt_getframe"));
     let call = round_tripped
         .iter()
-        .find(|op| op.kind == "call_internal")
+        .find(|op| op.kind == molt_ir::OpKind::CallInternal)
         .expect("direct local call must round-trip");
     assert!(call.passes_execution_context);
 }
@@ -334,18 +353,18 @@ fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
             params: vec!["name".into()],
             ops: vec![
                 OpIR {
-                    kind: "builtin_func".into(),
+                    kind: molt_ir::OpKind::BuiltinFunc,
                     s_value: Some(symbol.into()),
                     builtin_name: Some(builtin_name.into()),
                     value: Some(arity),
                     args: Some(vec!["name".into()]),
                     out: Some("callable".into()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
                 },
                 OpIR {
-                    kind: "ret".into(),
+                    kind: molt_ir::OpKind::Ret,
                     args: Some(vec!["callable".into()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
             ..FunctionIR::default()
@@ -355,7 +374,7 @@ fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
             let builtin = function
                 .ops
                 .iter()
-                .find(|op| op.kind == "builtin_func")
+                .find(|op| op.kind == molt_ir::OpKind::BuiltinFunc)
                 .unwrap();
             assert_eq!(builtin.s_value.as_deref(), Some(symbol));
             assert_eq!(builtin.builtin_name.as_deref(), Some(builtin_name));
@@ -378,7 +397,7 @@ fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
 fn source_call_argument_custody_survives_tir_roundtrip() {
     use molt_ir::ParameterCustody::{Borrowed, Transferred};
     let guarded = |out: &str, custody: Option<Vec<molt_ir::ParameterCustody>>| OpIR {
-        kind: "call_guarded".into(),
+        kind: molt_ir::OpKind::CallGuarded,
         args: Some(vec![
             "callable".into(),
             "receiver".into(),
@@ -387,19 +406,19 @@ fn source_call_argument_custody_survives_tir_roundtrip() {
         s_value: Some("target".into()),
         argument_custody: custody,
         out: Some(out.into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::CallGuarded)
     };
     let load = |callable: &str, self_or_null: &str| OpIR {
-        kind: "load_method".into(),
+        kind: molt_ir::OpKind::LoadMethod,
         args: Some(vec!["receiver".into()]),
         s_value: Some("method".into()),
         var: Some(callable.into()),
         out: Some(self_or_null.into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::LoadMethod)
     };
     let loaded_call =
         |callable: &str, self_or_null: &str, out: &str, custody: Option<Vec<_>>| OpIR {
-            kind: "call_loaded_method".into(),
+            kind: molt_ir::OpKind::CallLoadedMethod,
             args: Some(vec![
                 callable.into(),
                 self_or_null.into(),
@@ -407,7 +426,7 @@ fn source_call_argument_custody_survives_tir_roundtrip() {
             ]),
             argument_custody: custody,
             out: Some(out.into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::CallLoadedMethod)
         };
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -429,8 +448,8 @@ fn source_call_argument_custody_survives_tir_roundtrip() {
             load("borrowed_callable", "borrowed_self"),
             loaded_call("borrowed_callable", "borrowed_self", "borrowing", None),
             OpIR {
-                kind: "ret_void".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::RetVoid,
+                ..OpIR::new(molt_ir::OpKind::RetVoid)
             },
         ],
         ..FunctionIR::default()
@@ -447,8 +466,7 @@ fn source_call_argument_custody_survives_tir_roundtrip() {
         .ops
         .iter()
         .filter(|op| {
-            op.opcode == OpCode::CallLoadedMethod
-                || op.attrs.get("_original_kind") == Some(&AttrValue::Str("call_guarded".into()))
+            op.opcode == OpCode::CallLoadedMethod || op.origin == Some(molt_ir::OpKind::CallGuarded)
         })
         .map(TirOp::argument_custody)
         .collect::<Vec<_>>();
@@ -456,7 +474,12 @@ fn source_call_argument_custody_survives_tir_roundtrip() {
 
     let lowered = lower_to_simple_ir(&tir)
         .into_iter()
-        .filter(|op| matches!(op.kind.as_str(), "call_guarded" | "call_loaded_method"))
+        .filter(|op| {
+            matches!(
+                op.kind,
+                molt_ir::OpKind::CallGuarded | molt_ir::OpKind::CallLoadedMethod
+            )
+        })
         .map(|op| op.argument_custody)
         .collect::<Vec<_>>();
     assert_eq!(lowered, expected);
@@ -476,27 +499,27 @@ fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
     let all_requirements = crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements::ALL.bits();
     for (index, kind) in carrier_kinds.iter().enumerate() {
         let args = match *kind {
-            "builtin_func" => vec!["name".into()],
-            "call_func" => vec!["callee".into(), "object".into()],
-            "get_attr_generic_obj" => vec!["object".into()],
-            "get_attr_name_default" => {
+            molt_ir::OpKind::BuiltinFunc => vec!["name".into()],
+            molt_ir::OpKind::CallFunc => vec!["callee".into(), "object".into()],
+            molt_ir::OpKind::GetAttrGenericObj => vec!["object".into()],
+            molt_ir::OpKind::GetAttrNameDefault => {
                 vec!["object".into(), "name".into(), "default".into()]
             }
             _ => vec!["module".into(), "name".into()],
         };
         ops.push(OpIR {
-            kind: (*kind).into(),
+            kind: (*kind),
             args: Some(args),
             out: Some(format!("result_{index}")),
-            s_value: (*kind == "get_attr_generic_obj").then(|| "_getframe".into()),
-            value: (*kind == "builtin_func").then_some(1),
+            s_value: (*kind == molt_ir::OpKind::GetAttrGenericObj).then(|| "_getframe".into()),
+            value: (*kind == molt_ir::OpKind::BuiltinFunc).then_some(1),
             runtime_requirement_bits: all_requirements,
-            ..OpIR::default()
+            ..OpIR::new(*kind)
         });
     }
     ops.push(OpIR {
-        kind: "ret_void".into(),
-        ..OpIR::default()
+        kind: molt_ir::OpKind::RetVoid,
+        ..OpIR::new(molt_ir::OpKind::RetVoid)
     });
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -523,16 +546,16 @@ fn every_runtime_symbol_carrier_survives_tir_roundtrip() {
         .iter()
         .enumerate()
         .map(|(index, kind)| OpIR {
-            kind: (*kind).into(),
+            kind: (*kind),
             args: Some(vec!["module".into(), "name".into()]),
             out: Some(format!("result_{index}")),
             runtime_symbol: Some("molt_getframe".into()),
-            ..OpIR::default()
+            ..OpIR::new(*kind)
         })
         .collect::<Vec<_>>();
     ops.push(OpIR {
-        kind: "ret_void".into(),
-        ..OpIR::default()
+        kind: molt_ir::OpKind::RetVoid,
+        ..OpIR::new(molt_ir::OpKind::RetVoid)
     });
     let func = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -578,13 +601,10 @@ fn lower_to_simple_emits_separate_drop_fact_markers() {
     let ops = lower_to_simple_ir(&func);
 
     assert_eq!(
-        ops.iter()
-            .take(2)
-            .map(|op| op.kind.as_str())
-            .collect::<Vec<_>>(),
+        ops.iter().take(2).map(|op| op.kind).collect::<Vec<_>>(),
         vec![
-            crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR,
-            crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+            molt_ir::OpKind::DropInserted,
+            molt_ir::OpKind::ExceptionRegionDropsInserted,
         ],
         "full drop ownership and exception-only drop facts must remain distinct on SimpleIR transport"
     );
@@ -622,6 +642,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
             args: vec![],
             ops: vec![
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],
@@ -630,6 +651,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
                     source_span: None,
                 },
                 TirOp {
+                    origin: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::StateYield,
                     operands: vec![yielded_pair],
@@ -656,6 +678,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
             id: resume_block,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstNone,
                 operands: vec![],
@@ -672,16 +695,16 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
     let ops = lower_to_simple_ir(&func);
     let state_yield_idx = ops
         .iter()
-        .position(|op| op.kind == "state_yield")
+        .position(|op| op.kind == molt_ir::OpKind::StateYield)
         .expect("state_yield op");
     let next = ops
         .get(state_yield_idx + 1)
         .expect("resume continuation after state_yield");
-    assert_eq!(next.kind, "state_label", "{ops:?}");
+    assert_eq!(next.kind, molt_ir::OpKind::StateLabel, "{ops:?}");
     assert_eq!(ops[state_yield_idx].value, Some(5), "{ops:?}");
     let state_targets = ops
         .iter()
-        .find(|op| op.kind == "state_switch")
+        .find(|op| op.kind == molt_ir::OpKind::StateSwitch)
         .and_then(|op| op.state_targets.as_ref())
         .expect("state dispatch must transport its saved-state/control-label map");
     assert_eq!(state_targets.as_slice(), &[(5, 91)], "{ops:?}");
@@ -691,7 +714,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
     let mut omitted = ops.clone();
     omitted
         .iter_mut()
-        .find(|op| op.kind == "state_switch")
+        .find(|op| op.kind == molt_ir::OpKind::StateSwitch)
         .unwrap()
         .state_targets = Some(vec![]);
     let error = molt_ir::ir_schema::validate_state_dispatch(&omitted).unwrap_err();
@@ -706,8 +729,10 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
     assert!(
         ops[state_yield_idx + 1..]
             .iter()
-            .take_while(|op| !(op.kind == "ret" || op.kind == "ret_void"))
-            .all(|op| op.kind != "unreachable"),
+            .take_while(
+                |op| !(op.kind == molt_ir::OpKind::Ret || op.kind == molt_ir::OpKind::RetVoid)
+            )
+            .all(|op| op.kind != molt_ir::OpKind::Unreachable),
         "pure state_yield suspend must not emit an unreachable before its resume continuation: {ops:?}"
     );
 }
@@ -726,6 +751,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
     {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -734,9 +760,10 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
             source_span: None,
         });
         let mut attrs = AttrDict::new();
-        attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+
         attrs.insert("_var".into(), AttrValue::Str("slot".into()));
         block.ops.push(TirOp {
+            origin: Some(molt_ir::OpKind::StoreVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source],
@@ -755,7 +782,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
     let stored_name = value_var(stored);
     let store = ops
         .iter()
-        .find(|op| op.kind == "store_var" && op.var.as_deref() == Some("slot"))
+        .find(|op| op.kind == molt_ir::OpKind::StoreVar && op.var.as_deref() == Some("slot"))
         .expect("result-carrying store_var must preserve the local lifetime boundary");
     assert_eq!(
         store.args.as_deref(),
@@ -764,7 +791,9 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
     );
     let alias = ops
         .iter()
-        .find(|op| op.kind == "copy_var" && op.out.as_deref() == Some(stored_name.as_str()))
+        .find(|op| {
+            op.kind == molt_ir::OpKind::CopyVar && op.out.as_deref() == Some(stored_name.as_str())
+        })
         .expect("result-carrying store_var must define its SSA alias result");
     assert_eq!(
         alias.var.as_deref(),
@@ -793,8 +822,8 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
             block.ops.iter().any(|op| {
                 op.opcode == OpCode::Copy
                     && matches!(
-                        op.attrs.get("_original_kind"),
-                        Some(AttrValue::Str(kind)) if kind == "store_var"
+                        op.origin,
+                        Some(kind) if kind == molt_ir::OpKind::StoreVar
                     )
                     && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "slot")
             })
@@ -834,6 +863,7 @@ fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
     {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -844,6 +874,7 @@ fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
         let mut attrs = AttrDict::new();
         attrs.insert("_var".into(), AttrValue::Str("x".into()));
         block.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source],
@@ -860,7 +891,9 @@ fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
     let copied_name = value_var(copied);
     let copy = ops
         .iter()
-        .find(|op| op.kind == "copy_var" && op.out.as_deref() == Some(copied_name.as_str()))
+        .find(|op| {
+            op.kind == molt_ir::OpKind::CopyVar && op.out.as_deref() == Some(copied_name.as_str())
+        })
         .expect("copy_var must be re-emitted for the copied value");
 
     assert_eq!(copy.var, Some(value_var(source)));
@@ -872,20 +905,23 @@ fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
 
 #[test]
 fn copy_source_substitution_never_revives_transport_metadata() {
-    for kind in [None, Some("copy"), Some("copy_var"), Some("load_var")] {
+    for kind in [
+        None,
+        Some(molt_ir::OpKind::Copy),
+        Some(molt_ir::OpKind::CopyVar),
+        Some(molt_ir::OpKind::LoadVar),
+    ] {
         for metadata in [
             None,
             Some("stale_local".to_string()),
             Some(value_var(ValueId(1))),
         ] {
             let mut attrs = AttrDict::new();
-            if let Some(kind) = kind {
-                attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
-            }
             if let Some(metadata) = metadata {
                 attrs.insert("_var".into(), AttrValue::Str(metadata));
             }
             let mut op = TirOp {
+                origin: kind,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![ValueId(1)],
@@ -897,7 +933,7 @@ fn copy_source_substitution_never_revives_transport_metadata() {
                 op.operands[0] = source;
                 let lowered = super::super::op_lowering::lower_op_many(&op);
                 assert_eq!(lowered.len(), 1, "{op:?}");
-                assert_eq!(lowered[0].kind, "copy_var");
+                assert_eq!(lowered[0].kind, molt_ir::OpKind::CopyVar);
                 assert_eq!(lowered[0].var, Some(value_var(source)), "{op:?}");
                 assert_eq!(lowered[0].out, Some(value_var(ValueId(2))));
                 assert_eq!(lowered[0].args, None);
@@ -910,26 +946,24 @@ fn copy_source_substitution_never_revives_transport_metadata() {
 fn named_store_substitution_changes_source_but_not_destination() {
     for results in [vec![], vec![ValueId(2)]] {
         let mut op = TirOp {
+            origin: Some(molt_ir::OpKind::StoreVar),
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![ValueId(1)],
             results,
-            attrs: AttrDict::from([
-                ("_original_kind".into(), AttrValue::Str("store_var".into())),
-                ("_var".into(), AttrValue::Str("destination".into())),
-            ]),
+            attrs: AttrDict::from([("_var".into(), AttrValue::Str("destination".into()))]),
             source_span: None,
         };
         for source in [ValueId(1), ValueId(3)] {
             op.operands[0] = source;
             let lowered = super::super::op_lowering::lower_op_many(&op);
             assert_eq!(lowered.len(), 1 + op.results.len());
-            assert_eq!(lowered[0].kind, "store_var");
+            assert_eq!(lowered[0].kind, molt_ir::OpKind::StoreVar);
             assert_eq!(lowered[0].args, Some(vec![value_var(source)]));
             assert_eq!(lowered[0].var.as_deref(), Some("destination"));
             assert_eq!(lowered[0].out, None);
             if let Some(result) = op.results.first() {
-                assert_eq!(lowered[1].kind, "copy_var");
+                assert_eq!(lowered[1].kind, molt_ir::OpKind::CopyVar);
                 assert_eq!(lowered[1].var, Some(value_var(source)));
                 assert_eq!(lowered[1].out, Some(value_var(*result)));
                 assert_eq!(lowered[1].args, None);
@@ -942,11 +976,12 @@ fn named_store_substitution_changes_source_but_not_destination() {
 #[should_panic(expected = "named-local mutation requires an explicit _var destination")]
 fn named_store_cannot_invent_a_destination_from_its_result() {
     super::super::op_lowering::lower_op_many(&TirOp {
+        origin: Some(molt_ir::OpKind::StoreVar),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![ValueId(1)],
         results: vec![ValueId(2)],
-        attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str("store_var".into()))]),
+        attrs: AttrDict::from([]),
         source_span: None,
     });
 }
@@ -955,6 +990,7 @@ fn named_store_cannot_invent_a_destination_from_its_result() {
 #[should_panic(expected = "named-local mutation requires an explicit _var destination")]
 fn named_delete_cannot_invent_a_destination_from_its_result() {
     super::super::op_lowering::lower_op_many(&TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DeleteVar,
         operands: vec![],
@@ -978,6 +1014,7 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
     func.next_value += 1;
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Shl,
         operands: vec![ValueId(0), ValueId(1)],
@@ -986,6 +1023,7 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Shr,
         operands: vec![shl, ValueId(1)],
@@ -996,10 +1034,10 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
     entry.terminator = Terminator::Return { values: vec![shr] };
 
     let ops = lower_to_simple_ir(&func);
-    assert!(ops.iter().any(|op| op.kind == "lshift"));
-    assert!(ops.iter().any(|op| op.kind == "rshift"));
-    assert!(!ops.iter().any(|op| op.kind == "shl"));
-    assert!(!ops.iter().any(|op| op.kind == "shr"));
+    assert!(ops.iter().any(|op| op.kind == molt_ir::OpKind::Lshift));
+    assert!(ops.iter().any(|op| op.kind == molt_ir::OpKind::Rshift));
+    assert!(!ops.iter().any(|op| op.kind == molt_ir::OpKind::Shl));
+    assert!(!ops.iter().any(|op| op.kind == molt_ir::OpKind::Shr));
 }
 
 #[test]
@@ -1016,6 +1054,7 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
     func.next_value += 1;
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -1028,6 +1067,7 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
         source_span: None,
     });
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Import,
         operands: vec![name],
@@ -1042,12 +1082,12 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
     let ops = lower_to_simple_ir(&func);
     let import_op = ops
         .iter()
-        .find(|op| op.kind == "module_import")
+        .find(|op| op.kind == molt_ir::OpKind::ModuleImport)
         .expect("expected module_import op");
     assert_eq!(import_op.args.as_ref().map(Vec::len), Some(1));
 }
 
-fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: &str, arity: usize) {
+fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: molt_ir::OpKind, arity: usize) {
     let mut func = TirFunction::new(
         format!("{simple_kind}_roundtrip"),
         std::iter::repeat_n(TirType::DynBox, arity).collect(),
@@ -1056,6 +1096,7 @@ fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: &str, arity: u
     );
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode,
         operands: (0..arity as u32).map(ValueId).collect(),
@@ -1081,29 +1122,29 @@ fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: &str, arity: u
 
 #[test]
 fn lower_module_cache_set_roundtrips() {
-    assert_module_mutation_roundtrips(OpCode::ModuleCacheSet, "module_cache_set", 2);
+    assert_module_mutation_roundtrips(OpCode::ModuleCacheSet, molt_ir::OpKind::ModuleCacheSet, 2);
 }
 
 #[test]
 fn lower_module_cache_del_roundtrips() {
-    assert_module_mutation_roundtrips(OpCode::ModuleCacheDel, "module_cache_del", 1);
+    assert_module_mutation_roundtrips(OpCode::ModuleCacheDel, molt_ir::OpKind::ModuleCacheDel, 1);
 }
 
 #[test]
 fn lower_module_set_attr_roundtrips() {
-    assert_module_mutation_roundtrips(OpCode::ModuleSetAttr, "module_set_attr", 3);
+    assert_module_mutation_roundtrips(OpCode::ModuleSetAttr, molt_ir::OpKind::ModuleSetAttr, 3);
 }
 
 #[test]
 fn lower_module_del_global_roundtrips() {
-    assert_module_mutation_roundtrips(OpCode::ModuleDelGlobal, "module_del_global", 2);
+    assert_module_mutation_roundtrips(OpCode::ModuleDelGlobal, molt_ir::OpKind::ModuleDelGlobal, 2);
 }
 
 #[test]
 fn lower_module_del_global_if_present_roundtrips() {
     assert_module_mutation_roundtrips(
         OpCode::ModuleDelGlobalIfPresent,
-        "module_del_global_if_present",
+        molt_ir::OpKind::ModuleDelGlobalIfPresent,
         2,
     );
 }
@@ -1125,7 +1166,7 @@ fn value_return_abi_survives_empty_and_unreachable_returns_without_payload_synth
         let ops = lower_to_simple_ir(&func);
         assert!(
             !ops.iter()
-                .any(|op| op.kind == "const_none" || op.kind == "ret")
+                .any(|op| op.kind == molt_ir::OpKind::ConstNone || op.kind == molt_ir::OpKind::Ret)
         );
         let source = FunctionIR {
             name: func.name.clone(),
@@ -1153,7 +1194,7 @@ fn ret_op_has_args_set() {
     let ops = lower_to_simple_ir(&func);
     let ret_op = ops
         .iter()
-        .find(|o| o.kind == "ret")
+        .find(|o| o.kind == molt_ir::OpKind::Ret)
         .expect("expected a ret op");
     assert!(
         ret_op.args.as_ref().is_some_and(|args| !args.is_empty()),
@@ -1176,15 +1217,15 @@ fn tir_round_trip_preserves_ret_args() {
         params: vec!["a".into(), "b".into()],
         ops: vec![
             OpIR {
-                kind: "add".into(),
+                kind: molt_ir::OpKind::Add,
                 args: Some(vec!["a".into(), "b".into()]),
                 out: Some("v0".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Add)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["v0".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         param_types: None,
@@ -1201,7 +1242,7 @@ fn tir_round_trip_preserves_ret_args() {
 
     let ret_op = round_tripped
         .iter()
-        .find(|o| o.kind == "ret")
+        .find(|o| o.kind == molt_ir::OpKind::Ret)
         .expect("TIR round-trip must preserve the ret op");
     assert!(
         ret_op.args.as_ref().is_some_and(|args| args == &["v0"]),
@@ -1231,32 +1272,32 @@ fn checked_add_two_result_round_trip_survives_relift() {
         params: vec!["a".into(), "b".into()],
         ops: vec![
             OpIR {
-                kind: "checked_add".into(),
+                kind: molt_ir::OpKind::CheckedAdd,
                 args: Some(vec!["a".into(), "b".into()]),
                 var: Some("sum0".into()),
                 out: Some("of0".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckedAdd)
             },
             OpIR {
-                kind: "br_if".into(),
+                kind: molt_ir::OpKind::BrIf,
                 args: Some(vec!["of0".into()]),
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::BrIf)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["sum0".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
             OpIR {
-                kind: "label".into(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["a".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         param_types: None,
@@ -1298,7 +1339,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
     let round_tripped = lower_to_simple_ir(&tir_func);
     let ca = round_tripped
         .iter()
-        .find(|op| op.kind == "checked_add")
+        .find(|op| op.kind == molt_ir::OpKind::CheckedAdd)
         .expect("re-emit must preserve checked_add");
     assert_eq!(ca.args.as_ref().map(Vec::len), Some(2));
     let sum_var = ca.var.as_deref().expect("sum must round-trip in var");
@@ -1318,32 +1359,32 @@ fn checked_mul_two_result_round_trip_survives_relift() {
         params: vec!["a".into(), "b".into()],
         ops: vec![
             OpIR {
-                kind: "checked_mul".into(),
+                kind: molt_ir::OpKind::CheckedMul,
                 args: Some(vec!["a".into(), "b".into()]),
                 var: Some("product0".into()),
                 out: Some("of0".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CheckedMul)
             },
             OpIR {
-                kind: "br_if".into(),
+                kind: molt_ir::OpKind::BrIf,
                 args: Some(vec!["of0".into()]),
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::BrIf)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["product0".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
             OpIR {
-                kind: "label".into(),
+                kind: molt_ir::OpKind::Label,
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["a".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         param_types: None,
@@ -1380,7 +1421,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
     let round_tripped = lower_to_simple_ir(&tir_func);
     let cm = round_tripped
         .iter()
-        .find(|op| op.kind == "checked_mul")
+        .find(|op| op.kind == molt_ir::OpKind::CheckedMul)
         .expect("re-emit must preserve checked_mul");
     assert_eq!(cm.args.as_ref().map(Vec::len), Some(2));
     let product_var = cm.var.as_deref().expect("product must round-trip in var");
@@ -1392,7 +1433,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
 fn linearize_emits_add_op() {
     let func = add_function();
     let ops = lower_to_simple_ir(&func);
-    let has_add = ops.iter().any(|o| o.kind == "add");
+    let has_add = ops.iter().any(|o| o.kind == molt_ir::OpKind::Add);
     assert!(has_add, "expected an 'add' op, got: {:?}", ops);
 }
 
@@ -1428,6 +1469,7 @@ fn linearize_multi_block_emits_labels() {
             id: bb1,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -1447,6 +1489,7 @@ fn linearize_multi_block_emits_labels() {
             id: bb2,
             args: vec![],
             ops: vec![TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -1459,26 +1502,26 @@ fn linearize_multi_block_emits_labels() {
     );
 
     let ops = lower_to_simple_ir(&func);
-    let kinds: Vec<&str> = ops.iter().map(|o| o.kind.as_str()).collect();
+    let kinds: Vec<molt_ir::OpKind> = ops.iter().map(|o| o.kind).collect();
     // Simple CondBranch with both successors returning is now emitted
     // as structured if/else/end_if instead of labels + jumps.
     assert!(
-        kinds.contains(&"if"),
+        kinds.contains(&molt_ir::OpKind::If),
         "expected structured 'if' op for simple CondBranch, got: {:?}",
         kinds
     );
     assert!(
-        kinds.contains(&"else"),
+        kinds.contains(&molt_ir::OpKind::Else),
         "expected structured 'else' op for simple CondBranch, got: {:?}",
         kinds
     );
     assert!(
-        kinds.contains(&"end_if"),
+        kinds.contains(&molt_ir::OpKind::EndIf),
         "expected structured 'end_if' op for simple CondBranch, got: {:?}",
         kinds
     );
     // Both branches should have const + ret.
-    let ret_count = kinds.iter().filter(|k| **k == "ret").count();
+    let ret_count = kinds.iter().filter(|k| **k == molt_ir::OpKind::Ret).count();
     assert!(
         ret_count >= 2,
         "expected >=2 ret ops (one per branch), got {}: {:?}",
@@ -1496,34 +1539,34 @@ fn loaded_method_receiver_prefix_preserves_ownership_through_roundtrip() {
         params: vec!["receiver".into()],
         ops: vec![
             OpIR {
-                kind: "load_method".into(),
+                kind: molt_ir::OpKind::LoadMethod,
                 args: Some(vec!["receiver".into()]),
                 s_value: Some("m".into()),
                 var: Some("callable".into()),
                 out: Some("nullable".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::LoadMethod)
             },
             OpIR {
-                kind: "callargs_new".into(),
+                kind: molt_ir::OpKind::CallargsNew,
                 out: Some("builder".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallargsNew)
             },
             OpIR {
-                kind: "callargs_push_method_receiver".into(),
+                kind: molt_ir::OpKind::CallargsPushMethodReceiver,
                 args: Some(vec!["builder".into(), "nullable".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallargsPushMethodReceiver)
             },
             OpIR {
-                kind: "call_bind".into(),
+                kind: molt_ir::OpKind::CallBind,
                 args: Some(vec!["callable".into(), "builder".into()]),
                 argument_custody: Some(vec![molt_ir::ParameterCustody::Transferred; 2]),
                 out: Some("result".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallBind)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["result".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         ..FunctionIR::default()
@@ -1550,7 +1593,7 @@ fn loaded_method_receiver_prefix_preserves_ownership_through_roundtrip() {
         let prefix = function
             .ops
             .iter()
-            .find(|op| op.kind == "callargs_push_method_receiver")
+            .find(|op| op.kind == molt_ir::OpKind::CallargsPushMethodReceiver)
             .unwrap();
         assert_eq!(prefix.args.as_ref().unwrap().len(), 2);
         assert!(prefix.out.is_none() && prefix.argument_custody.is_none());

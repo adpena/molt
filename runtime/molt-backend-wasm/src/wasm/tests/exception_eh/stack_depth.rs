@@ -16,11 +16,19 @@ fn wasm_compiles_exception_stack_depth_bookkeeping_family() {
         vec![],
         None,
         vec![
-            wasm_test_op("exception_stack_enter", Some("prev"), vec![]),
-            wasm_test_op("exception_stack_depth", Some("depth"), vec![]),
-            wasm_test_op("exception_stack_set_depth", Some("none"), vec!["depth"]),
-            wasm_test_op("exception_stack_exit", Some("none"), vec!["prev"]),
-            wasm_test_op("ret_void", None, vec![]),
+            wasm_test_op(molt_ir::OpKind::ExceptionStackEnter, Some("prev"), vec![]),
+            wasm_test_op(molt_ir::OpKind::ExceptionStackDepth, Some("depth"), vec![]),
+            wasm_test_op(
+                molt_ir::OpKind::ExceptionStackSetDepth,
+                Some("none"),
+                vec!["depth"],
+            ),
+            wasm_test_op(
+                molt_ir::OpKind::ExceptionStackExit,
+                Some("none"),
+                vec!["prev"],
+            ),
+            wasm_test_op(molt_ir::OpKind::RetVoid, None, vec![]),
         ],
     );
     let ir = SimpleIR {

@@ -1,6 +1,6 @@
 use super::*;
 
-fn luau_local_call_ir(kind: &str) -> SimpleIR {
+fn luau_local_call_ir(kind: molt_ir::OpKind) -> SimpleIR {
     let callee = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "luau_local".to_string(),
@@ -8,21 +8,18 @@ fn luau_local_call_ir(kind: &str) -> SimpleIR {
         param_types: Some(vec!["int".to_string()]),
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 value: Some(1),
                 out: Some("one".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: kind.to_string(),
                 args: Some(vec!["x".to_string(), "one".to_string()]),
                 out: Some("sum".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["sum".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         source_file: None,
@@ -38,22 +35,19 @@ fn luau_local_call_ir(kind: &str) -> SimpleIR {
         param_types: None,
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 value: Some(41),
                 out: Some("arg".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Const)
             },
             OpIR {
-                kind: "call".to_string(),
                 s_value: Some("luau_local".to_string()),
                 args: Some(vec!["arg".to_string()]),
                 out: Some("result".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Call)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["result".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ],
         source_file: None,
@@ -70,7 +64,7 @@ fn luau_local_call_ir(kind: &str) -> SimpleIR {
 
 #[test]
 fn luau_tir_module_pipeline_inlines_direct_local_calls() {
-    let mut ir = luau_local_call_ir("is");
+    let mut ir = luau_local_call_ir(molt_ir::OpKind::Is);
 
     let stats = run_luau_tir_module_pipeline(&mut ir).expect("luau module pipeline");
 
@@ -79,7 +73,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         ir.functions
             .iter()
             .flat_map(|function| &function.ops)
-            .all(|op| op.kind != "async_work_poll"),
+            .all(|op| op.kind != molt_ir::OpKind::AsyncWorkPoll),
         "Luau's target pipeline must not inject a native pending-call/eval-breaker boundary"
     );
     assert!(
@@ -94,7 +88,8 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
     assert!(
         main.ops
             .iter()
-            .all(|op| !(op.kind == "call" && op.s_value.as_deref() == Some("luau_local"))),
+            .all(|op| !(op.kind == molt_ir::OpKind::Call
+                && op.s_value.as_deref() == Some("luau_local"))),
         "Luau module phase must inline direct local calls instead of leaving a call boundary: {:?}",
         main.ops
     );
@@ -102,7 +97,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
 
 #[test]
 fn luau_tir_module_pipeline_preserves_callback_capable_local_calls() {
-    let mut ir = luau_local_call_ir("add");
+    let mut ir = luau_local_call_ir(molt_ir::OpKind::Add);
     let stats = run_luau_tir_module_pipeline(&mut ir).expect("luau module pipeline");
     assert_eq!(stats.module_changed, 0);
     let main = ir
@@ -113,7 +108,8 @@ fn luau_tir_module_pipeline_preserves_callback_capable_local_calls() {
     assert!(
         main.ops
             .iter()
-            .any(|op| op.kind == "call" && op.s_value.as_deref() == Some("luau_local"))
+            .any(|op| op.kind == molt_ir::OpKind::Call
+                && op.s_value.as_deref() == Some("luau_local"))
     );
 }
 
@@ -126,9 +122,8 @@ fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                kind: "unsupported_for_rust_target_test".to_string(),
                 out: Some("v0".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::GpuBarrier)
             }],
             param_types: None,
             source_file: None,
@@ -143,11 +138,7 @@ fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
     let err = rust_source_for_ir(&ir, Default::default())
         .expect_err("Rust target must reject unknown operations");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-    assert_eq!(
-        err.to_string(),
-        "Rust validation failed: rust SimpleIR validation failed: function `molt_main` op#0: \
-         unregistered op kind `unsupported_for_rust_target_test`"
-    );
+    assert!(err.to_string().contains("gpu_barrier"), "{err}");
 }
 
 #[cfg(feature = "rust-backend")]
@@ -159,10 +150,7 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
-                ops: vec![OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                }],
+                ops: vec![OpIR::new(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -175,9 +163,8 @@ fn rust_source_for_ir_prunes_unreachable_stub_markers() {
                 name: "dead_stdlib_helper".to_string(),
                 params: vec![],
                 ops: vec![OpIR {
-                    kind: "unsupported_for_rust_target_test".to_string(),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GpuBarrier)
                 }],
                 param_types: None,
                 source_file: None,

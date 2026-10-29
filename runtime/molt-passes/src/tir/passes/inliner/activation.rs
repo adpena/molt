@@ -300,6 +300,7 @@ fn released_operands(op: &TirOp) -> Vec<ValueId> {
 /// The Python boundary that ends the binding `value`.
 fn del_boundary(value: ValueId) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelBoundary,
         operands: vec![value],

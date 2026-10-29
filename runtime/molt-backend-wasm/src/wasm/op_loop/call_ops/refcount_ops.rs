@@ -8,12 +8,12 @@ pub(super) fn emit_refcount_call_op(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    match op.kind.as_str() {
-        "inc_ref" | "borrow" => {
+    match op.kind {
+        molt_ir::OpKind::IncRef | molt_ir::OpKind::Borrow => {
             emit_inc_ref_like(call_ctx, func, op);
             CallOpEmission::Handled
         }
-        "dec_ref" | "release" | "del_boundary" => {
+        molt_ir::OpKind::DecRef | molt_ir::OpKind::Release | molt_ir::OpKind::DelBoundary => {
             emit_dec_ref_like(call_ctx, func, op);
             CallOpEmission::Handled
         }

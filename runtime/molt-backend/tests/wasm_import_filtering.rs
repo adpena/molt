@@ -11,19 +11,16 @@ use molt_backend::{WasmBackend, WasmCompileOptions, WasmProfile};
 use molt_backend_wasm::test_util::reserved_runtime_callable_import_names;
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef};
 
-fn op(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op(kind: molt_ir::OpKind) -> OpIR {
+    OpIR::new(kind)
 }
 
 fn hello_world_ir() -> SimpleIR {
-    let mut const_str = op("const_str");
+    let mut const_str = op(molt_ir::OpKind::ConstStr);
     const_str.s_value = Some("hello world".to_string());
     const_str.out = Some("s0".to_string());
 
-    let mut print = op("print");
+    let mut print = op(molt_ir::OpKind::Print);
     print.args = Some(vec!["s0".to_string()]);
 
     SimpleIR {
@@ -31,7 +28,12 @@ fn hello_world_ir() -> SimpleIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![const_str, print, op("print_newline"), op("ret_void")],
+            ops: vec![
+                const_str,
+                print,
+                op(molt_ir::OpKind::PrintNewline),
+                op(molt_ir::OpKind::RetVoid),
+            ],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -49,7 +51,7 @@ fn empty_main_ir() -> SimpleIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![op("ret_void")],
+            ops: vec![op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -68,7 +70,7 @@ fn host_init_and_main_ir() -> SimpleIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_host_init".to_string(),
                 params: vec![],
-                ops: vec![op("ret_void")],
+                ops: vec![op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -80,7 +82,7 @@ fn host_init_and_main_ir() -> SimpleIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
-                ops: vec![op("ret_void")],
+                ops: vec![op(molt_ir::OpKind::RetVoid)],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
@@ -94,7 +96,7 @@ fn host_init_and_main_ir() -> SimpleIR {
 }
 
 fn ir_with_async_ops() -> SimpleIR {
-    let mut sleep = op("call_async");
+    let mut sleep = op(molt_ir::OpKind::CallAsync);
     sleep.s_value = Some("molt_async_sleep_poll".to_string());
     sleep.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     sleep.out = Some("v0".to_string());
@@ -104,7 +106,7 @@ fn ir_with_async_ops() -> SimpleIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec!["p0".to_string(), "p1".to_string()],
-            ops: vec![sleep, op("ret_void")],
+            ops: vec![sleep, op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -117,7 +119,7 @@ fn ir_with_async_ops() -> SimpleIR {
 }
 
 fn ir_with_os_name() -> SimpleIR {
-    let mut os_name = op("builtin_func");
+    let mut os_name = op(molt_ir::OpKind::BuiltinFunc);
     os_name.s_value = Some("molt_os_name".to_string());
     os_name.value = Some(0);
     os_name.out = Some("v0".to_string());
@@ -127,7 +129,7 @@ fn ir_with_os_name() -> SimpleIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
-            ops: vec![os_name, op("ret_void")],
+            ops: vec![os_name, op(molt_ir::OpKind::RetVoid)],
             param_types: None,
             source_file: None,
             is_extern: false,
@@ -140,23 +142,23 @@ fn ir_with_os_name() -> SimpleIR {
 }
 
 fn ir_with_escaped_call_guarded() -> SimpleIR {
-    let mut func_new = op("func_new");
+    let mut func_new = op(molt_ir::OpKind::FuncNew);
     func_new.s_value = Some("callee".to_string());
     func_new.value = Some(2);
     func_new.out = Some("f".to_string());
 
-    let mut call_guarded = op("call_guarded");
+    let mut call_guarded = op(molt_ir::OpKind::CallGuarded);
     call_guarded.s_value = Some("callee".to_string());
     call_guarded.args = Some(vec!["f".to_string(), "p0".to_string(), "p1".to_string()]);
     call_guarded.out = Some("out".to_string());
 
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["out".to_string()]);
 
-    let mut callee_none = op("const_none");
+    let mut callee_none = op(molt_ir::OpKind::ConstNone);
     callee_none.out = Some("retv".to_string());
 
-    let mut callee_ret = op("ret");
+    let mut callee_ret = op(molt_ir::OpKind::Ret);
     callee_ret.args = Some(vec!["retv".to_string()]);
 
     SimpleIR {
@@ -596,23 +598,23 @@ fn pure_profile_keeps_collection_ops() {
     main.params = vec!["key".to_string(), "value".to_string()];
     main.ops.clear();
     for (kind, out, args) in [
-        ("dict_new", "dictionary", vec!["key", "value"]),
-        ("list_new", "list", vec!["key", "value"]),
-        ("set_new", "set", vec!["key"]),
+        (molt_ir::OpKind::DictNew, "dictionary", vec!["key", "value"]),
+        (molt_ir::OpKind::ListNew, "list", vec!["key", "value"]),
+        (molt_ir::OpKind::SetNew, "set", vec!["key"]),
     ] {
         let mut collection = op(kind);
         collection.out = Some(out.to_string());
         collection.args = Some(args.into_iter().map(str::to_string).collect());
         main.ops.push(collection);
     }
-    let mut result = op("tuple_new");
+    let mut result = op(molt_ir::OpKind::TupleNew);
     result.out = Some("collections".to_string());
     result.args = Some(vec![
         "dictionary".to_string(),
         "list".to_string(),
         "set".to_string(),
     ]);
-    let mut ret = op("ret");
+    let mut ret = op(molt_ir::OpKind::Ret);
     ret.args = Some(vec!["collections".to_string()]);
     main.ops.extend([result, ret]);
 

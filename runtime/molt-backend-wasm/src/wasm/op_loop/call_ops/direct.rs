@@ -23,10 +23,10 @@ pub(super) fn emit_direct_call_op(
     func: &mut Function,
     op: &OpIR,
 ) -> CallOpEmission {
-    match op.kind.as_str() {
-        "call_async" => emit_call_async(call_ctx, func, op),
-        "call" => emit_plain_call(call_ctx, func, op),
-        "call_internal" => emit_internal_call(call_ctx, func, op),
+    match op.kind {
+        molt_ir::OpKind::CallAsync => emit_call_async(call_ctx, func, op),
+        molt_ir::OpKind::Call => emit_plain_call(call_ctx, func, op),
+        molt_ir::OpKind::CallInternal => emit_internal_call(call_ctx, func, op),
         _ => CallOpEmission::NotHandled,
     }
 }
@@ -49,7 +49,7 @@ fn emit_call_async(
     );
     let layout = WasmTaskRuntimeLayout::for_call_async();
     let target_name = op.s_value.as_ref().expect("call_async target missing");
-    let table_target = call_site_abi.table_target(target_name, "call_async");
+    let table_target = call_site_abi.table_target(target_name, molt_ir::OpKind::CallAsync);
     layout.emit_task_new(
         func,
         import_ids,
@@ -106,7 +106,7 @@ fn emit_plain_call(
     if let Some(import) = runtime_import {
         crate::wasm_abi::assert_runtime_i64_call(import, args_names.len());
     }
-    let func_idx = call_site_abi.function_index(target_name, "call");
+    let func_idx = call_site_abi.function_index(target_name, molt_ir::OpKind::Call);
     let bootstrap_call =
         func_idx == import_ids[crate::wasm_abi_generated::WasmRuntimeImport::RuntimeInit];
     if bootstrap_call {
@@ -162,7 +162,7 @@ fn emit_internal_call(
     let live_object_locals =
         collect_live_object_locals_for_call(locals, call_liveness, call_live_idx, op.out.as_ref());
     retain_live_object_locals(func, import_ids, reloc_enabled, &live_object_locals);
-    let func_idx = call_site_abi.function_index(target_name, "call_internal");
+    let func_idx = call_site_abi.function_index(target_name, molt_ir::OpKind::CallInternal);
     let is_tail_call = abi_returns_value
         && locals.bound_op_result_slot(op).is_some()
         && op.out.as_deref().is_some_and(|out_name| {
@@ -218,7 +218,7 @@ fn is_tail_call_candidate(
         && call_ctx.try_stack_is_empty
         && call_ctx.op_idx + 1 < call_ctx.ops.len()
         && molt_ir::tir::op_kinds_generated::simpleir_return_shape(
-            call_ctx.ops[call_ctx.op_idx + 1].kind.as_str(),
+            call_ctx.ops[call_ctx.op_idx + 1].kind,
         ) == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value
         && call_ctx.ops[call_ctx.op_idx + 1]
             .args

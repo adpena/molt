@@ -1,5 +1,4 @@
 use crate::OpIR;
-use molt_tir::tir::op_kinds_generated::simpleir_kind_is_wasm_split_barrier;
 
 #[derive(Clone, Copy)]
 pub(in crate::wasm) enum ControlKind {
@@ -33,6 +32,5 @@ pub(in crate::wasm) fn loop_continue_depth(control_stack: &[ControlKind]) -> Opt
 }
 
 pub(in crate::wasm) fn has_non_linear_control_flow(ops: &[OpIR]) -> bool {
-    ops.iter()
-        .any(|op| simpleir_kind_is_wasm_split_barrier(op.kind.as_str()))
+    ops.iter().any(|op| op.kind.is_wasm_split_barrier())
 }

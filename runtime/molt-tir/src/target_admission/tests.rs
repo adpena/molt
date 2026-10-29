@@ -21,18 +21,22 @@ fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
 
 #[test]
 fn singleton_materialization_does_not_authorize_identity_or_unknown_spellings() {
-    for kind in ["const_ellipsis", "const_not_implemented", "missing"] {
+    for kind in [
+        molt_ir::OpKind::ConstEllipsis,
+        molt_ir::OpKind::ConstNotImplemented,
+        molt_ir::OpKind::Missing,
+    ] {
         let literal = OpIR {
-            kind: kind.into(),
+            kind,
             out: Some("singleton".into()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         };
         let ir = function_ir(vec![
             literal.clone(),
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["singleton".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ]);
         for target in [
@@ -43,20 +47,21 @@ fn singleton_materialization_does_not_authorize_identity_or_unknown_spellings() 
             TargetInfo::rust_release_fast(),
             TargetInfo::mlir_release_fast(),
         ] {
-            validate_runtime_target_contract(&ir, &target).expect(kind);
+            validate_runtime_target_contract(&ir, &target)
+                .unwrap_or_else(|error| panic!("{kind}: {error}"));
         }
         let observed = function_ir(vec![
             literal,
             OpIR {
-                kind: "is".into(),
+                kind: molt_ir::OpKind::Is,
                 args: Some(vec!["singleton".into(), "singleton".into()]),
                 out: Some("observed".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Is)
             },
             OpIR {
-                kind: "ret".into(),
+                kind: molt_ir::OpKind::Ret,
                 args: Some(vec!["observed".into()]),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Ret)
             },
         ]);
         let restricted = target_with_runtime(
@@ -66,64 +71,60 @@ fn singleton_materialization_does_not_authorize_identity_or_unknown_spellings() 
             .expect_err("a literal does not grant object identity semantics");
         assert!(error.contains("Python object identity"), "{error}");
     }
-    for kind in ["const_missing", "unregistered_singleton"] {
-        let ir = function_ir(vec![OpIR {
-            kind: kind.into(),
-            out: Some("singleton".into()),
-            ..OpIR::default()
-        }]);
-        let error = validate_runtime_target_contract(&ir, &TargetInfo::luau_release_fast())
-            .expect_err("unknown spellings remain unclassified");
-        assert!(error.contains("unclassified"), "{error}");
-    }
 }
 
 #[test]
 fn shared_graph_admission_precedes_target_representation_planning() {
-    let labelled = |kind: &str, value: i64| OpIR {
-        kind: kind.into(),
+    let labelled = |kind: molt_ir::OpKind, value: i64| OpIR {
+        kind,
         value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(kind)
     };
     let cases = [
-        (vec![labelled("jump", 19)], "invalid-jump-target"),
+        (
+            vec![labelled(molt_ir::OpKind::Jump, 19)],
+            "invalid-jump-target",
+        ),
         (
             vec![OpIR {
-                kind: "jump".into(),
+                kind: molt_ir::OpKind::Jump,
                 s_value: Some("alias".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Jump)
             }],
             "malformed-label-reference",
         ),
         (
             vec![OpIR {
-                kind: "label".into(),
+                kind: molt_ir::OpKind::Label,
                 s_value: Some("alias".into()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::Label)
             }],
             "malformed-label-definition",
         ),
         (
-            vec![labelled("label", 19), labelled("label", 19)],
+            vec![
+                labelled(molt_ir::OpKind::Label, 19),
+                labelled(molt_ir::OpKind::Label, 19),
+            ],
             "duplicate-label-definition",
         ),
         (
             vec![
                 OpIR {
-                    kind: "loop_start".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::LoopStart,
+                    ..OpIR::new(molt_ir::OpKind::LoopStart)
                 },
                 OpIR {
-                    kind: "end_if".into(),
-                    ..OpIR::default()
+                    kind: molt_ir::OpKind::EndIf,
+                    ..OpIR::new(molt_ir::OpKind::EndIf)
                 },
             ],
             "unbalanced-control-flow",
         ),
         (
             vec![OpIR {
-                kind: "loop_break_if_exception".into(),
-                ..OpIR::default()
+                kind: molt_ir::OpKind::LoopBreakIfException,
+                ..OpIR::new(molt_ir::OpKind::LoopBreakIfException)
             }],
             "break-outside-loop",
         ),
@@ -168,7 +169,12 @@ fn representation_shape_admission_precedes_every_target_plan() {
         TargetInfo::rust_release_fast(),
         TargetInfo::mlir_release_fast(),
     ] {
-        for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
+        for kind in [
+            molt_ir::OpKind::Box,
+            molt_ir::OpKind::BoxFromRawInt,
+            molt_ir::OpKind::Unbox,
+            molt_ir::OpKind::UnboxToRawInt,
+        ] {
             for (args, var) in [
                 (None, None),
                 (Some(vec![]), None),
@@ -180,14 +186,14 @@ fn representation_shape_admission_precedes_every_target_plan() {
             ] {
                 let mut ir = function_ir(vec![
                     OpIR {
-                        kind: kind.into(),
+                        kind,
                         args,
                         var: var.map(str::to_owned),
-                        ..OpIR::default()
+                        ..OpIR::new(kind)
                     },
                     OpIR {
-                        kind: "ret_void".into(),
-                        ..OpIR::default()
+                        kind: molt_ir::OpKind::RetVoid,
+                        ..OpIR::new(molt_ir::OpKind::RetVoid)
                     },
                 ]);
                 ir.functions[0].params = vec!["source".into(), "extra".into()];
@@ -216,13 +222,16 @@ fn lexical_cells_require_real_storage_and_capture_transport() {
     let requirement = SimpleIrRuntimeRequirements::LEXICAL_CELLS;
     let denied = target_with_runtime(SimpleIrRuntimeRequirements::ALL.difference(requirement));
     let admitted = target_with_runtime(SimpleIrRuntimeRequirements::ALL);
-    let mut operations: Vec<OpIR> = ["func_new_closure", "function_closure_bits"]
-        .into_iter()
-        .map(|kind| OpIR {
-            kind: kind.into(),
-            ..OpIR::default()
-        })
-        .collect();
+    let mut operations: Vec<OpIR> = [
+        molt_ir::OpKind::FuncNewClosure,
+        molt_ir::OpKind::FunctionClosureBits,
+    ]
+    .into_iter()
+    .map(|kind| OpIR {
+        kind,
+        ..OpIR::new(kind)
+    })
+    .collect();
     for symbol in [
         "molt_cell_new",
         "molt_cell_get",
@@ -241,23 +250,23 @@ fn lexical_cells_require_real_storage_and_capture_transport() {
         "molt_function_closure_bits",
     ] {
         for kind in [
-            "call",
-            "call_internal",
-            "func_new",
-            "func_new_closure",
-            "builtin_func",
+            molt_ir::OpKind::Call,
+            molt_ir::OpKind::CallInternal,
+            molt_ir::OpKind::FuncNew,
+            molt_ir::OpKind::FuncNewClosure,
+            molt_ir::OpKind::BuiltinFunc,
         ] {
             operations.push(OpIR {
-                kind: kind.into(),
+                kind,
                 s_value: Some(symbol.into()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
         }
         for kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
             operations.push(OpIR {
-                kind: (*kind).into(),
+                kind: (*kind),
                 runtime_symbol: Some(symbol.into()),
-                ..OpIR::default()
+                ..OpIR::new(*kind)
             });
         }
     }
@@ -276,17 +285,17 @@ fn import_protocol_is_independent_of_object_storage_and_callable_transport() {
     let unsupported = target_with_runtime(SimpleIrRuntimeRequirements::ALL.difference(import));
     let supported = target_with_runtime(SimpleIrRuntimeRequirements::ALL);
     let mut operations: Vec<OpIR> = [
-        "import",
-        "import_name",
-        "module_import",
-        "import_from",
-        "module_import_from",
-        "module_import_star",
+        molt_ir::OpKind::Import,
+        molt_ir::OpKind::ImportName,
+        molt_ir::OpKind::ModuleImport,
+        molt_ir::OpKind::ImportFrom,
+        molt_ir::OpKind::ModuleImportFrom,
+        molt_ir::OpKind::ModuleImportStar,
     ]
     .into_iter()
     .map(|kind| OpIR {
-        kind: kind.into(),
-        ..OpIR::default()
+        kind,
+        ..OpIR::new(kind)
     })
     .collect();
     for symbol in [
@@ -310,28 +319,28 @@ fn import_protocol_is_independent_of_object_storage_and_callable_transport() {
         "molt_runpy_run_path",
     ] {
         for kind in [
-            "call_internal",
-            "call",
-            "func_new",
-            "func_new_closure",
-            "builtin_func",
+            molt_ir::OpKind::CallInternal,
+            molt_ir::OpKind::Call,
+            molt_ir::OpKind::FuncNew,
+            molt_ir::OpKind::FuncNewClosure,
+            molt_ir::OpKind::BuiltinFunc,
         ] {
             operations.push(OpIR {
-                kind: kind.into(),
+                kind,
                 s_value: Some(symbol.into()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             });
         }
         operations.push(OpIR {
-            kind: "module_get_attr".into(),
+            kind: molt_ir::OpKind::ModuleGetAttr,
             runtime_symbol: Some(symbol.into()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
         });
     }
     operations.push(OpIR {
-        kind: "get_attr_generic_obj".into(),
+        kind: molt_ir::OpKind::GetAttrGenericObj,
         runtime_requirement_bits: import.bits(),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::GetAttrGenericObj)
     });
     for op in operations {
         let ir = function_ir(vec![op]);
@@ -356,10 +365,10 @@ fn import_protocol_is_independent_of_object_storage_and_callable_transport() {
 #[test]
 fn raw_boxed_stack_allocation_is_rejected_on_every_target() {
     let ir = function_ir(vec![OpIR {
-        kind: "stack_alloc".into(),
+        kind: molt_ir::OpKind::StackAlloc,
         value: Some(16),
         out: Some("object".into()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::StackAlloc)
     }]);
     for target in [
         crate::tir::TargetInfo::native_release_fast(),
@@ -376,49 +385,28 @@ fn raw_boxed_stack_allocation_is_rejected_on_every_target() {
 }
 
 #[test]
-fn retired_class_frame_operation_is_rejected_on_every_target() {
+fn retired_class_frame_operation_is_rejected_at_decode() {
     for payload in [None, Some(-1), Some(16), Some(i64::MAX)] {
-        let ir = function_ir(vec![
-            OpIR {
-                kind: "object_new_bound_stack".into(),
-                args: Some(vec!["class".into()]),
-                value: payload,
-                out: Some("object".into()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "ret".into(),
-                args: Some(vec!["object".into()]),
-                ..OpIR::default()
-            },
-        ]);
-        for target in [
-            crate::tir::TargetInfo::native_release_fast(),
-            crate::tir::TargetInfo::wasm_release_fast(),
-            crate::tir::TargetInfo::llvm_release_fast(),
-            crate::tir::TargetInfo::luau_release_fast(),
-            crate::tir::TargetInfo::rust_release_fast(),
-            crate::tir::TargetInfo::mlir_release_fast(),
-        ] {
-            let error = validate_runtime_target_contract(&ir, &target).unwrap_err();
-            assert!(error.contains("object_new_bound_stack"));
-            assert!(error.contains("unclassified"));
-            assert!(error.contains("f:op#0"));
-        }
+        let error = serde_json::from_value::<OpIR>(serde_json::json!({
+            "kind": "object_new_bound_stack", "args": ["class"],
+            "value": payload, "out": "object",
+        }))
+        .expect_err("retired spellings cannot enter any target");
+        assert!(error.to_string().contains("object_new_bound_stack"));
     }
 }
 
-fn binary(kind: &str, ty: &str) -> SimpleIR {
+fn binary(kind: molt_ir::OpKind, ty: &str) -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "f".to_string(),
             params: vec!["lhs".to_string(), "rhs".to_string()],
             ops: vec![OpIR {
-                kind: kind.to_string(),
+                kind,
                 args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
                 out: Some("out".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             }],
             param_types: Some(vec![ty.to_string(), ty.to_string()]),
             ..FunctionIR::default()
@@ -445,15 +433,15 @@ fn runtime_without_frame_introspection() -> crate::tir::TargetInfo {
 #[test]
 fn async_work_marker_uses_precise_pending_call_eval_breaker_capability() {
     let explicit_poll = OpIR {
-        kind: "async_work_poll".to_string(),
+        kind: molt_ir::OpKind::AsyncWorkPoll,
         value: Some(9),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::AsyncWorkPoll)
     };
     let marked_observer = OpIR {
-        kind: "exception_finally_pending_observer".to_string(),
+        kind: molt_ir::OpKind::ExceptionFinallyPendingObserver,
         out: Some("pending".to_string()),
         async_work_poll: true,
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ExceptionFinallyPendingObserver)
     };
     let unmarked_observer = OpIR {
         async_work_poll: false,
@@ -507,8 +495,8 @@ fn extern_linkage_capability_is_one_shared_target_admission_gate() {
         name: "external_helper".to_string(),
         params: vec!["arg".to_string()],
         ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::RetVoid,
+            ..OpIR::new(molt_ir::OpKind::RetVoid)
         }],
         ..FunctionIR::default()
     };
@@ -533,12 +521,16 @@ fn extern_linkage_capability_is_one_shared_target_admission_gate() {
 #[test]
 fn fixed_width_targets_admit_exact_float_basics_only() {
     validate_numeric_target_contract(
-        &binary("add", "float"),
+        &binary(molt_ir::OpKind::Add, "float"),
         &crate::tir::TargetInfo::rust_release_fast(),
     )
     .expect("float add is exact in the target policy");
 
-    for kind in ["pow", "floor_div", "mod"] {
+    for kind in [
+        molt_ir::OpKind::Pow,
+        molt_ir::OpKind::FloorDiv,
+        molt_ir::OpKind::Mod,
+    ] {
         let error = validate_numeric_target_contract(
             &binary(kind, "float"),
             &crate::tir::TargetInfo::rust_release_fast(),
@@ -551,7 +543,7 @@ fn fixed_width_targets_admit_exact_float_basics_only() {
 #[test]
 fn fixed_width_targets_reject_integer_arithmetic() {
     let error = validate_numeric_target_contract(
-        &binary("add", "int"),
+        &binary(molt_ir::OpKind::Add, "int"),
         &crate::tir::TargetInfo::rust_release_fast(),
     )
     .expect_err("i64 is not Python integer semantics");
@@ -563,24 +555,24 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
     let target = crate::tir::TargetInfo::luau_release_fast();
     for op in [
         OpIR {
-            kind: "const".to_string(),
+            kind: molt_ir::OpKind::Const,
             value: Some(42),
             out: Some("out".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         },
         OpIR {
-            kind: "const_int".to_string(),
+            kind: molt_ir::OpKind::ConstInt,
             value: Some(-(1_i64 << 53)),
             out: Some("out".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstInt)
         },
         OpIR {
-            kind: "const_bigint".to_string(),
+            kind: molt_ir::OpKind::ConstBigint,
             bytes: Some(molt_ir::literal_payload::integer_literal_bytes(
                 1_i128 << 53,
             )),
             out: Some("out".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstBigint)
         },
     ] {
         validate_numeric_target_contract(&function_ir(vec![op]), &target)
@@ -593,10 +585,10 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
     ] {
         let error = validate_numeric_target_contract(
             &function_ir(vec![OpIR {
-                kind: "const_bigint".to_string(),
+                kind: molt_ir::OpKind::ConstBigint,
                 bytes: Some(payload.clone()),
                 out: Some("out".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ConstBigint)
             }]),
             &target,
         )
@@ -612,10 +604,10 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
 fn float_literal_stays_outside_integer_admission() {
     validate_numeric_target_contract(
         &function_ir(vec![OpIR {
-            kind: "const_float".to_string(),
+            kind: molt_ir::OpKind::ConstFloat,
             f_value: Some(1.25),
             out: Some("out".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ConstFloat)
         }]),
         &crate::tir::TargetInfo::rust_release_fast(),
     )
@@ -628,10 +620,10 @@ fn integer_literal_kind_without_integer_payload_is_rejected() {
     // wire and must not be admitted as an integer literal.
     let error = validate_numeric_target_contract(
         &function_ir(vec![OpIR {
-            kind: "const".to_string(),
+            kind: molt_ir::OpKind::Const,
             f_value: Some(1.25),
             out: Some("out".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Const)
         }]),
         &crate::tir::TargetInfo::rust_release_fast(),
     )
@@ -642,24 +634,24 @@ fn integer_literal_kind_without_integer_payload_is_rejected() {
 #[test]
 fn execution_frames_are_distinct_from_python_introspection() {
     for kind in [
-        "frame_context_set",
-        "frame_locals_set",
-        "line",
-        "trace_enter_slot",
-        "trace_exit",
+        molt_ir::OpKind::FrameContextSet,
+        molt_ir::OpKind::FrameLocalsSet,
+        molt_ir::OpKind::Line,
+        molt_ir::OpKind::TraceEnterSlot,
+        molt_ir::OpKind::TraceExit,
     ] {
         let ir = function_ir(vec![OpIR {
-            kind: kind.to_string(),
+            kind,
             args: match kind {
-                "frame_context_set" => {
+                molt_ir::OpKind::FrameContextSet => {
                     Some(vec!["arg0".into(), "kind".into(), "class_cell".into()])
                 }
-                "frame_locals_set" => Some(vec!["locals".into()]),
+                molt_ir::OpKind::FrameLocalsSet => Some(vec!["locals".into()]),
                 _ => None,
             },
-            value: (kind == "line").then_some(7),
-            s_value: (kind == "trace_enter_slot").then(|| "f".into()),
-            ..OpIR::default()
+            value: (kind == molt_ir::OpKind::Line).then_some(7),
+            s_value: (kind == molt_ir::OpKind::TraceEnterSlot).then(|| "f".into()),
+            ..OpIR::new(kind)
         }]);
         let error =
             validate_runtime_target_contract(&ir, &crate::tir::TargetInfo::rust_release_fast())
@@ -675,8 +667,8 @@ fn execution_frames_are_distinct_from_python_introspection() {
 
     let error = validate_runtime_target_contract(
         &function_ir(vec![OpIR {
-            kind: "getframe".to_string(),
-            ..OpIR::default()
+            kind: molt_ir::OpKind::Getframe,
+            ..OpIR::new(molt_ir::OpKind::Getframe)
         }]),
         &target_with_runtime(SimpleIrRuntimeRequirements::EXECUTION_FRAME),
     )
@@ -688,22 +680,22 @@ fn execution_frames_are_distinct_from_python_introspection() {
 fn super_context_intrinsics_require_execution_frames_not_locals_introspection() {
     for symbol in ["molt_super_from_frame"] {
         let carriers = [
-            "call",
-            "call_internal",
-            "builtin_func",
-            "func_new",
-            "func_new_closure",
+            molt_ir::OpKind::Call,
+            molt_ir::OpKind::CallInternal,
+            molt_ir::OpKind::BuiltinFunc,
+            molt_ir::OpKind::FuncNew,
+            molt_ir::OpKind::FuncNewClosure,
         ]
         .into_iter()
         .map(|kind| OpIR {
-            kind: kind.to_string(),
+            kind,
             s_value: Some(symbol.to_string()),
-            ..OpIR::default()
+            ..OpIR::new(kind)
         })
         .chain([OpIR {
-            kind: "module_get_attr".to_string(),
+            kind: molt_ir::OpKind::ModuleGetAttr,
             runtime_symbol: Some(symbol.to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
         }]);
         for op in carriers {
             let requirements = op.runtime_requirements().unwrap();
@@ -711,7 +703,10 @@ fn super_context_intrinsics_require_execution_frames_not_locals_introspection() 
             assert!(!requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION));
             assert_eq!(
                 op.uses_execution_frame(),
-                matches!(op.kind.as_str(), "call" | "call_internal"),
+                matches!(
+                    op.kind,
+                    molt_ir::OpKind::Call | molt_ir::OpKind::CallInternal
+                ),
                 "callable acquisition requires target support, not an already-entered frame: {op:?}"
             );
             let ir = function_ir(vec![op]);
@@ -731,10 +726,10 @@ fn super_context_intrinsics_require_execution_frames_not_locals_introspection() 
 #[test]
 fn runtime_symbol_provenance_rejects_at_acquisition_not_at_transport_use() {
     let acquisition = OpIR {
-        kind: "module_get_attr".to_string(),
+        kind: molt_ir::OpKind::ModuleGetAttr,
         runtime_symbol: Some("molt_getframe".to_string()),
         out: Some("frame_callable".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
     };
     let requirements = acquisition
         .runtime_requirements()
@@ -744,10 +739,10 @@ fn runtime_symbol_provenance_rejects_at_acquisition_not_at_transport_use() {
     let mut ir = function_ir(vec![
         acquisition,
         OpIR {
-            kind: "call".to_string(),
+            kind: molt_ir::OpKind::Call,
             args: Some(vec!["frame_callable".to_string()]),
             out: Some("dynamic_result".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(molt_ir::OpKind::Call)
         },
     ]);
     ir.functions[0].execution_context = ExecutionContextPolicy::None;
@@ -763,10 +758,10 @@ fn runtime_symbol_provenance_rejects_at_acquisition_not_at_transport_use() {
 #[test]
 fn typed_may_provenance_rejects_without_inventing_a_runtime_symbol() {
     let acquisition = OpIR {
-        kind: "module_get_attr".to_string(),
+        kind: molt_ir::OpKind::ModuleGetAttr,
         runtime_requirement_bits: SimpleIrRuntimeRequirements::FRAME_INTROSPECTION.bits(),
         out: Some("maybe_frame_callable".to_string()),
-        ..OpIR::default()
+        ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
     };
     assert!(acquisition.runtime_symbol.is_none());
     let requirements = acquisition
@@ -835,30 +830,35 @@ fn every_canonical_runtime_symbol_field_shares_frame_introspection_admission() {
     ] {
         let carriers = [
             OpIR {
-                kind: "module_get_attr".to_string(),
+                kind: molt_ir::OpKind::ModuleGetAttr,
                 runtime_symbol: Some(symbol.to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::ModuleGetAttr)
             },
             OpIR {
-                kind: "builtin_func".to_string(),
+                kind: molt_ir::OpKind::BuiltinFunc,
                 builtin_name: Some(symbol.to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::BuiltinFunc)
             },
             OpIR {
-                kind: "call_internal".to_string(),
+                kind: molt_ir::OpKind::CallInternal,
                 s_value: Some(symbol.to_string()),
-                ..OpIR::default()
+                ..OpIR::new(molt_ir::OpKind::CallInternal)
             },
         ]
         .into_iter()
         .chain(
-            ["call", "builtin_func", "func_new", "func_new_closure"]
-                .into_iter()
-                .map(|kind| OpIR {
-                    kind: kind.to_string(),
-                    s_value: Some(symbol.to_string()),
-                    ..OpIR::default()
-                }),
+            [
+                molt_ir::OpKind::Call,
+                molt_ir::OpKind::BuiltinFunc,
+                molt_ir::OpKind::FuncNew,
+                molt_ir::OpKind::FuncNewClosure,
+            ]
+            .into_iter()
+            .map(|kind| OpIR {
+                kind,
+                s_value: Some(symbol.to_string()),
+                ..OpIR::new(kind)
+            }),
         );
         for op in carriers {
             let requirements = op
@@ -882,16 +882,16 @@ fn runtime_symbol_text_is_not_callable_identity_on_opaque_or_literal_operations(
     );
     for symbol in ["molt_module_import", "molt_getframe"] {
         for kind in [
-            "const_str",
-            "call_func",
-            "call_bind",
-            "call_guarded",
-            "invoke_ffi",
+            molt_ir::OpKind::ConstStr,
+            molt_ir::OpKind::CallFunc,
+            molt_ir::OpKind::CallBind,
+            molt_ir::OpKind::CallGuarded,
+            molt_ir::OpKind::InvokeFfi,
         ] {
             let op = OpIR {
-                kind: kind.to_string(),
+                kind,
                 s_value: Some(symbol.to_string()),
-                ..OpIR::default()
+                ..OpIR::new(kind)
             };
             validate_runtime_target_contract(&function_ir(vec![op]), &restricted)
                 .expect("literal payloads and opaque call hints do not acquire or invoke the named runtime symbol");

@@ -22,6 +22,7 @@ use cranelift_codegen::{
     verifier::verify_function,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use molt_ir::OpKind;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::test_support::native_object_symbols;
@@ -75,58 +76,49 @@ fn representation_plan_for_typed_ops(
 fn scalar_transport_plan_for_boxed_transport_homes() -> ScalarRepresentationPlan {
     representation_plan_for_ops(&[
         OpIR {
-            kind: "const_int".to_string(),
             out: Some("int_home".to_string()),
             value: Some(7),
             type_hint: Some("int".to_string()),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstInt)
         },
         OpIR {
-            kind: "const_bool".to_string(),
             out: Some("bool_home".to_string()),
             value: Some(1),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstBool)
         },
         OpIR {
-            kind: "const_float".to_string(),
             out: Some("float_home".to_string()),
             f_value: Some(1.25),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::ConstFloat)
         },
     ])
 }
 
 fn scalar_transport_plan_for_float_home() -> ScalarRepresentationPlan {
     representation_plan_for_ops(&[OpIR {
-        kind: "const_float".to_string(),
         out: Some("float_home".to_string()),
         f_value: Some(1.25),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ConstFloat)
     }])
 }
 
 fn list_int_new(out: &str, count: &str, fill: &str) -> OpIR {
     OpIR {
-        kind: "list_int_new".to_string(),
         out: Some(out.to_string()),
         args: Some(vec![count.to_string(), fill.to_string()]),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::ListIntNew)
     }
 }
 fn storage_const(out: &str, value: i64) -> OpIR {
     OpIR {
-        kind: "const".into(),
         out: Some(out.into()),
         value: Some(value),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Const)
     }
 }
 
-fn op_kind(kind: &str) -> OpIR {
-    OpIR {
-        kind: kind.to_string(),
-        ..OpIR::default()
-    }
+fn op_kind(kind: OpKind) -> OpIR {
+    OpIR { ..OpIR::new(kind) }
 }
 
 mod attrs;

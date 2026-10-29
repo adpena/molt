@@ -29,7 +29,7 @@ pub(crate) fn op_effects_with_types(
         if super::value_identity::copy_value_source(op).is_some() {
             return crate::tir::op_kinds_generated::OPCODE_EFFECTS_PURE;
         }
-        if let Some(crate::tir::ops::AttrValue::Str(kind)) = op.attrs.get("_original_kind") {
+        if let Some(kind) = op.origin {
             let mut effects = crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
             // Callback capability is independent from ownership and marker
             // categories. Trace lifecycle returns no owner while acquiring
@@ -132,16 +132,14 @@ mod tests {
         use crate::tir::ops::{AttrDict, AttrValue, Dialect};
         for named in [false, true] {
             let mut attrs = AttrDict::new();
-            attrs.insert(
-                "_original_kind".into(),
-                AttrValue::Str("builtin_func".into()),
-            );
+
             attrs.insert("s_value".into(), AttrValue::Str("molt_len".into()));
             attrs.insert("value".into(), AttrValue::Int(1));
             if named {
                 attrs.insert("builtin_name".into(), AttrValue::Str("len".into()));
             }
             let op = TirOp {
+                origin: Some(molt_ir::OpKind::BuiltinFunc),
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: if named { vec![ValueId(0)] } else { vec![] },
@@ -243,6 +241,7 @@ mod tests {
             let coarse = opcode_effects_table(opcode);
             assert!(!coarse.consistent || !coarse.effect_free);
             let op = TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],

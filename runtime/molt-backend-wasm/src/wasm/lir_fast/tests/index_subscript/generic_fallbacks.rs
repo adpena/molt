@@ -22,6 +22,7 @@ fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() 
         func.value_types.insert(result_id, TirType::DynBox);
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Index,
             operands: vec![ValueId(0), ValueId(1)],
@@ -72,6 +73,7 @@ fn typed_index_store_without_manifest_selector_rows_use_generic_runtime_calls() 
         );
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::StoreIndex,
             operands: vec![ValueId(0), ValueId(1), ValueId(2)],

@@ -1,4 +1,5 @@
 use super::super::*;
+use molt_ir::OpKind;
 
 /// Shared list/index fast-path state for native codegen.
 ///
@@ -247,11 +248,23 @@ pub(in crate::native_backend::function_compiler) fn loop_start_has_index_prelude
 ) -> bool {
     let mut scan_idx = start_idx + 1;
     while let Some(next) = ops.get(scan_idx) {
-        let kind = next.kind.as_str();
-        if kind == "loop_index_start" {
+        let kind = next.kind;
+        if kind == OpKind::LoopIndexStart {
             return true;
         }
-        if super::const_literals::literal_kind(kind).starts_with("const") {
+        if matches!(
+            super::const_literals::literal_kind(kind),
+            OpKind::Const
+                | OpKind::ConstBigint
+                | OpKind::ConstBool
+                | OpKind::ConstBytes
+                | OpKind::ConstEllipsis
+                | OpKind::ConstFloat
+                | OpKind::ConstInt
+                | OpKind::ConstNone
+                | OpKind::ConstNotImplemented
+                | OpKind::ConstStr
+        ) {
             scan_idx += 1;
             continue;
         }
@@ -272,7 +285,7 @@ fn typed_list_index_layout(
     op: &OpIR,
     plan: &ScalarRepresentationPlan,
 ) -> Option<ListIndexLayout> {
-    if op.kind != "index"
+    if op.kind != OpKind::Index
         || !op
             .args
             .as_ref()
@@ -299,8 +312,7 @@ fn list_storage_op_preserves_heap(
 ) -> bool {
     use crate::tir::op_kinds_generated::{
         copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
-        kind_to_opcode_table, opcode_effects_table, simpleir_kind_is_cfg_or_ssa_consumed,
-        simpleir_kind_is_conditional_branch,
+        kind_to_opcode_table, opcode_effects_table,
     };
     use crate::tir::ops::OpCode;
     use crate::tir::types::TirType;
@@ -322,7 +334,7 @@ fn list_storage_op_preserves_heap(
             None => TirType::DynBox,
         });
     });
-    let kind = op.kind.as_str();
+    let kind = op.kind;
     let opcode = kind_to_opcode_table(kind);
     let scalar_binding = simple_ir_binding(op).is_none_or(|binding| {
         plan.name_is_non_heap_scalar(binding.destination)
@@ -342,8 +354,8 @@ fn list_storage_op_preserves_heap(
         return true;
     }
     if opcode.is_none()
-        && simpleir_kind_is_cfg_or_ssa_consumed(kind)
-        && (!simpleir_kind_is_conditional_branch(kind)
+        && kind.is_cfg_or_ssa_consumed()
+        && (!kind.is_conditional_branch()
             || operand_types.iter().all(|ty| {
                 matches!(
                     ty,
@@ -394,10 +406,12 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
     // The loop_start before an indexed prelude is metadata for the same loop,
     // not an additional nested loop. This matches native loop emission.
     let mut body_start = start_idx;
-    if ops.get(start_idx).is_some_and(|op| op.kind == "loop_start")
+    if ops
+        .get(start_idx)
+        .is_some_and(|op| op.kind == OpKind::LoopStart)
         && loop_start_has_index_prelude(ops, start_idx)
     {
-        while ops[body_start].kind != "loop_index_start" {
+        while ops[body_start].kind != OpKind::LoopIndexStart {
             body_start += 1;
         }
     }
@@ -415,17 +429,17 @@ pub(in crate::native_backend::function_compiler) fn scan_loop_hoistable_lists(
         if may_finalize {
             return (BTreeSet::new(), BTreeSet::new());
         }
-        match op.kind.as_str() {
-            "loop_start" if loop_start_has_index_prelude(ops, idx) => continue,
-            "loop_start" | "loop_index_start" => {
+        match op.kind {
+            OpKind::LoopStart if loop_start_has_index_prelude(ops, idx) => continue,
+            OpKind::LoopStart | OpKind::LoopIndexStart => {
                 depth += 1;
                 continue;
             }
-            "loop_end" if depth > 0 => {
+            OpKind::LoopEnd if depth > 0 => {
                 depth -= 1;
                 continue;
             }
-            "loop_end" => {
+            OpKind::LoopEnd => {
                 loop_end = Some(idx);
                 break;
             }
@@ -740,10 +754,10 @@ pub(in crate::native_backend::function_compiler) fn match_loop_int_sum_shape(
     let mut depth = 0i32;
     let mut loop_end_idx = None;
     for i in (loop_index_start_idx + 1)..ops.len() {
-        match ops[i].kind.as_str() {
-            "loop_start" | "loop_index_start" => depth += 1,
-            "loop_end" if depth > 0 => depth -= 1,
-            "loop_end" => {
+        match ops[i].kind {
+            OpKind::LoopStart | OpKind::LoopIndexStart => depth += 1,
+            OpKind::LoopEnd if depth > 0 => depth -= 1,
+            OpKind::LoopEnd => {
                 loop_end_idx = Some(i);
                 break;
             }
@@ -761,12 +775,12 @@ pub(in crate::native_backend::function_compiler) fn match_loop_int_sum_shape(
 
     for i in (loop_index_start_idx + 1)..loop_end_idx {
         let op = &ops[i];
-        match super::const_literals::literal_kind(&op.kind) {
-            "loop_start" | "loop_index_start" => {
+        match super::const_literals::literal_kind(op.kind) {
+            OpKind::LoopStart | OpKind::LoopIndexStart => {
                 has_nested_loop = true;
                 break;
             }
-            "index" => {
+            OpKind::Index => {
                 if !representation_plan.op_has_container_storage(
                     i,
                     op,
@@ -792,7 +806,7 @@ pub(in crate::native_backend::function_compiler) fn match_loop_int_sum_shape(
                 let out = op.out.as_ref()?;
                 index_op = Some((i, args[0].clone(), out.clone()));
             }
-            "add" | "inplace_add" => {
+            OpKind::Add | OpKind::InplaceAdd => {
                 if add_op.is_some() {
                     return None; // multiple adds — too complex
                 }
@@ -803,7 +817,7 @@ pub(in crate::native_backend::function_compiler) fn match_loop_int_sum_shape(
                 let out = op.out.as_ref()?;
                 add_op = Some((args[0].clone(), args[1].clone(), out.clone()));
             }
-            "store_var" => {
+            OpKind::StoreVar => {
                 if store_var_op.is_some() {
                     return None; // multiple store_vars — too complex
                 }
@@ -821,27 +835,27 @@ pub(in crate::native_backend::function_compiler) fn match_loop_int_sum_shape(
                 store_var_op = Some((slot.to_string(), args[0].clone()));
             }
             // Structural ops that don't affect correctness:
-            "loop_index_next"
-            | "loop_continue"
-            | "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
-            | "loop_break"
-            | "const"
-            | "const_bool"
-            | "const_float"
-            | "const_str"
-            | "copy"
-            | "copy_var"
-            | "load_var"
-            | "lt"
-            | "le"
-            | "gt"
-            | "ge"
-            | "not"
-            | "line"
-            | "label"
-            | "phi" => {}
+            OpKind::LoopIndexNext
+            | OpKind::LoopContinue
+            | OpKind::LoopBreakIfTrue
+            | OpKind::LoopBreakIfFalse
+            | OpKind::LoopBreakIfException
+            | OpKind::LoopBreak
+            | OpKind::Const
+            | OpKind::ConstBool
+            | OpKind::ConstFloat
+            | OpKind::ConstStr
+            | OpKind::Copy
+            | OpKind::CopyVar
+            | OpKind::LoadVar
+            | OpKind::Lt
+            | OpKind::Le
+            | OpKind::Gt
+            | OpKind::Ge
+            | OpKind::Not
+            | OpKind::Line
+            | OpKind::Label
+            | OpKind::Phi => {}
             // Anything else (calls, other stores, etc.) disqualifies.
             _ => {
                 has_side_effects = true;

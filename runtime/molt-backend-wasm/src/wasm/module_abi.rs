@@ -186,15 +186,13 @@ mod audit_tests {
                     return_abi: molt_ir::FunctionReturnAbi::Value,
                     ops: vec![
                         OpIR {
-                            kind: "const".into(),
                             value: Some(41),
                             out: Some("value".into()),
-                            ..Default::default()
+                            ..OpIR::new(molt_ir::OpKind::Const)
                         },
                         OpIR {
-                            kind: "ret".into(),
                             args: Some(vec!["value".into()]),
-                            ..Default::default()
+                            ..OpIR::new(molt_ir::OpKind::Ret)
                         },
                     ],
                     ..Default::default()

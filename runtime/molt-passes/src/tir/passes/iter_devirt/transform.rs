@@ -18,18 +18,12 @@ pub(super) fn apply_transform(
     let len_val = func.fresh_value();
     func.value_types.insert(len_val, TirType::I64);
     let mut len_op = TirOp {
+        origin: Some(molt_ir::OpKind::Len),
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![c.list_val],
         results: vec![len_val],
-        attrs: {
-            let mut a = AttrDict::new();
-            a.insert(
-                "_original_kind".to_string(),
-                AttrValue::Str("len".to_string()),
-            );
-            a
-        },
+        attrs: AttrDict::new(),
         source_span: None,
     };
     len_op.inherit_source_from(&func.blocks[&c.setup_block].ops[c.get_iter_idx]);
@@ -82,6 +76,7 @@ pub(super) fn apply_transform(
         let cond_val = c.done_val; // Reuse done_val as the comparison result.
         func.value_types.insert(cond_val, TirType::Bool);
         let cmp_op = TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Lt,
             operands: vec![idx_var, len_val],
@@ -113,6 +108,7 @@ pub(super) fn apply_transform(
         index_attrs.insert("container_type".to_string(), AttrValue::Str(ct.clone()));
     }
     let index_op = TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
         operands: vec![c.list_val, idx_var],
@@ -167,6 +163,7 @@ pub(super) fn apply_transform(
             // `for x in seq:` index counter has no proven range, blocking SROA
             // hot-loop field promotion and BCE on devirtualized iterators.
             let add_op = TirOp {
+                origin: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![idx_var, one_val],
@@ -200,6 +197,7 @@ pub(super) fn apply_transform(
 
 pub(super) fn make_const_int(result: ValueId, value: i64) -> TirOp {
     TirOp {
+        origin: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],

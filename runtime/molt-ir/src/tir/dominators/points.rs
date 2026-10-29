@@ -185,6 +185,7 @@ mod tests {
         let disconnected = func.fresh_block();
         func.label_id_map.insert(handler.0, 7);
         let operation = |opcode, label: Option<i64>| TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -237,6 +238,7 @@ mod tests {
 
     fn point_op(opcode: OpCode, label: Option<i64>) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],

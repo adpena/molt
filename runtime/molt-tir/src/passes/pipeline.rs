@@ -29,7 +29,7 @@ pub struct SimpleIrPass {
     /// Stable pass name, used by diagnostics and tests.
     pub name: &'static str,
     /// Every op kind the pass can introduce.
-    pub introduces: &'static [&'static str],
+    pub introduces: &'static [molt_ir::OpKind],
     /// The lowering feature the pass's output relies on, if any.
     pub lowering: Option<SimpleIrLowering>,
     /// The pass itself.
@@ -59,7 +59,7 @@ impl SimpleIrPass {
         self.introduces
             .iter()
             .try_fold(SimpleIrRuntimeRequirements::NONE, |required, kind| {
-                Some(required.union(simpleir_runtime_requirements_table(kind)?))
+                Some(required.union(simpleir_runtime_requirements_table(*kind)?))
             })
     }
 }
@@ -69,23 +69,23 @@ pub const SIMPLE_IR_FUNCTION_PASSES: &[SimpleIrPass] = &[
     SimpleIrPass {
         name: "rewrite_stateful_loops",
         introduces: &[
-            "end_if",
-            "if",
-            "jump",
-            "label",
-            "loop_break",
-            "loop_break_if_exception",
-            "loop_break_if_false",
-            "loop_break_if_true",
-            "loop_continue",
-            "loop_end",
-            "loop_index_start",
-            "loop_start",
-            "not",
-            "state_label",
-            "state_switch",
-            "state_transition",
-            "state_yield",
+            molt_ir::OpKind::EndIf,
+            molt_ir::OpKind::If,
+            molt_ir::OpKind::Jump,
+            molt_ir::OpKind::Label,
+            molt_ir::OpKind::LoopBreak,
+            molt_ir::OpKind::LoopBreakIfException,
+            molt_ir::OpKind::LoopBreakIfFalse,
+            molt_ir::OpKind::LoopBreakIfTrue,
+            molt_ir::OpKind::LoopContinue,
+            molt_ir::OpKind::LoopEnd,
+            molt_ir::OpKind::LoopIndexStart,
+            molt_ir::OpKind::LoopStart,
+            molt_ir::OpKind::Not,
+            molt_ir::OpKind::StateLabel,
+            molt_ir::OpKind::StateSwitch,
+            molt_ir::OpKind::StateTransition,
+            molt_ir::OpKind::StateYield,
         ],
         lowering: None,
         run: super::rewrite_stateful_loops,
@@ -122,13 +122,13 @@ pub const SIMPLE_IR_FUNCTION_PASSES: &[SimpleIrPass] = &[
     },
     SimpleIrPass {
         name: "fold_constants",
-        introduces: &["const", "const_bool"],
+        introduces: &[molt_ir::OpKind::Const, molt_ir::OpKind::ConstBool],
         lowering: None,
         run: |function| super::fold_constants(&mut function.ops),
     },
     SimpleIrPass {
         name: "fold_constants_cross_block",
-        introduces: &["const", "const_bool"],
+        introduces: &[molt_ir::OpKind::Const, molt_ir::OpKind::ConstBool],
         lowering: None,
         run: |function| super::fold_constants_cross_block(&mut function.ops),
     },

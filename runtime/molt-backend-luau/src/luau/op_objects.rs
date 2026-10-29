@@ -2,14 +2,14 @@ use super::*;
 
 impl LuauBackend {
     pub(super) fn emit_object_op(&mut self, op: &OpIR) -> bool {
-        match op.kind.as_str() {
+        match op.kind {
             // ================================================================
             // Guarded field access
             // ================================================================
             // Luau tables hold attributes by name, so a layout guard has no
             // fast path to admit: operands = [obj, expected_version] for a
             // read and [obj, expected_version, value] for a write (HF-220).
-            "guarded_field_get" => {
+            molt_ir::OpKind::GuardedFieldGet => {
                 let out = self.out_var(op);
                 let args = op
                     .args
@@ -19,7 +19,7 @@ impl LuauBackend {
                 let attr = sanitize_ident(op.s_value.as_deref().expect("admitted field name"));
                 self.emit_line(&format!("local {out} = {obj}.{attr}"));
             }
-            "guarded_field_set" => {
+            molt_ir::OpKind::GuardedFieldSet => {
                 let args = op
                     .args
                     .as_deref()
@@ -33,11 +33,11 @@ impl LuauBackend {
             // ================================================================
             // Function/class/module objects
             // ================================================================
-            "module_new" | "object_new" => {
+            molt_ir::OpKind::ModuleNew | molt_ir::OpKind::ObjectNew => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
             }
-            "builtin_type" => {
+            molt_ir::OpKind::BuiltinType => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let tag = args
@@ -46,12 +46,14 @@ impl LuauBackend {
                     .unwrap_or_else(|| "nil".to_string());
                 self.emit_line(&format!("local {out} = molt_builtin_type({tag})"));
             }
-            "classmethod_new" | "staticmethod_new" | "property_new" => {
+            molt_ir::OpKind::ClassmethodNew
+            | molt_ir::OpKind::StaticmethodNew
+            | molt_ir::OpKind::PropertyNew => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let args = op.args.as_deref().unwrap_or(&[]);
-                    match op.kind.as_str() {
-                        "classmethod_new" => {
+                    match op.kind {
+                        molt_ir::OpKind::ClassmethodNew => {
                             let func = args
                                 .first()
                                 .map(|arg| sanitize_ident(arg))
@@ -60,7 +62,7 @@ impl LuauBackend {
                                 "local {out} = {{__molt_descriptor_kind=\"classmethod\", __func={func}}}"
                             ));
                         }
-                        "staticmethod_new" => {
+                        molt_ir::OpKind::StaticmethodNew => {
                             let func = args
                                 .first()
                                 .map(|arg| sanitize_ident(arg))
@@ -69,7 +71,7 @@ impl LuauBackend {
                                 "local {out} = {{__molt_descriptor_kind=\"staticmethod\", __func={func}}}"
                             ));
                         }
-                        "property_new" => {
+                        molt_ir::OpKind::PropertyNew => {
                             let get = args
                                 .first()
                                 .map(|arg| sanitize_ident(arg))
@@ -93,7 +95,7 @@ impl LuauBackend {
 
             // The class statement's program slot, recorded beside the layout
             // version on the class table it created (HF-220).
-            "class_set_definition" => {
+            molt_ir::OpKind::ClassSetDefinition => {
                 let args = op
                     .args
                     .as_deref()
@@ -107,10 +109,12 @@ impl LuauBackend {
                     "if type({class}) == \"table\" then {class}.__molt_class_definition = {slot} end"
                 ));
             }
-            "module_import" | "module_import_from" | "module_import_star" => {
+            molt_ir::OpKind::ModuleImport
+            | molt_ir::OpKind::ModuleImportFrom
+            | molt_ir::OpKind::ModuleImportStar => {
                 self.emit_unsupported_op(op);
             }
-            "module_cache_get" => {
+            molt_ir::OpKind::ModuleCacheGet => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     let args = op.args.as_deref().unwrap_or(&[]);
@@ -122,7 +126,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "module_cache_set" => {
+            molt_ir::OpKind::ModuleCacheSet => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let name = sanitize_ident(&args[0]);
@@ -130,14 +134,14 @@ impl LuauBackend {
                     self.emit_line(&format!("molt_module_cache[{name}] = {module}"));
                 }
             }
-            "module_cache_del" => {
+            molt_ir::OpKind::ModuleCacheDel => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(name_var) = args.first() {
                     let name = sanitize_ident(name_var);
                     self.emit_line(&format!("molt_module_cache[{name}] = nil"));
                 }
             }
-            "module_get_global" => {
+            molt_ir::OpKind::ModuleGetGlobal => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -150,7 +154,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "module_get_name" => {
+            molt_ir::OpKind::ModuleGetName => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
@@ -163,7 +167,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "module_get_attr" => {
+            molt_ir::OpKind::ModuleGetAttr => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
@@ -186,7 +190,7 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "module_set_attr" => {
+            molt_ir::OpKind::ModuleSetAttr => {
                 // Store user-visible variables into the module cache so they can
                 // be accessed by name later (e.g., `nums = [1,2,3]`).
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -203,12 +207,12 @@ impl LuauBackend {
                     self.emit_unsupported_op(op);
                 }
             }
-            "module_del_global" | "module_del_global_if_present" => {
+            molt_ir::OpKind::ModuleDelGlobal | molt_ir::OpKind::ModuleDelGlobalIfPresent => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let module = sanitize_ident(&args[0]);
                     let name = sanitize_ident(&args[1]);
-                    let missing_ok = op.kind == "module_del_global_if_present";
+                    let missing_ok = op.kind == molt_ir::OpKind::ModuleDelGlobalIfPresent;
                     if let Some(ref out_name) = op.out
                         && out_name != "none"
                     {
@@ -227,7 +231,7 @@ impl LuauBackend {
             // ================================================================
             // Alloc / memory (table stubs)
             // ================================================================
-            "alloc_class" => {
+            molt_ir::OpKind::AllocClass => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(class_var) = args.first() {
@@ -240,7 +244,7 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {{}}"));
                 }
             }
-            "alloc" => {
+            molt_ir::OpKind::Alloc => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
             }
@@ -248,11 +252,11 @@ impl LuauBackend {
             // ================================================================
             // Dataclass
             // ================================================================
-            "dataclass_new" | "dataclass_new_values" => {
+            molt_ir::OpKind::DataclassNew | molt_ir::OpKind::DataclassNewValues => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
             }
-            "dataclass_get" => {
+            molt_ir::OpKind::DataclassGet => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
@@ -265,7 +269,7 @@ impl LuauBackend {
                     }
                 }
             }
-            "dataclass_set" | "dataclass_set_class" => {
+            molt_ir::OpKind::DataclassSet | molt_ir::OpKind::DataclassSetClass => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);

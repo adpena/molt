@@ -1,4 +1,5 @@
 use super::*;
+use molt_ir::OpKind;
 
 #[test]
 #[should_panic(expected = "import signature mismatch for molt_test_import")]
@@ -39,34 +40,29 @@ fn preanalysis_keeps_mixed_join_store_targets_boxed() {
         params: vec!["callable".to_string(), "args".to_string()],
         ops: vec![
             OpIR {
-                kind: "call_indirect".to_string(),
                 args: Some(vec!["callable".to_string(), "args".to_string()]),
                 out: Some("dynamic".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::CallIndirect)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("_bb_arg0".to_string()),
                 args: Some(vec!["dynamic".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "const_bool".to_string(),
                 out: Some("fallback".to_string()),
                 value: Some(0),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstBool)
             },
             OpIR {
-                kind: "store_var".to_string(),
                 var: Some("_bb_arg0".to_string()),
                 args: Some(vec!["fallback".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StoreVar)
             },
             OpIR {
-                kind: "load_var".to_string(),
                 var: Some("_bb_arg0".to_string()),
                 out: Some("joined".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::LoadVar)
             },
         ],
         param_types: None,
@@ -95,52 +91,44 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
         params: vec!["x".to_string(), "seed".to_string()],
         ops: vec![
             OpIR {
-                kind: "const".to_string(),
                 value: Some(374761393),
                 out: Some("_v0".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "mul".to_string(),
                 args: Some(vec!["x".to_string(), "_v0".to_string()]),
                 out: Some("_v1".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Mul)
             },
             OpIR {
-                kind: "bit_xor".to_string(),
                 args: Some(vec!["seed".to_string(), "_v1".to_string()]),
                 out: Some("_v2".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::BitXor)
             },
             OpIR {
-                kind: "const".to_string(),
                 value: Some(13),
                 out: Some("_v3".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "rshift".to_string(),
                 args: Some(vec!["_v2".to_string(), "_v3".to_string()]),
                 out: Some("_v4".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Rshift)
             },
             OpIR {
-                kind: "bit_xor".to_string(),
                 args: Some(vec!["_v2".to_string(), "_v4".to_string()]),
                 out: Some("_v5".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::BitXor)
             },
             OpIR {
-                kind: "const".to_string(),
                 value: Some(3266489917),
                 out: Some("_v6".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "mul".to_string(),
                 args: Some(vec!["_v5".to_string(), "_v6".to_string()]),
                 out: Some("_v7".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Mul)
             },
         ],
         param_types: Some(vec!["int".to_string(), "int".to_string()]),
@@ -167,59 +155,48 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
         params: vec!["arg".to_string()],
         ops: vec![
             OpIR {
-                kind: "state_switch".into(),
                 state_targets: Some(vec![]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
-                kind: "const_str".to_string(),
                 out: Some("msg".to_string()),
                 s_value: Some("hi".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::ConstStr)
             },
             OpIR {
-                kind: "if".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::If)
             },
             OpIR {
-                kind: "check_exception".to_string(),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::CheckException)
             },
             OpIR {
-                kind: "else".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Else)
             },
             OpIR {
-                kind: "end_if".to_string(),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::EndIf)
             },
             OpIR {
-                kind: "phi".to_string(),
                 out: Some("joined".to_string()),
                 args: Some(vec!["msg".to_string(), "msg".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Phi)
             },
             OpIR {
-                kind: "state_set".to_string(),
                 value: Some(7),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSet)
             },
             OpIR {
-                kind: "state_label".to_string(),
                 value: Some(42),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateLabel)
             },
             OpIR {
-                kind: "copy".to_string(),
                 args: Some(vec!["msg".to_string()]),
                 out: Some("out".to_string()),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Copy)
             },
             OpIR {
-                kind: "ret".to_string(),
                 args: Some(vec!["out".to_string()]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Ret)
             },
         ],
         param_types: None,
@@ -262,8 +239,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
         name: "value_ret".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         }],
         param_types: None,
         source_file: None,
@@ -277,8 +253,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
         name: "void_ret".to_string(),
         params: vec![],
         ops: vec![OpIR {
-            kind: "ret_void".to_string(),
-            ..OpIR::default()
+            ..OpIR::new(OpKind::RetVoid)
         }],
         param_types: None,
         source_file: None,
@@ -298,8 +273,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
     );
     let mut unreachable = value_ret;
     unreachable.ops = vec![OpIR {
-        kind: "unreachable".into(),
-        ..OpIR::default()
+        ..OpIR::new(OpKind::Unreachable)
     }];
     assert!(preanalyze_for_test(&unreachable).returns_value);
 }
@@ -312,19 +286,16 @@ fn preanalysis_uses_only_declared_resume_cases() {
         params: vec!["self".to_string()],
         ops: vec![
             OpIR {
-                kind: "state_switch".into(),
                 state_targets: Some(vec![(216, 216)]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
-                kind: "state_label".to_string(),
                 value: Some(216),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateLabel)
             },
             OpIR {
-                kind: "state_set".to_string(),
                 value: Some(217),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSet)
             },
         ],
         param_types: None,
@@ -352,30 +323,25 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
         params: vec!["self".to_string()],
         ops: vec![
             OpIR {
-                kind: "state_switch".into(),
                 state_targets: Some(vec![(12, 12)]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
-                kind: "state_label".to_string(),
                 value: Some(12),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateLabel)
             },
             OpIR {
-                kind: "const".to_string(),
                 out: Some("pending_state".to_string()),
                 value: Some(12),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "state_set".to_string(),
                 value: Some(13),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSet)
             },
             OpIR {
-                kind: "label".to_string(),
                 value: Some(13),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Label)
             },
         ],
         param_types: None,
@@ -402,25 +368,21 @@ fn preanalysis_maps_saved_states_to_plain_labels() {
         params: vec!["self".to_string()],
         ops: vec![
             OpIR {
-                kind: "state_switch".into(),
                 state_targets: Some(vec![(99, 12)]),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
-                kind: "const".to_string(),
                 out: Some("pending_state".to_string()),
                 value: Some(12),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Const)
             },
             OpIR {
-                kind: "state_set".to_string(),
                 value: Some(13),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::StateSet)
             },
             OpIR {
-                kind: "label".to_string(),
                 value: Some(12),
-                ..OpIR::default()
+                ..OpIR::new(OpKind::Label)
             },
         ],
         param_types: None,

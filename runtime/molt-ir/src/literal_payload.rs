@@ -18,7 +18,7 @@ pub enum LiteralPayload<'a> {
 
 impl<'a> LiteralPayload<'a> {
     fn from_parts(
-        kind: &str,
+        kind: crate::OpKind,
         shape: Option<OwnedLiteralPayloadKind>,
         text: Option<&'a str>,
         bytes: Option<&'a [u8]>,
@@ -59,9 +59,8 @@ impl<'a> LiteralPayload<'a> {
     }
 
     pub fn from_simple(op: &'a OpIR) -> Result<Self, String> {
-        let shape =
-            kind_to_opcode_table(&op.kind).and_then(opcode_owned_literal_payload_kind_table);
-        Self::from_parts(&op.kind, shape, op.s_value.as_deref(), op.bytes.as_deref()).map_err(
+        let shape = kind_to_opcode_table(op.kind).and_then(opcode_owned_literal_payload_kind_table);
+        Self::from_parts(op.kind, shape, op.s_value.as_deref(), op.bytes.as_deref()).map_err(
             |error| {
                 format!(
                     "{error} for output `{}`",
@@ -72,7 +71,8 @@ impl<'a> LiteralPayload<'a> {
     }
 
     pub fn from_tir(op: &'a TirOp) -> Result<Self, String> {
-        let kind = opcode_canonical_kind_table(op.opcode);
+        let kind = opcode_canonical_kind_table(op.opcode)
+            .ok_or_else(|| format!("{:?} has no wire literal payload", op.opcode))?;
         let text = match op.attrs.get("s_value") {
             None => None,
             Some(AttrValue::Str(text)) => Some(text.as_str()),
@@ -112,8 +112,7 @@ pub enum SimpleLiteral<'a> {
 
 impl<'a> SimpleLiteral<'a> {
     pub fn from_simple(op: &'a OpIR) -> Result<Option<Self>, String> {
-        let Some(shape) =
-            kind_to_opcode_table(&op.kind).and_then(opcode_literal_payload_kind_table)
+        let Some(shape) = kind_to_opcode_table(op.kind).and_then(opcode_literal_payload_kind_table)
         else {
             return Ok(None);
         };
@@ -185,10 +184,11 @@ pub fn required_tir_literal_bytes(op: &TirOp) -> &[u8] {
 
 pub fn lower_tir_literal(op: &TirOp, out: Option<String>) -> Result<OpIR, String> {
     let payload = LiteralPayload::from_tir(op)?;
+    let kind = opcode_canonical_kind_table(op.opcode)
+        .ok_or_else(|| format!("{:?} has no wire literal representation", op.opcode))?;
     let mut simple = OpIR {
-        kind: opcode_canonical_kind_table(op.opcode).into(),
         out,
-        ..OpIR::default()
+        ..crate::OpIR::new(kind)
     };
     match payload {
         LiteralPayload::Text(text) => simple.s_value = Some(text.to_owned()),
@@ -228,6 +228,7 @@ mod tests {
 
     fn tir(opcode: OpCode, attrs: AttrDict) -> TirOp {
         TirOp {
+            origin: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -240,16 +241,28 @@ mod tests {
     #[test]
     fn literal_payload_admits_empty_nul_surrogate_and_arbitrary_bytes_losslessly() {
         for (opcode, kind, bytes) in [
-            (OpCode::ConstStr, "const_str", vec![]),
-            (OpCode::ConstStr, "const_str", vec![0, b'a', 0]),
-            (OpCode::ConstStr, "const_str", vec![0xed, 0xa0, 0x80]),
-            (OpCode::ConstStr, "const_str", vec![0xed, 0xbf, 0xbf, 0]),
-            (OpCode::ConstBytes, "const_bytes", vec![]),
-            (OpCode::ConstBytes, "const_bytes", vec![0, 0xff, 0x80]),
-            (OpCode::ConstBigInt, "const_bigint", vec![0]),
+            (OpCode::ConstStr, crate::OpKind::ConstStr, vec![]),
+            (OpCode::ConstStr, crate::OpKind::ConstStr, vec![0, b'a', 0]),
+            (
+                OpCode::ConstStr,
+                crate::OpKind::ConstStr,
+                vec![0xed, 0xa0, 0x80],
+            ),
+            (
+                OpCode::ConstStr,
+                crate::OpKind::ConstStr,
+                vec![0xed, 0xbf, 0xbf, 0],
+            ),
+            (OpCode::ConstBytes, crate::OpKind::ConstBytes, vec![]),
+            (
+                OpCode::ConstBytes,
+                crate::OpKind::ConstBytes,
+                vec![0, 0xff, 0x80],
+            ),
+            (OpCode::ConstBigInt, crate::OpKind::ConstBigint, vec![0]),
             (
                 OpCode::ConstBigInt,
-                "const_bigint",
+                crate::OpKind::ConstBigint,
                 vec![0xff, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
             ),
         ] {
@@ -277,14 +290,16 @@ mod tests {
 
     #[test]
     fn literal_payload_rejects_absence_wrong_carrier_and_conflicts() {
+        for opcode in [OpCode::ScfFor, OpCode::ScfWhile] {
+            let typed = tir(opcode, AttrDict::new());
+            let error = lower_tir_literal(&typed, None).unwrap_err();
+            assert!(error.contains("no wire literal payload"), "{error}");
+        }
         for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
             let typed = tir(opcode, AttrDict::new());
             assert!(validate_tir_literal(&typed).is_err());
             assert!(lower_tir_literal(&typed, None).is_err());
-            let simple = OpIR {
-                kind: opcode_canonical_kind_table(opcode).into(),
-                ..OpIR::default()
-            };
+            let simple = OpIR::new(opcode_canonical_kind_table(opcode).unwrap());
             assert!(validate_simple_literal(&simple).is_err());
             assert!(crate::ir_schema::validate_required_fields(&simple).is_err());
         }
@@ -304,15 +319,15 @@ mod tests {
     #[test]
     fn scalar_payload_admission_and_exact_integer_aliases_share_one_authority() {
         for kind in [
-            "const",
-            "const_int",
-            "load_const",
-            "const_bool",
-            "const_float",
+            crate::OpKind::Const,
+            crate::OpKind::ConstInt,
+            crate::OpKind::LoadConst,
+            crate::OpKind::ConstBool,
+            crate::OpKind::ConstFloat,
         ] {
             let op = OpIR {
-                kind: kind.into(),
-                ..OpIR::default()
+                kind,
+                ..crate::OpIR::new(kind)
             };
             assert!(validate_simple_literal(&op).is_err(), "{kind}");
             assert!(
@@ -320,11 +335,15 @@ mod tests {
                 "{kind}"
             );
         }
-        for kind in ["const", "const_int", "load_const"] {
+        for kind in [
+            crate::OpKind::Const,
+            crate::OpKind::ConstInt,
+            crate::OpKind::LoadConst,
+        ] {
             let op = OpIR {
-                kind: kind.into(),
+                kind,
                 value: Some(-7),
-                ..OpIR::default()
+                ..crate::OpIR::new(kind)
             };
             let value = SimpleLiteral::from_simple(&op).unwrap().unwrap();
             assert_eq!(value.exact_integer_value(7), Some(-7));
@@ -333,16 +352,16 @@ mod tests {
         // Retired decimal transport is rejected, including otherwise valid text.
         for text in ["", "-", "+", " 1", "1 ", "1.0", "0xff", "１２", "123"] {
             let op = OpIR {
-                kind: "const_bigint".into(),
+                kind: crate::OpKind::ConstBigint,
                 s_value: Some(text.into()),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::ConstBigint)
             };
             assert!(validate_simple_literal(&op).is_err(), "{text:?}");
         }
         let huge = OpIR {
-            kind: "const_bigint".into(),
+            kind: crate::OpKind::ConstBigint,
             bytes: Some([vec![1], vec![0; 32]].concat()),
-            ..OpIR::default()
+            ..crate::OpIR::new(crate::OpKind::ConstBigint)
         };
         assert!(validate_simple_literal(&huge).is_ok());
         assert_eq!(
@@ -386,9 +405,9 @@ mod tests {
         }
         for value in [i128::MIN, -129, -128, -1, 0, 127, 128, i128::MAX] {
             let op = OpIR {
-                kind: "const_bigint".into(),
+                kind: crate::OpKind::ConstBigint,
                 bytes: Some(integer_literal_bytes(value)),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::ConstBigint)
             };
             let literal = SimpleLiteral::from_simple(&op).unwrap().unwrap();
             assert_eq!(literal.exact_integer_value(u128::MAX), Some(value));
@@ -401,9 +420,9 @@ mod tests {
             vec![0xff, 0x80],
         ] {
             let op = OpIR {
-                kind: "const_bigint".into(),
+                kind: crate::OpKind::ConstBigint,
                 bytes: Some(bytes),
-                ..OpIR::default()
+                ..crate::OpIR::new(crate::OpKind::ConstBigint)
             };
             assert!(validate_simple_literal(&op).is_err());
         }

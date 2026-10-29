@@ -19,23 +19,18 @@ fn test_list_and_string_get_item_emit_index_error_guards() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "get_item".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("list".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetItem)
                 },
                 OpIR {
-                    kind: "get_item".to_string(),
                     args: Some(vec!["s".to_string(), "i".to_string()]),
                     out: Some("v1".to_string()),
                     type_hint: Some("str".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetItem)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -67,16 +62,14 @@ fn test_string_get_item_uses_utf8_codepoint_offsets() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "get_item".to_string(),
                     args: Some(vec!["s".to_string(), "i".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("str".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::GetItem)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -110,16 +103,14 @@ fn test_ord_at_emits_utf8_codepoint_helper() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "ord_at".to_string(),
                     args: Some(vec!["s".to_string(), "i".to_string()]),
                     out: Some("v0".to_string()),
                     type_hint: Some("int".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::OrdAt)
                 },
                 OpIR {
-                    kind: "ret".to_string(),
                     args: Some(vec!["v0".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Ret)
                 },
             ],
         }],
@@ -155,21 +146,16 @@ fn test_list_set_and_delete_emit_index_error_guards() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "set_item".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string(), "v".to_string()]),
                     type_hint: Some("list".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::SetItem)
                 },
                 OpIR {
-                    kind: "del_item".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     type_hint: Some("list".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DelItem)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -202,27 +188,21 @@ fn test_list_pop_and_index_emit_python_error_guards() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "list_pop".to_string(),
                     args: Some(vec!["xs".to_string()]),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListPop)
                 },
                 OpIR {
-                    kind: "list_pop".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     out: Some("v1".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListPop)
                 },
                 OpIR {
-                    kind: "list_index".to_string(),
                     args: Some(vec!["xs".to_string(), "needle".to_string()]),
                     out: Some("v2".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListIndex)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -252,23 +232,18 @@ fn test_call_method_list_pop_uses_python_error_guards() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("pop".to_string()),
                     args: Some(vec!["xs".to_string()]),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("pop".to_string()),
                     args: Some(vec!["xs".to_string(), "i".to_string()]),
                     out: Some("v1".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -306,21 +281,18 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("count".to_string()),
                     args: Some(vec!["xs".to_string(), "needle".to_string()]),
                     out: Some("count".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("index".to_string()),
                     args: Some(vec!["xs".to_string(), "needle".to_string()]),
                     out: Some("idx".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("index".to_string()),
                     args: Some(vec![
                         "xs".to_string(),
@@ -328,10 +300,9 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
                         "start".to_string(),
                     ]),
                     out: Some("start_only".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("index".to_string()),
                     args: Some(vec![
                         "xs".to_string(),
@@ -340,15 +311,13 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
                         "stop".to_string(),
                     ]),
                     out: Some("bounded".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
                 OpIR {
-                    kind: "missing".to_string(),
                     out: Some("missing_stop".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::Missing)
                 },
                 OpIR {
-                    kind: "list_index_range".to_string(),
                     args: Some(vec![
                         "xs".to_string(),
                         "needle".to_string(),
@@ -356,19 +325,15 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
                         "missing_stop".to_string(),
                     ]),
                     out: Some("missing_stop_index".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListIndexRange)
                 },
                 OpIR {
-                    kind: "call_method".to_string(),
                     s_value: Some("custom".to_string()),
                     args: Some(vec!["xs".to_string()]),
                     out: Some("custom_result".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::CallMethod)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -426,7 +391,6 @@ fn test_list_index_range_honors_start_stop_bounds() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "list_index_range".to_string(),
                     args: Some(vec![
                         "xs".to_string(),
                         "needle".to_string(),
@@ -434,12 +398,9 @@ fn test_list_index_range_honors_start_stop_bounds() {
                         "stop".to_string(),
                     ]),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListIndexRange)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -475,15 +436,11 @@ fn test_dict_popitem_emits_empty_dict_key_error_guard() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "dict_popitem".to_string(),
                     args: Some(vec!["d".to_string()]),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::DictPopitem)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -515,14 +472,10 @@ fn test_list_insert_clamps_python_index_bounds() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "list_insert".to_string(),
                     args: Some(vec!["xs".to_string(), "i".to_string(), "v".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListInsert)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -553,14 +506,10 @@ fn test_list_extend_uses_table_move_fast_path() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "list_extend".to_string(),
                     args: Some(vec!["dst".to_string(), "src".to_string()]),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::ListExtend)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
@@ -576,46 +525,9 @@ fn test_list_extend_uses_table_move_fast_path() {
 
 #[test]
 fn test_retired_range_repeat_is_rejected_before_luau_emission() {
-    for names in [
-        vec!["value", "count"],
-        vec!["value", "start", "stop", "step"],
-    ] {
-        let params: Vec<String> = names.into_iter().map(str::to_owned).collect();
-        let ir = SimpleIR {
-            functions: vec![FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Void,
-                name: "retired_range_repeat".to_string(),
-                params: params.clone(),
-                param_types: Some(vec!["int".to_string(); params.len()]),
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                parameter_custody: Vec::new(),
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![
-                    OpIR {
-                        kind: "list_repeat_range".to_string(),
-                        args: Some(params),
-                        out: Some("v0".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    },
-                ],
-            }],
-            profile: None,
-        };
-        let mut backend = LuauBackend::new();
-        let error = backend
-            .compile_checked(&ir)
-            .expect_err("retired operation must not emit source");
-        assert!(
-            error.contains("retired compiler operation `list_repeat_range`"),
-            "{error}"
-        );
-    }
+    let error = molt_ir::SimpleIR::from_json_str(r#"{"functions":[{"name":"retired","return_abi":"void","params":[],"ops":[{"kind":"list_repeat_range"}]}]}"#)
+        .expect_err("a retired spelling must fail during wire decode");
+    assert!(error.contains("list_repeat_range"), "{error}");
 }
 
 #[test]
@@ -643,7 +555,6 @@ fn test_string_slice_opcode_aliases_use_range_lowering() {
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
-                    kind: "string_find_slice".to_string(),
                     args: Some(vec![
                         "s".to_string(),
                         "needle".to_string(),
@@ -651,10 +562,9 @@ fn test_string_slice_opcode_aliases_use_range_lowering() {
                         "end_idx".to_string(),
                     ]),
                     out: Some("v0".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StringFindSlice)
                 },
                 OpIR {
-                    kind: "string_startswith_slice".to_string(),
                     args: Some(vec![
                         "s".to_string(),
                         "needle".to_string(),
@@ -662,10 +572,9 @@ fn test_string_slice_opcode_aliases_use_range_lowering() {
                         "end_idx".to_string(),
                     ]),
                     out: Some("v1".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StringStartswithSlice)
                 },
                 OpIR {
-                    kind: "string_endswith_slice".to_string(),
                     args: Some(vec![
                         "s".to_string(),
                         "needle".to_string(),
@@ -673,12 +582,9 @@ fn test_string_slice_opcode_aliases_use_range_lowering() {
                         "end_idx".to_string(),
                     ]),
                     out: Some("v2".to_string()),
-                    ..OpIR::default()
+                    ..OpIR::new(molt_ir::OpKind::StringEndswithSlice)
                 },
-                OpIR {
-                    kind: "ret_void".to_string(),
-                    ..OpIR::default()
-                },
+                OpIR::new(molt_ir::OpKind::RetVoid),
             ],
         }],
         profile: None,
