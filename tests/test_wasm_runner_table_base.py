@@ -2153,7 +2153,7 @@ def test_public_node_and_browser_deliver_declared_policy_to_wasi(
         }
     )
     manifest = write_wasm_execution_manifest(tmp_path, linked=wasm, policy=policy)
-    payload = json.loads(manifest.read_text())
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
     payload["abi"] = {
         "linked_self_imports": [],
         "runtime_imports": {
