@@ -149,6 +149,23 @@ def test_equality_compares_rules_and_name_identity(rule):
     assert env != dict(env) and dict(env) != env
 
 
+@pytest.mark.parametrize("rule", [NameRule.EXACT, NameRule.WINDOWS])
+def test_hash_agrees_with_equality_for_values_that_are_not_utf8(rule):
+    # os.environ holds a POSIX byte that is not UTF-8 as a surrogate escape,
+    # and a Windows lone UTF-16 surrogate as itself; neither encodes as UTF-8.
+    escaped = "ab" + b"\xff".decode("utf-8", "surrogateescape") + "cd"
+    lone = "ab\ud800cd"
+    with pytest.raises(UnicodeEncodeError):
+        escaped.encode("utf-8")
+    env = ProcessEnvironment({"Path": escaped, "KEEP": lone}, rule=rule)
+    same = ProcessEnvironment({"KEEP": lone, "Path": escaped}, rule=rule)
+    alias = ProcessEnvironment({"PATH": escaped, "KEEP": lone}, rule=rule)
+    assert hash(env) == hash(same) and {env: "cached"}[same] == "cached"
+    if rule is NameRule.WINDOWS:
+        assert env == alias and hash(env) == hash(alias)
+    assert env.updated({"Path": "ab?cd"}) not in {env}
+
+
 @pytest.mark.parametrize(
     "rule,ordered_names",
     [(NameRule.EXACT, ["Z", "a", "ß"]), (NameRule.WINDOWS, ["a", "Z", "ß"])],
