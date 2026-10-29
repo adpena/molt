@@ -42,6 +42,7 @@ pub(super) struct LoadedWasiCommandManifest {
     module: Module,
     manifest_path: PathBuf,
     source_sha256: [u8; 32],
+    launch_environment: Vec<(String, String)>,
 }
 
 impl LoadedWasiCommandManifest {
@@ -56,6 +57,10 @@ impl LoadedWasiCommandManifest {
     pub(super) fn source_sha256(&self) -> &[u8; 32] {
         &self.source_sha256
     }
+
+    pub(super) fn launch_environment(&self) -> &[(String, String)] {
+        &self.launch_environment
+    }
 }
 
 impl ResolvedWasiCommandManifest {
@@ -65,6 +70,7 @@ impl ResolvedWasiCommandManifest {
             module,
             manifest_path: self.manifest_path().to_path_buf(),
             source_sha256: *self.module().sha256(),
+            launch_environment: self.launch_environment().to_vec(),
         })
     }
 }
@@ -542,6 +548,7 @@ mod tests {
         }
         let execution = ResolvedExecution::MoltApplication(ResolvedExecutionModules {
             manifest_path: fixture.path().join("manifest.json"),
+            launch_environment: Vec::new(),
             main,
             runtime: Some(runtime),
             linked: false,
@@ -569,6 +576,7 @@ mod tests {
         let runtime = fixture.source("runtime.wat", b"(module)");
         let execution = ResolvedExecution::MoltApplication(ResolvedExecutionModules {
             manifest_path: fixture.path().join("manifest.json"),
+            launch_environment: Vec::new(),
             main,
             runtime: Some(runtime),
             linked: false,

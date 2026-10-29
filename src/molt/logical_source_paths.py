@@ -16,8 +16,6 @@ module's source location in an emitted artifact.
   ``/rustc/<commit>/library/...`` for std in the same way, and Go's
   ``-trimpath`` records ``runtime/proc.go``. The same compiler sources
   therefore give the same objects from every checkout.
-- A generated module (such as a namespace stub) reports its
-  path below ``GENERATED_ROOT``.
 
 The design and its references are in
 docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md, section 2.3.
@@ -25,13 +23,11 @@ docs/spec/areas/core/0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md, section 2.3.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 TOOLCHAIN_ROOT = "/__molt__"
-GENERATED_ROOT = "/__molt_generated__"
 _STDLIB_PREFIX = f"{TOOLCHAIN_ROOT}/stdlib/"
 
 
@@ -50,12 +46,6 @@ def toolchain_logical_path(package_relative_parts: Sequence[str]) -> str:
             f"invalid toolchain module path parts: {tuple(package_relative_parts)!r}"
         )
     return "/".join((TOOLCHAIN_ROOT, *package_relative_parts))
-
-
-def generated_module_logical_path(module_name: str) -> str:
-    """Return the path a compiler-generated module reports."""
-    safe = re.sub(r"[^0-9A-Za-z_]+", "_", module_name).strip("_")
-    return f"{GENERATED_ROOT}/{safe or 'module'}.py"
 
 
 def is_stdlib_logical_path(path: str) -> bool:

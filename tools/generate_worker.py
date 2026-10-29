@@ -4,6 +4,7 @@
 from __future__ import annotations
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,11 +27,11 @@ TEMPLATE_PATH = Path(__file__).parent / "wasm_worker_template.js"
 
 def generate_worker(
     output: Path,
-    capabilities: list[str],
+    *,
     tmp_quota_mb: int = 32,
     wasm_filename: str | None = None,
-    *,
     manifest: Path | None = None,
+    debug_stderr: bool = False,
 ) -> None:
     manifest_path = (
         manifest if manifest is not None else output.parent / "manifest.json"
@@ -62,16 +63,6 @@ def generate_worker(
         encoding="utf-8"
     )
     bridge = (wasm_root / "loader_bridge.js").read_text(encoding="utf-8")
-    template = template.replace("{{CALLABLE_TABLE_ABI}}", callable_abi).replace(
-        "{{LOADER_BRIDGE}}", bridge
-    )
-    template = template.replace(
-        "{{DEPLOYMENT_MANIFEST}}",
-        json.dumps(
-            {key: deployment[key] for key in ("version", "mode", "modules")},
-            sort_keys=True,
-        ),
-    )
     abi = json.loads(
         (wasm_root / "wasm_abi_generated.json").read_text(encoding="utf-8")
     )
@@ -83,42 +74,45 @@ def generate_worker(
             "runtime_shutdown",
         )
     }
-    template = template.replace(
-        "{{SYNTHETIC_ERRNO}}", json.dumps(abi["synthetic_errno"])
-    )
-    template = template.replace(
-        "{{WASI_PREVIEW1_ERRNO}}", json.dumps(abi["wasi_preview1_errno"])
-    )
-    template = template.replace("{{RUNTIME_LIFECYCLE}}", lifetime)
-    template = template.replace(
-        "{{RUNTIME_LIFETIME_EXPORTS}}", json.dumps(lifetime_exports)
-    )
     if not all(c.isalnum() or c in "._-" for c in wasm_filename):
         raise ValueError(f"Invalid wasm_filename: {wasm_filename!r}")
-    template = template.replace("{{TMP_QUOTA_MB}}", str(int(tmp_quota_mb)))
-    template = template.replace("{{CAPABILITIES}}", json.dumps(capabilities))
-    template = template.replace("{{WASM_FILENAME}}", wasm_filename)
+    replacements = {
+        "{{CALLABLE_TABLE_ABI}}": callable_abi,
+        "{{LOADER_BRIDGE}}": bridge,
+        "{{RUNTIME_LIFECYCLE}}": lifetime,
+        "{{RUNTIME_LIFETIME_EXPORTS}}": json.dumps(lifetime_exports),
+        "{{SYNTHETIC_ERRNO}}": json.dumps(abi["synthetic_errno"]),
+        "{{WASI_PREVIEW1_ERRNO}}": json.dumps(abi["wasi_preview1_errno"]),
+        "{{TMP_QUOTA_MB}}": str(int(tmp_quota_mb)),
+        "{{DEBUG_STDERR}}": json.dumps(debug_stderr),
+        "{{WASM_FILENAME}}": wasm_filename,
+        # Decode JSON rather than a JS object literal: an own __proto__ key is
+        # ordinary transported data, not an object-literal prototype setter.
+        "{{DEPLOYMENT_MANIFEST}}": (
+            f"JSON.parse({json.dumps(json.dumps(deployment, sort_keys=True))})"
+        ),
+    }
+    # Only original template tokens are replaced; inserted data is never rescanned.
+    template = re.sub(
+        r"\{\{[A-Z0-9_]+\}\}", lambda match: replacements[match[0]], template
+    )
     output.write_text(template, encoding="utf-8")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("-o", "--output", type=Path, default=Path("worker.js"))
-    parser.add_argument(
-        "--capabilities",
-        nargs="*",
-        default=["fs.bundle.read", "fs.tmp.read", "fs.tmp.write", "http.fetch"],
-    )
+    parser.add_argument("--debug-stderr", action="store_true")
     parser.add_argument("--tmp-quota-mb", type=int, default=32)
     parser.add_argument("--wasm-filename")
     parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
     generate_worker(
         args.output,
-        args.capabilities,
-        args.tmp_quota_mb,
-        args.wasm_filename,
+        tmp_quota_mb=args.tmp_quota_mb,
+        wasm_filename=args.wasm_filename,
         manifest=args.manifest,
+        debug_stderr=args.debug_stderr,
     )
     print(f"Generated {args.output}", file=__import__("sys").stderr)
     return 0

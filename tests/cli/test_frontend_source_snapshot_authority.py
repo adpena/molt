@@ -967,10 +967,9 @@ def test_frontend_analysis_keeps_the_snapshot_that_supplied_its_facts(
     )
     metadata = module_graph._build_module_graph_metadata(
         graph,
-        generated_module_source_paths={},
         entry_module="entry",
         entry_execution_kind="script",
-        namespace_module_names=set(),
+        namespace_portions_by_module={},
         stdlib_root=tmp_path / "stdlib",
     )
     seen: list[PythonSourceSnapshot] = []

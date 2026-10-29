@@ -550,7 +550,6 @@ def _lowering_context(module_path: Path, **changes: object) -> str | None:
         "known_func_kinds": {},
         "native_callable_exports": None,
         "module_deps": {"main": {"alpha"}, "alpha": set()},
-        "module_is_namespace": False,
         "module_chunking": False,
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",

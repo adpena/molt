@@ -4,6 +4,7 @@ from __future__ import annotations
 from tools.bench_evidence import AdmittedBenchmarkWorkload
 
 import os
+import json
 from dataclasses import asdict
 from collections.abc import Mapping
 from pathlib import Path
@@ -495,6 +496,7 @@ def measure_cell(
         if not cell.molt_ok:
             failure = failed_molt or cold_molt
             _record_molt_run_failure(cell, failure, fallback_status="runtime_failed")
+            log_lines.append("MOLT RUN FAILURE: " + json.dumps(cell.molt_failure))
             cell.note = f"molt run unmeasurable (status={failure.status})"
         elif not cell.cpython_ok:
             failure = failed_cpy or cold_cpy
@@ -654,8 +656,12 @@ def _record_molt_run_failure(
     failure = bench.classify_molt_process_failure(
         phase="run",
         returncode=outcome.exit_code,
+        # Classification stays bounded; identities bind the complete original
+        # failed captures independently of these diagnostic tails.
         stdout=outcome.stdout_tail,
         stderr=outcome.stderr_tail,
+        stdout_identity=outcome.stdout_identity,
+        stderr_identity=outcome.stderr_identity,
         elapsed_s=outcome.elapsed_s,
         timed_out=outcome.status == "timeout",
         violation=guard.violation if guard is not None else None,

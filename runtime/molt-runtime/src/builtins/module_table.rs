@@ -34,16 +34,15 @@ use crate::{
 // Structural gate: tests/test_module_registry_gates.py asserts these
 // constants equal the Python authority's. Bump both in the same arc.
 
-pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 4;
-const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD4");
-const MODULE_REGISTRY_HEADER_BYTES: usize = 48;
-const MODULE_REGISTRY_ROW_BYTES: usize = 40;
+pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 5;
+const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD5");
+const MODULE_REGISTRY_HEADER_BYTES: usize = 56;
+const MODULE_REGISTRY_ROW_BYTES: usize = 48;
 const NO_MODULE_ID: u32 = u32::MAX;
 
 const MODULE_KIND_SOURCE: u8 = 0;
 const MODULE_KIND_EXTENSION: u8 = 1;
 const MODULE_KIND_ALIAS: u8 = 2;
-#[allow(dead_code)] // reserved by the schema; no namespace-parent rows in PR1
 const MODULE_KIND_NAMESPACE_PARENT: u8 = 3;
 const MODULE_KIND_RUNTIME_BUILTIN: u8 = 4;
 
@@ -93,6 +92,27 @@ pub(crate) struct CompiledModuleSpec {
     pub(crate) origin: &'static str,
     pub(crate) is_package: bool,
     pub(crate) has_location: bool,
+    pub(crate) namespace_portions: Option<NamespacePortions>,
+}
+
+/// Ordered UTF-8 directories borrowed from a validated namespace registry row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NamespacePortions(&'static [u8]);
+
+impl NamespacePortions {
+    pub(crate) fn iter(self) -> impl Iterator<Item = &'static str> {
+        let mut remaining = self.0;
+        std::iter::from_fn(move || {
+            if remaining.is_empty() {
+                return None;
+            }
+            let len = u32::from_le_bytes(remaining[..4].try_into().unwrap()) as usize;
+            let portion = std::str::from_utf8(&remaining[4..4 + len])
+                .expect("namespace portions validated at registry install");
+            remaining = &remaining[4 + len..];
+            Some(portion)
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -102,6 +122,8 @@ pub(crate) struct ModuleRegistry {
     names_off: usize,
     origins_off: usize,
     origins_len: usize,
+    portions_off: usize,
+    portions_len: usize,
     digest: [u8; 16],
 }
 
@@ -155,6 +177,15 @@ impl ModuleRegistry {
         std::str::from_utf8(bytes).expect("module registry origins validated at install")
     }
 
+    fn portions_of(&self, id: u32) -> NamespacePortions {
+        let row = self.row_base(id);
+        let off = Self::read_u32(unsafe { row.add(36) }) as usize;
+        let len = Self::read_u32(unsafe { row.add(40) }) as usize;
+        NamespacePortions(unsafe {
+            std::slice::from_raw_parts(self.base.add(self.portions_off + off), len)
+        })
+    }
+
     pub(crate) fn row(&self, id: u32) -> RegistryRow {
         debug_assert!(id < self.count);
         let row = self.row_base(id);
@@ -201,9 +232,10 @@ impl ModuleRegistry {
     /// Immutable description of an executable catalog row, without touching
     /// module state or invoking an initializer. Alias metadata belongs to the
     /// terminal provider. Reserved/no-body rows cannot supply an executable
-    /// compiled loader, including namespace-parent rows without an init lane.
+    /// compiled loader. Namespace rows describe packages without a body.
     pub(crate) fn compiled_spec(&self, name: &str) -> Option<CompiledModuleSpec> {
-        self.provider_spec(name).filter(|spec| spec.has_body)
+        self.provider_spec(name)
+            .filter(|spec| spec.has_body || spec.namespace_portions.is_some())
     }
 
     /// Canonical source/provider facts also describe non-executable rows.
@@ -218,6 +250,8 @@ impl ModuleRegistry {
             origin: self.origin_of(id),
             is_package: row.module_flags & MODULE_FLAG_PACKAGE != 0,
             has_location: row.module_flags & MODULE_FLAG_HAS_LOCATION != 0,
+            namespace_portions: (row.kind == MODULE_KIND_NAMESPACE_PARENT)
+                .then(|| self.portions_of(id)),
         })
     }
 
@@ -247,6 +281,8 @@ impl ModuleRegistry {
             .map_err(|_| "module registry name table exceeds the target address space")?;
         let origins_len = usize::try_from(Self::read_u64(unsafe { base.add(40) }))
             .map_err(|_| "module registry origin table exceeds the target address space")?;
+        let portions_len = usize::try_from(Self::read_u64(unsafe { base.add(48) }))
+            .map_err(|_| "module registry portions table exceeds the target address space")?;
         let names_off = usize::try_from(count)
             .ok()
             .and_then(|count| count.checked_mul(MODULE_REGISTRY_ROW_BYTES))
@@ -255,9 +291,12 @@ impl ModuleRegistry {
         let origins_off = names_off
             .checked_add(names_len)
             .ok_or("module registry name table offset overflow")?;
-        let total_len = origins_off
+        let portions_off = origins_off
             .checked_add(origins_len)
             .ok_or("module registry origin table offset overflow")?;
+        let total_len = portions_off
+            .checked_add(portions_len)
+            .ok_or("module registry portions table offset overflow")?;
         base.addr()
             .checked_add(total_len)
             .ok_or("module registry address range overflow")?;
@@ -267,6 +306,8 @@ impl ModuleRegistry {
             names_off,
             origins_off,
             origins_len,
+            portions_off,
+            portions_len,
             digest,
         };
         // Validate every row once so all later reads are infallible.
@@ -318,6 +359,49 @@ impl ModuleRegistry {
             }
             previous_name = Some(name);
             let row = registry.row(id);
+            let portion_off = Self::read_u32(unsafe { row_base.add(36) }) as usize;
+            let portion_len = Self::read_u32(unsafe { row_base.add(40) }) as usize;
+            if portion_off
+                .checked_add(portion_len)
+                .is_none_or(|end| end > registry.portions_len)
+            {
+                return Err(format!(
+                    "module registry row {id} portions span exceeds the portions table"
+                ));
+            }
+            let mut portions = registry.portions_of(id).0;
+            while !portions.is_empty() {
+                let Some(length) = portions.get(..4) else {
+                    return Err(format!("module registry row {id} truncated portion length"));
+                };
+                let length = u32::from_le_bytes(length.try_into().unwrap()) as usize;
+                portions = &portions[4..];
+                let Some(portion) = portions.get(..length) else {
+                    return Err(format!("module registry row {id} truncated portion"));
+                };
+                if portion.is_empty() || std::str::from_utf8(portion).is_err() {
+                    return Err(format!(
+                        "module registry row {id} portion is empty or not UTF-8"
+                    ));
+                }
+                portions = &portions[length..];
+            }
+            if row.kind == MODULE_KIND_NAMESPACE_PARENT {
+                if portion_len == 0
+                    || origin_len != 0
+                    || row.init_ptr != 0
+                    || row.alias_target.is_some()
+                    || row.module_flags != MODULE_FLAG_PACKAGE
+                {
+                    return Err(format!(
+                        "module registry namespace row {id} requires portions and no origin, location or body"
+                    ));
+                }
+            } else if portion_len != 0 {
+                return Err(format!(
+                    "module registry non-namespace row {id} carries portions"
+                ));
+            }
             if row.module_flags & !MODULE_FLAG_KNOWN_MASK != 0 {
                 return Err(format!(
                     "module registry row {id} has unknown flags 0x{:02x}",
@@ -2202,7 +2286,20 @@ fn ensure_parent_ready(_py: &PyToken<'_>, row: &RegistryRow) -> bool {
     let Some(parent) = row.parent else {
         return true;
     };
-    let parent_bits = module_ensure(_py, parent);
+    // Namespace rows own no initializer. A bootstrap import of a compiled
+    // child still creates its namespace parent through the public spec protocol.
+    let registry = module_registry().expect("compiled parent registry");
+    let parent_bits = if registry.row(parent).kind == MODULE_KIND_NAMESPACE_PARENT {
+        let Some(name) = crate::attr_name_bits_from_bytes(_py, registry.name_of(parent).as_bytes())
+        else {
+            return false;
+        };
+        let bits = crate::builtins::modules::molt_module_import(name);
+        dec_ref_bits(_py, name);
+        bits
+    } else {
+        module_ensure(_py, parent)
+    };
     if exception_pending(_py) {
         if !is_none_bits(parent_bits) {
             dec_ref_bits(_py, parent_bits);

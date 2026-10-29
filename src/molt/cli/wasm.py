@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Iterable, Mapping
 
 from molt._wasm_abi_generated import (
@@ -22,7 +23,6 @@ from molt.wasm_artifact import (
     require_current_wasm_execution_manifest,
     wasm_execution_manifest_module_descriptor,
 )
-from molt.capability_manifest import ResolvedRuntimePolicy
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_canonical_import_name,
     wasm_split_runtime_export_name_for_import,
@@ -231,7 +231,6 @@ def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
 def _generate_split_worker_js(
     *,
     deployment_manifest: Mapping[str, object],
-    resolved_capability_policy: ResolvedRuntimePolicy,
     shared_memory_initial_pages: int,
     shared_table_initial: int,
     shared_table_base: int | None,
@@ -297,18 +296,6 @@ def _generate_split_worker_js(
     reserved_runtime_shared_prefix_len = (
         reserved_runtime_callable_base + WASM_RESERVED_RUNTIME_CALLABLE_COUNT * 2
     )
-    resolved_policy_env_json = json.dumps(
-        [
-            f"{name}={value}"
-            for name, value in sorted(
-                {
-                    **resolved_capability_policy.to_env_vars(),
-                    "MOLT_EXECUTION_TARGET": "cloudflare",
-                }.items()
-            )
-        ],
-        ensure_ascii=True,
-    )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import "./molt_vfs_browser.js";
@@ -320,6 +307,7 @@ import appModule from "./app.wasm";
 
 const {
   requireMoltDeploymentManifest,
+  deploymentLaunchEnvironment,
   bindRuntimeFunctionImports,
   callableTableFromModule,
   callableTableSignature,
@@ -399,13 +387,13 @@ export default {
     const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\\0"));
     const argsTotalSize = argsEncoded.reduce((s, a) => s + a.length, 0);
 
-    const envVars = [
-      ...__MOLT_RESOLVED_POLICY_ENV__,
-      ...(__MOLT_SHARED_TABLE_BASE__ !== null
-        ? [`MOLT_WASM_TABLE_BASE=${__MOLT_SHARED_TABLE_BASE__}`]
-        : []),
-      ...(queryString ? [`QUERY_STRING=${queryString}`] : []),
-    ];
+    const guestEnvironment = deploymentLaunchEnvironment(deploymentManifest);
+    guestEnvironment.MOLT_EXECUTION_TARGET = "cloudflare";
+    if (__MOLT_SHARED_TABLE_BASE__ !== null) {
+      guestEnvironment.MOLT_WASM_TABLE_BASE = String(__MOLT_SHARED_TABLE_BASE__);
+    }
+    if (queryString) guestEnvironment.QUERY_STRING = queryString;
+    const envVars = Object.entries(guestEnvironment).map(([name, value]) => `${name}=${value}`);
     const envEncoded = envVars.map(e => encoder.encode(e + "\\0"));
     const envTotalSize = envEncoded.reduce((s, e) => s + e.length, 0);
     const QNAN = 0x7ff8000000000000n;
@@ -1336,70 +1324,34 @@ export default {
   }
 };
 """
-    return (
-        worker_js.replace(
-            "__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages)
-        )
-        .replace(
-            "__MOLT_DEPLOYMENT_MANIFEST__",
-            json.dumps(
-                {
-                    key: deployment_manifest[key]
-                    for key in ("version", "mode", "modules")
-                },
-                sort_keys=True,
-            ),
-        )
-        .replace("__MOLT_SYNTHETIC_ERRNO__", json.dumps(dict(WASM_SYNTHETIC_ERRNO)))
-        .replace(
-            "__MOLT_WASI_PREVIEW1_ERRNO__", json.dumps(dict(WASM_WASI_PREVIEW1_ERRNO))
-        )
-        .replace("__MOLT_RESOLVED_POLICY_ENV__", resolved_policy_env_json)
-        .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))
-        .replace(
-            "__MOLT_RUNTIME_IMPORT_RESULT_KINDS__",
-            runtime_import_result_kinds_json,
-        )
-        .replace(
-            "__MOLT_RUNTIME_IMPORT_SIGNATURES__",
-            runtime_import_signatures_json,
-        )
-        .replace(
-            "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__",
-            runtime_import_export_names_json,
-        )
-        .replace(
-            "__MOLT_RUNTIME_EXPORT_SIGNATURES__",
-            runtime_export_signatures_json,
-        )
-        .replace(
-            "__MOLT_CALL_INDIRECT_IMPORTS__",
-            call_indirect_imports_json,
-        )
-        .replace(
-            "__MOLT_RESERVED_RUNTIME_CALLABLES__",
-            reserved_runtime_callables_json,
-        )
-        .replace(
-            "__MOLT_DEFAULT_WASM_APP_TABLE_BASE__",
-            str(WASM_DEFAULT_APP_TABLE_BASE),
-        )
-        .replace(
-            "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__",
-            str(reserved_runtime_callable_base),
-        )
-        .replace(
-            "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__",
-            str(reserved_runtime_shared_prefix_len),
-        )
-        .replace(
-            "__MOLT_SHARED_TABLE_BASE__",
-            "null" if shared_table_base is None else str(shared_table_base),
-        )
-        .replace(
-            "__MOLT_WEBGPU_DISPATCH_HOST_IMPORT__",
-            json.dumps(WEBGPU_DISPATCH_HOST_IMPORT),
-        )
+    substitutions = {
+        "__MOLT_SHARED_MEMORY_PAGES__": str(shared_memory_initial_pages),
+        "__MOLT_DEPLOYMENT_MANIFEST__": "JSON.parse("
+        + json.dumps(json.dumps(dict(deployment_manifest), sort_keys=True))
+        + ")",
+        "__MOLT_SYNTHETIC_ERRNO__": json.dumps(dict(WASM_SYNTHETIC_ERRNO)),
+        "__MOLT_WASI_PREVIEW1_ERRNO__": json.dumps(dict(WASM_WASI_PREVIEW1_ERRNO)),
+        "__MOLT_SHARED_TABLE_INITIAL__": str(shared_table_initial),
+        "__MOLT_RUNTIME_IMPORT_RESULT_KINDS__": runtime_import_result_kinds_json,
+        "__MOLT_RUNTIME_IMPORT_SIGNATURES__": runtime_import_signatures_json,
+        "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__": runtime_import_export_names_json,
+        "__MOLT_RUNTIME_EXPORT_SIGNATURES__": runtime_export_signatures_json,
+        "__MOLT_CALL_INDIRECT_IMPORTS__": call_indirect_imports_json,
+        "__MOLT_RESERVED_RUNTIME_CALLABLES__": reserved_runtime_callables_json,
+        "__MOLT_DEFAULT_WASM_APP_TABLE_BASE__": str(WASM_DEFAULT_APP_TABLE_BASE),
+        "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__": str(reserved_runtime_callable_base),
+        "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__": str(
+            reserved_runtime_shared_prefix_len
+        ),
+        "__MOLT_SHARED_TABLE_BASE__": "null"
+        if shared_table_base is None
+        else str(shared_table_base),
+        "__MOLT_WEBGPU_DISPATCH_HOST_IMPORT__": json.dumps(WEBGPU_DISPATCH_HOST_IMPORT),
+    }
+    # Substitute only the original template: policy strings remain data even
+    # when their bytes spell another template token.
+    return re.sub(
+        r"__MOLT_[A-Z0-9_]+__", lambda match: substitutions[match[0]], worker_js
     )
 
 

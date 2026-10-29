@@ -91,7 +91,7 @@ def test_cloudflare_bundle_rejects_incompatible_execution_version(
     )
     original = split_wasm_execution_manifest(EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM)
     path = tmp_path / "manifest.json"
-    for version in ["missing", None, 0, 1, 2, 4, 99, True, False, "3", 3.0]:
+    for version in ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0]:
         manifest = dict(original)
         if version == "missing":
             del manifest["version"]
@@ -99,7 +99,7 @@ def test_cloudflare_bundle_rejects_incompatible_execution_version(
             manifest["version"] = version
         path.write_text(json.dumps(manifest), encoding="utf-8")
         with pytest.raises(
-            RuntimeError, match="Molt deployment manifest version must be 3"
+            RuntimeError, match="Molt deployment manifest version must be 4"
         ):
             verify.validate_bundle_contract(tmp_path, config)
 
